@@ -393,25 +393,6 @@
         });
       }
 
-      // Register known sources for fallback routing
-      window._proxyOrchestrator.fallback.registerSource('kalshi', {
-        endpoint: 'kalshi',
-      });
-      window._proxyOrchestrator.fallback.registerSource('cmc', {
-        endpoint: 'cmc',
-      });
-      window._proxyOrchestrator.fallback.registerSource('pyth', {
-        endpoint: 'pyth',
-      });
-      window._proxyOrchestrator.fallback.registerSource('coingecko', {
-        endpoint: 'coingecko',
-      });
-      window._proxyOrchestrator.fallback.registerSource('coingecko', {
-        endpoint: 'coingecko',
-      });
-      window._proxyOrchestrator.fallback.registerSource('cache', {
-        endpoint: 'cache',
-      });
 
       console.log('[ProxyOrchestrator] ✓ Initialized successfully');
       console.log('[ProxyOrchestrator] Health:', window._proxyOrchestrator.getHealthStatus());

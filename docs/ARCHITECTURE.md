@@ -10,19 +10,19 @@ To manage the high throughput of ticks, order book imbalances, and on-chain tele
 
 ```mermaid
 graph TD
-    subgraph Docker Containerization
+    subgraph DockerContainerization [Docker Containerization]
         R[Redpanda Broker] -->|Topics| T1(wecrypto.orbital.ticks)
         R -->|Topics| T2(wecrypto.orbital.mempool)
         R -->|Topics| T3(wecrypto.orbital.dex)
         I[Orbital Ingestor Daemon] -->|Publishes| R
     end
 
-    subgraph Electron Main Process
+    subgraph ElectronMainProcess [Electron Main Process]
         P[Proxy Orchestrator] -->|Routes| I
         IPC[IPC Bridge] <--> P
     end
 
-    subgraph Renderer [Renderer UI]
+    subgraph RendererUI [Renderer UI]
         UI[Network Health Dashboard] -.->|Probes :9644| R
     end
 
