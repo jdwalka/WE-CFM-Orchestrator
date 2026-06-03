@@ -126,7 +126,15 @@
         }
     }
 
+    let lastProbeTime = 0;
+    let lastProbeResult = null;
+    let probeBackoffMs = 2500;
+
     async function probeOrbitalLocalEndpoints() {
+        if (Date.now() - lastProbeTime < probeBackoffMs && lastProbeResult) {
+            return lastProbeResult;
+        }
+
         const out = {
             docker: 'unknown',
             redpanda: 'unknown',
@@ -167,6 +175,15 @@
                 });
             }
         } catch (_) { }
+
+        lastProbeTime = Date.now();
+        lastProbeResult = out;
+        
+        if (out.redpanda !== 'healthy') {
+            probeBackoffMs = Math.min(30000, probeBackoffMs * 1.5);
+        } else {
+            probeBackoffMs = 2500;
+        }
 
         return out;
     }
@@ -215,7 +232,7 @@
 
         let hybridHint = '<span style="color:#888;">Hybrid mode: normal</span>';
         if (proxy.mode === 'bypass' || proxy.bypassActive) {
-            hybridHint = `<span style="color:#ffd166;">Hybrid mode: proxy bypass (${Math.round((proxy.bypassMsLeft || 0) / 1000)}s)</span>`;
+            hybridHint = `<span style="color:#ffd166;">Hybrid mode: proxy bypass (${proxy.bypassMsLeft > 0 ? Math.round(proxy.bypassMsLeft / 1000) + 's' : 'active'})</span>`;
         } else if (proxy.healthy === false) {
             hybridHint = `<span style="color:#ffd166;">Hybrid mode: degraded proxy (${proxy.failures || 0} fails)</span>`;
         } else if (proxy.mode === 'proxy') {
@@ -389,7 +406,8 @@
                 </div>
             `;
         } catch (err) {
-            el.innerHTML = `<span style="color:#ff5e5e;">Failed to poll orbital status</span>`;
+            const message = err?.message || String(err || 'unknown error');
+            el.innerHTML = `<span style="color:#ff5e5e;">Failed to poll orbital status: ${escapeHtml(message)}</span>`;
         }
     }
 

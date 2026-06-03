@@ -1,30 +1,44 @@
 // ================================================================
-// WE|||CRYPTO — Prediction Markets Intelligence Layer v2.1
+// WE|||CRYPTO â€” Prediction Markets Intelligence Layer v2.1
 // Aggregates Kalshi 15M + Kalshi 5M + Polymarket sentiment for crypto markets
 //
 // Sources (no auth required for market data):
-//   Kalshi 15M  — Direct 15-min UP/DOWN direction markets (KXBTC15M etc.)
+//   Kalshi 15M  â€” Direct 15-min UP/DOWN direction markets (KXBTC15M etc.)
 //                 YES price = market-implied probability price rises in 15 min
 //                 Perfectly aligned with our h15 prediction horizon
-//   Kalshi 5M   — Direct 5-min UP/DOWN direction markets (KXBTC5M etc.)
+//   Kalshi 5M   â€” Direct 5-min UP/DOWN direction markets (KXBTC5M etc.)
 //                 Polled on every 2nd cycle to avoid rate limits
-//   Polymarket  — Decentralised prediction market on Polygon
+//   Polymarket  â€” Decentralised prediction market on Polygon
 //                 Gamma API primary; CLOB API fallback on failure
 //
 // Exposes window.PredictionMarkets:
-//   .start()      — begin 30-second polling
-//   .getAll()     — per-coin sentiment map
-//   .getCoin(sym) — { kalshi, poly, combinedProb, kalshi15m, kalshi5m, poly5m, sources, ... }
-//   .getStatus()  — last fetch metadata
+//   .start()      â€” begin 30-second polling
+//   .getAll()     â€” per-coin sentiment map
+//   .getCoin(sym) â€” { kalshi, poly, combinedProb, kalshi15m, kalshi5m, poly5m, sources, ... }
+//   .getStatus()  â€” last fetch metadata
 // ================================================================
 
 (function () {
   'use strict';
 
   const KALSHI_BASE = 'https://api.elections.kalshi.com/trade-api/v2';
+  const POLY_GAMMA = 'https://gamma-api.polymarket.com';
+  const POLY_CLOB = 'https://clob.polymarket.com';
+
+  const COIN_PATTERNS = {
+    BTC: [/\bbitcoin\b/i, /\bbtc\b/i],
+    ETH: [/\bethereum\b/i, /\beth\b/i],
+    SOL: [/\bsolana\b/i, /\bsol\b/i],
+    XRP: [/\bxrp\b/i, /\bripple\b/i],
+    DOGE: [/\bdogecoin\b/i, /\bdoge\b/i],
+    BNB: [/\bbnb\b/i, /\bbinance\s+coin\b/i, /\bbinancecoin\b/i],
+    HYPE: [/\bhyperliquid\b/i, /\bhype\b/i],
+  };
+
+  const POLY_5M_KEYWORDS = ['5 min', '5min', '5-min', 'next 5', 'five min', '5m ', '5 m '];
+  const POLY_SHORT_WINDOW_MS = 60 * 60_000;
   
-  
-  // 15-second refresh — keeps Yes/No vote initialization tightly synced to
+  // 15-second refresh â€” keeps Yes/No vote initialization tightly synced to
   // active 15M contracts, especially during boundary rollovers.
   const POLL_MS = 15_000;
   const KALSHI_MARKET_LIMIT = 25;
@@ -45,7 +59,7 @@
     HYPE: 'KXHYPE15M',
   };
 
-  // Direct 5-minute UP/DOWN series — BNB/HYPE gracefully null if not live on Kalshi
+  // Direct 5-minute UP/DOWN series â€” BNB/HYPE gracefully null if not live on Kalshi
   const KALSHI_5M_SERIES = {
     BTC: 'KXBTC5M',
     ETH: 'KXETH5M',
@@ -65,7 +79,7 @@
   let _rateLimitUntil = 0;
   let _consecutive429 = 0;
 
-  // ── Kalshi probability velocity tracking ──────────────────────────────────
+  // â”€â”€ Kalshi probability velocity tracking â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   // Tracks the last 12 probability readings per coin to detect smart-money
   // drift BEFORE the model catches up. velocity > 0 = Kalshi odds rising (bullish).
   const _probHistory = {};
@@ -113,8 +127,8 @@
   // Routes through ProxyOrchestrator for:
   //   - Per-endpoint rate limiting
   //   - Deduplication (coalesce identical requests within 500ms)
-  //   - Fallback chains (Kalshi → Polymarket → Cache)
-  //   - Multi-layer caching (memory → localStorage)
+  //   - Fallback chains (Kalshi â†’ Polymarket â†’ Cache)
+  //   - Multi-layer caching (memory â†’ localStorage)
   //
   // Fallback to direct fetch if ProxyOrchestrator not initialized.
 
@@ -140,6 +154,7 @@
     const params = parseKalshiUrl(url);
     let data = null;
     let transport = 'http';
+    let is429 = false;
 
     if (window.EndpointTransport?.fetchKalshiMarkets) {
       try {
@@ -149,18 +164,11 @@
         console.warn(`[PredictionMarkets] EndpointTransport failed:`, err?.message || err);
         window._kalshiErrors = window._kalshiErrors || [];
         window._kalshiErrors.push({ ts: Date.now(), sym: params.series_ticker || 'SYS', msg: 'Proxy ' + (err?.message || 'Error') });
+        if (String(err?.message || err).includes('429')) is429 = true;
       }
     }
 
-<<<<<<< Updated upstream
-=======
-    if (!data && usedEndpointTransport) {
-      markKalshiRateLimit(series, { status: 429, message: 'Transport Cooldown' });
-      return getSeriesCache(series);
-    }
-
->>>>>>> Stashed changes
-    if (!data) {
+    if (!data && !is429) {
       try {
         data = await apiFetch(url);
         transport = 'http';
@@ -168,16 +176,17 @@
         console.error(`[PredictionMarkets] Fetch error for ${url}:`, err?.message || err);
         window._kalshiErrors = window._kalshiErrors || [];
         window._kalshiErrors.push({ ts: Date.now(), sym: params.series_ticker || 'SYS', msg: 'Fetch ' + (err?.message || 'Error') });
-        return null;
+        if (String(err?.message || err).includes('429')) is429 = true;
+        else return null;
       }
     }
 
-    if (data && typeof data === 'object' && data.status === 429) {
+    if (is429 || (data && typeof data === 'object' && data.status === 429)) {
       _consecutive429++;
       const wait = _consecutive429 >= 3
         ? 60_000
         : Math.min(30_000, 3_000 * (2 ** attempt));
-      console.warn(`[PredictionMarkets] HTTP 429 — backoff ${wait}ms`);
+      console.warn(`[PredictionMarkets] HTTP 429 â€” backoff ${wait}ms`);
       _rateLimitUntil = Date.now() + wait;
       await new Promise(r => setTimeout(r, wait));
       _rateLimitUntil = 0;
@@ -357,7 +366,7 @@
   }
 
   // ---- Generic Kalshi series fetch ------------------------------------
-  // Used for both 15M and 5M series — pass a windowMin for the fallback search.
+  // Used for both 15M and 5M series â€” pass a windowMin for the fallback search.
 
   async function fetchKalshiSeriesForSym(series, opts = {}) {
     const suppressWarnings = !!opts.suppressWarnings;
@@ -414,7 +423,6 @@
   async function fetchKalshi15M() {
     const result = {};
     const coins = Object.keys(KALSHI_15M_SERIES);
-<<<<<<< Updated upstream
     for (let i = 0; i < coins.length; i++) {
       const sym = coins[i];
       const series = KALSHI_15M_SERIES[sym];
@@ -423,21 +431,6 @@
         minTradableMs: MIN_TRADABLE_MS_15M,
         strictQuarterHour: true,
       });
-=======
-     // Fetch in parallel chunks of 3 to reduce latency while avoiding instant 429s
-    const CHUNK_SIZE = 3;
-    for (let i = 0; i < coins.length; i += CHUNK_SIZE) {
-      const chunk = coins.slice(i, i + CHUNK_SIZE);
-      const promises = chunk.map(sym => 
-        fetchKalshiSeriesForSym(KALSHI_15M_SERIES[sym], {
-          bucketMs: BUCKET_MS_15M,
-          minTradableMs: MIN_TRADABLE_MS_15M,
-          strictQuarterHour: true,
-        }).then(res => { result[sym] = res; })
-      );
-      await Promise.allSettled(promises);
-      if (i + CHUNK_SIZE < coins.length) await sleep(KALSHI_SERIES_FETCH_GAP_MS);
->>>>>>> Stashed changes
     }
 
     if (_quarterDebugTicksRemaining > 0) {
@@ -462,18 +455,18 @@
     return result;
   }
 
-  // ---- Kalshi 5M — covers all 7 coins; dedicated 5M series tried first,
+  // ---- Kalshi 5M â€” covers all 7 coins; dedicated 5M series tried first,
   // falls back to nearest-expiry 15M market as real-time proxy ----
 
   async function fetchKalshi5M() {
-    // Cover all 7 coins — use 5M series if available, else nearest-expiry 15M as proxy
+    // Cover all 7 coins â€” use 5M series if available, else nearest-expiry 15M as proxy
     const result = {};
     const coins = Object.keys(KALSHI_15M_SERIES); // BTC ETH SOL XRP DOGE BNB HYPE
     for (let i = 0; i < coins.length; i++) {
       const sym = coins[i];
       const series5m = KALSHI_5M_SERIES[sym] || null;
 
-      // 1. Try dedicated 5M series (e.g. KXBTC5M) — may not exist on Kalshi
+      // 1. Try dedicated 5M series (e.g. KXBTC5M) â€” may not exist on Kalshi
       let data = series5m ? await fetchKalshiSeriesForSym(series5m, {
         suppressWarnings: true,
         bucketMs: BUCKET_MS_5M,
@@ -523,14 +516,14 @@
 
   // ---- Probability velocity tracker -----------------------------------
   // Records each new Kalshi YES probability reading (deduped by change + time).
-  // Linear regression over the rolling window gives ¢/min velocity — i.e. how
+  // Linear regression over the rolling window gives Â¢/min velocity â€” i.e. how
   // fast Kalshi's implied probability is drifting. Positive = bullish pressure.
   function trackProbability(sym, prob) {
     if (prob == null) return;
     if (!_probHistory[sym]) _probHistory[sym] = [];
     const hist = _probHistory[sym];
     const last = hist[hist.length - 1];
-    // Require >0.3¢ change OR >15s elapsed since last reading
+    // Require >0.3Â¢ change OR >15s elapsed since last reading
     if (last && Math.abs(last.prob - prob) < 0.003 && Date.now() - last.ts < 15_000) return;
     hist.push({ prob, ts: Date.now() });
     if (hist.length > PROB_HIST_MAX) hist.shift();
@@ -552,7 +545,7 @@
     const num = xs.reduce((s, x, i) => s + (x - xMean) * (ys[i] - yMean), 0);
     const den = xs.reduce((s, x) => s + (x - xMean) ** 2, 0);
     const slope = den > 0 ? num / den : 0; // prob per second
-    const velCentsPerMin = slope * 60 * 100; // → ¢/min
+    const velCentsPerMin = slope * 60 * 100; // â†’ Â¢/min
 
     // Acceleration: velocity of 2nd half vs 1st half
     const compHalfVel = (half) => {
@@ -575,18 +568,190 @@
     };
   }
 
-  // ---- Aggregation --------------------------------------------------
-  // Polymarket: poll every cycle — it's now the primary source
+    // ---- Polymarket ΓÇö paginated, all crypto markets, suppFetch-routed ----
+  // Fetches active Gamma pages sorted by 24h volume. Gamma currently caps pages
+  // at 100 rows even when a larger limit is requested, so offsets must step by
+  // 100 or the app skips most of the market list.
+  // Falls back to CLOB API if Gamma is unreachable.
+
+  async function fetchPolymarket() {
+    // ---- Tier 1: Gamma API (paginated, sort by volume) ----
+    try {
+      const pageSize = 100;
+      const offsets = Array.from({ length: 16 }, (_, i) => i * pageSize);
+      const pages = await Promise.all(offsets.map(offset =>
+        apiFetch(`${POLY_GAMMA}/markets?active=true&closed=false&limit=${pageSize}&offset=${offset}&order=volume24hr&ascending=false`)
+          .catch(() => null)
+      ));
+      const all = [];
+      for (const d of pages) {
+        if (!d) continue;
+        const batch = Array.isArray(d) ? d : Array.isArray(d.results) ? d.results : [];
+        all.push(...batch);
+      }
+      if (all.length) {
+        const seen = new Set();
+        return all.filter(m => {
+          const key = m.id || m.conditionId || m.question || m.slug;
+          if (!key) return true;
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+      }
+    } catch (err) {
+      console.warn('[PredictionMarkets] Gamma fetch failed:', err?.message || err);
+    }
+
+    // ---- Tier 2: CLOB API fallback ----
+    try {
+      if (window.electron && window.electron.invoke) {
+        try {
+          const dClob = await window.electron.invoke('poly:fetchClob', '/markets?active=true&limit=500');
+          if (dClob && !dClob.error) {
+            return Array.isArray(dClob) ? dClob : Array.isArray(dClob.data) ? dClob.data : null;
+          }
+        } catch (ipcErr) {
+          console.warn('[PredictionMarkets] Auth IPC CLOB fetch failed:', ipcErr.message);
+        }
+      }
+      
+      const d2 = await apiFetch(`${POLY_CLOB}/markets?active=true&limit=500`);
+      return Array.isArray(d2) ? d2 : Array.isArray(d2.data) ? d2.data : null;
+    } catch { return null; }
+  }
+
+  // Keywords that indicate non-crypto political/social markets to exclude
+  const POLY_BAD_KW = ['weinstein', 'biden', 'trump', 'ukraine', 'russia', 'election',
+    'senate', 'house', 'president', 'gta', 'elon', 'musk', 'harvey', 'ceasefire',
+    'tariff', 'nato', 'congress', 'supreme court'];
+
+  // Parse YES probability from a single Gamma API market object
+  function _parseYesProb(m) {
+    let prices = m.outcomePrices;
+    if (typeof prices === 'string') { try { prices = JSON.parse(prices); } catch { return null; } }
+    if (!Array.isArray(prices) || !prices[0]) return null;
+    let yesIndex = 0;
+    let outcomes = m.outcomes;
+    if (typeof outcomes === 'string') { try { outcomes = JSON.parse(outcomes); } catch { outcomes = null; } }
+    if (Array.isArray(outcomes)) {
+      const idx = outcomes.findIndex(o => String(o || '').trim().toLowerCase() === 'yes');
+      if (idx >= 0) yesIndex = idx;
+    }
+    const yes = parseFloat(prices[yesIndex]);
+    return Number.isFinite(yes) && yes >= 0.01 && yes <= 0.99 ? yes : null;
+  }
+
+  function matchesPolymarketCoin(m, sym) {
+    const text = `${m.question || m.title || ''} ${m.description || ''}`;
+    const q = text.toLowerCase();
+    if (POLY_BAD_KW.some(b => q.includes(b))) return false;
+    const patterns = COIN_PATTERNS[sym] || [new RegExp(`\\b${String(sym).toLowerCase()}\\b`, 'i')];
+    return patterns.some(re => re.test(text));
+  }
+
+  function polymarketSentiment(markets, sym) {
+    const hits = markets.filter(m => matchesPolymarketCoin(m, sym));
+    if (!hits.length) return null;
+
+    let totalVol = 0, weighted = 0;
+    hits.forEach(m => {
+      const yes = _parseYesProb(m);
+      if (yes === null) return;
+      const vol = parseFloat(m.volume24hr || m.volume || 0) || 1;
+      weighted += yes * vol;
+      totalVol += vol;
+    });
+    if (totalVol === 0) return null;
+
+    // Top 5 by 24h volume with individual YES prices ΓÇö shown in the 5M view
+    const topMarkets = [...hits]
+      .map(m => ({ question: m.question, yes: _parseYesProb(m), vol24h: parseFloat(m.volume24hr || m.volume || 0), endDate: m.end_date_iso || m.end_date || m.endDate || null, slug: m.market_slug || m.slug || null }))
+      .filter(m => m.yes !== null)
+      .sort((a, b) => b.vol24h - a.vol24h)
+      .slice(0, 5);
+
+    return {
+      probability: Math.min(1, Math.max(0, weighted / totalVol)),
+      volume: totalVol,
+      title: topMarkets[0]?.question,
+      count: hits.length,
+      markets: topMarkets,
+    };
+  }
+
+  function polymarket5mSentiment(markets, sym) {
+    const now = Date.now();
+
+    // First try: markets genuinely closing within 6 hours or tagged 5M
+    let hits = markets.filter(m => {
+      const q = ((m.question || '') + ' ' + (m.description || '')).toLowerCase();
+      if (!matchesPolymarketCoin(m, sym)) return false;
+      const endRaw = m.end_date_iso || m.end_date || m.endDate || null;
+      if (endRaw) {
+        const endMs = new Date(endRaw).getTime();
+        if (endMs > now && endMs <= now + 6 * 60 * 60_000) return true;
+      }
+      return POLY_5M_KEYWORDS.some(k => q.includes(k));
+    });
+
+    // Fallback: any active coin market as long-term sentiment context
+    const _noShortTerm = hits.length === 0;
+    if (_noShortTerm) {
+      hits = markets.filter(m => {
+        return matchesPolymarketCoin(m, sym);
+      });
+    }
+    if (!hits.length) return null;
+
+    let totalVol = 0, weighted = 0;
+    hits.forEach(m => {
+      const yes = _parseYesProb(m);
+      if (yes === null) return;
+      const vol = parseFloat(m.volume24hr || m.volume || 0) || 1;
+      weighted += yes * vol;
+      totalVol += vol;
+    });
+    if (totalVol === 0) return null;
+
+    const topMarkets = [...hits]
+      .map(m => ({ question: m.question, yes: _parseYesProb(m), vol24h: parseFloat(m.volume24hr || m.volume || 0), endDate: m.end_date_iso || m.end_date || m.endDate || null, slug: m.market_slug || m.slug || null }))
+      .filter(m => m.yes !== null)
+      .sort((a, b) => b.vol24h - a.vol24h)
+      .slice(0, 5);
+
+    return {
+      probability: Math.min(1, Math.max(0, weighted / totalVol)),
+      volume: totalVol,
+      title: topMarkets[0]?.question,
+      count: hits.length,
+      markets: topMarkets,
+      _noShortTerm,
+    };
+  }
+
+
+
+// ---- Aggregation --------------------------------------------------
+  // Polymarket: poll every cycle â€” it's now the primary source
   // Kalshi 5M:  every 2nd cycle (~60s)
   let _polyCycleCount = 0;
   
+  let _polyCache = null;
   let _k5mCache = {};
 
   async function _doFetch() {
     _polyCycleCount++;
     const fetch5M = false; // Disabled 5M polling due to Kalshi 400/429 limits and new 15M architecture
 
-    const kalshi15m = await fetchKalshi15M();
+    const [kalshi15m, polyMarkets] = await Promise.all([
+      fetchKalshi15M(),
+      fetchPolymarket(),
+    ]);
+    if (polyMarkets !== null) {
+      _polyCache = polyMarkets;
+      window.DataLogger?.logPolymarket(polyMarkets);
+    }
 
     if (fetch5M) {
       const k5m = await fetchKalshi5M();
@@ -603,6 +768,15 @@
         reason: kalshi15m && Object.values(kalshi15m).some(x => x) ? '' : 'No Kalshi 15M data',
       };
       window.NetworkHealth.update('Kalshi', kalshiStatus);
+
+      // Polymarket
+      const polyStatus = {
+        status: polyMarkets && polyMarkets.length > 0 ? 'healthy' : 'down',
+        lastFetch: Date.now(),
+        fallback: false,
+        reason: polyMarkets && polyMarkets.length > 0 ? '' : 'No Polymarket data',
+      };
+      window.NetworkHealth.update('Polymarket', polyStatus);
 
       
 
@@ -642,7 +816,7 @@
         kalshi15m: k15,
         kalshi5m: k5,
         kalshiTitle: k15?.title ?? null,
-        probVelocity: getProbVelocity(sym),  // Kalshi YES-price drift (¢/min)
+        probVelocity: getProbVelocity(sym),  // Kalshi YES-price drift (Â¢/min)
       };
       // Update velocity history AFTER building next[sym] so this cycle feeds next read
       if (k15?.probability != null) trackProbability(sym, k15.probability);
@@ -738,3 +912,4 @@
   };
 
 })();
+

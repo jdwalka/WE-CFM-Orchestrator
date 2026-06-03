@@ -152,8 +152,8 @@ async function isDockerAvailable() {
  */
 function spawnDockerCompose(workspacePath) {
     return new Promise((resolve, reject) => {
-        console.log('[OrbitalOrchestrator] Spawning docker-compose...');
-        const proc = spawn('docker-compose', ['up', '-d'], {
+        console.log('[OrbitalOrchestrator] Spawning docker-compose for Redpanda services...');
+        const proc = spawn('docker-compose', ['up', '-d', 'redpanda', 'redpanda-console'], {
             cwd: workspacePath,
             stdio: ['ignore', 'pipe', 'pipe']
         });

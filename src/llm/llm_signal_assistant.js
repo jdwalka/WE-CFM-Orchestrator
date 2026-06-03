@@ -9,10 +9,6 @@
 const fs = require("fs");
 const path = require("path");
 const { generateSystemPrompt, generateUserPrompt } = require("./specialized_prompt");
-const {
-  readSecretFromEnvOrFiles,
-  extractGoogleApiKey,
-} = require("../cloud/secrets-loader");
 
 function loadLLMEnv() {
   const loadedPaths = [];
@@ -44,29 +40,11 @@ function loadLLMEnv() {
 const LLM_ENV_SOURCES = loadLLMEnv();
 
 function resolveCompatibleApiKey() {
-  const secret = readSecretFromEnvOrFiles(
-    ['LLM_API_KEY', 'OPENAI_API_KEY', 'OPENAI_KEY'],
-    [
-      'OPENAI-WECRYPTO.txt',
-      'OPENAI-Service-account.txt',
-      'LLM-API-KEY.txt',
-      'OPENAI-API-KEY.txt',
-    ]
-  );
-  return String(secret?.value || '').trim();
+  return process.env.ASI_ONE_API_KEY || process.env.LLM_API_KEY || process.env.OPENAI_API_KEY || process.env.OPENAI_KEY || '';
 }
 
 function resolveGoogleApiKey() {
-  const secret = readSecretFromEnvOrFiles(
-    ['GOOGLE_API_KEY', 'GEMINI_API_KEY'],
-    [
-      'GOOGLE-CREDENTIAL-API.txt',
-      'GOOGLE-GEMINI-API-KEY.txt',
-      'GEMINI-API-KEY.txt',
-      'GOOGLE-API-KEY.txt',
-    ]
-  );
-  return extractGoogleApiKey(secret?.value || '');
+  return process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY || '';
 }
 
 // Configuration from environment
@@ -80,7 +58,7 @@ const CONTEXT_CACHE_TTL_MS = Number(process.env.LLM_CONTEXT_CACHE_TTL_MS || 1500
 const MARKET_MEMORY_LIMIT = Number(process.env.LLM_MARKET_MEMORY_LIMIT || 12);
 const LLM_RATE_LIMIT_BASE_COOLDOWN_MS = Number(process.env.LLM_RATE_LIMIT_BASE_COOLDOWN_MS || 15000);
 const LLM_RATE_LIMIT_MAX_COOLDOWN_MS = Number(process.env.LLM_RATE_LIMIT_MAX_COOLDOWN_MS || 5 * 60 * 1000);
-const LLM_RATE_LIMIT_LOG_DEBOUNCE_MS = Number(process.env.LLM_RATE_LIMIT_LOG_DEBOUNCE_MS || 10000);
+const LLM_RATE_LIMIT_LOG_DEBOUNCE_MS = Number(process.env.LLM_RATE_LIMIT_LOG_DEBOUNCE_MS || 20000);
 
 class LLMSignalAssistant {
   constructor() {
@@ -245,16 +223,49 @@ Use this recall only as context, and prioritize current market snapshot data if 
    * Call the LLM API with specialized prompts
    */
   async callAPI(systemPrompt, userPrompt) {
-    if (this.provider === "google") {
-      return this.callGoogleAPI(systemPrompt, userPrompt);
+    const cascade = ['asi1', 'google', 'openai'];
+    let lastErr = null;
+
+    for (const p of cascade) {
+      try {
+        if (p === 'asi1' && process.env.ASI_ONE_API_KEY) {
+          return await this.callCompatibleAPI(systemPrompt, userPrompt, {
+            url: "https://api.asi1.ai/v1/chat/completions",
+            model: "asi1",
+            key: process.env.ASI_ONE_API_KEY
+          });
+        }
+        if (p === 'google' && GOOGLE_API_KEY) {
+          return await this.callGoogleAPI(systemPrompt, userPrompt);
+        }
+        if (p === 'openai' && process.env.OPENAI_API_KEY) {
+          return await this.callCompatibleAPI(systemPrompt, userPrompt, {
+            url: "https://api.openai.com/v1/chat/completions",
+            model: "gpt-4o",
+            key: process.env.OPENAI_API_KEY
+          });
+        }
+      } catch (err) {
+        lastErr = err;
+        console.warn(`[LLMSignalAssistant] Provider ${p} failed: ${err.message}. Falling back...`);
+      }
     }
 
+    if (lastErr) throw lastErr;
+    
+    // Fallback to default compatible if no keys matched the cascade
     return this.callCompatibleAPI(systemPrompt, userPrompt);
   }
 
-  async callCompatibleAPI(systemPrompt, userPrompt) {
+  async callCompatibleAPI(systemPrompt, userPrompt, config = {}) {
+    const url = config.url || LLM_API_URL;
+    const model = config.model || LLM_MODEL;
+    const key = config.key || LLM_API_KEY;
+
+    if (!key) throw new Error("API key missing for compatible provider");
+
     const payload = {
-      model: LLM_MODEL,
+      model: model,
       messages: [
         {
           role: "system",
@@ -266,13 +277,14 @@ Use this recall only as context, and prioritize current market snapshot data if 
         },
       ],
       temperature: 0.1, // low temp for consistency
-      max_tokens: 600,
+      max_tokens: 1500,
+      stream: true,
     };
 
-    const response = await fetch(LLM_API_URL, {
+    const response = await fetch(url, {
       method: "POST",
       headers: {
-        "Authorization": `Bearer ${LLM_API_KEY}`,
+        "Authorization": `Bearer ${key}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify(payload),
@@ -284,16 +296,37 @@ Use this recall only as context, and prioritize current market snapshot data if 
       );
     }
 
-    const data = await response.json();
-
-    // Handle different API response formats
     let content = "";
-    if (data.choices?.[0]?.message?.content) {
-      content = data.choices[0].message.content.trim();
-    } else if (data.error) {
-      throw new Error(`LLM API error: ${data.error.message}`);
+    if (payload.stream && response.body) {
+      const decoder = new TextDecoder("utf-8");
+      for await (const chunk of response.body) {
+        const text = decoder.decode(chunk, { stream: true });
+        const lines = text.split("\n");
+        for (const line of lines) {
+          if (line.startsWith("data: ")) {
+            const dataStr = line.slice(6).trim();
+            if (dataStr === "[DONE]") continue;
+            try {
+              const data = JSON.parse(dataStr);
+              if (data.choices?.[0]?.delta?.content) {
+                content += data.choices[0].delta.content;
+              }
+            } catch (e) {
+              // ignore partial json block
+            }
+          }
+        }
+      }
+      content = content.trim();
     } else {
-      throw new Error("Unexpected LLM API response format");
+      const data = await response.json();
+      if (data.choices?.[0]?.message?.content) {
+        content = data.choices[0].message.content.trim();
+      } else if (data.error) {
+        throw new Error(`LLM API error: ${data.error.message}`);
+      } else {
+        throw new Error("Unexpected LLM API response format");
+      }
     }
 
     // Extract JSON from markdown code blocks if present
@@ -508,6 +541,9 @@ Use this recall only as context, and prioritize current market snapshot data if 
       high_confidence_rationale: "",
       scalp_setups: []
     };
+    const display_terms = Array.isArray(raw.display_terms)
+      ? raw.display_terms.map(String).map(s => s.trim()).filter(Boolean).slice(0, 12)
+      : [];
 
     return {
       regime,
@@ -516,6 +552,7 @@ Use this recall only as context, and prioritize current market snapshot data if 
       warnings,
       analysis: raw.analysis || {},
       ai_wording,
+      display_terms,
     };
   }
 

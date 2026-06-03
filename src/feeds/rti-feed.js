@@ -61,7 +61,7 @@
     BTC: { spacing: 1,    spreadDeviation: 0.005, potentiallyErroneousParam: 0.05 },
     ETH: { spacing: 25,   spreadDeviation: 0.01,  potentiallyErroneousParam: 0.05 },
     SOL: { spacing: 100,  spreadDeviation: 0.01,  potentiallyErroneousParam: 0.05 },
-    XRP: { spacing: 10000, spreadDeviation: 0.01, potentiallyErroneousParam: 0.10 },
+    XRP: { spacing: 20000, spreadDeviation: 0.01, potentiallyErroneousParam: 0.10 },
   };
 
   // Rolling buffer: _buffer[sym] = [{ ts, rti }]

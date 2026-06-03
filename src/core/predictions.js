@@ -30,7 +30,7 @@
   })();
   const _predictionLogThrottle = new Map();
 
-  function predictionDebugLog(key, level, messageFactory, intervalMs = 10000) {
+  function predictionDebugLog(key, level, messageFactory, intervalMs = 20000) {
     if (!VERBOSE_PREDICTION_LOGS) return;
     const now = Date.now();
     const last = _predictionLogThrottle.get(key) || 0;
@@ -95,7 +95,7 @@
   let lastTideRunTs = 0;
   let tideStatusCache = null;
   let tideStatusCacheTs = 0;
-  const INFERENCE_MIN_INTERVAL_MS = 12000;
+  const INFERENCE_MIN_INTERVAL_MS = 25000;
   const INFERENCE_REQUEST_TIMEOUT_MS = 7000;
   const INFERENCE_QUOTA_COOLDOWN_MS = 5 * 60 * 1000;
   const TIDE_MIN_INTERVAL_MS = 15000;
@@ -176,16 +176,16 @@
     _fngCache.ts = now;
     try {
       // Non-critical indicator; keep timeout moderate to avoid noisy false negatives on slow routes.
-      const res = await fetchAnalyticsWithRoute('https://api.alternative.me/fng/?limit=1', 5000);
+      const res = await fetchAnalyticsWithRoute('https://api.alternative.me/fng/?limit=1', 15000);
       if (!res.ok) {
-        console.warn(`[FNG] HTTP ${res.status} after 5s - using cached value`);
+        console.warn(`[FNG] HTTP ${res.status} after 15s - using cached value`);
         return _fngCache.value;
       }
       const data = await res.json();
       _fngCache.value = parseInt(data.data[0].value, 10);
       console.info(`[FNG] Updated: ${_fngCache.value}`);
     } catch (e) {
-      console.warn(`[FNG] Timeout/error after 5s: ${e.message} - using cached value`);
+      console.warn(`[FNG] Timeout/error after 15s: ${e.message} - using cached value`);
       /* use cached value */
     }
     return _fngCache.value;
@@ -212,14 +212,14 @@
     macd: 0.07,
     persistence: 0.07,
     // Mean-reversion / oscillators
-    bands: 0.08,
+    bands: 0.05,
     keltner: 0.05,
     williamsR: 0.07,
     rsi: 0.06,
     cci: 0.05,
     stochrsi: 0.04,
     // Volume / flow
-    volume: 0.10,
+    volume: 0.12,
     obv: 0.07,
     cmf: 0.07,
     mfi: 0.07,
@@ -311,7 +311,7 @@
     return out;
   }
 
-  const CLOSE_WINDOW_GUARD_SECS = 35;
+  const CLOSE_WINDOW_GUARD_SECS = 10;
 
   /**
    * Applies regime-based multipliers to a copy of baseWeights.
@@ -373,43 +373,43 @@
       //      trending_volatile: 2.0x (catch dumps), ranging: 0.1x (suppress noise)
       // CRITICAL: rsi 82% at h15 but only 37% at h1/h5 (MASSIVE OVERFITTING)
       // Solution: Reduce RSI weight dramatically for short horizons
-      rsi: 0.05,   // reduced: 39% in 4-day ETH retune
-      stochrsi: 1.155,   // mild boost: ~53% in 4-day ETH retune
-      williamsR: 2.106,  // boosted: strongest consistent ETH feature
-      bands: 2.11,   // boosted: strong ETH performer in recent window
-      structure: 1.634, keltner: 1.91, cci: 1.045, fisher: 1.92, cmf: 0.532,
-      volume: 0.779, persistence: 0.582, obv: 0.649, macd: 0.358,
-      ema: 0.05, sma: 1.43, adx: 0.19, ichimoku: 0.179, vwap: 1.10, vwma: 0.403, supertrend: 0.132,
+      rsi: 0.01,   // reduced: 39% in 4-day ETH retune
+      stochrsi: 1.087,   // mild boost: ~53% in 4-day ETH retune
+      williamsR: 1.923,  // boosted: strongest consistent ETH feature
+      bands: 2.045,   // boosted: strong ETH performer in recent window
+      structure: 1.451, keltner: 1.857, cci: 0.929, fisher: 1.686, cmf: 0.607,
+      volume: 0.726, persistence: 0.01, obv: 1.055, macd: 0.837,
+      ema: 0.01, sma: 1.132, adx: 0.112, ichimoku: 0.053, vwap: 0.852, vwma: 0.484, supertrend: 0.01,
       // ★ FIX: Restore momentum for trending detection (gated by regime multipliers)
-      momentum: 0.278,  // retained mild positive edge in 4-day ETH retune
-      mfi: 0.92, // reduced: weak in 4-day ETH retune
-      hma: 0.115,  // reduced: weak in 4-day ETH retune
+      momentum: 0.304,  // retained mild positive edge in 4-day ETH retune
+      mfi: 0.843, // reduced: weak in 4-day ETH retune
+      hma: 0.412,  // reduced: weak in 4-day ETH retune
       // ETH moderately correlated with F&G (less than BTC)
-      fearGreed: 1.1,
+      fearGreed: 1.062,
     },
     SOL: { // outcome-retuned 2026-05-20 from 299 windows
  // outcome-retuned 2026-05-20 from 122 windows
       // ── FIXED 2026-05-06: Remove maxScore cap + lower h1/h5 thresholds ──────────────
       // Root cause: maxScore: 0.55 was killing 60-70% of high-confidence h15 mean-reversion signals
       // Solution: Remove maxScore entirely, lower h1/h5 thresholds from 0.43 → 0.30 (match ETH/XRP)
-      bands: 2.5,    // ← REDUCED FROM 3.5 (prevent saturation, oscillations)
+      bands: 1.2,    // ← REDUCED FROM 3.5 (prevent saturation, oscillations)
       fisher: 1.836,    // ← REDUCED FROM 2.8
-      williamsR: 0.57,    // ← REDUCED FROM 4.5 (keep strong but prevent 0.65+ scores)
+      williamsR: 0.30,    // ← REDUCED FROM 4.5 (keep strong but prevent 0.65+ scores)
       cci: 0.51,    // ← REDUCED FROM 3.5
       hma: 1.43,    // 41% WR gate is broken on h1/h5
       structure: 2.5,
       keltner: 1.54,    // ← REDUCED FROM 2.8
-      obv: 1.274,    // volume-direction breakout confirmation
+      obv: 1.5,    // volume-direction breakout confirmation
       macd: 0.928, ichimoku: 1.38, adx: 0.05,
       vwma: 0.169, volume: 1.91, sma: 0.084,
       vwap: 2.0,
-      rsi: 0.05,   // 29% WR is inversely useful, but engine has no rsiInvert flag
+      rsi: 1.5,   // 29% WR is inversely useful, but engine has no rsiInvert flag
       persistence: 0.022,
-      ema: 0.08,
+      ema: 1.5,
       cmf: 0.073,
       supertrend: 0.013, // outcome-retuned 2026-05-08 (180 windows)
       momentum: 0.072,
-      mfi: 0.072,
+      mfi: 1.2,
       stochrsi: 0.046,
       book: 0.489,
       flow: 0.468,
@@ -977,7 +977,7 @@
 
   async function fetchGeckoJSON(path, options = {}) {
     const { minGapMs = GECKO_MIN_GAP_MS, retries = 0, retry429 = false } = options;
-    const backoffMs = [1500, 3500, 8000];
+    const backoffMs = [1500, 3500, 20000];
 
     const run = async (attempt = 0) => {
       const nowCircuit = Date.now();
@@ -1113,7 +1113,7 @@
   async function fetchCDCCandles(instrument, tf, count = 300) {
     const apiInstr = instrument.replace(/([A-Z]+)(USD[T]?)$/, '$1_$2');
     await waitExchangeJitter();
-    const res = await fetchWithTimeout(`${CDC_BASE}/get-candlestick?instrument_name=${apiInstr}&timeframe=${tf}&count=${count}`, 12000);
+    const res = await fetchWithTimeout(`${CDC_BASE}/get-candlestick?instrument_name=${apiInstr}&timeframe=${tf}&count=${count}`, 25000);
     if (!res.ok) throw new Error(`CDC ${res.status}`);
     const json = await res.json();
     if (json.code !== 0) throw new Error(`CDC code ${json.code}`);
@@ -1123,7 +1123,7 @@
   async function fetchCDCBook(instrument) {
     const apiInstr = instrument.replace(/([A-Z]+)(USD[T]?)$/, '$1_$2');
     await waitExchangeJitter();
-    const res = await fetchWithTimeout(`${CDC_BASE}/get-book?instrument_name=${apiInstr}&depth=20`, 8000);
+    const res = await fetchWithTimeout(`${CDC_BASE}/get-book?instrument_name=${apiInstr}&depth=20`, 20000);
     if (!res.ok) return null;
     const json = await res.json();
     if (json.code !== 0) return null;
@@ -1140,7 +1140,7 @@
   async function fetchCDCTrades(instrument) {
     const apiInstr = instrument.replace(/([A-Z]+)(USD[T]?)$/, '$1_$2');
     await waitExchangeJitter();
-    const res = await fetchWithTimeout(`${CDC_BASE}/get-trades?instrument_name=${apiInstr}&count=100`, 8000);
+    const res = await fetchWithTimeout(`${CDC_BASE}/get-trades?instrument_name=${apiInstr}&count=100`, 20000);
     if (!res.ok) return [];
     const json = await res.json();
     if (json.code !== 0) return [];
@@ -1174,7 +1174,7 @@
     const symbol = mexcSymbolForCoin(coin);
     if (!symbol) return [];
     await waitExchangeJitter();
-    const res = await fetchWithTimeout(`${MEXC_BASE}/klines?symbol=${symbol}&interval=${mexcInterval(tf)}&limit=${limit}`, 10000);
+    const res = await fetchWithTimeout(`${MEXC_BASE}/klines?symbol=${symbol}&interval=${mexcInterval(tf)}&limit=${limit}`, 20000);
     if (!res.ok) return [];
     const json = await res.json();
     if (!Array.isArray(json)) return [];
@@ -1238,7 +1238,7 @@
     const symbol = BYBIT_SYMS[sym];
     if (!symbol) return [];
     await waitExchangeJitter();
-    const res = await fetchWithTimeout(getBybitUrl(`/market/kline?category=spot&symbol=${symbol}&interval=${bybitInterval(tf)}&limit=${limit}`), 10000);
+    const res = await fetchWithTimeout(getBybitUrl(`/market/kline?category=spot&symbol=${symbol}&interval=${bybitInterval(tf)}&limit=${limit}`), 20000);
     if (!res.ok) return fetchBINCandles(sym, tf === '1m' ? '1m' : tf === '5m' ? '5m' : '15m', limit);
     const json = await res.json();
     if (json.retCode !== 0 || !Array.isArray(json.result?.list)) return fetchBINCandles(sym, tf === '1m' ? '1m' : tf === '5m' ? '5m' : '15m', limit);
@@ -1305,7 +1305,7 @@
     const bucketSec = tf === '1m' ? 60 : tf === '5m' ? 300 : tf === '15m' ? 900 : 3600;
     const endAt = Math.floor(Date.now() / 1000);
     const startAt = endAt - limit * bucketSec;
-    const res = await fetchWithTimeout(`${KUCOIN_BASE}/market/candles?type=${kucoinType(tf)}&symbol=${symbol}&startAt=${startAt}&endAt=${endAt}`, 10000);
+    const res = await fetchWithTimeout(`${KUCOIN_BASE}/market/candles?type=${kucoinType(tf)}&symbol=${symbol}&startAt=${startAt}&endAt=${endAt}`, 20000);
     if (!res.ok) return [];
     const json = await res.json();
     if (json.code !== '200000' || !Array.isArray(json.data)) return [];
@@ -1367,7 +1367,7 @@
     const symbol = BFNX_SYMS[sym];
     if (!symbol) return [];
     await waitExchangeJitter();
-    const res = await fetchWithTimeout(`${BFNX_BASE}/candles/trade:${bfnxTimeframe(tf)}:${symbol}/hist?limit=${limit}&sort=1`, 10000);
+    const res = await fetchWithTimeout(`${BFNX_BASE}/candles/trade:${bfnxTimeframe(tf)}:${symbol}/hist?limit=${limit}&sort=1`, 20000);
     if (!res.ok) return [];
     const json = await res.json();
     if (!Array.isArray(json)) return [];
@@ -1469,7 +1469,7 @@
     const binSym = BIN_SYMS[sym];
     if (!binSym) return [];
     await waitExchangeJitter();
-    const res = await fetchWithTimeout(`${BIN_BASE}/klines?symbol=${binSym}&interval=${interval}&limit=${limit}`, 10000);
+    const res = await fetchWithTimeout(`${BIN_BASE}/klines?symbol=${binSym}&interval=${interval}&limit=${limit}`, 20000);
     if (!res.ok) return [];
     const json = await res.json();
     if (!Array.isArray(json)) return [];
@@ -1527,7 +1527,7 @@
     const startSec = endSec - limit * granularitySec;
     const res = await fetchWithTimeout(
       `${CB_EXCH_BASE}/products/${productId}/candles?granularity=${granularitySec}&start=${startSec}&end=${endSec}`,
-      12000
+      25000
     );
     if (!res.ok) return [];
     const json = await res.json();
@@ -1547,7 +1547,7 @@
     const productId = CB_EXCH_SYMS[sym];
     if (!productId) return null;
     await waitExchangeJitter();
-    const res = await fetchWithTimeout(`${CB_EXCH_BASE}/products/${productId}/book?level=2`, 8000);
+    const res = await fetchWithTimeout(`${CB_EXCH_BASE}/products/${productId}/book?level=2`, 20000);
     if (!res.ok) return null;
     const json = await res.json();
     if (!Array.isArray(json?.bids) || !Array.isArray(json?.asks)) return null;
@@ -1563,7 +1563,7 @@
     const productId = CB_EXCH_SYMS[sym];
     if (!productId) return [];
     await waitExchangeJitter();
-    const res = await fetchWithTimeout(`${CB_EXCH_BASE}/products/${productId}/trades?limit=${limit}`, 8000);
+    const res = await fetchWithTimeout(`${CB_EXCH_BASE}/products/${productId}/trades?limit=${limit}`, 20000);
     if (!res.ok) return [];
     const json = await res.json();
     if (!Array.isArray(json)) return [];
@@ -1590,7 +1590,7 @@
     const pair = KRAKEN_SYMS[sym];
     if (!pair) return [];
     await waitExchangeJitter();
-    const res = await fetchWithTimeout(`${KRAKEN_BASE}/OHLC?pair=${pair}&interval=${krakenInterval(tf)}`, 12000);
+    const res = await fetchWithTimeout(`${KRAKEN_BASE}/OHLC?pair=${pair}&interval=${krakenInterval(tf)}`, 25000);
     if (!res.ok) return [];
     const json = await res.json();
     if (json.error?.length) return [];
@@ -1611,7 +1611,7 @@
     const pair = KRAKEN_SYMS[sym];
     if (!pair) return null;
     await waitExchangeJitter();
-    const res = await fetchWithTimeout(`${KRAKEN_BASE}/Depth?pair=${pair}&count=25`, 8000);
+    const res = await fetchWithTimeout(`${KRAKEN_BASE}/Depth?pair=${pair}&count=25`, 20000);
     if (!res.ok) return null;
     const json = await res.json();
     if (json.error?.length) return null;
@@ -1629,7 +1629,7 @@
     const pair = KRAKEN_SYMS[sym];
     if (!pair) return [];
     await waitExchangeJitter();
-    const res = await fetchWithTimeout(`${KRAKEN_BASE}/Trades?pair=${pair}`, 8000);
+    const res = await fetchWithTimeout(`${KRAKEN_BASE}/Trades?pair=${pair}`, 20000);
     if (!res.ok) return [];
     const json = await res.json();
     if (json.error?.length) return [];
@@ -1711,7 +1711,7 @@
         };
       } else {
         // BTC / ETH / SOL / XRP / DOGE: Coinbase + Binance only
-        const [bin1m, bin5m, bin15m, cb1m, cb5m, cb15m, cbBook, cbTrades] = await Promise.all([
+        const [bin1m, bin5m, bin15m, cb1m, cb5m, cb15m, cbBook, cbTrades, longHistory] = await Promise.all([
           fetchBINCandles(coin.sym, '1m', 180).catch(() => []),
           fetchBINCandles(coin.sym, '5m', 300).catch(() => []),
           fetchBINCandles(coin.sym, '15m', 300).catch(() => []),
@@ -1720,6 +1720,7 @@
           fetchCBExchCandles(coin.sym, 900, 300).catch(() => []),
           fetchCBExchBook(coin.sym).catch(() => null),
           fetchCBExchTrades(coin.sym).catch(() => []),
+          hasLongHistory ? Promise.resolve(existing.longHistory) : fetchGeckoMaxHistory(coin.geckoId).catch(() => existing.longHistory || []),
         ]);
         const ws15m_b = window.CandleWS ? window.CandleWS.getClosedBuckets15m(coin.sym) : [];
         const ws1m = window.CandleWS ? window.CandleWS.getClosedBuckets1m(coin.sym) : [];
@@ -1742,8 +1743,8 @@
           book: cbBook, trades: cbTrades,
           source: sourceParts.join(' + '),
           ts: Date.now(),
-          longHistory: existing.longHistory || [],
-          longHistoryTs: existing.longHistoryTs || 0,
+          longHistory: longHistory || [],
+          longHistoryTs: longHistory?.length ? Date.now() : (existing.longHistoryTs || 0),
           _cb1m: cb1m, _cb5m: cb5m, _cb15m: cb15m,
           _bin1m: bin1m, _bin5m: bin5m, _bin15m: bin15m,
         };
@@ -4595,11 +4596,11 @@
 
     // Log consensus (only if meaningful)
     if ((bullCount >= 2 || bearCount >= 2) && Math.abs(liveRealtimeMomentum) > 0.05) {
-      predictionDebugLog(`consensus:${options.sym}`, 'log', () => `[CONSENSUS] ${options.sym}: direction=${consensusDirection > 0 ? 'BULL' : 'BEAR'} conf=${(consensusConfidence*100).toFixed(0)}% (${bullCount+bearCount} signals), mom=${momSig.toFixed(2)}`, 10000);
+      predictionDebugLog(`consensus:${options.sym}`, 'log', () => `[CONSENSUS] ${options.sym}: direction=${consensusDirection > 0 ? 'BULL' : 'BEAR'} conf=${(consensusConfidence*100).toFixed(0)}% (${bullCount+bearCount} signals), mom=${momSig.toFixed(2)}`, 20000);
     }
 
-    // 🌟 PHASE INVERSION: Flipped score output to capitalize on 45% systematic loss rate
-    const score = -1 * clamp(consensusComposite * 1.6 * adxGate * divergenceSuppression * (ENABLE_MDT_SCORE_MULT ? mdtScoreMult : 1) * _sessMult * (tapeVelocity.scoreBoostMult || 1), -1, 1);
+    // REMOVED PHASE INVERSION: A 45% loss rate is a 55% win rate. Flipping the score turned a winning edge into a losing one!
+    const score = clamp(consensusComposite * 1.6 * adxGate * divergenceSuppression * (ENABLE_MDT_SCORE_MULT ? mdtScoreMult : 1) * _sessMult * (tapeVelocity.scoreBoostMult || 1), -1, 1);
     const agreement = summarizeAgreement(Object.fromEntries(modelActiveKeys.map(key => [key, signalVector[key]])));
     const coreAgreement = summarizeAgreement(Object.fromEntries(CORE_SIGNAL_KEYS.map(key => [key, signalVector[key]])));
 
@@ -4760,13 +4761,18 @@
       projections: SHORT_HORIZON_MINUTES.reduce((acc, horizonMin) => {
         const targetScale = horizonMin / 60;
         const rangeScale = Math.max(0.12, Math.sqrt(horizonMin / 15) * 0.5) * projectionRangeExpansionMult;
-        const target = lastPrice * (1 + mom / 100 * targetScale * projectionTargetDriftMult);
+        
+        // Use model score for projection target so UI targets match verdict direction
+        const expectedMovePct = Math.max(Math.abs(mom / 100), (atr / lastPrice) * 0.4);
+        const modelDrift = score * expectedMovePct;
+        
+        const target = lastPrice * (1 + modelDrift * targetScale * projectionTargetDriftMult);
         const entry = projectionKey(horizonMin);
         acc[entry] = { horizonMin, target, high: target + atr * rangeScale, low: target - atr * rangeScale };
         // For the 15-min horizon, align target to the NEXT 15-min candle session
         if (horizonMin === 15) {
           const ns = getNextCandleSession();
-          const scaledMom = mom / 100 * (ns.minsRemaining / 60) * projectionTargetDriftMult;
+          const scaledMom = modelDrift * (ns.minsRemaining / 60) * projectionTargetDriftMult;
           const nsTarget = lastPrice * (1 + scaledMom);
           acc[entry].nextSession = {
             target: nsTarget,
@@ -5536,6 +5542,9 @@
             suggestions: llmOutput.suggestions || {},
             warnings: Array.isArray(llmOutput.warnings) ? llmOutput.warnings.map(String) : [],
             notes: llmNotes,
+            ai_wording: llmOutput.ai_wording || null,
+            analysis: llmOutput.analysis || null,
+            market_patterns: llmOutput.ai_wording?.market_patterns || llmOutput.market_patterns || null,
             provider: response?.diagnostics?.provider || null,
             degraded: llmDegraded,
             cooldownRemainingMs: llmCooldownRemainingMs,
@@ -5915,8 +5924,8 @@
       const series = (horizonMin <= 5 && cache.candles1m && cache.candles1m.length >= 30)
         ? cache.candles1m
         : cache.candles;
-      const last = series?.[series.length - 1];
-      return `${horizonMin}:${series?.length || 0}:${last?.t || 0}:${Math.round((last?.c || 0) * 10000)}`;
+      // Remove live price (last.c) from cache key so it doesn't recompute on every tick!
+      return `${horizonMin}:${series?.length || 0}`;
     }).join('|');
     if (cache._walkBacktestKey === walkKey && cache._walkBacktest) {
       return cache._walkBacktest;
@@ -5924,21 +5933,25 @@
     const results = {};
 
     SHORT_HORIZON_MINUTES.forEach(horizonMin => {
-      // ★★★ CRITICAL FIX: Use raw candles WITHOUT RTI aggregation for h1/h5
-      // Previously: aggregateToRTI(candles1m, 5) converted 1m→5m, breaking h1 horizon (looked ahead 5m instead of 1m)
-      // Now: Use raw candles1m for h1/h5, raw candles5m for h10+
       const candles = (horizonMin <= 5 && cache.candles1m && cache.candles1m.length >= 30)
         ? cache.candles1m  // Use raw 1-minute candles for h1/h5
         : cache.candles;   // Use 5-minute candles for h10+
       if (!candles || candles.length < 30) return;
-      const barMinutes = inferBarMinutes(candles) || 5;  // RTI aggregates to 5m
+      
+      const barMinutes = inferBarMinutes(candles) || 5;
       const horizonBars = Math.max(1, Math.round(horizonMin / barMinutes));
-      const startIndex = Math.max(26, horizonBars + 10);
+      
+      // Limit backtest steps to prevent UI freeze
+      const maxBacktestSteps = 250;
+      const minStartIndex = Math.max(26, horizonBars + 10);
+      const startIndex = Math.max(minStartIndex, candles.length - horizonBars - maxBacktestSteps);
+      
       const observations = [];
       const history = [];
 
       for (let idx = startIndex; idx < candles.length - horizonBars; idx++) {
-        const windowCandles = candles.slice(0, idx + 1);
+        // Slice window to max 400 items to bound buildSignalModel's O(N) complexity
+        const windowCandles = candles.slice(Math.max(0, idx + 1 - 400), idx + 1);
         const model = buildSignalModel(windowCandles, null, [], {
           includeMicrostructure: false,
           includeSetups: false,
@@ -6887,7 +6900,7 @@
     if (candles15m.length < 8) {
       return {
         sym: coin.sym, name: coin.name, color: coin.color, icon: coin.icon,
-        price: cache?.ticker?.usd || 0,
+        price: cache?.ticker?.usd || window._predictions?.[coin.sym]?.price || 0,
         signal: 'neutral', confidence: 15, score: 0,
         ts: computedTs, timestamp: computedTs,
         source: 'loading', candleCount: cache?.candles15m?.length || 0, updatedAt: '–',
@@ -7340,7 +7353,7 @@
           Promise.race([p, new Promise(r => setTimeout(r, 20000))]);
         await Promise.allSettled([
           ...PREDICTION_COINS.map(c => withCoinTimeout(loadCoinData(c))),
-          Promise.race([fetchDerivatives(), new Promise(r => setTimeout(r, 8000))]) // 8s cap
+          Promise.race([fetchDerivatives(), new Promise(r => setTimeout(r, 20000))]) // 8s cap
         ]);
         // Yield between each coin's backtest to keep the UI thread responsive
         for (const coin of PREDICTION_COINS) {

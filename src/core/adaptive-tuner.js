@@ -11,6 +11,7 @@ class AdaptiveTuner {
 
     // Tuning log for audit trail
     this.tuningLog = [];
+    this.regimeMultiplierHistory = [];
 
     // Baseline thresholds — synced to SIGNAL_GATE_OVERRIDES (30-day walk-forward 2026-04-27).
     // TUNED FOR 15M CONTRACTS (2026-05-04 recalibration):
@@ -87,6 +88,31 @@ class AdaptiveTuner {
     const supported = active.length ? active : Object.keys(this.baselineGates);
     return [...new Set(supported.map(s => String(s).toUpperCase()))]
       .filter(sym => this.baselineGates[sym]);
+  }
+
+  applyRegimeMultipliers(multiplierSet, options = {}) {
+    if (typeof window === 'undefined' || !window.PredictionEngine?.setRegimeWeightMultipliers) {
+      return { applied: false, reason: 'PredictionEngine regime multiplier API unavailable' };
+    }
+    const applied = window.PredictionEngine.setRegimeWeightMultipliers(multiplierSet, {
+      persist: !!options.persist,
+    });
+    const event = {
+      timestamp: Date.now(),
+      source: options.source || 'adaptive-tuner',
+      persist: !!options.persist,
+      regimes: Object.keys(multiplierSet || {}),
+    };
+    this.regimeMultiplierHistory.push(event);
+    if (this.regimeMultiplierHistory.length > 50) {
+      this.regimeMultiplierHistory = this.regimeMultiplierHistory.slice(-50);
+    }
+    return { applied: true, event, multipliers: applied };
+  }
+
+  getRegimeMultipliers() {
+    if (typeof window === 'undefined' || !window.PredictionEngine?.getRegimeWeightMultipliers) return null;
+    return window.PredictionEngine.getRegimeWeightMultipliers();
   }
 
   clamp(value, min, max) {
@@ -170,7 +196,7 @@ class AdaptiveTuner {
 
     const reasons = [];
     const sessionChanged = !!(state.sessionLabel && state.sessionLabel !== sessionLabel);
-    const impulseCooldownOk = !state.lastImpulseTs || (now - state.lastImpulseTs) >= 12000;
+    const impulseCooldownOk = !state.lastImpulseTs || (now - state.lastImpulseTs) >= 25000;
 
     if (hugeCandle && tapeConfirmed) {
       gate.closeEdgeAdj -= closeWindow ? 2.5 : 1.4;
@@ -935,6 +961,8 @@ class AdaptiveTuner {
       lastTuneTime: new Date(this.lastTuneTime).toISOString(),
       tuningLogLength: this.tuningLog.length,
       recentTuningEvents: this.tuningLog.slice(-10),
+      regimeMultipliers: this.getRegimeMultipliers(),
+      recentRegimeMultiplierEvents: this.regimeMultiplierHistory.slice(-10),
     };
 
     for (const sym of TUNING_COINS) {

@@ -4,19 +4,29 @@
  * 200ms fixed-rate updates, proper connection pooling
  */
 
+const path = require('path');
+
+try {
+  require('dotenv').config({ path: path.resolve(__dirname, '../../.env'), quiet: true });
+} catch (_) { }
+
 const { PythLazerClient } = require("@pythnetwork/pyth-lazer-sdk");
 
-const LAZER_TOKEN = process.env.LAZER_TOKEN || "HjkdyqJTX45K7nrqtkiKwHPuCpDkh2gmvKNof29RwTW";
+const LAZER_TOKEN = process.env.PYTH_LAZER_TOKEN || process.env.LAZER_TOKEN || process.env.PYTH_API_KEY || "";
 
 const PRICE_FEED_IDS = {
   BTC: 1,
   ETH: 2,
-  SOL: 3,
-  XRP: 4,
-  DOGE: 5,
-  BNB: 6,
-  HYPE: 7,
+  SOL: 6,
+  DOGE: 10,
+  XRP: 14,
+  BNB: 15,
 };
+const EXTRA_PRICE_FEED_IDS = [13, 110];
+const SUBSCRIPTION_PRICE_FEED_IDS = Array.from(new Set([
+  ...Object.values(PRICE_FEED_IDS),
+  ...EXTRA_PRICE_FEED_IDS,
+]));
 
 class PythLazerWebSocketHandler {
   constructor() {
@@ -31,6 +41,9 @@ class PythLazerWebSocketHandler {
    */
   async connect() {
     try {
+      if (!LAZER_TOKEN) {
+        throw new Error("PYTH_LAZER_TOKEN not set");
+      }
       console.log("[PythLazerWS] Initializing official SDK client...");
 
       this.client = await PythLazerClient.create({
@@ -60,7 +73,7 @@ class PythLazerWebSocketHandler {
       this.client.subscribe({
         type: "subscribe",
         subscriptionId: this.subscriptionId,
-        priceFeedIds: Object.values(PRICE_FEED_IDS), // [1, 2, 3, 4, 5, 6, 7] for all 7 coins
+        priceFeedIds: SUBSCRIPTION_PRICE_FEED_IDS,
         properties: [
           "price",
           "marketSession",
@@ -82,7 +95,7 @@ class PythLazerWebSocketHandler {
         ignoreInvalidFeeds: true,
       });
 
-      console.log("[PythLazerWS] ✅ Subscribed to 7 price feeds with enhanced properties (real-time)");
+      console.log(`[PythLazerWS] Subscribed to price feeds: ${SUBSCRIPTION_PRICE_FEED_IDS.join(',')} (real-time)`);
 
       // Listen for price updates
       this.client.addMessageListener((message) => {
@@ -119,27 +132,34 @@ class PythLazerWebSocketHandler {
    */
   handlePriceUpdate(data) {
     try {
-      if (!data.parsed || !data.parsed.priceFeedUpdates) {
+      const feeds = data?.parsed?.priceFeeds || data?.parsed?.priceFeedUpdates;
+      if (!Array.isArray(feeds) || !feeds.length) {
         return;
       }
 
-      data.parsed.priceFeedUpdates.forEach((feed) => {
+      feeds.forEach((feed) => {
         // Convert feed ID back to symbol
         const symbol = Object.entries(PRICE_FEED_IDS).find(
           ([_, id]) => id === feed.priceFeedId
         )?.[0];
 
         if (!symbol) return;
+        const exponent = feed.exponent ?? feed.price?.expo ?? -8;
+        const rawPrice = feed.price?.price ?? feed.price ?? 0;
+        const rawConf = feed.price?.conf ?? feed.confidence ?? 0;
+        const feedTs = Number(feed.feedUpdateTimestamp || 0);
+        const publishTime = feed.publishTime
+          || (feedTs ? (feedTs > 20_000_000_000 ? Math.floor(feedTs / 1000) : Math.floor(feedTs)) : Math.floor(Date.now() / 1000));
 
         // Convert to Pyth standard format with all enhanced properties
         const update = {
           type: "price_update",
           account: `Crypto.${symbol}/USD`,
           price: {
-            price: feed.price?.price || 0,
-            conf: feed.price?.conf || 0,
-            expo: feed.price?.expo || 0,
-            publish_time: feed.publishTime || Math.floor(Date.now() / 1000),
+            price: rawPrice,
+            conf: rawConf,
+            expo: exponent,
+            publish_time: publishTime,
           },
           // Enhanced Lazer properties
           marketSession: feed.marketSession || null,
@@ -150,7 +170,7 @@ class PythLazerWebSocketHandler {
           bestAskPrice: feed.bestAskPrice || null,
           publisherCount: feed.publisherCount || null,
           bestBidPrice: feed.bestBidPrice || null,
-          exponent: feed.exponent || feed.price?.expo || 0,
+          exponent,
           fundingTimestamp: feed.fundingTimestamp || null,
         };
 

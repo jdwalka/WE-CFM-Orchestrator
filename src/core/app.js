@@ -20,6 +20,20 @@
   // Track in-flight icon fetches so we don't fire duplicate requests per symbol
   const _iconFetchQueue = new Set();
 
+  // ---- LLM Integration ----
+  let _llmIntegration = null;
+  let _llmCycleCount = 0;
+  try {
+    if (typeof window !== 'undefined' && window.require) {
+      const LLMIntClass = window.require('../src/llm/llm_integration.js');
+      _llmIntegration = typeof LLMIntClass === 'function' ? new LLMIntClass() : LLMIntClass;
+      window._llmIntegration = _llmIntegration;
+      console.log('[App] LLMIntegration loaded successfully.');
+    }
+  } catch (e) {
+    console.warn('[App] Failed to load LLMIntegration:', e.message);
+  }
+
   // ---- State ----
   let currentView = 'cfm';
   let _fetchAttempted = false;  // set after first fetchAll() completes (success or fail)
@@ -38,7 +52,7 @@
   let donutChart = null;       // Chart.js donut
   let scanRunning = false;
   let cfmExpanded = new Set();
-  let predictionExpanded = new Set();
+  let predictionCollapsed = new Set();
   let _universeActiveTab = 'table'; // persists across auto-refresh re-renders
   let screenerSortBy = 'marketCap';
   let screenerSortDir = -1;
@@ -447,10 +461,10 @@
           background: { concurrency: 2, gapMs: 180 },
         },
         providers: {
-          kalshi: { cooldownMs: 250, cooldownMaxMs: 3000, circuitThreshold: 10, circuitMs: 12000 },
+          kalshi: { cooldownMs: 250, cooldownMaxMs: 3000, circuitThreshold: 10, circuitMs: 25000 },
           gecko: { cooldownMs: 3500, cooldownMaxMs: 120000, circuitThreshold: 5, circuitMs: 180000 },
           llm: { cooldownMs: 15000, cooldownMaxMs: 300000, circuitThreshold: 2, circuitMs: 300000 },
-          'pyth-lazer': { cooldownMs: 1200, cooldownMaxMs: 8000, circuitThreshold: 3, circuitMs: 12000 },
+          'pyth-lazer': { cooldownMs: 1200, cooldownMaxMs: 20000, circuitThreshold: 3, circuitMs: 25000 },
           cdc: { cooldownMs: 1500, cooldownMaxMs: 45000, circuitThreshold: 4, circuitMs: 60000 },
         },
       });
@@ -624,7 +638,7 @@
 
     let slippageBps = null;
     if (Number.isFinite(realizedFillPrice) && Number.isFinite(expectedPrice) && Math.abs(expectedPrice) > 1e-9) {
-      slippageBps = ((realizedFillPrice - expectedPrice) / expectedPrice) * 10000;
+      slippageBps = ((realizedFillPrice - expectedPrice) / expectedPrice) * 20000;
     }
 
     const realizedRatio = Number.isFinite(Number(meta.realized_fill_ratio))
@@ -2166,12 +2180,12 @@
   async function fetchTickers() {
     // Check shared cache first (may have been populated by CFM engine)
     const cache = window._sharedTickerCache;
-    if (cache.data && Date.now() - cache.age < 8000) {
+    if (cache.data && Date.now() - cache.age < 20000) {
       return cache.data;
     }
     const res = await fetchWithTimeout(`${CDC_BASE}/get-tickers`, 15000);  // 15s for Stockholm/DERP routing
     if (!res.ok) throw new Error(`Tickers HTTP ${res.status}`);
-    const json = await res.json();
+    const json = await res.clone().json();
     if (json.code !== 0) throw new Error(`Tickers error code ${json.code}`);
     const normalized = json.result.data.map(normalizeTicker);
     // Populate shared cache for other engines
@@ -2329,10 +2343,11 @@
         return;
       }
 
-      // Get balance for portfolio context
-      const balanceRes = await window.Kalshi.getBalance();
-      const balanceParsed = unwrapKalshiIpcPayload(balanceRes);
-      const balance = balanceParsed.success ? (balanceParsed.payload?.balance ?? null) : null;
+      // Get balance for portfolio context (Disabled per user request)
+      // const balanceRes = await window.Kalshi.getBalance();
+      // const balanceParsed = unwrapKalshiIpcPayload(balanceRes);
+      // const balance = balanceParsed.success ? (balanceParsed.payload?.balance ?? null) : null;
+      const balance = null;
 
       // Store Kalshi snapshot
       window._kalshiSnapshot = {
@@ -2642,7 +2657,7 @@
     // ★ FALLBACK 2: Pyth Hermes (standard, wider coin coverage)
     const feedIds = Object.values(PYTH_FEEDS);
     const params = feedIds.map(id => `ids[]=${id}`).join('&');
-    const res = await fetchWithTimeout(`${PYTH_HERMES}/v2/updates/price/latest?${params}`, 8000);
+    const res = await fetchWithTimeout(`${PYTH_HERMES}/v2/updates/price/latest?${params}`, 20000);
     if (!res.ok) throw new Error(`Pyth HTTP ${res.status}`);
     const json = await res.json();
     const result = [];
@@ -2716,7 +2731,7 @@
   // ---- Hyperliquid allMids — decentralized perps, covers HYPE + wide alt universe ----
   async function fetchHyperliquidMids() {
     const res = await fetchWithTimeout(
-      `${HL_BASE}/info`, 8000,
+      `${HL_BASE}/info`, 20000,
       { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: 'allMids' }) }
     );
     if (!res.ok) throw new Error(`Hyperliquid HTTP ${res.status}`);
@@ -2941,7 +2956,7 @@
           console.info(`[Chart] CoinCap skipped for ${instrument}: no API key configured`);
           return [];
         }
-        const res = await fetchWithTimeout(`${COINCAP_BASE}/assets/${coincapId}/history?interval=d1`, 8000, {
+        const res = await fetchWithTimeout(`${COINCAP_BASE}/assets/${coincapId}/history?interval=d1`, 20000, {
           headers: {
             Accept: 'application/json',
             Authorization: `Bearer ${coinCapKey}`,
@@ -3048,7 +3063,7 @@
     const now = Math.floor(Date.now() / 1000);
     const from = now - (SEC[res] || 3600) * (BARS[res] || 100);
     const url = `${PYTH_HISTORY_BASE}/v1/real_time/history?symbol=${encodeURIComponent(sym)}&from=${from}&to=${now}&resolution=${res}`;
-    const r = await fetchWithTimeout(url, 8000);
+    const r = await fetchWithTimeout(url, 20000);
     if (!r.ok) throw new Error(`Pyth History HTTP ${r.status}`);
     const d = await r.json();
     if (d.s !== 'ok' || !d.c?.length) throw new Error(`Pyth History no data (s=${d.s})`);
@@ -3103,7 +3118,7 @@
       } catch (_) {
         try { ctrl.abort(); } catch (_) { }
       }
-    }, 8000);
+    }, 20000);
     try {
       // Try resilientFetch first (adds automatic retry + fallback to Etherscan)
       const res = window.resilientFetch
@@ -3448,7 +3463,7 @@
           }
         }
 
-      } else if (!manual && _shared?.data && Date.now() - _shared.age < 8000) {
+      } else if (!manual && _shared?.data && Date.now() - _shared.age < 20000) {
         // ── Instant: reuse shared cache if very fresh (<8s) ─────────────────
         rawTickers = _shared.data;
         dataSource = 'cache';
@@ -3492,12 +3507,12 @@
       // Supplemental: fill coins not covered by primary source.
       // Tries Binance first (covers ~37 coins), then CoinGecko for any remaining holes
       // (XTZ, PEPE, AERO, HYPE not on Pyth; Binance may not carry AERO/HYPE).
-      fetchSupplementalTickers(rawTickers)
-        .then(supp => {
-          if (Array.isArray(supp)) supp.forEach(t => { if (t?.instrument_name) tickers[t.instrument_name] = t; });
-          refreshActiveView();
-        })
-        .catch(err => console.warn('[WE] Supplemental fetch failed:', err.message));
+      try {
+        const supp = await fetchSupplementalTickers(rawTickers);
+        if (Array.isArray(supp)) supp.forEach(t => { if (t?.instrument_name) tickers[t.instrument_name] = t; });
+      } catch (err) {
+        console.warn('[WE] Supplemental fetch failed:', err.message);
+      }
 
       // Hard fail only if every live source returned nothing AND no stale tickers exist
       if (!rawTickers.length && Object.keys(tickers).length === 0) {
@@ -4012,6 +4027,8 @@
     const preds = window._predictions || {};
     const nowMs = Date.now();
 
+    _llmCycleCount++;
+
     PREDICTION_COINS.forEach(coin => {
       const p = preds[coin.sym];
       
@@ -4259,6 +4276,19 @@
     if (window._contractCache?.flushSync) {
       try { window._contractCache.flushSync(); } catch (_) { }
     }
+
+    // ---- LLM Integration Trigger ----
+    // Fire background LLM analysis every 4 cycles (~60s) to refresh narrations non-blockingly
+    if (window._llmIntegration && (_llmCycleCount % 4 === 0)) {
+      Object.entries(preds).forEach(([sym, p]) => {
+        try {
+          window._llmIntegration.analyze(sym, p, {}).catch(err => {
+            console.warn(`[LLMEngine] background analysis for ${sym} failed:`, err.message);
+          });
+        } catch (err) { }
+      });
+    }
+
     saveLastPred();
     saveLastKalshi();
     scheduleWebStatePublish('prediction-snapshot');
@@ -4558,7 +4588,7 @@
     if (_webStateHeartbeat) return;
     _webStateHeartbeat = setInterval(() => {
       publishWebState('heartbeat', true);
-    }, 10000);
+    }, 20000);
   }
 
   // ── Market Divergence ─────────────────────────────────────────────────────
@@ -5554,7 +5584,7 @@
     const pm = window.PredictionMarkets?.getAll() || {};
     const pred = window.PredictionEngine?.getAll() || {};
     const snipes = window.PredictionMarkets?.getSnipes?.() || [];
-    const COINS_5M = ['BTC', 'ETH', 'XRP', 'DOGE', 'BNB'];  // ★ REMOVED HYPE (48%) and SOL (52%)
+    const COINS_5M = ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'BNB'];  // ★ REMOVED HYPE (48%)
 
     function _pct(v) {
       if (v == null) return '—';
@@ -6222,6 +6252,24 @@
     return out;
   }
 
+let _llmObsStats = { completions: 0, queues: 0, provider: 'none', model: 'none', enabled: false };
+    setInterval(async () => {
+      if (!window.electron) return;
+      try {
+        const diag = await window.electron.invoke('llm:getStats');
+        const qStats = window._signalScheduler?.getStats()?.lanes?.validation?.queued || 0;
+        if (diag && diag.stats) {
+          _llmObsStats.completions = diag.stats.successes || diag.stats.total_calls || diag.stats.calls || 0;
+          _llmObsStats.provider = diag.provider || 'none';
+          _llmObsStats.model = diag.model || 'none';
+          _llmObsStats.enabled = diag.enabled || false;
+        } else if (diag) {
+          _llmObsStats.completions = diag.successes || diag.calls || 0;
+        }
+        _llmObsStats.queues = qStats;
+      } catch(e) {}
+    }, 2000);
+
   function _obsBuildMetrics() {
     const resLog = window._15mResolutionLog || [];
     const kalshiLog = window._kalshiLog || [];
@@ -6697,6 +6745,22 @@
       </div>
 
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:12px;margin-bottom:12px;">
+        <div class="card" style="padding:12px">
+          <div class="card-title">ASI1 LLM Engine</div>
+          <div style="font-size:10px; color:var(--color-text-faint); margin-bottom:4px">
+            ${_llmObsStats.enabled ? `🟢 ${_llmObsStats.provider.toUpperCase()} | ${_llmObsStats.model}` : '🔴 Offline'}
+          </div>
+          <div style="display:flex; justify-content: space-between; align-items: center; margin-top: 6px;">
+            <div>
+              <div style="font-size:22px;font-weight:800;color:var(--color-primary);font-family:var(--font-mono)">${_llmObsStats.completions}</div>
+              <div style="font-size:11px;color:var(--color-text-muted);">Chat Completions</div>
+            </div>
+            <div style="text-align: right;">
+              <div style="font-size:22px;font-weight:800;color:${_llmObsStats.queues > 0 ? 'var(--color-orange)' : 'var(--color-green)'};font-family:var(--font-mono)">${_llmObsStats.queues}</div>
+              <div style="font-size:11px;color:var(--color-text-muted);">AIs in Queue</div>
+            </div>
+          </div>
+        </div>
         <div class="card" style="padding:12px">
           <div class="card-title">Feature Drift Status</div>
           <div style="font-size:22px;font-weight:800;color:${driftCol};font-family:var(--font-mono)">${m.featureDrift.driftStatus}</div>
@@ -9795,6 +9859,7 @@
           ${gsRow}
           ${primary ? `<span class="dc-rationale-primary">${primary}</span>` : ''}
           ${secondary ? `<span class="dc-rationale-secondary">${secondary}</span>` : ''}
+          ${pred.llm?.narration ? `<span class="dc-rationale-llm" style="color:var(--color-primary); font-style:italic; font-size: 0.9em; display:block; margin-top:4px;">✨ ${pred.llm.narration}</span>` : ''}
         </div>`;
     }).join('');
 
@@ -10274,6 +10339,7 @@
     return {
       ...incoming,
       sym,
+      llm: window._llmIntegration?.lastInfluence?.[sym] || incoming.llm || null,
       name: incoming.name || meta.name || (typeof COIN_SHORT !== 'undefined' ? COIN_SHORT[sym] : null) || sym,
       instrument: incoming.instrument || meta.instrument || `${sym}USD`,
       geckoId: incoming.geckoId || meta.geckoId || null,
@@ -10631,8 +10697,8 @@
       card.addEventListener('click', (e) => {
         if (e.target.closest('.gs-wrap')) return;
         const sym = card.dataset.predToggle;
-        if (predictionExpanded.has(sym)) predictionExpanded.delete(sym);
-        else predictionExpanded.add(sym);
+        if (predictionCollapsed.has(sym)) predictionCollapsed.delete(sym);
+        else predictionCollapsed.add(sym);
         renderPredictions();
       });
     });
@@ -10677,7 +10743,10 @@
     const kalshiProb = _k15mV?.probability ?? _k15mCV?.combinedProb ?? null;
     const kalshiPct = kalshiProb !== null ? Math.round(kalshiProb * 100) : null;
     const kalshiEdge = kalshiProb !== null ? Math.abs(kalshiProb - 0.5) : null;
-    const _kAlignEarly = p.projections?.p15?.kalshiAlign ?? null;
+    let _kAlignEarly = p.projections?.p15?.kalshiAlign ?? null;
+    if (_kAlignEarly && _k15mV && _kAlignEarly.ticker && _k15mV.ticker && _kAlignEarly.ticker !== _k15mV.ticker) {
+      _kAlignEarly = null;
+    }
     const _strikeDirEarly = (_kAlignEarly?.strikeDir ?? _k15mV?.strikeDir) === 'below' ? 'below' : 'above';
     const _yesDirEarly = _strikeDirEarly === 'below' ? 'down' : 'up';
     const _noDirEarly = _yesDirEarly === 'up' ? 'down' : 'up';
@@ -10818,27 +10887,7 @@
         return `High-confidence overlay: HOLD (confidence ${Math.round(confNorm * 100)}% < ${Math.round(hcConfThreshold * 100)}% threshold).`;
       }
       return `High-confidence overlay: HOLD (edge ${compositeEdge.toFixed(2)} < ${hcEdgeThreshold.toFixed(2)} threshold).`;
-      // =========================================================================
-  // RL Weights Synchronization
-  // =========================================================================
-  setTimeout(() => {
-    if (window.wecryp?.getSystemWeights) {
-      window.wecryp.getSystemWeights()
-        .then(res => {
-          if (res.success && res.weights) {
-            console.log('[RL Loop] ?? Fetched system_weights from Firebase on startup');
-            if (window.PredictionMarkets?.setAdaptiveWeights) {
-              const symbols = ['BTC', 'ETH', 'SOL', 'DOGE', 'XRP']; 
-              symbols.forEach(sym => {
-                window.PredictionMarkets.setAdaptiveWeights(sym, res.weights);
-              });
-            }
-          }
-        })
-        .catch(err => console.warn('[RL Loop] Failed to sync startup weights:', err));
-    }
-  }, 3000); 
-})();
+    })();
     const waitRationale = (() => {
       if (verdictDir !== 'wait') return '';
 
@@ -10863,30 +10912,12 @@
         return `Model thinking: semi-confidence (${Math.round(confNorm * 100)}%) with crowd conflict in the last 45 seconds, so entry is blocked.`;
       }
       return `Model thinking: waiting for stronger directional confirmation.`;
-      // =========================================================================
-  // RL Weights Synchronization
-  // =========================================================================
-  setTimeout(() => {
-    if (window.wecryp?.getSystemWeights) {
-      window.wecryp.getSystemWeights()
-        .then(res => {
-          if (res.success && res.weights) {
-            console.log('[RL Loop] ?? Fetched system_weights from Firebase on startup');
-            if (window.PredictionMarkets?.setAdaptiveWeights) {
-              const symbols = ['BTC', 'ETH', 'SOL', 'DOGE', 'XRP']; 
-              symbols.forEach(sym => {
-                window.PredictionMarkets.setAdaptiveWeights(sym, res.weights);
-              });
-            }
-          }
-        })
-        .catch(err => console.warn('[RL Loop] Failed to sync startup weights:', err));
-    }
-  }, 3000); 
-})();
+    })();
     const llmRegime = p.llm?.regime || p.diagnostics?.llmRegime || null;
     const llmConfidence = Number(p.llm?.confidence || p.diagnostics?.llmConfidence || 0);
     const llmNotes = String(p.llm?.notes || p.diagnostics?.llmNotes || '').trim();
+    let llmPatterns = p.llm?.market_patterns || p.diagnostics?.market_patterns || null;
+    if (Array.isArray(llmPatterns)) llmPatterns = llmPatterns.join(', ');
     const llmBadge = llmRegime && llmRegime !== 'unknown'
       ? `<span class="pred-source-badge" style="border-color:rgba(143,168,255,0.45);color:#8fa8ff">🧠 LLM ${escapeHtml(llmRegime.replace(/_/g, ' '))}${llmConfidence ? ` ${Math.round(llmConfidence)}%` : ''}</span>`
       : '';
@@ -10933,7 +10964,7 @@
           </span>
         `).join('')}
       </div>` : '';
-    const expanded = predictionExpanded.has(p.sym);
+    const expanded = !predictionCollapsed.has(p.sym);
     const horizonRows = PREDICTION_HORIZONS.map(horizonMin => ({
       horizonMin,
       label: `${horizonMin}m`,
@@ -10954,27 +10985,7 @@
         return { label: '15m setup: caution', cls: 'bear', detail: `${wr.toFixed(1)}% hit · ${fmtPct(edge)} edge` };
       }
       return { label: '15m setup: mixed', cls: 'flat', detail: `${wr.toFixed(1)}% hit · ${fmtPct(edge)} edge` };
-      // =========================================================================
-  // RL Weights Synchronization
-  // =========================================================================
-  setTimeout(() => {
-    if (window.wecryp?.getSystemWeights) {
-      window.wecryp.getSystemWeights()
-        .then(res => {
-          if (res.success && res.weights) {
-            console.log('[RL Loop] ?? Fetched system_weights from Firebase on startup');
-            if (window.PredictionMarkets?.setAdaptiveWeights) {
-              const symbols = ['BTC', 'ETH', 'SOL', 'DOGE', 'XRP']; 
-              symbols.forEach(sym => {
-                window.PredictionMarkets.setAdaptiveWeights(sym, res.weights);
-              });
-            }
-          }
-        })
-        .catch(err => console.warn('[RL Loop] Failed to sync startup weights:', err));
-    }
-  }, 3000); 
-})();
+    })();
     const depthMeta = ind.orderBookImbalance?.meta || null;
     const depth10 = depthMeta?.levels?.level10 || null;
     const depth20 = depthMeta?.levels?.level20 || null;
@@ -11011,7 +11022,10 @@
     const _k15mCoin = window.PredictionMarkets?.getCoin(p.sym);
     const _k15m = _k15mCoin?.kalshi15m ?? null;
     const _kProb = ind.mktSentiment?.kalshi ?? _k15m?.probability ?? _k15mCoin?.combinedProb ?? null;
-    const _kAlign = p.projections?.p15?.kalshiAlign ?? null;
+    let _kAlign = p.projections?.p15?.kalshiAlign ?? null;
+    if (_kAlign && _k15m && _kAlign.ticker && _k15m.ticker && _kAlign.ticker !== _k15m.ticker) {
+      _kAlign = null;
+    }
 
     // Debug: log data availability on first few renders
     const _debugKalshi = window._debugKalshiCount = (window._debugKalshiCount || 0) + 1;
@@ -11102,32 +11116,54 @@
         }
       }
 
-      return `<div class="ind-item k15m-row"><span class="ind-name">Kalshi 15M</span><span class="ind-val ${kCls}">${probLine}${refLine}${gapLine}${countdown}</span></div>`;
-      // =========================================================================
-  // RL Weights Synchronization
-  // =========================================================================
-  setTimeout(() => {
-    if (window.wecryp?.getSystemWeights) {
-      window.wecryp.getSystemWeights()
-        .then(res => {
-          if (res.success && res.weights) {
-            console.log('[RL Loop] ?? Fetched system_weights from Firebase on startup');
-            if (window.PredictionMarkets?.setAdaptiveWeights) {
-              const symbols = ['BTC', 'ETH', 'SOL', 'DOGE', 'XRP']; 
-              symbols.forEach(sym => {
-                window.PredictionMarkets.setAdaptiveWeights(sym, res.weights);
-              });
-            }
-          }
-        })
-        .catch(err => console.warn('[RL Loop] Failed to sync startup weights:', err));
-    }
-  }, 3000); 
-})();
+      const cfmRow = (() => {
+        const cfmData = window.CFMEngine?.getAll ? window.CFMEngine.getAll()[p.sym] : null;
+        if (!cfmData || !cfmData.bias) return '';
+        const dir = cfmData.bias === 'up' ? 'bull' : cfmData.bias === 'down' ? 'bear' : 'flat';
+        const mktContext = window.tickers?.[p.sym] ? `5m Δ ${((window.tickers[p.sym].close - window.tickers[p.sym].open) / window.tickers[p.sym].open * 100).toFixed(2)}%` : '';
+        return `<div class="ind-item"><span class="ind-name">CFM Context</span><span class="ind-val ${dir}">${String(cfmData.bias).toUpperCase()} · ${mktContext}</span></div>`;
+      })();
+
+      return `<div class="ind-item k15m-row"><span class="ind-name">Kalshi 15M</span><span class="ind-val ${kCls}">${probLine}${refLine}${gapLine}${countdown}</span></div>${cfmRow}`;
+    })();
+
+    const model5mRow = (() => {
+      const p5 = p.projections?.p5;
+      if (!p5) return '';
+      const dir = p5.target > p.price ? 'UP' : 'DOWN';
+      const cls = dir === 'UP' ? 'bull' : 'bear';
+      const gapPct = ((p5.target - p.price) / p.price) * 100;
+      const gapDollar = Math.abs(p5.target - p.price);
+      const gapLine = ` <span class="k15-gap ${gapPct > 0 ? 'k15-gap-up' : 'k15-gap-down'}">${gapPct > 0 ? '▲' : '▼'} $${gapDollar.toFixed(4)} (${gapPct > 0 ? '+' : ''}${gapPct.toFixed(3)}%)</span>`;
+      return `<div class="ind-item k15m-row" style="background:rgba(255,255,255,0.03); border-left:2px solid var(--color-${dir === 'UP' ? 'green' : 'red'}); padding-left: 6px;"><span class="ind-name">Model 5M</span><span class="ind-val ${cls}"><span class="k15-side-label" style="opacity:0.6">PROJ</span><span class="k15-${dir.toLowerCase()}" style="font-weight:700">${dir}</span><span class="k15-target"> ≥ $${fmtPrice(p5.target)}</span>${gapLine}</span></div>`;
+    })();
 
     return `
       <div class="pred-card ${p.signal} ${expanded ? 'expanded' : ''}" data-testid="pred-${p.sym}" data-pred-toggle="${p.sym}"
            style="border-left: 4px solid ${verdictDir === 'up' ? 'var(--color-green)' : verdictDir === 'down' ? 'var(--color-red)' : 'var(--color-border)'}">
+
+        ${llmNotes ? `
+        <div class="ai-thoughts-popup" style="
+          margin: 0 0 12px 0;
+          padding: 16px;
+          border-radius: 8px;
+          background: linear-gradient(135deg, rgba(25, 30, 45, 0.95), rgba(15, 20, 30, 0.98));
+          border: 1px solid rgba(143, 168, 255, 0.25);
+          box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+          font-family: 'Inter', 'Outfit', 'Segoe UI', sans-serif;
+          position: relative;
+        ">
+          <div style="font-size:11px;font-weight:800;letter-spacing:1px;color:#a5b4fc;margin-bottom:8px;display:flex;align-items:center;gap:8px;">
+            <span style="font-size:14px;">✨</span> <span>ASI1 THOUGHTS</span>
+            <span style="font-size:9px;padding:2px 8px;border-radius:999px;background:rgba(165, 180, 252, 0.15);color:#c7d2fe;letter-spacing:0.5px;">${escapeHtml((llmRegime || 'Mixed Regime').replace(/_/g, ' '))}</span>
+          </div>
+          <div style="font-size:13px;color:#f8fafc;line-height:1.6;font-weight:400;white-space:pre-wrap;">${escapeHtml(llmNotes)}</div>
+          ${llmPatterns ? `
+          <div style="margin-top:10px;font-size:11px;color:#cbd5e1;background:rgba(165,180,252,0.08);padding:8px 12px;border-radius:6px;border-left:3px solid #a5b4fc;">
+            <strong style="color:#a5b4fc;text-transform:uppercase;letter-spacing:0.5px;">Detected Patterns:</strong><br>
+            <span style="font-family:var(--font-mono);">${escapeHtml(llmPatterns)}</span>
+          </div>` : ''}
+        </div>` : ''}
 
         <!-- Header: always visible -->
         <div class="pred-header">
@@ -11170,14 +11206,6 @@
           ${(p.llm?.ai_wording?.wait_rationale) ? `<div class="pred-verdict-rationale" style="color:#8fa8ff"><span style="font-weight:700">✨ AI:</span> ${escapeHtml(p.llm.ai_wording.wait_rationale)}</div>` : waitRationale ? `<div class="pred-verdict-rationale">${waitRationale}</div>` : ''}
           ${(p.llm?.ai_wording?.high_confidence_rationale) ? `<div class="pred-verdict-rationale" style="color:#8fa8ff"><span style="font-weight:700">✨ AI:</span> ${escapeHtml(p.llm.ai_wording.high_confidence_rationale)}</div>` : hcRationale ? `<div class="pred-verdict-rationale">${hcRationale}</div>` : ''}
           ${(p.llm?.ai_wording?.primary_rationale) ? `<div class="pred-verdict-rationale" style="color:#8fa8ff"><span style="font-weight:700">✨ AI:</span> ${escapeHtml(p.llm.ai_wording.primary_rationale)}</div>` : ratPrimary ? `<div class="pred-verdict-rationale">${ratPrimary}</div>` : ''}
-          ${llmNotes ? `
-            <div class="ai-insights-block" style="margin-top:12px;padding:12px;border-radius:8px;background:rgba(143,168,255,0.08);border:1px solid rgba(143,168,255,0.2);">
-              <div style="font-size:11px;font-weight:700;color:#8fa8ff;margin-bottom:6px;display:flex;align-items:center;gap:6px;">
-                <span>🧠 AI MARKET ANALYSIS</span>
-                <span style="font-size:9px;padding:2px 6px;border-radius:4px;background:rgba(143,168,255,0.15);">${escapeHtml((llmRegime || 'Mixed Regime').replace(/_/g, ' '))}</span>
-              </div>
-              <div style="font-size:12px;color:var(--color-text);line-height:1.5;white-space:pre-wrap;">${escapeHtml(llmNotes)}</div>
-            </div>` : ''}
           <div class="pred-verdict-bar-wrap">
             <div class="pred-verdict-bar-fill ${verdictDir}" style="width:${p.confidence}%"></div>
           </div>
@@ -11202,7 +11230,9 @@
               </div>
             </div>
           ` : ''}
+          ${model5mRow}
           ${kalshi15mRow}
+          ${_k15mCoin ? renderFifteenMinuteMovePlan(_k15mCoin, true) : ''}
           ${(() => {
         // ── Market Divergence row ─────────────────────────────────────
         const _md = window._marketDivergence?.[p.sym];
@@ -13093,7 +13123,7 @@
       </div>`;
     toast.addEventListener('click', () => toast.remove());
     document.body.appendChild(toast);
-    setTimeout(() => { if (toast.isConnected) toast.remove(); }, 12000);
+    setTimeout(() => { if (toast.isConnected) toast.remove(); }, 25000);
     console.log(`[ShellRouter] Toast: ${sym} wall released (${reason})`);
   });
 
@@ -13280,7 +13310,7 @@
       setFeedStatus('error');
       render();
     }
-  }, 8000);
+  }, 20000);
 
   window._fetchAllNow = () => fetchAll(true).then(() => { clearTimeout(_bootGuard); resetTimer(); });
 
@@ -13404,7 +13434,7 @@
         else refreshActiveView();
       }
     } catch (_) { }
-  }, 10000);
+  }, 20000);
 
   // ── Order Book HUD — initialise after DOM is ready ──────────────
   initOBHud();
@@ -13554,7 +13584,7 @@
           'predictions',
           async () => window._predictions || {},
           null,
-          { interval: 10000, critical: true }
+          { interval: 20000, critical: true }
         );
 
         // Register hourly kalshi tracker channel
@@ -13572,38 +13602,6 @@
       }
     } catch (err) {
       console.warn('[App] Failed to initialize adaptive modules:', err.message);
-    }
-    // =========================================================================
-  // RL Weights Synchronization
-  // =========================================================================
-  setTimeout(() => {
-    if (window.wecryp?.getSystemWeights) {
-      window.wecryp.getSystemWeights()
-        .then(res => {
-          if (res.success && res.weights) {
-            console.log('[RL Loop] ?? Fetched system_weights from Firebase on startup');
-            if (window.PredictionMarkets?.setAdaptiveWeights) {
-              const symbols = ['BTC', 'ETH', 'SOL', 'DOGE', 'XRP']; 
-              symbols.forEach(sym => {
-                window.PredictionMarkets.setAdaptiveWeights(sym, res.weights);
-              });
-            }
-          }
-        })
-        .catch(err => console.warn('[RL Loop] Failed to sync startup weights:', err));
-    }
-  }, 3000); 
-})();
-
-  // ── Initialize Blockchain Research Agent ──────────────────────────
-  (async function initializeResearchAgent() {
-    try {
-      const ResearchAgentManager = require('../agents/research-agent-init');
-      window._researchAgentManager = new ResearchAgentManager();
-      await window._researchAgentManager.start();
-      console.log('[App] ResearchAgentManager initialized and running');
-    } catch (err) {
-      console.warn('[App] Failed to initialize research agent:', err.message);
     }
     // =========================================================================
   // RL Weights Synchronization

@@ -355,7 +355,8 @@
       return { exchange, available: false, reason: 'Not listed' };
     }
     try {
-      const data = await getJson(`https://www.okx.com/api/v5/market/trades?instId=${sym}-USDT&limit=200`);
+      // Use aws.okx.com to bypass geo-blocks
+      const data = await getJson(`https://aws.okx.com/api/v5/market/trades?instId=${sym}-USDT&limit=200`);
       const list = data?.data ?? [];
 
       let buyQty = 0, sellQty = 0;

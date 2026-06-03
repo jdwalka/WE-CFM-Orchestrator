@@ -9,7 +9,7 @@
   'use strict';
 
   const DEFAULT_LANES = {
-    microstructure: { concurrency: 4, gapMs: 10, maxJobMs: 12000 },
+    microstructure: { concurrency: 4, gapMs: 10, maxJobMs: 25000 },
     price: { concurrency: 3, gapMs: 25, maxJobMs: 20000 },
     momentum: { concurrency: 3, gapMs: 75, maxJobMs: 22000 },
     validation: { concurrency: 1, gapMs: 250, maxJobMs: 15000 },

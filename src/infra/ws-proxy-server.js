@@ -364,7 +364,7 @@ class ProxyManager {
       const timeout = setTimeout(() => {
         ws.terminate();
         reject(new Error(`Connection timeout for ${service}`));
-      }, 10000);
+      }, 20000);
 
       ws.on('open', () => {
         clearTimeout(timeout);

@@ -20,6 +20,13 @@
 (function (root) {
   'use strict';
 
+  var DynamicWeightDecay = null;
+  try {
+      DynamicWeightDecay = require('./dynamic-weight-decay');
+  } catch (e) {
+      // Browser environment fallback if necessary
+  }
+
   var ASSETS = ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'BNB', 'HYPE'];
 
   // Default lambda scales when no local sigma is available.
@@ -39,6 +46,14 @@
   // Orbital weight mixture used to compute OEQ.
   var OEQ_WEIGHTS = { s: 0.45, p: 0.25, d: 0.20, f: 0.10 };
   var SPDF_OEQ_WEIGHTS = { s: 0.30, p: 0.45, f: 0.25 };
+  
+  var _decayEngine = DynamicWeightDecay ? new DynamicWeightDecay({
+      initialWeights: SPDF_OEQ_WEIGHTS
+  }) : null;
+
+  function getSpdfWeights() {
+      return _decayEngine ? _decayEngine.getWeights() : SPDF_OEQ_WEIGHTS;
+  }
   var SPDF_OVERLAY_LIMIT = 1.25;
   var SPDF_MIN_RISK_DAMP = 0.65;
 
@@ -599,10 +614,11 @@
   }
 
   function recomputeSpdfOeq(orbitals, risk) {
+    var weights = getSpdfWeights();
     var core =
-      SPDF_OEQ_WEIGHTS.s * orbitals.s +
-      SPDF_OEQ_WEIGHTS.p * orbitals.p +
-      SPDF_OEQ_WEIGHTS.f * orbitals.f;
+      weights.s * orbitals.s +
+      weights.p * orbitals.p +
+      weights.f * orbitals.f;
     var riskDamp = clamp(1 - clamp(risk, 0, 1) * 0.35, SPDF_MIN_RISK_DAMP, 1);
     return core * riskDamp;
   }
@@ -626,7 +642,7 @@
       anchorQuality *= 0.92;
       anchorReasons.push('non-rti-anchor');
     }
-    if (Number.isFinite(tickerAgeMs) && tickerAgeMs > 8000) {
+    if (Number.isFinite(tickerAgeMs) && tickerAgeMs > 20000) {
       anchorQuality *= 0.75;
       anchorReasons.push('ticker-stale');
     }
@@ -1021,6 +1037,17 @@
       ts: Date.now(),
     };
     _lastResult[sym] = result;
+
+    if (_decayEngine && position && position.entryPrice) {
+        var actualMovement = (effectiveOrbitals.lastClose - position.entryPrice) / position.entryPrice * 100;
+        // Map features roughly to the weights we're adjusting
+        _decayEngine.recordSessionData({
+            s: effectiveOrbitals.s,
+            p: effectiveOrbitals.p,
+            f: effectiveOrbitals.f
+        }, actualMovement);
+    }
+
     return result;
   }
 

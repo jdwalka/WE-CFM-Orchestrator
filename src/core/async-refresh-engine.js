@@ -121,7 +121,7 @@
             // Fire all streams in parallel — they run independently and never block startup.
             void this.streamPredictions().catch(err => console.error('[AsyncRefreshEngine] predictions stream failed:', err));
             void this.streamOrderBookImbalance().catch(err => console.error('[AsyncRefreshEngine] order-book stream failed:', err));
-            void this.streamKalshiBalance().catch(err => console.error('[AsyncRefreshEngine] balance stream failed:', err));
+            // void this.streamKalshiBalance().catch(err => console.error('[AsyncRefreshEngine] balance stream failed:', err));
             void this.streamMarketData().catch(err => console.error('[AsyncRefreshEngine] market stream failed:', err));
             void this.streamSettlementPulse().catch(err => console.error('[AsyncRefreshEngine] settlement stream failed:', err));
 
@@ -451,7 +451,7 @@
                         const res = await Promise.race([
                             window.Kalshi.getBalance(),
                             new Promise((_, reject) =>
-                                setTimeout(() => reject(new Error('Balance fetch timeout')), 8000)
+                                setTimeout(() => reject(new Error('Balance fetch timeout')), 20000)
                             )
                         ]);
 
@@ -556,7 +556,7 @@
                         cycle,
                         detail: err.message,
                     });
-                    await this.sleepUntil(this.nowMs() + 10000);
+                    await this.sleepUntil(this.nowMs() + 20000);
                 }
             }
         }

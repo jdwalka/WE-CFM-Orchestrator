@@ -343,10 +343,6 @@ contextBridge.exposeInMainWorld('desktopApp', {
 
 contextBridge.exposeInMainWorld('resolveRuntimeKey', resolveRuntimeKey);
 
-contextBridge.exposeInMainWorld('resolveRuntimeKey', resolveRuntimeKey);
-
-contextBridge.exposeInMainWorld('resolveRuntimeKey', resolveRuntimeKey);
-
 contextBridge.exposeInMainWorld('electron', {
   invoke: ipcRenderer.invoke.bind(ipcRenderer),
   web: {
@@ -465,4 +461,6 @@ contextBridge.exposeInMainWorld('pythLazer', {
   onConnectionFailed: (cb) => ipcRenderer.on('pyth:connection-failed', (_e, data) => cb(data)),
   getCandles: (opts) => ipcRenderer.invoke('pyth:getCandles', opts),
   getProxyLatest: (feedIds) => ipcRenderer.invoke('pyth:getProxyLatest', feedIds),
+  getLatestTickers: () => ipcRenderer.invoke('pyth:getLatestTickers'),
+  getStatus: () => ipcRenderer.invoke('pyth:getStatus'),
 });

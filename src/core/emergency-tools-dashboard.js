@@ -411,7 +411,7 @@
         right: 0;
         bottom: 0;
         background: rgba(0, 0, 0, 0.95);
-        z-index: 10000;
+        z-index: 20000;
         overflow-y: auto;
         padding: 20px;
         font-family: 'Jetbrains Mono', monospace;

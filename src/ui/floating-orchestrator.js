@@ -17,7 +17,7 @@
   function playAlert(type) {
     if (typeof window === 'undefined' || (!window.AudioContext && !window.webkitAudioContext)) return;
     var now = Date.now();
-    if (now - _lastAlertTime < 8000) return; // Throttle 8s
+    if (now - _lastAlertTime < 20000) return; // Throttle 8s
     try {
       if (!_audioCtx) _audioCtx = new (window.AudioContext || window.webkitAudioContext)();
       if (_audioCtx.state === 'suspended') _audioCtx.resume();
@@ -580,7 +580,7 @@
     var span = Math.max(1, activeMaxSecs - activeMinSecs);
     var t = Number.isFinite(secsLeft) ? clamp((secsLeft - activeMinSecs) / span, 0, 1) : 1;
 
-    var confirmMs = 12000 + t * 18000;
+    var confirmMs = 25000 + t * 18000;
     confirmMs += toxicity * 5000;
     confirmMs -= Math.max(0, flowScore - 1) * 2500;
     if (mispricing >= 0.24) confirmMs -= 3000;
@@ -646,7 +646,7 @@
     if (regime === 'volatile') softResetMs -= 1000;
     if (mispricing >= 0.22) softResetMs += 1000;
     softResetMs -= Math.max(0, toxicity - 1) * 1000;
-    softResetMs = Math.round(clamp(softResetMs, 3500, 12000));
+    softResetMs = Math.round(clamp(softResetMs, 3500, 25000));
 
     var graceMinSecs = clamp(activeMinSecs - lateSideGraceSecs, MIN_SECONDS_LEFT, activeMaxSecs);
     var graceMaxSecs = clamp(
@@ -2010,7 +2010,7 @@
       intent && intent.waitGuardDiagnostics && intent.waitGuardDiagnostics.blocked ? 'wg1' : 'wg0',
       intent && intent.modelHardVeto ? 'hv1' : 'hv0',
       intent && intent.modelSoftVeto ? 'sv1' : 'sv0',
-      intent && intent.stageDiagnostics && intent.stageDiagnostics.timing ? Math.round(Number(intent.stageDiagnostics.timing.predictionAgeMs || 0) / 10000) : 'pa0',
+      intent && intent.stageDiagnostics && intent.stageDiagnostics.timing ? Math.round(Number(intent.stageDiagnostics.timing.predictionAgeMs || 0) / 20000) : 'pa0',
       intent && intent.stageDiagnostics && intent.stageDiagnostics.timing ? Math.round(Number(intent.stageDiagnostics.timing.marketAgeMs || 0) / 5000) : 'ma0',
       intent && intent.mcts && intent.mcts.directionOverrode ? 'mo1' : 'mo0',
     ].join('|');

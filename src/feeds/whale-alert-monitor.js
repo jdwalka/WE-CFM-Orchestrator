@@ -39,7 +39,7 @@
   // ── Rate limiting ────────────────────────────────────────────
   const _rateLimits = {
     lastFetch: {},    // chain → timestamp
-    minInterval: 10000, // 10s minimum between requests per chain
+    minInterval: 20000, // 10s minimum between requests per chain
   };
 
   // ── Health tracking ──────────────────────────────────────────
@@ -172,8 +172,29 @@
     },
 
     /**
+     * Get synchronous accumulation score (-1.0 to 1.0) based on cached transactions.
+     * buy = outflow from exchange (accumulation)
+     * sell = inflow to exchange (distribution)
+     */
+    getAccumulationScore(chain) {
+      const txs = _whaleCache.get(chain)?.txs || [];
+      if (txs.length === 0) return 0;
+      
+      let buyVol = 0;
+      let sellVol = 0;
+      
+      for (const tx of txs) {
+        if (tx.direction === 'buy') buyVol += tx.score;
+        else if (tx.direction === 'sell') sellVol += tx.score;
+      }
+      
+      const total = buyVol + sellVol;
+      return total > 0 ? (buyVol - sellVol) / total : 0;
+    },
+
+    /**
      * Start monitoring multiple chains for whale activity.
-     * Calls callback every 30s with latest whales.
+     * Calls callback every 20s with latest whales.
      */
     startMonitoring(chains = ['BTC', 'ETH', 'BNB'], callback) {
       if (_monitorInterval) return; // Already running
@@ -186,7 +207,7 @@
 
       _monitorInterval = setInterval(() => {
         _monitorCycle(chains, callback);
-      }, 30000); // 30s polling
+      }, 20000); // 20s polling
 
       console.log(`[WhaleAlert] Monitoring started: ${chains.join(', ')}`);
     },

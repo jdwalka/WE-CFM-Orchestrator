@@ -56,7 +56,7 @@ if (
   // ── RATE LIMIT CONFIGURATION ────────────────────────────────────
   const RATE_LIMITS = {
     kalshi: { reqs_per_min: 100, burst: 0, backoff_start: 2000, backoff_max: 32000 },
-    cmc: { credits_per_month: 10000, per_request: 1, burst: 0, backoff_start: 5000 },
+    cmc: { credits_per_month: 20000, per_request: 1, burst: 0, backoff_start: 5000 },
     
     coinbase: { reqs_per_second: 4, burst: 15, backoff_start: 3000, backoff_max: 20000 },
     okx: { reqs_per_second: 12, reqs_per_minute: 700, burst: 30, backoff_start: 1000, backoff_max: 25000 },
@@ -69,7 +69,7 @@ if (
     mexc: { reqs_per_second: 10, reqs_per_minute: 600, burst: 30, backoff_start: 1500, backoff_max: 25000 },
     bitfinex: { reqs_per_second: 10, reqs_per_minute: 600, burst: 25, backoff_start: 1500, backoff_max: 25000 },
     cryptocom: { reqs_per_second: 10, reqs_per_minute: 600, burst: 25, backoff_start: 1400, backoff_max: 25000 },
-    pyth: { reqs_per_second: 20, burst: 50, backoff_start: 1000, backoff_max: 10000 },
+    pyth: { reqs_per_second: 20, burst: 50, backoff_start: 1000, backoff_max: 20000 },
     coingecko: { reqs_per_minute: 600, burst: 10, backoff_start: 3000, backoff_max: 90000 },
     blockchainraw: { reqs_per_second: 10, reqs_per_minute: 500, burst: 20, backoff_start: 1000, backoff_max: 20000 },
     default: { reqs_per_second: 5, reqs_per_minute: 240, burst: 10, backoff_start: 1500, backoff_max: 30000 },
@@ -427,7 +427,7 @@ if (
       const level = Math.max(0, Math.min(6, s.cascadeLevel));
       const adaptiveInterval = Math.min(maxInterval, minInterval + (Math.pow(1.7, level) * minInterval * 0.35));
 
-      const minTimeout = Number.isFinite(policy.minTimeoutMs) ? policy.minTimeoutMs : 12000;
+      const minTimeout = Number.isFinite(policy.minTimeoutMs) ? policy.minTimeoutMs : 25000;
       const maxTimeout = Number.isFinite(policy.maxTimeoutMs) ? policy.maxTimeoutMs : 30000;
       const latencyFactor = s.avgLatencyMs > 0 ? Math.min(2.5, Math.max(0.8, s.avgLatencyMs / Math.max(1, minTimeout))) : 1;
       const adaptiveTimeout = Math.max(minTimeout, Math.min(maxTimeout, Math.round(minTimeout * (1 + level * 0.3) * latencyFactor)));
@@ -935,7 +935,7 @@ if (
       const cascadeWindow = this.cascadeTimer.getWindow(endpoint);
       if (!limiter.canRequest()) {
         const waitMs = Math.max(limiter.getWaitMs(), cascadeWindow.intervalMs);
-        const canWait = waitMs > 0 && waitMs <= Math.max(10000, cascadeWindow.timeoutMs) && !limiter.circuitOpen;
+        const canWait = waitMs > 0 && waitMs <= Math.max(20000, cascadeWindow.timeoutMs) && !limiter.circuitOpen;
         if (canWait) {
           await new Promise(r => setTimeout(r, waitMs));
         } else {
@@ -972,7 +972,7 @@ if (
           result = result.result;
         }
 
-        limiter.recordSuccess();
+        if (limiter) limiter.recordSuccess();
         this.cache.set(cacheKey, result, cacheType);
 
         const latency = Date.now() - startTime;
@@ -989,7 +989,7 @@ if (
       } catch (err) {
         const latency = Date.now() - startTime;
         this._recordLatency(latency);
-        limiter.recordFailure();
+        if (limiter) limiter.recordFailure();
         this.cascadeTimer.recordFailure(endpoint, err);
         metrics.failures[endpoint] = (metrics.failures[endpoint] || 0) + 1;
 
@@ -1008,7 +1008,9 @@ if (
           const cascadeWindow = this.cascadeTimer.getWindow(endpoint);
           // Use batcher to deduplicate
           return await this.batcher.batch(url, { endpoint }, async () => {
-            limiter.lastRequestTime = Date.now();
+            if (limiter) {
+              limiter.lastRequestTime = Date.now();
+            }
             let fetchUrl = (endpoint === 'coingecko' || /coingecko/i.test(String(url))) && typeof window !== 'undefined' && typeof window.coinGeckoUrl === 'function'
               ? window.coinGeckoUrl(url)
               : url;
@@ -1054,6 +1056,7 @@ if (
                 : { headers };
 
               res = await fetch(fetchUrl, {
+                ...requestOptions,
                 headers: requestWithAuth.headers || headers,
                 signal: controller ? controller.signal : undefined,
               });
@@ -1062,7 +1065,7 @@ if (
             }
 
             if (res.status === 429 || res.status === 503) {
-              const backoffMs = limiter.recordFailure(res.status);
+              const backoffMs = limiter ? limiter.recordFailure(res.status) : 2000;
               if (attempt < retries) {
                 await new Promise(r => setTimeout(r, backoffMs));
                 throw new Error(`HTTP ${res.status}, retrying...`);
@@ -1073,7 +1076,7 @@ if (
             if (res.status === 401 || res.status === 403) {
               const isGecko = endpoint === 'coingecko' || /coingecko/i.test(String(url));
               const lockMs = isGecko ? 60 * 60_000 : 15 * 60_000;
-              limiter.recordAuthFailure(lockMs, res.status);
+              if (limiter) limiter.recordAuthFailure(lockMs, res.status);
               throw new Error(`HTTP ${res.status}: auth rejection (${endpoint})`);
             }
 

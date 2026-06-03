@@ -38,9 +38,9 @@
 
   const VISIBLE_BUCKETS = 13;   // 6 above + current + 6 below
   const POLL_NORMAL_MS  = 30000;
-  const POLL_FAST_MS    = 10000; // last 10 mins of hour
+  const POLL_FAST_MS    = 20000; // last 10 mins of hour
   const FAST_WINDOW_MS  = 10 * 60 * 1000;
-  const CACHE_TTL_MS    = 8000; // lowered to 8s so 10s fast-polling works
+  const CACHE_TTL_MS    = 20000; // lowered to 8s so 10s fast-polling works
 
   // ── State ──────────────────────────────────────────────────────
   let _prices  = {}; // sym → number
@@ -82,7 +82,7 @@
   async function fetchPrice(sym) {
     // 1. Coinbase
     try {
-      const d = await apiFetch(`${COINBASE_BASE}/products/${CB_PRODUCTS[sym]}`, 8000);
+      const d = await apiFetch(`${COINBASE_BASE}/products/${CB_PRODUCTS[sym]}`, 20000);
       if (d?.price) return parseFloat(d.price);
     } catch (e) { console.warn(`[HR] Coinbase price fetch failed for ${sym}:`, e.message); }
 
@@ -90,7 +90,7 @@
     const kt = KRAKEN_TICKERS[sym];
     if (kt) {
       try {
-        const d = await apiFetch(`${KRAKEN_BASE}/Ticker?pair=${kt}`, 8000);
+        const d = await apiFetch(`${KRAKEN_BASE}/Ticker?pair=${kt}`, 20000);
         const c = d?.result?.[kt]?.c;
         if (c) return parseFloat(c[0]);
       } catch (e) { console.warn(`[HR] Kraken price fetch failed for ${sym}:`, e.message); }

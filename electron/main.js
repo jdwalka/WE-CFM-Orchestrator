@@ -1,4 +1,4 @@
-const { startOrbitalSystem, shutdownOrbitalSystem } = require('../src/infra/orbital-startup-orchestrator');
+const { startOrbitalSystem, shutdownOrbitalSystem, getOrbitalStatus } = require('../src/infra/orbital-startup-orchestrator');
 const { app, BrowserWindow, Menu, shell, ipcMain } = require('electron');
 const path = require('path');
 const fs = require('fs');
@@ -464,11 +464,84 @@ try {
   // dotenv not installed, skip silently
 }
 
+// ── Backend Tor / Hard Proxy Routing ───────────────────────────────────────
+if (process.env.WECRYPTO_TOR_SOCKS) {
+  try {
+    const { SocksProxyAgent } = require('socks-proxy-agent');
+    const http = require('http');
+    const https = require('https');
+    const proxyUrl = process.env.WECRYPTO_TOR_SOCKS; // e.g., 'socks5://127.0.0.1:9050'
+    const socksAgent = new SocksProxyAgent(proxyUrl);
+    
+    const bypassDomains = [
+      'coingecko.com',
+      'kalshi.com', 
+      'polymarket.com', 
+      'etherscan.io', 
+      'crypto.com',
+      'binance.com',
+      'dexscreener.com',
+      'okx.com',
+      'kraken.com',
+      'hyperliquid.xyz',
+      'bybit.com',
+      'alternative.me',
+      'alchemy.com', 
+      'coinmarketcap.com',
+      '127.0.0.1',
+      'localhost'
+    ];
+    
+    const originalHttpRequest = http.request;
+    const originalHttpsRequest = https.request;
+    
+    function patchedRequest(original) {
+      return function(...args) {
+        let urlStr = '';
+        if (typeof args[0] === 'string') {
+          urlStr = args[0];
+        } else if (args[0] instanceof URL) {
+          urlStr = args[0].hostname;
+        } else if (args[0] && (args[0].hostname || args[0].host)) {
+          urlStr = args[0].hostname || args[0].host;
+        }
+        
+        const isBypass = bypassDomains.some(d => urlStr.includes(d));
+        
+        if (!isBypass) {
+          if (typeof args[0] === 'object' && args[0] !== null && !(args[0] instanceof URL)) {
+            args[0].agent = socksAgent;
+          } else if (typeof args[1] === 'object' && args[1] !== null) {
+            args[1].agent = socksAgent;
+          } else {
+            args.splice(1, 0, { agent: socksAgent });
+          }
+        }
+        
+        return original.apply(this, args);
+      };
+    }
+    
+    http.request = patchedRequest(originalHttpRequest);
+    https.request = patchedRequest(originalHttpsRequest);
+    
+    console.warn(`[SECURITY] Global SOCKS5 Tor routing enabled with API bypasses across Node.js backend: ${proxyUrl}`);
+  } catch (e) {
+    console.error('[SECURITY] Failed to instantiate global SOCKS proxy:', e.message);
+  }
+}
+
+
 // ── Kalshi Worker Bridge ──────────────────────────────────────────────────
 const { startKalshiWorker, stopKalshiWorker, getWorkerReadiness } = require('./kalshi-ipc-bridge.js');
 
 // ── Multi-Drive Settlement Logger ──────────────────────────────────────────
 require('./multi-drive-logger-handlers.js');
+
+// ── Polymarket CLOB Manager ────────────────────────────────────────────────
+const { initClobClient, registerIpcHandlers: registerPolyIpc } = require('./polymarket-clob-manager.js');
+initClobClient();
+registerPolyIpc();
 
 // ── Web Service (HTTPS) ────────────────────────────────────────────────────
 const { startWebService, getWebServiceHealth, updateState, broadcastUpdate } = require('./wecrypto-web-service.js');
@@ -1451,16 +1524,11 @@ function dedupePaths(paths) {
 }
 
 function enumerateReadableDriveRoots() {
-  const roots = [];
-  for (let code = 67; code <= 90; code++) {
-    const letter = String.fromCharCode(code);
-    const root = normalizeCachePath(`${letter}:\\`);
-    try {
-      fs.accessSync(root, fs.constants.R_OK);
-      roots.push(root);
-    } catch (_) { }
-  }
-  return dedupePaths(roots);
+  // Disabled C-Z brute-force scan to prevent Electron main thread freezing on disconnected network drives.
+  // Known drives are already hardcoded in buildStaticContractCacheFiles.
+  return dedupePaths([
+    'C:\\', 'D:\\', 'E:\\', 'F:\\', 'G:\\', 'Y:\\', 'Z:\\'
+  ]);
 }
 
 function buildDynamicCloudDriveCandidates(driveRoots = []) {
@@ -1615,7 +1683,7 @@ function getContractCacheDiscoveryTargets({ forceRefresh = false } = {}) {
   return { ...contractCacheDiscoveryMemo, fromMemo: false };
 }
 
-function gatherContractCacheCandidateFiles(targets) {
+async function gatherContractCacheCandidateFiles(targets) {
   const files = [];
   const pushFile = (filePath) => {
     const normalized = normalizeCachePath(filePath);
@@ -1626,18 +1694,20 @@ function gatherContractCacheCandidateFiles(targets) {
 
   (targets.directFiles || []).forEach(pushFile);
 
-  for (const dirPath of targets.directories || []) {
+  const dirChecks = (targets.directories || []).map(async (dirPath) => {
     try {
-      if (!fs.existsSync(dirPath)) continue;
-      const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+      const stats = await fs.promises.stat(dirPath).catch(() => null);
+      if (!stats || !stats.isDirectory()) return;
+      const entries = await fs.promises.readdir(dirPath, { withFileTypes: true });
       for (const entry of entries) {
         if (!entry || !entry.isFile()) continue;
         if (!/^contract-cache.*\.json$/i.test(entry.name)) continue;
         pushFile(path.join(dirPath, entry.name));
       }
     } catch (_) { }
-  }
+  });
 
+  await Promise.all(dirChecks);
   return dedupePaths(files);
 }
 
@@ -1724,12 +1794,12 @@ function settlementDedupKey(entry) {
   return `fallback:${JSON.stringify(entry)}`;
 }
 
-function parseContractCacheFile(filePath) {
+async function parseContractCacheFile(filePath) {
   try {
-    const stats = fs.statSync(filePath);
+    const stats = await fs.promises.stat(filePath);
     if (!stats.isFile()) return null;
 
-    const raw = fs.readFileSync(filePath, 'utf8');
+    const raw = await fs.promises.readFile(filePath, 'utf8');
     if (!raw || !raw.trim()) return null;
 
     const parsed = JSON.parse(raw);
@@ -1795,7 +1865,7 @@ ipcMain.handle('storage:readContractCache', async (_event, options = {}) => {
   const lookbackMs = Number.isFinite(options.lookbackMs) ? Math.max(0, options.lookbackMs) : 24 * 60 * 60 * 1000;
 
   const discoveryTargets = getContractCacheDiscoveryTargets({ forceRefresh });
-  const candidateFiles = gatherContractCacheCandidateFiles(discoveryTargets);
+  const candidateFiles = await gatherContractCacheCandidateFiles(discoveryTargets);
 
   console.log(
     `[IPC] Contract cache discovery: ${candidateFiles.length} candidate files ` +
@@ -1803,9 +1873,8 @@ ipcMain.handle('storage:readContractCache', async (_event, options = {}) => {
     `(memo=${discoveryTargets.fromMemo ? 'hit' : 'miss'})`
   );
 
-  const parsedFiles = candidateFiles
-    .map(parseContractCacheFile)
-    .filter(Boolean);
+  const parsedResults = await Promise.all(candidateFiles.map(parseContractCacheFile));
+  const parsedFiles = parsedResults.filter(Boolean);
 
   if (parsedFiles.length === 0) {
     console.warn('[IPC] Contract cache not found on any discovered path');
@@ -1868,7 +1937,7 @@ ipcMain.handle('storage:writeContractCache', async (_event, payload = [], option
     };
 
     const discoveryTargets = getContractCacheDiscoveryTargets({ forceRefresh: !!options.forceRefresh });
-    const candidateFiles = gatherContractCacheCandidateFiles(discoveryTargets);
+    const candidateFiles = await gatherContractCacheCandidateFiles(discoveryTargets);
     const targets = dedupePaths([
       ...candidateFiles,
       ...(discoveryTargets?.directFiles || []),
@@ -2160,6 +2229,10 @@ ipcMain.handle('llm:analyzeSnapshot', async (_event, snapshot = {}) => {
   return runLLMInferencePacket(snapshot);
 });
 
+ipcMain.handle('llm:getStats', async () => {
+  return LLMSignalAssistant ? LLMSignalAssistant.getDiagnostics() : null;
+});
+
 ipcMain.handle('ai:run-inference', async (_event, payload = {}) => {
   const prompt = String(payload?.prompt || '').trim();
   const context = payload?.context && typeof payload.context === 'object' ? payload.context : {};
@@ -2233,6 +2306,18 @@ ipcMain.handle('google:tideForecast', async (_event, payload = {}) => {
   }
 });
 
+ipcMain.handle('firebase:getSystemWeights', async () => {
+  if (!FirebaseAdminFirestore || typeof FirebaseAdminFirestore.getSystemWeights !== 'function') {
+    return { success: false, error: 'Firebase Admin module unavailable or method missing' };
+  }
+  try {
+    const weights = await FirebaseAdminFirestore.getSystemWeights();
+    return { success: true, weights };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
 ipcMain.handle('firebase:status', async () => {
   try {
     return {
@@ -2274,6 +2359,13 @@ ipcMain.handle('orbital:broadcaster:diagnostics', () => {
   return OrbitalBroadcaster && typeof OrbitalBroadcaster.getDiagnostics === 'function'
     ? OrbitalBroadcaster.getDiagnostics()
     : { firestoreReady: false, error: 'broadcaster not loaded' };
+});
+
+ipcMain.handle('orbital:status', async () => {
+  if (typeof getOrbitalStatus === 'function') {
+    return getOrbitalStatus();
+  }
+  return { ready: false, services: {} };
 });
 
 ipcMain.handle('firebase:startupCheck', async (_event, options = {}) => {

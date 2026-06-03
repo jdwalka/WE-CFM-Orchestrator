@@ -354,7 +354,7 @@
                 fallback: proxy.mode === 'bypass' || !!proxy.bypassActive,
                 transient: !!proxy.bypassActive || proxy.healthy === false,
                 reason: proxy.mode === 'bypass'
-                    ? `hybrid bypass (${Math.round((proxy.bypassMsLeft || 0) / 1000)}s)`
+                    ? `hybrid bypass (${proxy.bypassMsLeft > 0 ? Math.round(proxy.bypassMsLeft / 1000) + 's' : 'active'})`
                     : (proxy.healthy ? 'proxy healthy' : `proxy degraded (${proxy.failures || 0})`),
             });
         }

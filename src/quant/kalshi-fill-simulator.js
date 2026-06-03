@@ -31,7 +31,7 @@
     }
 
     function bpsToPrice(price, bps) {
-        return (Number(price) * Number(bps)) / 10000;
+        return (Number(price) * Number(bps)) / 20000;
     }
 
     function createSeededRng(seed) {

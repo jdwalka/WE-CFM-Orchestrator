@@ -20,7 +20,7 @@
   const LIQSNAP_MAX = 450;
   const DEPTH_WINDOWS = [10, 20];
   const IMBALANCE_WINDOW_MS = 15 * 60 * 1000;
-  const HL_FALLBACK_DELAY_MS = 8000;
+  const HL_FALLBACK_DELAY_MS = 20000;
   const WALL_BEEPS_PERMANENTLY_DISABLED = true;
 
   const books = {};   // sym → { bids, asks, mid, timestamp }

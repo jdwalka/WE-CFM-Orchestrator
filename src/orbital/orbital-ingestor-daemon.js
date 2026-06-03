@@ -17,6 +17,18 @@
 const WebSocket = require('ws');
 const http = require('http');
 const { produceOrbitalTick } = require('../infra/orbital-redpanda-bridge');
+const DualSourceValidationLoop = require('./dual-source-validation-loop');
+const OracleRedundancyIntegrator = require('./oracle-redundancy-integrator');
+const Redis = require('ioredis');
+
+const redisPub = new Redis(process.env.REDIS_URL || 'redis://localhost:6379');
+
+function publishTickToRedis(orbitalType, asset, payload) {
+    const channel = `orbital:ticks:${orbitalType}:${asset}`;
+    redisPub.publish(channel, JSON.stringify(payload)).catch(err => {
+        // suppress verbose logs unless in debug mode, but catch errors
+    });
+}
 
 const COINGECKO_WS_URL   = 'wss://stream.coingecko.com/v1/stream';
 const COINBASE_WS_URL    = 'wss://advanced-trade-ws.coinbase.com';
@@ -79,11 +91,31 @@ class OrbitalIngestor {
         this.connections = new Map();
         this._kalshiPollTimer = null;
         this._stopped = false;
+
+        // Initialize Validation & Oracle Feedback Loops
+        this.validationLoop = new DualSourceValidationLoop();
+        this.oracleIntegrator = new OracleRedundancyIntegrator(this.validationLoop);
+
+        this.oracleIntegrator.on('data_integrity_ok', (data) => {
+            if (data.source === 'DECENTRALIZED') {
+                const payload = {
+                    source: 'decentralized_oracle',
+                    price_usd: data.price,
+                    ts: data.timestamp
+                };
+                produceOrbitalTick('s', data.asset, payload);
+                publishTickToRedis('s', data.asset, payload);
+            }
+        });
     }
 
     start() {
         console.log('[OrbitalIngestor] Starting high-velocity ingestion layer...');
         this._stopped = false;
+        
+        // Start validation loop for primary asset tracking (e.g., BTC)
+        this.validationLoop.start('BTC');
+        
         this.connectCoinGecko();
         this.connectCoinbase();
         this.connectHyperliquid();
@@ -93,6 +125,7 @@ class OrbitalIngestor {
     stop() {
         console.log('[OrbitalIngestor] Stopping...');
         this._stopped = true;
+        this.validationLoop.stop();
         if (this._kalshiPollTimer) {
             clearInterval(this._kalshiPollTimer);
             this._kalshiPollTimer = null;
@@ -118,19 +151,34 @@ class OrbitalIngestor {
             try {
                 const msg = JSON.parse(data);
                 if (msg.asset && msg.price && ASSETS.includes(msg.asset)) {
-                    produceOrbitalTick('s', msg.asset, {
+                    // Prevent ingesting corrupted data if we've fallen back
+                    if (this.oracleIntegrator.activeSource === 'DECENTRALIZED') {
+                        return;
+                    }
+                    const payload = {
                         source: 'coingecko',
                         price_usd: parseFloat(msg.price),
                         ts: Date.now()
-                    });
+                    };
+                    produceOrbitalTick('s', msg.asset, payload);
+                    publishTickToRedis('s', msg.asset, payload);
                 }
             } catch (err) { /* ignore malformed frames */ }
         });
 
-        ws.on('error', (err) => console.warn('[OrbitalIngestor] CoinGecko error:', err.message));
+        ws.on('error', (err) => {
+            if (err.message.includes('401')) {
+                if (!this._coinGeckoBlocked) {
+                    console.warn('[OrbitalIngestor] CoinGecko is blocking this IP (VPN/Tor). Disabling feed to prevent log spam. The system will rely on Coinbase/Hyperliquid.');
+                    this._coinGeckoBlocked = true;
+                }
+            } else {
+                console.warn('[OrbitalIngestor] CoinGecko error:', err.message);
+            }
+        });
         ws.on('close', () => {
             this.connections.delete('coingecko');
-            if (!this._stopped) setTimeout(() => this.connectCoinGecko(), 5000);
+            if (!this._stopped && !this._coinGeckoBlocked) setTimeout(() => this.connectCoinGecko(), 5000);
         });
     }
 
@@ -177,25 +225,34 @@ class OrbitalIngestor {
 
                 if (!price) return;
 
+                // Prevent ingesting primary API data if we're in decentralized fallback mode
+                if (this.oracleIntegrator.activeSource === 'DECENTRALIZED') {
+                    return;
+                }
+
                 // s-orbital: raw Coinbase price tick
-                produceOrbitalTick('s', asset, {
+                const sPayload = {
                     source: 'coinbase',
                     price_usd: price,
                     ts: Date.now()
-                });
+                };
+                produceOrbitalTick('s', asset, sPayload);
+                publishTickToRedis('s', asset, sPayload);
 
                 // p-orbital: rolling 20-tick VWAP momentum
                 const vwap = updateVwap(asset, price, volume);
                 const momentum = vwap > 0 ? (price - vwap) / vwap : 0;
 
-                produceOrbitalTick('p', asset, {
+                const pPayload = {
                     source: 'coinbase',
                     vwap_20: vwap,
                     price_momentum: momentum,  // positive = price above VWAP (bullish pressure)
                     price: price,
                     volume: volume,
                     ts: Date.now()
-                });
+                };
+                produceOrbitalTick('p', asset, pPayload);
+                publishTickToRedis('p', asset, pPayload);
             } catch (err) { /* ignore malformed frames */ }
         });
 
@@ -230,12 +287,14 @@ class OrbitalIngestor {
                 if (!asset || !ASSETS.includes(asset)) return;
 
                 if (msg.data?.levels) {
-                    produceOrbitalTick('d', asset, {
+                    const dPayload = {
                         source: 'hyperliquid',
                         open_interest_usd: msg.data.oi    || 0,
                         funding_rate:      msg.data.funding || 0,
                         ts: Date.now()
-                    });
+                    };
+                    produceOrbitalTick('d', asset, dPayload);
+                    publishTickToRedis('d', asset, dPayload);
                 }
             } catch (err) { /* ignore malformed frames */ }
         });
@@ -276,7 +335,7 @@ class OrbitalIngestor {
                 const volume     = parseFloat(contract.volume          ?? 0);
                 const openInterest = parseFloat(contract.open_interest ?? 0);
 
-                produceOrbitalTick('f', asset, {
+                const fPayload = {
                     source: 'kalshi',
                     kalshi_yes_pct: yesMid,
                     kalshi_yes_bid: yesBid,
@@ -285,7 +344,9 @@ class OrbitalIngestor {
                     kalshi_open_interest: openInterest,
                     contract_ticker: contract.ticker || '',
                     ts: Date.now()
-                });
+                };
+                produceOrbitalTick('f', asset, fPayload);
+                publishTickToRedis('f', asset, fPayload);
             }
         } catch (err) {
             if (process.env.NODE_ENV !== 'production') {

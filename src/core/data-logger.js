@@ -537,6 +537,8 @@
     logOutcome,
     logLogicDebug,
     logError,
+    logPolymarketOutcome: (sym, record) => push('polymarket_outcomes', { sym, ...record, ts: Date.now() }),
+    logPolymarket: (data) => push('polymarket_raw', { markets: data }),
     flush:         flushAll,
     getStats:      () => _stats,
     getWritePaths: (category) => filePaths(category || 'export'),

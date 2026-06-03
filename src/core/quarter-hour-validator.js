@@ -12,7 +12,7 @@
 
   const QUARTER_HOUR_MS = 15 * 60 * 1000;  // 15 minutes in milliseconds
   const SETTLEMENT_GRACE_MS = 5000;        // Allow 5s wiggle room
-  const PREDICTION_LEAD_MS = 10000;        // Emit prediction 10s before settlement
+  const PREDICTION_LEAD_MS = 20000;        // Emit prediction 10s before settlement
 
   // ── Helper: Check if timestamp aligns to quarter-hour ──
   function isQuarterHourAligned(tsMs) {

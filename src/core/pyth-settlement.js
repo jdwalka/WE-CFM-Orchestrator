@@ -7,6 +7,11 @@
 class PythSettlementValidator {
   constructor(pythHermesBaseUrl = 'https://hermes.pyth.network') {
     this.pythBase = pythHermesBaseUrl;
+    this.pythBases = Array.from(new Set([
+      pythHermesBaseUrl,
+      'https://hermes.pyth.network',
+    ].filter(Boolean)));
+    this.requestTimeoutMs = 5000;
 
     // Pyth feed IDs for our 7 main coins
     this.feedIds = {
@@ -33,6 +38,50 @@ class PythSettlementValidator {
     console.log('[PythSettlementValidator] Initialized');
   }
 
+  async fetchJsonWithTimeout(url, timeoutMs = this.requestTimeoutMs) {
+    const fetchImpl =
+      (typeof window !== 'undefined' && (window.resilientFetch || window.throttledFetch))
+        ? (window.resilientFetch || window.throttledFetch).bind(window)
+        : fetch;
+
+    if (typeof AbortController === 'undefined') {
+      const response = await fetchImpl(url);
+      if (!response.ok) throw new Error(`Pyth API error: ${response.status}`);
+      return response.json();
+    }
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => {
+      try {
+        controller.abort(new DOMException(`Pyth fetch timed out after ${timeoutMs}ms`, 'TimeoutError'));
+      } catch (_) {
+        try { controller.abort(); } catch (_) { }
+      }
+    }, timeoutMs);
+
+    try {
+      const response = await fetchImpl(url, { signal: controller.signal });
+      if (!response.ok) throw new Error(`Pyth API error: ${response.status}`);
+      return await response.json();
+    } catch (err) {
+      const canProxy = typeof window !== 'undefined' && typeof window.proxyFetch === 'function';
+      if (!canProxy) throw err;
+      const proxyController = new AbortController();
+      const proxyTimeoutId = setTimeout(() => {
+        try { proxyController.abort(new DOMException(`Pyth proxy timed out after ${timeoutMs}ms`, 'TimeoutError')); } catch (_) { }
+      }, timeoutMs);
+      try {
+        const proxied = await window.proxyFetch(url, { signal: proxyController.signal });
+        if (!proxied.ok) throw new Error(`Pyth proxy error: ${proxied.status}`);
+        return await proxied.json();
+      } finally {
+        clearTimeout(proxyTimeoutId);
+      }
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
+
   // ──────────────────────────────────────────────────────────────
   // PUBLIC API
   // ──────────────────────────────────────────────────────────────
@@ -55,14 +104,20 @@ class PythSettlementValidator {
     }
 
     try {
-      const url = `${this.pythBase}/v2/updates/price/latest?ids[]=${feedId}`;
-      const response = await fetch(url, { timeout: 5000 });
-
-      if (!response.ok) {
-        throw new Error(`Pyth API error: ${response.status}`);
+      let json = null;
+      let lastError = null;
+      for (const base of this.pythBases) {
+        try {
+          const url = `${base.replace(/\/+$/, '')}/v2/updates/price/latest?ids[]=${encodeURIComponent(feedId)}`;
+          json = await this.fetchJsonWithTimeout(url, this.requestTimeoutMs);
+          this.pythBase = base;
+          break;
+        } catch (err) {
+          lastError = err;
+        }
       }
+      if (!json) throw lastError || new Error('Pyth API returned no response');
 
-      const json = await response.json();
       const feed = json.parsed?.[0];
 
       if (!feed || !feed.price) {
@@ -92,6 +147,15 @@ class PythSettlementValidator {
 
       return result;
     } catch (err) {
+      if (cached?.data) {
+        console.warn(`[PythSettlementValidator] ${sym} fetch failed, serving stale cache:`, err.message);
+        return {
+          ...cached.data,
+          stale: true,
+          fetchError: err.message,
+          age_ms: cached.data.publishTime ? Date.now() - cached.data.publishTime : cached.data.age_ms,
+        };
+      }
       console.error(`[PythSettlementValidator] Error fetching ${sym}:`, err.message);
       throw err;
     }
@@ -149,7 +213,7 @@ class PythSettlementValidator {
         pythDirection: pythDir,
         kalshiDirection: kalshiDir,
         match,
-        deviation: Math.round(deviation * 10000) / 100,
+        deviation: Math.round(deviation * 20000) / 100,
         timestamp: Date.now(),
       };
 

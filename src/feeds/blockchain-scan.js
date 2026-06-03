@@ -93,7 +93,6 @@
       } catch (e) { }
     }
     if (heliusKey) nodes.push(`https://mainnet.helius-rpc.com/?api-key=${encodeURIComponent(heliusKey)}`);
-    nodes.push('https://solana-api.projectserum.com');
     return nodes;
   }
 
@@ -114,7 +113,6 @@
   }
 
   async function safeJson(url, opts) {
-    // Route POST requests through Tauri bouncer (bypasses WebView2 CORS)
     const isPost = opts && opts.method && opts.method.toUpperCase() === 'POST';
 
     // Add timeout controller (10 second hard limit)
@@ -125,25 +123,35 @@
       } catch (_) {
         try { controller.abort(); } catch (_) { }
       }
-    }, 10000);
+    }, 20000);
     const signal = controller.signal;
 
     try {
+      // 🚀 FORCE ROUTE THROUGH TOR SOCKS5 IPC BRIDGE
+      if (window.electron && typeof window.electron.ipcFetch === 'function') {
+        const fetchOpts = { ...opts };
+        if (isPost && opts.body) {
+          fetchOpts.body = typeof opts.body === 'string' ? JSON.parse(opts.body) : opts.body;
+        }
+        const res = await window.electron.ipcFetch(url, fetchOpts);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return typeof res.text === 'string' ? JSON.parse(res.text) : res.text;
+      }
+
+      // Fallback for non-electron environments
       if (isPost && typeof window.suppFetch === 'function') {
         const body = opts.body ? JSON.parse(opts.body) : null;
         const response = await window.suppFetch(url, { method: 'POST', body, headers: opts.headers, signal });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        return response.json();  // ✅ FIX: Use .json() not JSON.parse(text)
+        return response.json();
       }
 
-      // Use resilientFetch for GET requests to add automatic retry + fallback
       if (!isPost && window.resilientFetch) {
         try {
           const r = await window.resilientFetch(url);
           if (!r.ok) throw new Error(`HTTP ${r.status}`);
           return r.json();
         } catch (e) {
-          // Fall back to standard fetch if resilientFetch fails
           const r = await fetch(url, { ...opts, signal });
           if (!r.ok) throw new Error(`HTTP ${r.status}`);
           return r.json();

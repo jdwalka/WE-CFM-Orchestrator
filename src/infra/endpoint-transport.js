@@ -89,20 +89,26 @@
     );
   }
 
-<<<<<<< Updated upstream
-=======
+  const providerRateLimit = {};
+  const PROVIDER_RATE_LIMIT_MAX_MS = 60_000;
+
   function _isRateLimitError(err) {
     return /(?:^|\b)(?:http\s*)?429\b|too many requests|rate limit/i.test(String(err?.message || err || ''));
   }
 
   function _markProviderRateLimited(provider, err) {
+    if (provider === 'pyth' || provider === 'pyth-lazer') {
+      return 500; // Pyth bypasses exponential backoff to maintain live tracking (orchestrator handles burst)
+    }
     if (err && typeof err === 'object' && err._endpointRateLimitMarked) {
       return _providerRateLimitRemaining(provider);
     }
     const now = Date.now();
     const state = providerRateLimit[provider] || { count: 0, until: 0 };
     state.count = now < state.until ? state.count + 1 : 1;
-    // Exponential backoff with a higher cap and a lower base for smoother retry\n    const baseMs = 15000;\n    const wait = Math.min(PROVIDER_RATE_LIMIT_MAX_MS, baseMs * (2 ** Math.max(0, state.count - 1)));
+    // Exponential backoff with a higher cap and a lower base for smoother retry
+    const baseMs = 15000;
+    const wait = Math.min(PROVIDER_RATE_LIMIT_MAX_MS, baseMs * (2 ** Math.max(0, state.count - 1)));
     state.until = now + wait;
     providerRateLimit[provider] = state;
     if (err && typeof err === 'object') {
@@ -116,8 +122,6 @@
     const until = providerRateLimit[provider]?.until || 0;
     return Math.max(0, until - Date.now());
   }
-
->>>>>>> Stashed changes
   function _classifyTransportBucket(err, provider, transport) {
     const text = String(err?.message || err || '').toLowerCase();
     if (/browser websocket cannot send|requires node ws|credential|crypto unavailable|signature generation|kalshi-api-key\.txt not found|auth-header-failed/.test(text)) {
@@ -715,7 +719,7 @@
       } catch (_) {
         try { controller.abort(); } catch (_) { }
       }
-    }, 8000) : null;
+    }, 20000) : null;
     try {
       const res = await fetch(`${KALSHI_WORKER_URL}/markets?${q}`, {
         signal: controller ? controller.signal : undefined,

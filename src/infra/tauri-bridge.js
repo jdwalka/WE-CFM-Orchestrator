@@ -151,7 +151,7 @@
           fallback: detail.mode === 'bypass',
           transient: detail.bypassActive || !detail.healthy,
           reason: detail.mode === 'bypass'
-            ? `hybrid bypass (${detail.bypassMsLeft}ms left)`
+            ? `hybrid bypass (${detail.bypassMsLeft > 0 ? Math.round(detail.bypassMsLeft / 1000) + 's left' : 'active'})`
             : (detail.healthy ? 'proxy healthy' : `proxy degraded (${detail.failures} failures)`),
         });
       }
@@ -274,6 +274,9 @@
 
   // ── Core fetch ───────────────────────────────────────────────────────────────
   window.proxyFetch = async function (url, options = {}) {
+    if (!_proxyAvailable && (Date.now() - _lastInitAt > 15000)) {
+       _initPromise = null;
+    }
     await initOnce();
     try {
       const isGecko = /coingecko/i.test(String(url));

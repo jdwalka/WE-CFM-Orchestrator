@@ -378,7 +378,7 @@ class ComprehensiveAccuracyScorecard {
     console.log('1️⃣  KALSHI API CONNECTIVITY TEST');
     try {
       const testUrl = 'https://api.elections.kalshi.com/trade-api/v2/markets?status=settled&limit=1';
-      const response = await fetch(testUrl, { timeout: 8000 });
+      const response = await fetch(testUrl, { timeout: 20000 });
       console.log(`   Status: ${response.status} (${response.ok ? '✅ OK' : '❌ FAILED'})`);
       
       if (response.ok) {

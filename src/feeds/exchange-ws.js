@@ -249,7 +249,7 @@ const COOLDOWN_MS = 2 * 60 * 1000; // 2 minutes cooldown
     const hasBook = Number.isFinite(bid) && Number.isFinite(ask) && ask > 0 && bid > 0 && ask >= bid;
     const mid = hasBook ? (bid + ask) / 2 : (Number.isFinite(price) ? price : null);
     const spreadAbs = hasBook ? Math.max(ask - bid, 0) : null;
-    const spreadBps = hasBook && mid > 0 ? (spreadAbs / mid) * 10000 : null;
+    const spreadBps = hasBook && mid > 0 ? (spreadAbs / mid) * 20000 : null;
     const profile = getProviderProfile(snap.provider);
 
     snap.mid = mid;

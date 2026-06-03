@@ -19,7 +19,7 @@
   'use strict';
 
   // ── Fetch with AbortController timeout ──────────────────────────────────
-  function fetchWithTimeout(url, ms = 8000, opts = {}) {
+  function fetchWithTimeout(url, ms = 20000, opts = {}) {
     const ctrl = new AbortController();
     const tid = setTimeout(() => {
       try {
@@ -52,13 +52,13 @@
     CB: { budget: 60, used: 0, resetAt: 0, label: 'Coinbase', color: '#0052ff' },
     GKO: { budget: 18, used: 0, resetAt: 0, label: 'CoinGecko', color: '#8dc63f' },
     DEX: { budget: 20, used: 0, resetAt: 0, label: 'DexScreener', color: '#a259ff' },
-    BIN: { budget: 120, used: 0, resetAt: 0, label: 'Binance', color: '#f3ba2f' },
+    BIN: { budget: 60, used: 0, resetAt: 0, label: 'Binance', color: '#f3ba2f' },
     OKX: { budget: 60, used: 0, resetAt: 0, label: 'OKX', color: '#ffffff' },
     KRK: { budget: 30, used: 0, resetAt: 0, label: 'Kraken', color: '#5741d9' },
     HYP: { budget: 20, used: 0, resetAt: 0, label: 'Hyperliquid', color: '#5ee7b0' },
     BIF: { budget: 60, used: 0, resetAt: 0, label: 'Binance Futures', color: '#f0b90b' },
     BYB: { budget: 30, used: 0, resetAt: 0, label: 'Bybit', color: '#f7a600' },
-    UPB: { budget: 120, used: 0, resetAt: 0, label: 'Upbit', color: '#093687' },
+    UPB: { budget: 60, used: 0, resetAt: 0, label: 'Upbit', color: '#093687' },
     BIT: { budget: 60, used: 0, resetAt: 0, label: 'Bitget', color: '#00d2b4' },
     BNX: { budget: 60, used: 0, resetAt: 0, label: 'BingX', color: '#1052fb' },
     BTV: { budget: 120, used: 0, resetAt: 0, label: 'Bitvavo', color: '#1f48ed' },
@@ -169,13 +169,13 @@
   async function fetchCDCTickers() {
     // Check shared cache from app.js (avoids duplicate HTTP call)
     const shared = window._sharedTickerCache;
-    if (shared && shared.raw && Date.now() - shared.age < 10000) {
+    if (shared && shared.raw && Date.now() - shared.age < 20000) {
       cdcTickerCache = shared.raw;
       cdcTickerAge = shared.age;
       return cdcTickerCache;
     }
     if (!can('CDC')) return null;
-    if (cdcTickerCache && Date.now() - cdcTickerAge < 10000) return cdcTickerCache;
+    if (cdcTickerCache && Date.now() - cdcTickerAge < 20000) return cdcTickerCache;
     try {
       hit('CDC');
       const r = await fetchWithTimeout(`${CDC_BASE}/get-tickers`);
@@ -235,7 +235,7 @@
         headers['Authorization'] = `Bearer ${jwtStr}`;
       }
 
-      const r = await fetchWithTimeout(`https://api.coinbase.com/api/v3/brokerage/best_bid_ask?product_ids=${sym}-USD`, 8000, { headers });
+      const r = await fetchWithTimeout(`https://api.coinbase.com/api/v3/brokerage/best_bid_ask?product_ids=${sym}-USD`, 20000, { headers });
       if (r.status === 429) { console.warn('CB rate limited'); return null; }
       if (!r.ok) return null;
       
@@ -417,7 +417,7 @@
         } catch (_) {
           try { ctrl.abort(); } catch (_) { }
         }
-      }, 8000);
+      }, 20000);
       const res = await fetch('https://api.hyperliquid.xyz/info', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -449,7 +449,7 @@
   async function fetchBIF() {
     if (!can('BIF')) return [];
     try {
-      const res = await fetchWithTimeout('https://fapi.binance.com/fapi/v1/premiumIndex', 8000);
+      const res = await fetchWithTimeout('https://fapi.binance.com/fapi/v1/premiumIndex', 20000);
       if (!res.ok) return [];
       const data = await res.json();
       hit('BIF');
@@ -475,7 +475,7 @@
   async function fetchBYB() {
     if (!can('BYB')) return [];
     try {
-      const res = await fetchWithTimeout('https://api.bybit.com/v5/market/tickers?category=linear', 8000);
+      const res = await fetchWithTimeout('https://api.bybit.com/v5/market/tickers?category=linear', 20000);
       if (!res.ok) return [];
       const data = await res.json();
       hit('BYB');

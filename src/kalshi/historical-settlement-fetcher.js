@@ -168,7 +168,7 @@ class HistoricalSettlementFetcher {
     try {
       // Polymarket markets endpoint
       const url = `${this.polyBase}/markets?status=resolved&limit=${limit}`;
-      const response = await fetch(url, { timeout: 8000 });
+      const response = await fetch(url, { timeout: 20000 });
 
       if (!response.ok) {
         console.error(`[HistoricalFetcher] Polymarket API error: ${response.status}`);
@@ -180,32 +180,34 @@ class HistoricalSettlementFetcher {
       const resolved = markets
         .filter(m => {
           // Only crypto prediction markets
-          if (!m.title) return false;
-          if (m.closed_time == null) return false;
-          if (m.resolved_by_source !== 'AMM' && !m.resolutionSources) return false;
+          if (!m.question) return false;
+          if (m.endDateIso == null && m.endDate == null) return false;
+          // check if title contains crypto names
           return ['BTC', 'ETH', 'SOL', 'XRP'].some(sym =>  // 4-coin focus
-            m.title.toUpperCase().includes(sym)
+            m.question.toUpperCase().includes(sym)
           );
         })
         .map(m => {
-          // Extract symbol from title
-          const symMatch = m.title.match(/(BTC|ETH|SOL|XRP|DOGE|BNB)/i);
+          // Extract symbol from question
+          const symMatch = m.question.match(/(BTC|ETH|SOL|XRP|DOGE|BNB)/i);
           const symbol = symMatch ? symMatch[1].toUpperCase() : null;
 
-          // Determine outcome from outcome prices
-          const outcomeYes = m.outcomePrices?.[0] ?? 0;
-          const outcomeNo = m.outcomePrices?.[1] ?? 0;
+          // Determine outcome from outcome prices. "1" means YES resolved, "0" means NO.
+          const outcomeYes = parseFloat(m.outcomePrices?.[0] || '0');
+          const outcomeNo = parseFloat(m.outcomePrices?.[1] || '0');
           const outcome = outcomeYes > outcomeNo ? 'YES' : 'NO';
+          
+          const resolvedTime = m.updatedAt ? new Date(m.updatedAt).getTime() : (m.endDateIso ? new Date(m.endDateIso).getTime() : new Date(m.endDate).getTime());
 
           return {
             source: 'polymarket',
             marketId: m.id,
             symbol,
-            title: m.title,
+            title: m.question,
             outcome,
             outcomePrices: m.outcomePrices,
-            resolvedTime: m.closed_time ? new Date(m.closed_time).getTime() : null,
-            createdAt: m.created_at ? new Date(m.created_at).getTime() : null,
+            resolvedTime: resolvedTime,
+            createdAt: m.createdAt ? new Date(m.createdAt).getTime() : null,
             // Raw market object for debugging
             raw: m,
           };
@@ -214,6 +216,22 @@ class HistoricalSettlementFetcher {
 
       this.settledCache.polymarket = resolved;
       this.lastFetch.polymarket = now;
+
+      if (!this._loggedPolyMarkets) this._loggedPolyMarkets = new Set();
+      resolved.forEach(m => {
+        if (typeof window !== 'undefined' && window.DataLogger && window.DataLogger.logPolymarketOutcome) {
+          if (!this._loggedPolyMarkets.has(m.marketId)) {
+            this._loggedPolyMarkets.add(m.marketId);
+            window.DataLogger.logPolymarketOutcome(m.symbol, {
+              marketId: m.marketId,
+              title: m.title,
+              outcome: m.outcome,
+              resolvedTimeMs: m.resolvedTime,
+              outcomePrices: m.outcomePrices
+            });
+          }
+        }
+      });
 
       console.log(`[HistoricalFetcher] Fetched ${resolved.length} resolved Polymarket crypto markets`);
       return resolved;
@@ -243,7 +261,7 @@ class HistoricalSettlementFetcher {
     try {
       // Coinbase prediction markets endpoint
       const url = `${this.coinbaseBase}/predictions?status=settled&limit=${limit}`;
-      const response = await fetch(url, { timeout: 8000 });
+      const response = await fetch(url, { timeout: 20000 });
 
       if (!response.ok) {
         console.error(`[HistoricalFetcher] Coinbase API error: ${response.status}`);

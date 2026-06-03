@@ -5,9 +5,14 @@
  */
 
 const https = require('https');
+const path = require('path');
+
+try {
+  require('dotenv').config({ path: path.resolve(__dirname, '../../.env'), quiet: true });
+} catch (_) { }
 
 const PYTH_LAZER_URL = 'https://pyth-lazer.dourolabs.app/v1/latest_price';
-const PYTH_API_KEY = process.env.PYTH_API_KEY || 'HjkdyqJTX45K7nrqtkiKwHPuCpDkh2gmvKNof29RwTW';
+const PYTH_API_KEY = process.env.PYTH_LAZER_TOKEN || process.env.PYTH_API_KEY || process.env.LAZER_TOKEN || '';
 
 const SYMBOLS = [
   'Crypto.BTC/USD',
@@ -80,6 +85,15 @@ class PythLazerPoller {
    * Poll Pyth Lazer API and emit updates
    */
   poll() {
+    if (!PYTH_API_KEY) {
+      if (!this._warnedMissingToken) {
+        this._warnedMissingToken = true;
+        console.warn('[PythLazer] PYTH_LAZER_TOKEN not set; poller disabled');
+      }
+      this.connected = false;
+      return;
+    }
+
     const payload = JSON.stringify({
       channel: 'real_time',
       formats: ['evm'],

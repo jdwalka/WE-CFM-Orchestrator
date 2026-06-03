@@ -132,7 +132,7 @@
     const startSec = endSec - 180;
     try {
       const url = `${CB_BASE}/products/${product}/candles?start=${startSec}&end=${endSec}&granularity=60`;
-      const r = await fetchWithTimeout(url, 8000);
+      const r = await fetchWithTimeout(url, 20000);
       if (!r.ok) return null;
       const candles = await r.json();
       if (!Array.isArray(candles) || !candles.length) return null;
@@ -309,7 +309,7 @@
 
   async function resolveKalshiMarket(entry) {
     const url = `${KALSHI_BASE}/markets/${entry.ticker}`;
-    const retryDelays = [2000, 4000, 8000];
+    const retryDelays = [2000, 4000, 20000];
     let d = null;
     let viaTransport = null;
 

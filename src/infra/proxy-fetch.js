@@ -54,14 +54,14 @@
     'hypurrscan.io',
     'api.etherscan.io',
     'api.bscscan.com',
+    'api.binance.us',
+    'api.binance.com',
+    'fapi.binance.com',
   ]);
 
   // ── Bucket C: open / first-party APIs — direct ok in Electron ───────────
   // (still proxied in browser so the CORS bouncer doesn't fire)
-  // api.binance.us, fapi.binance.com, api.coinbase.com,
-  // api.exchange.coinbase.com, api.kraken.com, api.elections.kalshi.com,
-  // s2.ripple.com, xrplcluster.com, api.mainnet-beta.solana.com,
-  // eth.blockscout.com, bsc.blockscout.com, api.blockcypher.com, mempool.space, api.hyperliquid.xyz
+  // api.elections.kalshi.com
 
   // hostname → proxy exchange prefix (config.toml keys)
   const HOST_MAP = {
@@ -127,14 +127,46 @@
   }
 
   const IGNORE_DOMAINS = /timeapi\.io|kalshi\.com|polymarket\.com/i;
+  let _nodeFetch = null;
+  try {
+    if (typeof require !== 'undefined') {
+      _nodeFetch = require('node-fetch');
+    }
+  } catch (_) {}
+
+  function shouldUseNodeFetch(originalUrl, rewrittenUrl) {
+    if (!_nodeFetch) return false;
+    const isProxyRoute = rewrittenUrl !== originalUrl;
+    return isProxyRoute; // ONLY use node-fetch for the local proxy (127.0.0.1) route. External DNS hangs in Electron renderer.
+  }
 
   window.fetch = function (input, init) {
     if (typeof input === 'string') {
-      if (!IGNORE_DOMAINS.test(input)) input = rewrite(input);
+      let urlToUse = input;
+      if (!IGNORE_DOMAINS.test(input)) {
+        urlToUse = rewrite(input);
+      }
+      if (shouldUseNodeFetch(input, urlToUse)) {
+        return _nodeFetch(urlToUse, init);
+      }
+      if (urlToUse !== input) {
+        input = urlToUse;
+      }
     } else if (input instanceof Request && EXTERNAL.test(input.url)) {
+      let urlToUse = input.url;
       if (!IGNORE_DOMAINS.test(input.url)) {
-        const rw = rewrite(input.url);
-        if (rw !== input.url) input = new Request(rw, input);
+        urlToUse = rewrite(input.url);
+      }
+      if (shouldUseNodeFetch(input.url, urlToUse)) {
+        const opts = init || {};
+        opts.method = opts.method || input.method;
+        opts.headers = opts.headers || input.headers;
+        if (input.body && !opts.body) opts.body = input.body;
+        opts.signal = opts.signal || input.signal;
+        return _nodeFetch(urlToUse, opts);
+      }
+      if (urlToUse !== input.url) {
+        input = new Request(urlToUse, input);
       }
     }
     return _origFetch(input, init);

@@ -35,7 +35,9 @@
     "backtest:walkforward": "node backtest/walk-forward-backtest.js --days 30 --fold-size 400 --test 100 --step 50",
     "backtest:kalshi-odds-wf": "node backtest/kalshi-odds-walkforward.js --days 7 --coins BTC,ETH,SOL,XRP --train 120 --test 40 --step 20 --min-trades 12",
     "backtest:pipeline": "node backtest/recalibrate-and-backtest.js --write-weights",
+    "backtest:recalibrate:polymarket": "node backtest/polymarket-retuner.js",
     "backtest:adaptive": "node backtest/adaptive-backtest-harness.js --days 7 --coins BTC,ETH,SOL,XRP --compare-static --adaptive-mode",
+    "backtest:hyper-sweep": "node src/core/run-hyper-sweep.js",
     "backtest:regime-analyze": "node backtest/adaptive-regime-weighter.js",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build"
@@ -94,22 +96,26 @@
   "devDependencies": {
     "@tauri-apps/cli": "^2.10.1",
     "assemblyscript": "^0.28.17",
-    "electron": "^41.4.0",
+    "electron": "^41.7.1",
     "electron-builder": "^26.8.1"
   },
   "dependencies": {
     "@google/genai": "^1.52.0",
     "@google/generative-ai": "^0.24.1",
+    "@polymarket/clob-client-v2": "^1.0.6",
     "@pythnetwork/pyth-lazer-sdk": "^6.2.2",
     "dotenv": "^17.4.2",
     "express": "^5.1.0",
     "firebase": "^12.13.0",
     "firebase-admin": "^12.7.0",
+    "ioredis": "^5.11.0",
     "jsonwebtoken": "^9.0.3",
     "kafkajs": "^2.2.4",
     "kalshi-typescript": "^3.15.0",
     "node-addon-api": "^8.7.0",
+    "node-fetch": "^2.7.0",
     "selfsigned": "^5.5.0",
+    "socks-proxy-agent": "^10.0.0",
     "ws": "^8.20.1"
   },
   "bin": {

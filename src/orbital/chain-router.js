@@ -17,7 +17,7 @@
   let _timer = null;
 
   const POLL_MS = 60000;  // 60s polling interval; failing handlers back off independently
-  const TIMEOUT = 12000;  // 12s — extra headroom for Tailscale/IPv6 routing
+  const TIMEOUT = 25000;  // 12s — extra headroom for Tailscale/IPv6 routing
   const ERROR_LOG_COOLDOWN_MS = 60000;
   const ERROR_LOG_STATE = {}; // sym -> { msg, ts }
   const ROUTE_HANDLER_HEALTH = {}; // sym:index -> { failures, nextAt }
@@ -257,7 +257,7 @@
     const feeSlow = Number(data.low_fee_per_kb || 0) / 1e5;
     const block = Number(data.height || 0);
     if (!block && !txCount && !feeFast) throw new Error('BlockCypher BTC empty');
-    const score = txCount > 12000 ? 0.45 : txCount > 4000 ? 0.20 : feeFast > 30 ? 0.15 : 0;
+    const score = txCount > 25000 ? 0.45 : txCount > 4000 ? 0.20 : feeFast > 30 ? 0.15 : 0;
     return {
       sym: 'BTC', label: 'Bitcoin', chain: 'Bitcoin Network',
       source: 'BlockCypher', explorerUrl: 'https://live.blockcypher.com/btc',
@@ -269,7 +269,7 @@
         { k: 'Fee Med', v: feeMed ? `${feeMed.toFixed(1)} sat/vB` : '—' },
         { k: 'Fee Slow', v: feeSlow ? `${feeSlow.toFixed(1)} sat/vB` : '—' },
       ],
-      congestion: txCount > 10000 ? 'HIGH' : txCount > 2500 ? 'MED' : 'LOW',
+      congestion: txCount > 20000 ? 'HIGH' : txCount > 2500 ? 'MED' : 'LOW',
       score, signal: scoreLabel(score), ts: Date.now(),
       raw: { feeFast, feeMed, feeSlow, vsize: 0, txCount, block },
     };
@@ -659,7 +659,7 @@
     const data = await getJson(_blockCypherUrl('/v1/doge/main'));
     const uc = data.unconfirmed_count || 0;
     if (!data.height) throw new Error('BlockCypher DOGE empty');
-    const score = uc > 10000 ? 0.40 : uc > 3000 ? 0.20 : 0;
+    const score = uc > 20000 ? 0.40 : uc > 3000 ? 0.20 : 0;
     return {
       sym: 'DOGE', label: 'Dogecoin', chain: 'Dogecoin Network',
       source: 'BlockCypher/Dogescan', explorerUrl: 'https://live.blockcypher.com/doge',
@@ -850,16 +850,9 @@
   }
 
   const ROUTES = [
-<<<<<<< Updated upstream
-    { sym: 'BTC',  handlers: [btcMempool, btcBlockchain] },
-    { sym: 'ETH',  handlers: [ethAlchemy, ethEtherscan, ethBlockscout] },
+    { sym: 'BTC',  handlers: [btcMempool, btcBlockcypher, btcBlockchain] },
+    { sym: 'ETH',  handlers: [ethAlchemy, ethEtherscan, ethBlockscout, ethBlockcypher] },
     { sym: 'SOL',  handlers: [
-=======
-    { sym: 'BTC', handlers: [btcMempool, btcBlockcypher, btcBlockchain] },
-    { sym: 'ETH', handlers: [ethBlockscout, ethEtherscan, ethBlockcypher] },
-    {
-      sym: 'SOL', handlers: [
->>>>>>> Stashed changes
         ..._solRpcCandidates().map((url) => () => solRpc(url)),
       ]
     },
@@ -867,18 +860,11 @@
       sym: 'XRP', handlers: [
         () => xrpLedger('https://s2.ripple.com:51234/'),
         () => xrpLedger('https://s1.ripple.com:51234/'),
-        () => xrpLedger('https://xrpl.link/'),
-        () => xrpLedger('https://xrpl-cluster.com/'),
         () => xrpLedger('https://xrplcluster.com/'),
       ]
     },
-<<<<<<< Updated upstream
     { sym: 'BNB',  handlers: [bnbAlchemy, bnbAnkrRpc, bnbBscscan, bnbBlockscout] },
     { sym: 'DOGE', handlers: [dogeBlockcypher, dogeChainSo, dogeBlockchair] },
-=======
-    { sym: 'BNB', handlers: [bnbAnkrRpc, bnbBscscan, bnbBlockscout] },
-    { sym: 'DOGE', handlers: [dogeBlockchair, dogeBlockcypher] },
->>>>>>> Stashed changes
     { sym: 'HYPE', handlers: [hypeHyperliquid] },
   ];
 

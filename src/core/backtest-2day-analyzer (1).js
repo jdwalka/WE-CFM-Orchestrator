@@ -113,7 +113,7 @@ class BacktestAnalyzer {
       try {
         // Fetch settled markets for this coin
         const url = `https://api.elections.kalshi.com/trade-api/v2/markets?status=settled&limit=100`;
-        const response = await fetch(url, { timeout: 10000 });
+        const response = await fetch(url, { timeout: 20000 });
         
         if (!response.ok) continue;
         

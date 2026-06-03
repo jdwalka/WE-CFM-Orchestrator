@@ -328,6 +328,7 @@ Return ONLY valid JSON with this exact structure:
     "primary_rationale": "",
     "wait_rationale": "",
     "high_confidence_rationale": "",
+    "market_patterns": "",
     "scalp_setups": [
       { "label": "", "ai_description": "" }
     ]
@@ -353,6 +354,72 @@ Rules:
 - Use ai_wording.primary_rationale and ai_wording.high_confidence_rationale to talk about the 15-minute window, contract repricing, early-sale opportunity, and house mispricing when relevant.
 - Do not output markdown, code fences, or extra commentary.
 - Output must parse with JSON.parse exactly as returned.`.trim();
+}
+
+// Add dynamic regime detection
+function detectRegime(snapshot) {
+  const indicators = snapshot.indicators || {};
+  const volatility = Number(snapshot.volatility || 0);
+  const adx = indicators.ADX?.value || 0;
+  const rsi = indicators.RSI?.value || 50;
+  
+  if (volatility > 1.5) return 'breakout_volatility';
+  if (adx < 15) return 'chop_noise';
+  if (rsi > 70 || rsi < 30) return 'mean_reversion';
+  return 'trend_continuation';
+}
+
+// Add signal strength helper
+function isSignalStrong(snapshot, indicatorName) {
+  const indicators = snapshot.indicators || {};
+  const orderbook = snapshot.orderbook || {};
+  const volatility = Number(snapshot.volatility || 0);
+  
+  switch(indicatorName) {
+    case 'RSI':
+      const rsi = indicators.RSI?.value;
+      return rsi && (rsi > 60 || rsi < 40);
+    case 'RSI_extreme':
+      const rsiExt = indicators.RSI?.value;
+      return rsiExt && (rsiExt > 70 || rsiExt < 30);
+    case 'MACD':
+      const macd = indicators.MACD?.value;
+      const sig = indicators.MACD?.signal;
+      return typeof macd === 'number' && typeof sig === 'number' && Math.abs(macd - sig) > 0.001;
+    case 'ADX':
+      return indicators.ADX?.value > 25;
+    case 'Fisher':
+      const fish = indicators.FisherTransform?.value;
+      return fish && Math.abs(fish) > 1.5;
+    case 'CCI':
+      const cci = indicators.CCI?.value;
+      return cci && Math.abs(cci) > 100;
+    case 'OrderBook':
+      const imb = orderbook.imbalance;
+      return imb && (imb > 0.65 || imb < 0.35);
+    case 'OrderBook_near_50':
+      const imb50 = orderbook.imbalance;
+      return imb50 && (imb50 >= 0.45 && imb50 <= 0.55);
+    case 'ATR_high':
+      return volatility > 1.5;
+    case 'ATR_low':
+      return volatility < 0.5;
+    case 'CrowdFade':
+      return snapshot.market?.confidencePct > 80;
+    default:
+      return false;
+  }
+}
+
+// Add confidence scoring
+function calculateRegimeConfidence(snapshot, regime) {
+  const rules = REGIME_RULES[regime];
+  if (!rules || !rules.strongSignals || !rules.strongSignals.length) return 0;
+  const strongCount = rules.strongSignals.filter(sig => 
+    isSignalStrong(snapshot, sig)
+  ).length;
+  
+  return Math.min(strongCount / rules.strongSignals.length, 1.0);
 }
 
 /**
@@ -386,8 +453,12 @@ function generateUserPrompt(snapshot) {
   const setupsText = (snapshot.setups || []).map(s => `- ${s.label} (${s.cls}): ${s.desc}`).join('\n') || "NONE";
   const contrarianSetupsText = (snapshot.contrarianSetups || []).map(s => `- ${s.label} (${s.cls}): ${s.desc}`).join('\n') || "NONE";
 
+  const algoRegime = detectRegime(snapshot);
+  const algoRegimeConfidence = calculateRegimeConfidence(snapshot, algoRegime);
+
   let prompt = `Current market snapshot:
 Coin: ${coin}
+Algorithmic Regime Estimate: ${algoRegime} (Confidence: ${(algoRegimeConfidence*100).toFixed(0)}%)
 Verdict: ${verdictDir.toUpperCase()} (Edge: ${compositeEdge.toFixed(3)})
 Contract horizon: ${horizonMinutes}m primary window (preferred: ${preferredHorizonMinutes}m)
 Model direction for contract: ${marketDirection}

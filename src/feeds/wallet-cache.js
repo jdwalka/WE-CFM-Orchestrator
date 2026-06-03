@@ -116,7 +116,7 @@
   function _isBackedOff(src) {
     const h = _health[src];
     if (!h || h.fails === 0) return false;
-    const backoffMs = Math.min(Math.pow(2, h.fails) * 10000, 300000);
+    const backoffMs = Math.min(Math.pow(2, h.fails) * 20000, 300000);
     return (Date.now() - h.lastFail) < backoffMs;
   }
 
