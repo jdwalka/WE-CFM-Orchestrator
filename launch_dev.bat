@@ -3,4 +3,8 @@ echo Starting WE-CFM-Orchestrator with DevTools enabled...
 cd /d G:\WECRYP
 set WECRYPTO_OPEN_DEVTOOLS=1
 set ELECTRON_ENABLE_LOGGING=1
+set PYTH_LAZER_CHANNEL=fixed_rate@1000ms
+if not defined PYTH_FALLBACK_TIMEOUT_MS set PYTH_FALLBACK_TIMEOUT_MS=9000
+if not defined PYTH_FALLBACK_GRACE_MS set PYTH_FALLBACK_GRACE_MS=3000
+if not defined PYTH_LIVE_FEED_BACKOFF_MS set PYTH_LIVE_FEED_BACKOFF_MS=250
 npm run start

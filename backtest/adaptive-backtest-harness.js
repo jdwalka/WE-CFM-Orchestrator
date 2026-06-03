@@ -176,7 +176,7 @@ async function runAdaptiveBacktest() {
 
 function runKalshiWalkForward(options) {
   return new Promise((resolve, reject) => {
-    const scriptPath = path.join(BACKTEST_DIR, 'backtest', 'kalshi-odds-walkforward.js');
+    const scriptPath = path.join(BACKTEST_DIR, 'backtest', 'walk-forward-backtest.js');
     const args = [
       scriptPath,
       `--days=${options.days}`,
@@ -195,37 +195,42 @@ function runKalshiWalkForward(options) {
 
     proc.on('close', code => {
       if (code !== 0) {
-        reject(new Error(`kalshi-odds-walkforward.js exited with code ${code}`));
+        reject(new Error(`walk-forward-backtest.js exited with code ${code}`));
         return;
       }
 
-      // Parse output for metrics
+      // Parse output for metrics from walk-forward-backtest.js
       try {
-        // Look for JSON output or structured metrics in stdout
-        const wr_match = stdout.match(/\b(\d+\.\d+)%\s*(?:WR|win rate)/i);
-        const windows_match = stdout.match(/(\d+)\s*windows/i);
+        // Average OOS WR across horizons can represent the overall WR
+        const wrMatches = [...stdout.matchAll(/Avg OOS WR:\s*(\d+\.\d+)%/gi)];
+        let avgOosWr = 50;
+        if (wrMatches.length > 0) {
+            avgOosWr = wrMatches.reduce((acc, match) => acc + parseFloat(match[1]), 0) / wrMatches.length;
+        }
+
+        const windowsMatch = stdout.match(/\[(\d+)\s+valid\s+folds\]/i);
 
         const result = {
           mode: options.adaptive ? 'adaptive' : 'static',
-          wr_pct: wr_match ? parseFloat(wr_match[1]) : 50,
-          windows: windows_match ? parseInt(windows_match[1]) : 100,
-          raw_output: stdout.slice(-500), // Last 500 chars
+          wr_pct: avgOosWr,
+          windows: windowsMatch ? parseInt(windowsMatch[1]) : 0,
+          raw_output: stdout.slice(-500),
         };
 
-        // Try to extract regime distribution
-        const regimeMatch = stdout.match(/Regime Distribution:(.+?)(?:\n\n|$)/s);
-        if (regimeMatch) {
-          const regimeText = regimeMatch[1];
-          const distribution = {};
-          // Parse regime percentages if available
-          const regimes = ['elastic_bounce', 'mean_reversion_consolidation', 'breakout_momentum', 'extrema_pullback', 'neutral_drift'];
-          regimes.forEach(r => {
-            const m = regimeText.match(new RegExp(`${r}[^\\d]*(\\d+\\.\\d+)%`, 'i'));
-            if (m) distribution[r] = parseFloat(m[1]);
-          });
-          if (Object.keys(distribution).length > 0) {
-            result.regime_distribution = distribution;
-          }
+        // Regimes are found in the table rows under the "Regime" column
+        const regimeDistribution = {};
+        const regimeMatches = [...stdout.matchAll(/^\s*\d+\s*\|\s*([a-z_]+)\s*\|/gmi)];
+        if (regimeMatches.length > 0) {
+            regimeMatches.forEach(m => {
+                const regime = m[1];
+                regimeDistribution[regime] = (regimeDistribution[regime] || 0) + 1;
+            });
+            // Convert to percentages
+            const total = Object.values(regimeDistribution).reduce((a, b) => a + b, 0);
+            for (let k in regimeDistribution) {
+                regimeDistribution[k] = (regimeDistribution[k] / total) * 100;
+            }
+            result.regime_distribution = regimeDistribution;
         }
 
         resolve(result);

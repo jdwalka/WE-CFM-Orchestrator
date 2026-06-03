@@ -79,3 +79,8 @@ data/
 config.toml
 
 .fake
+
+# Local Cleanup Folders
+logs/
+scratch/
+

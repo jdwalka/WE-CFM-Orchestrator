@@ -5,7 +5,7 @@
 ```
 WE-CRYPTO-Kalshi-15m-v2.14.0-win32.exe
 └─ 83.35 MB NSIS Installer
-└─ Location: F:\WECRYP\dist\
+└─ Location: G:\WECRYP\dist\
 ```
 
 ---
@@ -32,7 +32,7 @@ WE-CRYPTO-Kalshi-15m-v2.14.0-win32.exe
 ## 🚀 DEPLOY NOW
 
 ```bash
-cd F:\WECRYP\dist
+cd G:\WECRYP\dist
 
 # Option 1: Full Installation
 ./WE-CRYPTO-Kalshi-15m-v2.14.0-win32.exe

@@ -15,7 +15,7 @@
     "geminicodeassist.contextExclusionFile": "",
     "geminicodeassist.inlineSuggestions.nextEditPredictions": true,
     "geminicodeassist.verboseLogging": true,
-    "editor.defaultFormatter": "vscode.typescript-language-features",
+    "editor.defaultFormatter": "vscode.json-language-features",
     "notebook.defaultFormatter": "vscode.typescript-language-features",
     "github.copilot.chat.alternateGeminiModelFPrompt.enabled": true,
     "github.copilot.chat.copilotMemory.enabled": true,
@@ -27,5 +27,14 @@
     "editor.codeActions.triggerOnFocusChange": true,
     "[jsonc]": {
         "editor.defaultFormatter": "vscode.json-language-features"
+    },
+    "editor.formatOnSave": true,
+    "editor.wordWrap": "on",
+    "files.exclude": {
+        "**/.DS_Store": false,
+        "**/.git": false,
+        "**/.hg": false,
+        "**/.svn": false,
+        "**/Thumbs.db": false
     }
 }

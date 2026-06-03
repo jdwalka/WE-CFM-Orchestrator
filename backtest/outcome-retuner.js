@@ -1144,7 +1144,17 @@ async function main() {
     }
   }
 
-  console.log('\n── COMPLETE ─────────────────────────────────────────────────\n');
+  console.log('\n================ COMPLETE ================\n');
 }
 
-main().catch(e => { console.error('FATAL:', e.stack); process.exit(1); });
+if (require.main === module) {
+  main().catch(e => { console.error('FATAL:', e.stack); process.exit(1); });
+} else {
+  module.exports = {
+    computeSignalVector,
+    fetchLookback,
+    optimizeWeights,
+    writeWeightsToPredictions,
+    gradeSignals
+  };
+}
