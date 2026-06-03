@@ -10,11 +10,13 @@ The orchestrator is built to handle high-velocity data ingestion, complex local 
 <summary><strong>Quick Start Guide</strong></summary>
 
 ### Prerequisites
+
 - Node.js (v18+)
 - Docker & Docker Compose (for the Orbital Matrix and Redpanda)
 - API Keys for ASI1, Google, OpenAI, and Coinbase
 
 ### Running the System
+
 ```bash
 # 1. Start the Dockerized Data Clusters (Redpanda/Kafka, Ingestion)
 docker-compose up -d
@@ -47,16 +49,20 @@ flowchart LR
 
 To thoroughly understand the system, please explore the redirectable links below detailing each component's architecture, data flow, and specific containerization strategies.
 
-### 1. [System Architecture & Data Clusters](./docs/architecture.md)
+### 1. [System Architecture & Data Clusters](./docs/ARCHITECTURE.md)
+
 **Highlights:** Docker containerization, Redpanda Kafka data bus, Proxy Orchestrator, and Electron IPC bridging. Learn how the Orbital Matrix manages high-throughput data clusters.
 
 ### 2. [LLM Engine & Signal Processing](./docs/llm_engine.md)
+
 **Highlights:** The ASI1 ➡️ Google ➡️ OpenAI fallback cascade, specialized prompt assembly, and inference routing.
 
 ### 3. [Kalshi Markets & Backtesting](./docs/kalshi_and_backtesting.md)
+
 **Highlights:** Walk-forward tuning, historical contract cache discovery, and predictive accuracy scorecarding.
 
 ### 4. [Real-time Data Feeds](./docs/data_feeds.md)
+
 **Highlights:** Coinbase Advanced Trade WebSockets, DEX activity monitors, and throttled fetch topologies.
 
 ---
