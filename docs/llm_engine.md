@@ -7,9 +7,9 @@ The predictive heart of WE-CRYPTO relies on a robust LLM tier system. Since API 
 ```mermaid
 sequenceDiagram
     participant App as Orchestrator
-    participant ASI1 as ASI1 (Primary)
-    participant Google as Google (Secondary)
-    participant OpenAI as OpenAI (Tertiary)
+    participant ASI1 as "ASI1 (Primary)"
+    participant Google as "Google (Secondary)"
+    participant OpenAI as "OpenAI (Tertiary)"
 
     App->>ASI1: Request Prediction (Specialized Prompt)
     alt ASI1 Succeeds

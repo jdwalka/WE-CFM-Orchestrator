@@ -22,7 +22,7 @@ graph TD
         IPC[IPC Bridge] <--> P
     end
 
-    subgraph Renderer (UI)
+    subgraph Renderer [Renderer UI]
         UI[Network Health Dashboard] -.->|Probes :9644| R
     end
 
