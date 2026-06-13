@@ -71,7 +71,7 @@ if (
     bitfinex: { reqs_per_second: 10, reqs_per_minute: 600, burst: 25, backoff_start: 1500, backoff_max: 25000 },
     cryptocom: { reqs_per_second: 10, reqs_per_minute: 600, burst: 25, backoff_start: 1400, backoff_max: 25000 },
     pyth: { reqs_per_second: 20, burst: 50, backoff_start: 1000, backoff_max: 20000 },
-    coingecko: { reqs_per_minute: 600, burst: 10, backoff_start: 3000, backoff_max: 90000 },
+    coingecko: { reqs_per_minute: 500, burst: 10, backoff_start: 3000, backoff_max: 90000 },
     blockchainraw: { reqs_per_second: 10, reqs_per_minute: 500, burst: 20, backoff_start: 1000, backoff_max: 20000 },
     default: { reqs_per_second: 5, reqs_per_minute: 240, burst: 10, backoff_start: 1500, backoff_max: 30000 },
   };
@@ -1222,7 +1222,7 @@ if (
                     try { return new URL(String(fetchUrl)).hostname.toLowerCase(); } catch (_) { return ''; }
                   })();
                   const tier = String(window.resolveRuntimeKey('COINGECKO_API_TIER') || '').trim().toLowerCase();
-                  const usePro = /^(pro|paid|enterprise)$/.test(tier) || host.includes('pro-api.coingecko.com');
+                  const usePro = /^(pro|paid|enterprise|trial)$/.test(tier) || host.includes('pro-api.coingecko.com');
                   const headerName = usePro ? 'x-cg-pro-api-key' : 'x-cg-demo-api-key';
                   headers[headerName] = cgKey;
                 }

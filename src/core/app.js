@@ -1924,7 +1924,7 @@
     });
     const fallbackKey = String(resolveRuntimeKeyLocal('COINGECKO_API_KEY') || '').trim();
     const fallbackTier = String(resolveRuntimeKeyLocal('COINGECKO_API_TIER') || '').trim().toLowerCase();
-    const fallbackUsePro = !!fallbackKey && /^(pro|paid|enterprise)$/.test(fallbackTier);
+    const fallbackUsePro = !!fallbackKey && /^(pro|paid|enterprise|trial)$/.test(fallbackTier);
     const baseUrl = fallbackUsePro ? GECKO_PRO_BASE : GECKO_BASE;
     const rawUrl = `${baseUrl}${path}${qs.toString() ? `?${qs.toString()}` : ''}`;
     const url = typeof window.coinGeckoUrl === 'function' ? window.coinGeckoUrl(rawUrl) : rawUrl;

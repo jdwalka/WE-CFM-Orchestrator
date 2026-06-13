@@ -99,7 +99,7 @@
       try { return new URL(String(url), window.location.href).hostname.toLowerCase(); } catch (_) { return ''; }
     })();
     const tier = String(resolveRuntimeKey('COINGECKO_API_TIER') || '').trim().toLowerCase();
-    const usePro = /^(pro|paid|enterprise)$/.test(tier) || host.includes('pro-api.coingecko.com');
+    const usePro = /^(pro|paid|enterprise|trial)$/.test(tier) || host.includes('pro-api.coingecko.com');
     const headerName = usePro ? 'x-cg-pro-api-key' : 'x-cg-demo-api-key';
     const headers = { ...(options.headers || {}) };
     if (!headers[headerName] && !headers[headerName.toUpperCase()]) {
@@ -112,7 +112,7 @@
     const key = String(resolveRuntimeKey('COINGECKO_API_KEY') || '').trim();
     if (!key) return url;
     const tier = String(resolveRuntimeKey('COINGECKO_API_TIER') || '').trim().toLowerCase();
-    const usePro = /^(pro|paid|enterprise)$/.test(tier);
+    const usePro = /^(pro|paid|enterprise|trial)$/.test(tier);
     if (!usePro) return url;
     try {
       const u = new URL(String(url), window.location.href);
