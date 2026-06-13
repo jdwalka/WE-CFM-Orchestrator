@@ -1,4 +1,20 @@
 services:
+  # Redis pub/sub side-channel for live orbital tick fanout
+  redis:
+    image: redis:7-alpine
+    container_name: wecrypto-redis
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "512mb", "--maxmemory-policy", "allkeys-lru"]
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    networks:
+      - wecrypto-net
+
   # Redpanda broker (Kafka-compatible streaming)
   redpanda:
     image: docker.redpanda.com/redpandadata/redpanda:v24.1.2

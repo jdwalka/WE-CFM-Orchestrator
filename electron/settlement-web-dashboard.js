@@ -37,12 +37,12 @@ function getAllSettlementLogs(targets) {
     // OneDrive
     ...(targets.onedrive || []).map(base => {
       const oneDrivePath = base || path.join('C:\\Users', username, 'OneDrive');
-      return path.join(oneDrivePath, 'WECRYP', 'settlement-logs');
+      return path.join(oneDrivePath, 'WECRYPTO', 'settlement-logs');
     }),
     // Google Drive
     ...(targets.google_drive || []).map(base => {
       const gdrPath = base || path.join('C:\\Users', username, 'Google Drive');
-      return path.join(gdrPath, 'WECRYP', 'settlement-logs');
+      return path.join(gdrPath, 'WECRYPTO', 'settlement-logs');
     })
   ];
 

@@ -67,7 +67,7 @@ class KalshiWorkerClient {
 
     try {
       const res = await fetch(`${this.workerUrl}/balance`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) return Promise.reject(new Error(`HTTP ${res.status}`));
       
       const data = await res.json();
       if (data.success) {
@@ -90,7 +90,7 @@ class KalshiWorkerClient {
 
     try {
       const res = await fetch(`${this.workerUrl}/markets?limit=${limit}`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) return Promise.reject(new Error(`HTTP ${res.status}`));
       
       const data = await res.json();
       if (data.success) {
@@ -117,7 +117,7 @@ class KalshiWorkerClient {
         : `${this.workerUrl}/events`;
       
       const res = await fetch(url);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) return Promise.reject(new Error(`HTTP ${res.status}`));
       
       const data = await res.json();
       if (data.success) {
@@ -139,7 +139,7 @@ class KalshiWorkerClient {
 
     try {
       const res = await fetch(`${this.workerUrl}/positions`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) return Promise.reject(new Error(`HTTP ${res.status}`));
       
       const data = await res.json();
       if (data.success && data.data?.positions) {
@@ -161,7 +161,7 @@ class KalshiWorkerClient {
 
     try {
       const res = await fetch(`${this.workerUrl}/orders`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) return Promise.reject(new Error(`HTTP ${res.status}`));
       
       const data = await res.json();
       if (data.success && data.data?.orders) {

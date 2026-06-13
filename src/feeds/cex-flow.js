@@ -20,7 +20,36 @@
   const TIMEOUT = 9000;
   const CACHE = {};        // sym → { exchanges[], aggregate, ts }
   const VOL_HISTORY = {};    // `${exchange}_${sym}` → [vol24h, ...]  (rolling 8)
+  const EXCHANGE_CACHE = {}; // `${exchange}_${sym}` -> { value, ts, inFlight }
+  const EXCHANGE_POLL_INTERVAL_MS = {
+    Binance: 30000,
+    Coinbase: 30000,
+    Kraken: 30000,
+    Bybit: 30000,
+    OKX: 30000,
+    KuCoin: 30000,
+    'Gate.io': 30000,
+    Upbit: 30000,
+    Bitget: 30000,
+    BingX: 60000,
+    Bitvavo: 60000,
+    Gemini: 120000,
+    CoinW: 120000,
+    LBank: 180000,
+    Bitstamp: 180000,
+    Bitso: 180000,
+    Bullish: 300000,
+    WhiteBIT: 300000,
+    Ourbit: 300000,
+    WEEX: 300000,
+  };
+  const SECONDARY_EXCHANGES = Object.keys(EXCHANGE_POLL_INTERVAL_MS);
   let _timer = null;
+  let _fetchCycle = 0;
+
+  function wait(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
 
   // ── helpers ──────────────────────────────────────────────────────
   function timedFetch(url, opts = {}) {
@@ -51,6 +80,54 @@
     const avg = hist.slice(0, -1).reduce((a, b) => a + b, 0) / (hist.length - 1);
     if (avg <= 0) return null;
     return currentVol / avg;
+  }
+
+  function shouldPollExchange(exchange, sym, intervalMs) {
+    const slots = Math.max(1, Math.ceil((Number(intervalMs) || POLL_MS) / POLL_MS));
+    if (slots <= 1) return true;
+    const coinIndex = Math.max(0, COINS.indexOf(sym));
+    const exchangeIndex = Math.max(0, SECONDARY_EXCHANGES.indexOf(exchange));
+    return ((coinIndex + exchangeIndex + _fetchCycle) % slots) === 0;
+  }
+
+  async function withExchangeCadence(exchange, sym, fetcher) {
+    const intervalMs = EXCHANGE_POLL_INTERVAL_MS[exchange] || POLL_MS;
+    const key = `${exchange}_${sym}`;
+    const row = EXCHANGE_CACHE[key] || {};
+    const ageMs = Date.now() - Number(row.ts || 0);
+    if (row.value && ageMs < intervalMs) {
+      return {
+        ...row.value,
+        via: row.value.via || 'cached-pool',
+        cadenceMs: intervalMs,
+      };
+    }
+    if (row.inFlight) {
+      if (row.value) return { ...row.value, via: row.value.via || 'cached-pool', cadenceMs: intervalMs };
+      return row.inFlight;
+    }
+    if (!shouldPollExchange(exchange, sym, intervalMs)) {
+      if (row.value) return { ...row.value, via: row.value.via || 'stale-pool', cadenceMs: intervalMs };
+      return {
+        exchange,
+        available: false,
+        reason: `pooled ${Math.round(intervalMs / 1000)}s cadence wait`,
+        cadenceMs: intervalMs,
+        via: 'cadence-wait',
+      };
+    }
+    row.inFlight = Promise.resolve()
+      .then(fetcher)
+      .then(value => {
+        EXCHANGE_CACHE[key] = { value, ts: Date.now(), inFlight: null };
+        return { ...value, cadenceMs: intervalMs };
+      })
+      .catch(err => {
+        if (row.value) return { ...row.value, via: row.value.via || 'stale-pool', cadenceMs: intervalMs };
+        return { exchange, available: false, reason: err?.message || 'cadence fetch failed', cadenceMs: intervalMs };
+      });
+    EXCHANGE_CACHE[key] = row;
+    return row.inFlight;
   }
 
   function wsSnapshot(exchange, sym) {
@@ -355,8 +432,8 @@
       return { exchange, available: false, reason: 'Not listed' };
     }
     try {
-      // Use aws.okx.com to bypass geo-blocks
-      const data = await getJson(`https://aws.okx.com/api/v5/market/trades?instId=${sym}-USDT&limit=200`);
+      // Use proxy bypass for OKX geo-blocks
+      const data = await getJson(`https://www.okx.com/api/v5/market/trades?instId=${sym}-USDT&limit=200`);
       const list = data?.data ?? [];
 
       let buyQty = 0, sellQty = 0;
@@ -376,18 +453,105 @@
     }
   }
 
+  const KUCOIN_SYMS = { BTC: 'BTC-USDT', ETH: 'ETH-USDT', SOL: 'SOL-USDT', XRP: 'XRP-USDT', BNB: 'BNB-USDT', DOGE: 'DOGE-USDT' };
   async function fetchKuCoin(sym) {
     const exchange = 'KuCoin';
     const ws = wsSnapshot(exchange, sym);
     if (ws) return ws;
-    return { exchange, available: false, reason: 'WS unavailable' };
+    const kucoinSym = KUCOIN_SYMS[sym];
+    if (!kucoinSym) return { exchange, available: false, reason: 'Not listed' };
+    try {
+      const [tradesRes, tickerRes] = await Promise.allSettled([
+        getJson(`https://api.kucoin.com/api/v1/market/histories?symbol=${encodeURIComponent(kucoinSym)}`),
+        getJson(`https://api.kucoin.com/api/v1/market/stats?symbol=${encodeURIComponent(kucoinSym)}`),
+      ]);
+      if (tradesRes.status === 'rejected') throw new Error(tradesRes.reason?.message || 'trades failed');
+
+      const trades = Array.isArray(tradesRes.value?.data) ? tradesRes.value.data : [];
+      let buyQty = 0, sellQty = 0;
+      for (const t of trades) {
+        const qty = parseFloat(t.size || t.qty || 0);
+        if (String(t.side || '').toLowerCase() === 'buy') buyQty += qty;
+        else sellQty += qty;
+      }
+      const totalQty = buyQty + sellQty;
+      const buyPct = totalQty > 0 ? (buyQty / totalQty) * 100 : 50;
+      const sellPct = 100 - buyPct;
+
+      const ticker = tickerRes.status === 'fulfilled' ? tickerRes.value?.data || {} : {};
+      const vol24h = parseFloat(ticker.volValue || ticker.vol || 0);
+      const volKey = `${exchange}_${sym}`;
+      pushVolHistory(volKey, vol24h);
+      const volMult = vol24h > 0 ? rollingVolMult(volKey, vol24h) : null;
+      const { signal, color } = computeSignal(buyPct, sellPct, volMult, null);
+      return {
+        exchange,
+        buyPct,
+        sellPct,
+        volMult,
+        fundingPct: null,
+        signal,
+        color,
+        available: true,
+        via: 'rest-fallback',
+        price: parseFloat(ticker.last || ticker.buy || ticker.sell || 0) || null,
+      };
+    } catch (e) {
+      return { exchange, available: false, reason: `WS/REST unavailable: ${e.message.slice(0, 44)}` };
+    }
   }
 
+  const GATE_SYMS = { BTC: 'BTC_USDT', ETH: 'ETH_USDT', SOL: 'SOL_USDT', XRP: 'XRP_USDT', BNB: 'BNB_USDT', DOGE: 'DOGE_USDT' };
   async function fetchGate(sym) {
     const exchange = 'Gate.io';
     const ws = wsSnapshot(exchange, sym);
     if (ws) return ws;
-    return { exchange, available: false, reason: 'WS unavailable' };
+    const gateSym = GATE_SYMS[sym];
+    if (!gateSym) return { exchange, available: false, reason: 'Not listed' };
+    try {
+      const [tradesRes, tickerRes] = await Promise.allSettled([
+        getJson(`https://api.gateio.ws/api/v4/spot/trades?currency_pair=${encodeURIComponent(gateSym)}&limit=100`),
+        getJson(`https://api.gateio.ws/api/v4/spot/tickers?currency_pair=${encodeURIComponent(gateSym)}`),
+      ]);
+      if (tradesRes.status === 'rejected') throw new Error(tradesRes.reason?.message || 'trades failed');
+
+      const trades = Array.isArray(tradesRes.value) ? tradesRes.value : [];
+      let buyQty = 0, sellQty = 0;
+      for (const t of trades) {
+        const qty = parseFloat(t.amount || t.size || 0);
+        if (String(t.side || '').toLowerCase() === 'buy') buyQty += qty;
+        else sellQty += qty;
+      }
+      const totalQty = buyQty + sellQty;
+      const buyPct = totalQty > 0 ? (buyQty / totalQty) * 100 : 50;
+      const sellPct = 100 - buyPct;
+
+      const tickerRows = tickerRes.status === 'fulfilled'
+        ? (Array.isArray(tickerRes.value) ? tickerRes.value : [tickerRes.value])
+        : [];
+      const ticker = tickerRows[0] || {};
+      const vol24h = parseFloat(ticker.quote_volume || ticker.base_volume || 0);
+      const volKey = `${exchange}_${sym}`;
+      pushVolHistory(volKey, vol24h);
+      const volMult = vol24h > 0 ? rollingVolMult(volKey, vol24h) : null;
+      const { signal, color } = computeSignal(buyPct, sellPct, volMult, null);
+      return {
+        exchange,
+        buyPct,
+        sellPct,
+        volMult,
+        fundingPct: null,
+        signal,
+        color,
+        available: true,
+        via: 'rest-fallback',
+        price: parseFloat(ticker.last || 0) || null,
+        bid: parseFloat(ticker.highest_bid || 0) || null,
+        ask: parseFloat(ticker.lowest_ask || 0) || null,
+      };
+    } catch (e) {
+      return { exchange, available: false, reason: `WS/REST unavailable: ${e.message.slice(0, 44)}` };
+    }
   }
 
 
@@ -406,11 +570,22 @@
         if (t.ask_bid === 'BID') buyQty += qty;
         else sellQty += qty;
       }
+      const latest = Array.isArray(list) ? list[0] : null;
       const totalQty = buyQty + sellQty;
       const buyPct = totalQty > 0 ? (buyQty / totalQty) * 100 : 50;
       const sellPct = 100 - buyPct;
       const { signal, color } = computeSignal(buyPct, sellPct, null, null);
-      return { exchange, buyPct, sellPct, volMult: null, fundingPct: null, signal, color, available: true };
+      return {
+        exchange,
+        buyPct,
+        sellPct,
+        volMult: null,
+        fundingPct: null,
+        signal,
+        color,
+        available: true,
+        price: parseFloat(latest?.trade_price || latest?.price || 0) || null,
+      };
     } catch (e) {
       return { exchange, available: false, reason: e.message.slice(0, 60) };
     }
@@ -431,7 +606,19 @@
       pushVolHistory(volKey, vol24h);
       const volMult = vol24h != null ? rollingVolMult(volKey, vol24h) : null;
       const { signal, color } = computeSignal(50, 50, volMult, null);
-      return { exchange, buyPct: 50, sellPct: 50, volMult, fundingPct: null, signal, color, available: true };
+      return {
+        exchange,
+        buyPct: 50,
+        sellPct: 50,
+        volMult,
+        fundingPct: null,
+        signal,
+        color,
+        available: true,
+        price: parseFloat(t?.lastPr || t?.close || t?.price || 0) || null,
+        bid: parseFloat(t?.bidPr || 0) || null,
+        ask: parseFloat(t?.askPr || 0) || null,
+      };
     } catch (e) { return { exchange, available: false, reason: e.message.slice(0, 60) }; }
   }
 
@@ -451,11 +638,22 @@
         if (!t.isBuyerMaker) buyQty += qty;
         else sellQty += qty;
       }
+      const latest = Array.isArray(list) ? list[0] : null;
       const totalQty = buyQty + sellQty;
       const buyPct = totalQty > 0 ? (buyQty / totalQty) * 100 : 50;
       const sellPct = 100 - buyPct;
       const { signal, color } = computeSignal(buyPct, sellPct, null, null);
-      return { exchange, buyPct, sellPct, volMult: null, fundingPct: null, signal, color, available: true };
+      return {
+        exchange,
+        buyPct,
+        sellPct,
+        volMult: null,
+        fundingPct: null,
+        signal,
+        color,
+        available: true,
+        price: parseFloat(latest?.price || latest?.p || 0) || null,
+      };
     } catch (e) {
       return { exchange, available: false, reason: e.message.slice(0, 60) };
     }
@@ -473,7 +671,19 @@
       pushVolHistory(volKey, vol24h);
       const volMult = vol24h != null ? rollingVolMult(volKey, vol24h) : null;
       const { signal, color } = computeSignal(50, 50, volMult, null);
-      return { exchange, buyPct: 50, sellPct: 50, volMult, fundingPct: null, signal, color, available: true };
+      return {
+        exchange,
+        buyPct: 50,
+        sellPct: 50,
+        volMult,
+        fundingPct: null,
+        signal,
+        color,
+        available: true,
+        price: parseFloat(res?.last || 0) || null,
+        bid: parseFloat(res?.bid || 0) || null,
+        ask: parseFloat(res?.ask || 0) || null,
+      };
     } catch (e) { return { exchange, available: false, reason: e.message.slice(0, 60) }; }
   }
 
@@ -489,7 +699,19 @@
       pushVolHistory(volKey, vol24h);
       const volMult = vol24h != null ? rollingVolMult(volKey, vol24h) : null;
       const { signal, color } = computeSignal(50, 50, volMult, null);
-      return { exchange, buyPct: 50, sellPct: 50, volMult, fundingPct: null, signal, color, available: true };
+      return {
+        exchange,
+        buyPct: 50,
+        sellPct: 50,
+        volMult,
+        fundingPct: null,
+        signal,
+        color,
+        available: true,
+        price: parseFloat(res?.last || 0) || null,
+        bid: parseFloat(res?.bid || 0) || null,
+        ask: parseFloat(res?.ask || 0) || null,
+      };
     } catch (e) { return { exchange, available: false, reason: e.message.slice(0, 60) }; }
   }
 
@@ -559,18 +781,18 @@
   // ── per-coin fetch ────────────────────────────────────────────────
   async function fetchCoin(sym) {
     const results = await Promise.allSettled([
-      fetchBinance(sym),
-      fetchCoinbase(sym),
-      fetchKraken(sym),
-      fetchBybit(sym),
-      fetchOkx(sym),
-      fetchKuCoin(sym),
-      fetchGate(sym),
-      fetchUpbit(sym),
-      fetchBitget(sym),
-      fetchBingX(sym),
-      fetchBitstamp(sym),
-      fetchBitvavo(sym),
+      withExchangeCadence('Binance', sym, () => fetchBinance(sym)),
+      withExchangeCadence('Coinbase', sym, () => fetchCoinbase(sym)),
+      withExchangeCadence('Kraken', sym, () => fetchKraken(sym)),
+      withExchangeCadence('Bybit', sym, () => fetchBybit(sym)),
+      withExchangeCadence('OKX', sym, () => fetchOkx(sym)),
+      withExchangeCadence('KuCoin', sym, () => fetchKuCoin(sym)),
+      withExchangeCadence('Gate.io', sym, () => fetchGate(sym)),
+      withExchangeCadence('Upbit', sym, () => fetchUpbit(sym)),
+      withExchangeCadence('Bitget', sym, () => fetchBitget(sym)),
+      withExchangeCadence('BingX', sym, () => fetchBingX(sym)),
+      withExchangeCadence('Bitstamp', sym, () => fetchBitstamp(sym)),
+      withExchangeCadence('Bitvavo', sym, () => fetchBitvavo(sym)),
     ]);
 
     const exchanges = results.map(r =>
@@ -593,10 +815,16 @@
 
   // ── fetchAll ──────────────────────────────────────────────────────
   async function fetchAll() {
-    const results = await Promise.allSettled(COINS.map(sym => fetchCoin(sym)));
+    _fetchCycle++;
     const detail = {};
-    for (let i = 0; i < COINS.length; i++) {
-      if (results[i].status === 'fulfilled') detail[COINS[i]] = results[i].value;
+    const batchSize = 2;
+    for (let i = 0; i < COINS.length; i += batchSize) {
+      const batch = COINS.slice(i, i + batchSize);
+      const results = await Promise.allSettled(batch.map(sym => fetchCoin(sym)));
+      for (let j = 0; j < batch.length; j++) {
+        if (results[j].status === 'fulfilled') detail[batch[j]] = results[j].value;
+      }
+      if (i + batchSize < COINS.length) await wait(75);
     }
     window.dispatchEvent(new CustomEvent('cex-flow-update', { detail }));
     return detail;

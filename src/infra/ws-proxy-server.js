@@ -72,9 +72,9 @@ function getSecretDirCandidates() {
     path.join(process.cwd(), 'secrets'),
     path.join(__dirname, '../../secrets'),
     path.join(__dirname, '../../../secrets'),
-    'G:\\WECRYP\\secrets',
-    'g:\\WECRYP\\secrets',
-    'F:\\WECRYP\\secrets',
+    'G:\\WECRYPTO\\secrets',
+    'g:\\WECRYPTO\\secrets',
+    'F:\\WECRYPTO\\secrets',
   ]);
 }
 
@@ -167,9 +167,11 @@ function normalizeCoinbaseJwtUri(method, requestPath) {
     if (/^https?:\/\//i.test(target)) {
       const u = new URL(target);
       target = `${u.hostname}${u.pathname}`;
+    } else {
+      target = target.split('?')[0];
     }
   } catch (_) {
-    // keep original target
+    target = target.split('?')[0];
   }
   target = target.replace(/^\/+/, '');
   if (/^api\/v3\//i.test(target)) target = `api.coinbase.com/${target}`;

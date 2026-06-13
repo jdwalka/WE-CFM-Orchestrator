@@ -1014,7 +1014,7 @@
       domain: 'kalshi-markets',
       intervalMs: 18_000,
       poll: async () => {
-        const payload = await rpcKalshiMarkets({ status: 'open', limit: 500 });
+        const payload = await rpcKalshiMarkets({ status: 'open', limit: 1 });
         const markets = Array.isArray(payload?.markets) ? payload.markets : [];
         return { marketCount: markets.length };
       },
@@ -1027,7 +1027,7 @@
       intervalMs: 30_000,
       poll: async () => {
         const payload = await httpFetchJson(
-          `${KALSHI_BASE}/markets?limit=500&status=open`,
+          `${KALSHI_BASE}/markets?limit=1&status=open`,
           { endpoint: 'kalshi-markets', cacheType: 'market-data', retries: 0 },
           'kalshi',
           'kalshi-markets',

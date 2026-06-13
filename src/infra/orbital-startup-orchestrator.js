@@ -36,7 +36,12 @@ if (process.platform === 'win32') {
 let dockerComposeProcess = null;
 let ingestorProcess = null;
 let processorIntervalHandle = null;
+let orbitalServiceProcess = null;
 let orchestratorReady = false;
+
+// WE-CRYPTO proxies
+let httpProxyProcess = null;
+let wsProxyProcess = null;
 
 // Status cache — prevents concurrent docker exec pile-up from flipping display to DOWN
 const STATUS_CACHE_TTL_MS = 30000; // re-probe every 30s; return cached result between probes
@@ -161,12 +166,10 @@ function spawnDockerCompose(workspacePath) {
         proc.stdout.on('data', (data) => console.log('[Docker-Compose]', data.toString().trim()));
         proc.stderr.on('data', (data) => { stderr += data.toString(); console.warn('[Docker-Compose]', data.toString().trim()); });
         proc.on('close', (code) => {
-            if (code === 0) {
-                console.log('[OrbitalOrchestrator] docker-compose up completed successfully');
-                resolve(proc);
-            } else {
-                reject(new Error(`docker-compose exited with code ${code}: ${stderr}`));
+            if (code !== 0) {
+                console.warn(`[OrbitalOrchestrator] docker-compose exited with code ${code}. Assuming services are already running or externally managed.`);
             }
+            resolve(proc);
         });
         proc.on('error', (err) => reject(err));
     });
@@ -268,6 +271,10 @@ async function startOrbitalSystem(workspacePath) {
         await initTopics(workspacePath);
         recordStatusEvent('info', 'Orbital topics initialized');
 
+        // Step 4b: Start WE-CRYPTO Proxies
+        await startProxies(workspacePath);
+        await new Promise(r => setTimeout(r, 2000));
+
         // Step 5: Connect KafkaJS producer via the bridge
         await initBridge();
         recordStatusEvent('success', 'Kafka bridge initialized');
@@ -302,7 +309,8 @@ async function shutdownOrbitalSystem() {
     console.log('[OrbitalOrchestrator] Initiating graceful shutdown...');
 
     try {
-        // Stop Matrix Processor interval
+        await stopProxies();
+        console.log('[OrbitalOrchestrator] Proxies stopped');
         if (processorIntervalHandle) {
             clearInterval(processorIntervalHandle);
             processorIntervalHandle = null;
@@ -464,6 +472,116 @@ async function getOrbitalStatus() {
     });
 
     return _statusInFlight;
+}
+
+// ---------------------------------------------------------------------------
+// WE-CRYPTO PROXY MANAGEMENT
+// ---------------------------------------------------------------------------
+
+async function startProxies(workspacePath) {
+    console.log('[OrbitalOrchestrator] Starting WE-CRYPTO proxies...');
+    
+    // 1. WebSocket Proxy
+    if (!wsProxyProcess || wsProxyProcess.killed) {
+        const wsProxyScript = path.join(workspacePath, 'src', 'infra', 'ws-proxy-server.js');
+        if (fs.existsSync(wsProxyScript)) {
+            wsProxyProcess = spawn(process.execPath, [wsProxyScript], {
+                cwd: workspacePath,
+                env: { ...process.env, WECRYPTO_WS_PROXY_PORT: '3011' },
+                stdio: ['ignore', 'pipe', 'pipe'],
+                windowsHide: true,
+            });
+            wsProxyProcess.stdout.on('data', chunk => console.log('[ws-proxy]', chunk.toString().trim()));
+            wsProxyProcess.stderr.on('data', chunk => console.warn('[ws-proxy:err]', chunk.toString().trim()));
+            wsProxyProcess.on('exit', code => { wsProxyProcess = null; console.log('[ws-proxy] exited', code); });
+        } else {
+            console.warn('[OrbitalOrchestrator] ws-proxy-server.js not found!');
+        }
+    }
+
+    // 2. HTTP Rust Proxy
+    if (!httpProxyProcess || httpProxyProcess.killed) {
+        const candidates = [
+            path.join(process.env.APPDATA || '', 'WECRYPTO', 'we-crypto-proxy.exe'),
+            path.join(workspacePath, 'we-crypto-proxy.exe'),
+            path.join(workspacePath, 'proxy', 'target', 'x86_64-pc-windows-gnu', 'release', 'we-crypto-proxy.exe'),
+            path.join(workspacePath, 'proxy', 'target', 'release', 'we-crypto-proxy.exe'),
+        ];
+        
+        let exePath = candidates.find(p => fs.existsSync(p));
+        if (!exePath && process.resourcesPath) {
+             const cp = [
+                 path.join(process.resourcesPath, 'app.asar.unpacked', 'we-crypto-proxy.exe'),
+                 path.join(process.resourcesPath, 'we-crypto-proxy.exe')
+             ];
+             exePath = cp.find(p => fs.existsSync(p));
+        }
+
+        if (exePath) {
+            const chosenPort = 3010;
+            let proxyDir = path.dirname(exePath);
+            if (proxyDir.includes('app.asar')) {
+                const os = require('os');
+                proxyDir = path.join(process.env.TEMP || path.join(os.homedir(), 'AppData', 'Roaming', 'WECRYPTO'), 'proxy-config');
+                fs.mkdirSync(proxyDir, { recursive: true });
+            }
+            try {
+                const configContent = `[server]
+host         = "127.0.0.1"
+port         = ${chosenPort}
+timeout_secs = 12
+[exchanges]
+binance         = "https://data-api.binance.vision"
+binance-f       = "https://fapi.binance.com"
+coingecko       = "https://api.coingecko.com"
+coinbase        = "https://api.coinbase.com"
+coinbase-ex     = "https://api.exchange.coinbase.com"
+kraken          = "https://api.kraken.com"
+bybit           = "https://api.bybit.com"
+okx             = "https://www.okx.com"
+kalshi          = "https://api.elections.kalshi.com"
+polymarket      = "https://gamma-api.polymarket.com"
+polymarket-clob = "https://clob.polymarket.com"
+bitfinex        = "https://api-pub.bitfinex.com"
+kucoin          = "https://api.kucoin.com"
+mexc            = "https://api.mexc.com"
+hypurrscan      = "https://hypurrscan.io"
+dexscreener     = "https://api.dexscreener.com"
+mempool         = "https://mempool.space"
+blockchair      = "https://api.blockchair.com"
+etherscan       = "https://api.etherscan.io"
+bscscan         = "https://api.bscscan.com"
+crypto-com      = "https://api.crypto.com"
+bitstamp        = "https://www.bitstamp.net"
+upbit           = "https://api.upbit.com"
+binance-data    = "https://data-api.binance.vision"`;
+                fs.writeFileSync(path.join(proxyDir, 'config.toml'), configContent);
+            } catch (e) {
+                console.warn('[OrbitalOrchestrator] could not write config.toml:', e.message);
+            }
+            
+            httpProxyProcess = spawn(exePath, [], {
+                detached: false,
+                cwd: proxyDir,
+                stdio: ['ignore', 'pipe', 'pipe'],
+                windowsHide: true,
+            });
+            httpProxyProcess.stdout.on('data', chunk => console.log('[http-proxy]', chunk.toString().trim()));
+            httpProxyProcess.stderr.on('data', chunk => console.warn('[http-proxy:err]', chunk.toString().trim()));
+            httpProxyProcess.on('exit', code => { httpProxyProcess = null; console.log('[http-proxy] exited', code); });
+        } else {
+            console.warn('[OrbitalOrchestrator] we-crypto-proxy.exe not found!');
+        }
+    }
+}
+
+async function stopProxies() {
+    if (httpProxyProcess && !httpProxyProcess.killed) {
+        try { httpProxyProcess.kill(); } catch (e) {}
+    }
+    if (wsProxyProcess && !wsProxyProcess.killed) {
+        try { wsProxyProcess.kill(); } catch (e) {}
+    }
 }
 
 module.exports = {

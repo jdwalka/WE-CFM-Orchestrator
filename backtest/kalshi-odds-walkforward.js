@@ -49,7 +49,7 @@ function fetchJson(url, timeoutMs = 12000) {
     const req = https.get(url, {
       headers: {
         Accept: 'application/json',
-        'User-Agent': 'WECRYP-KalshiOddsWalkForward/1.0',
+        'User-Agent': 'WECRYPTO-KalshiOddsWalkForward/1.0',
       },
     }, (res) => {
       let body = '';

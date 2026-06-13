@@ -68,10 +68,10 @@
     const message = `${timestamp}GET${WS_PATH}`;
     try {
       if (!crypto || typeof crypto.createSign !== 'function') {
-        throw new Error('node crypto unavailable for Kalshi WSS signing');
+        return Promise.reject(new Error('node crypto unavailable for Kalshi WSS signing'));
       }
       if (!crypto.constants?.RSA_PKCS1_PSS_PADDING || !crypto.constants?.RSA_PSS_SALTLEN_DIGEST) {
-        throw new Error('node crypto RSA-PSS constants unavailable');
+        return Promise.reject(new Error('node crypto RSA-PSS constants unavailable'));
       }
       const signature = crypto
         .createSign('RSA-SHA256')
@@ -138,7 +138,7 @@
     const timestamp = String(Date.now());
     const signature = generateSignature(timestamp, credentials.privateKeyPem);
     if (!signature) {
-      throw new Error('Kalshi WSS signature generation failed');
+      return Promise.reject(new Error('Kalshi WSS signature generation failed'));
     }
     lastAuthStatus = 'handshake-ready';
     lastAuthError = '';
@@ -647,6 +647,8 @@
   function _resubscribeAfterConnect() {
     const activeMarkets = _currentDesiredMarkets();
     lastSubscriptionSignature = '';
+    messageQueue.length = 0;
+    pendingSubscriptions.clear();
     subscribeToTicker(activeMarkets);
     if (activeMarkets.length) {
       subscribeToOrderbook(activeMarkets);
@@ -701,7 +703,7 @@
         _setConnectAttemptStatus('failed', { error: errorText, failureClass: fc });
         _recordConnectFailure(fc, errorText);
         _emitStatusUpdate(`connect-auth-failed:${errorText}`);
-        throw err;
+        return Promise.reject(err);
       }
 
       _setConnectAttemptStatus('connecting', { error: '' });
@@ -722,9 +724,9 @@
             headers: handshakeHeaders,
           });
         } else if (!WebSocketClass) {
-          throw new Error('No constructable WebSocket constructor available');
+          return reject(new Error('No constructable WebSocket constructor available'));
         } else if (!usingNodeWs) {
-          throw new Error('Kalshi WSS requires Node ws with handshake headers; browser WebSocket cannot send KALSHI-ACCESS headers');
+          return reject(new Error('Kalshi WSS requires Node ws with handshake headers; browser WebSocket cannot send KALSHI-ACCESS headers'));
         } else {
           ws = new WebSocketClass(WS_URL, {
             handshakeTimeout: CONNECT_ATTEMPT_TIMEOUT_MS,
@@ -1273,7 +1275,9 @@
     const { code, msg: errorMsg } = payload;
     const errorDescription = ERROR_CODES[code] || 'Unknown error';
 
-    console.error(`[KalshiWS] Error ${code}: ${errorMsg} (${errorDescription})`);
+    const hasPublicMarketData = Object.keys(store.tickers).length > 0 || Object.keys(store.orderbooks).length > 0;
+    const logError = code === 13 && hasPublicMarketData ? console.warn : console.error;
+    logError(`[KalshiWS] Error ${code}: ${errorMsg} (${errorDescription})`);
 
     store.errors.push({
       code,
@@ -1372,7 +1376,7 @@
       id: messageId++,
       cmd: 'subscribe',
       params: {
-        channels: ['ticker', 'market_lifecycle_v2'],
+        channels: ['ticker'],
         ...(list.length ? { market_tickers: list } : {}),
       },
     };
@@ -1409,6 +1413,10 @@
   }
 
   function subscribeToTrades(marketTickers) {
+    if (window.WECRYPTO_KALSHI_WS_TRADES_ENABLED !== true) {
+      return;
+    }
+
     if (!marketTickers || marketTickers.length === 0) {
       console.warn('[KalshiWS] No markets specified for trade subscription');
       return;
@@ -1569,6 +1577,14 @@
     if (!connected) return;
     const signature = _marketSubscriptionSignature(list);
     if (signature === lastSubscriptionSignature) return;
+
+    if (connected && ws && lastSubscriptionSignature) {
+      lastSubscriptionSignature = signature;
+      intentionalDisconnect = false;
+      try { ws.close(); } catch (_) { }
+      return;
+    }
+
     lastSubscriptionSignature = signature;
     subscribeToTicker(list);
     subscribeToOrderbook(list);

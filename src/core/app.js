@@ -38,6 +38,7 @@
   let currentView = 'cfm';
   let _fetchAttempted = false;  // set after first fetchAll() completes (success or fail)
   let _appBootTs = Date.now();
+  let _bootGateTimer = null;
   let _userInteractedWithNav = false;
   let coinFilter = 'all';
   let chartCoin = 'SOLUSD';
@@ -89,6 +90,8 @@
   let orbitalAnimationFrame = null;   // rAF handle for Market Universe orbital canvas
   let _rv = 0; // render version counter — increment on every render/refresh call so stale async renders can self-cancel
   let _observabilityCache = { sig: '', ts: 0, data: null };
+  let _asyncUiRefreshTimer = null;
+  let _asyncUiRefreshCoalesce = false;
 
   // ── Persistence keys ─────────────────────────────────────────────────────
   const PRED_LOG_STORE = 'beta1_pred_log';
@@ -101,8 +104,8 @@
   const LOG_CAP = 250;
   const LOG_BACKUP_COOLDOWN_MS = 15000;
   const LOG_BACKUP_TARGETS = [
-    'Z:\\WECRYP\\logs',
-    'Z:\\My Drive\\WECRYP\\logs',
+    'Z:\\WECRYPTO\\logs',
+    'Z:\\My Drive\\WECRYPTO\\logs',
   ];
   const TRADE_BELL_STORE = 'beta1_trade_setup_bell_v2';
   const LEGACY_TRADE_BELL_STORE = 'beta1_trade_setup_bell';
@@ -148,6 +151,27 @@
     }
     predictionRunInFlight = null;
     window.PredictionEngine?.forceReset?.();
+  }
+
+  function syncRLWeightsOnce() {
+    if (window._rlWeightsFetched) return;
+    window._rlWeightsFetched = true;
+
+    setTimeout(() => {
+      if (!window.wecryp?.getSystemWeights) return;
+      window.wecryp.getSystemWeights()
+        .then(res => {
+          if (!res?.success || !res.weights) return;
+          console.log('[RL Loop] Fetched system_weights from Firebase on startup');
+          window._rlSystemWeights = res.weights;
+          if (window.PredictionMarkets?.setAdaptiveWeights) {
+            ['BTC', 'ETH', 'SOL', 'DOGE', 'XRP'].forEach(sym => {
+              window.PredictionMarkets.setAdaptiveWeights(sym, res.weights);
+            });
+          }
+        })
+        .catch(err => console.warn('[RL Loop] Failed to sync startup weights:', err));
+    }, 3000);
   }
 
   // ── Prediction accuracy tracker ──────────────────────────────────────────
@@ -313,27 +337,10 @@
     capRuntimeLogs();
     scheduleLogBackup(true);
     setTimeout(() => { restoreLogsFromBackupIfNeeded(); }, 0);
-    // =========================================================================
-  // RL Weights Synchronization
-  // =========================================================================
-  setTimeout(() => {
-    if (window.wecryp?.getSystemWeights) {
-      window.wecryp.getSystemWeights()
-        .then(res => {
-          if (res.success && res.weights) {
-            console.log('[RL Loop] ?? Fetched system_weights from Firebase on startup');
-            if (window.PredictionMarkets?.setAdaptiveWeights) {
-              const symbols = ['BTC', 'ETH', 'SOL', 'DOGE', 'XRP']; 
-              symbols.forEach(sym => {
-                window.PredictionMarkets.setAdaptiveWeights(sym, res.weights);
-              });
-            }
-          }
-        })
-        .catch(err => console.warn('[RL Loop] Failed to sync startup weights:', err));
-    }
-  }, 3000); 
+
 })();
+
+  syncRLWeightsOnce();
 
   // ── Initialize 2-Hour Contract Cache + Multi-Drive Sync ──────────────────
   (function initContractCache() {
@@ -353,26 +360,7 @@
     } catch (e) {
       console.warn('[ContractCache] Failed to initialize:', e.message);
     }
-    // =========================================================================
-  // RL Weights Synchronization
-  // =========================================================================
-  setTimeout(() => {
-    if (window.wecryp?.getSystemWeights) {
-      window.wecryp.getSystemWeights()
-        .then(res => {
-          if (res.success && res.weights) {
-            console.log('[RL Loop] ?? Fetched system_weights from Firebase on startup');
-            if (window.PredictionMarkets?.setAdaptiveWeights) {
-              const symbols = ['BTC', 'ETH', 'SOL', 'DOGE', 'XRP']; 
-              symbols.forEach(sym => {
-                window.PredictionMarkets.setAdaptiveWeights(sym, res.weights);
-              });
-            }
-          }
-        })
-        .catch(err => console.warn('[RL Loop] Failed to sync startup weights:', err));
-    }
-  }, 3000); 
+
 })();
 
   // ── Initialize Proxy Orchestrator ────────────────────────────────────────
@@ -400,26 +388,7 @@
       console.warn('[ProxyOrchestrator] Initialization failed:', e.message);
       // Graceful degradation — app continues to work with direct fetch
     }
-    // =========================================================================
-  // RL Weights Synchronization
-  // =========================================================================
-  setTimeout(() => {
-    if (window.wecryp?.getSystemWeights) {
-      window.wecryp.getSystemWeights()
-        .then(res => {
-          if (res.success && res.weights) {
-            console.log('[RL Loop] ?? Fetched system_weights from Firebase on startup');
-            if (window.PredictionMarkets?.setAdaptiveWeights) {
-              const symbols = ['BTC', 'ETH', 'SOL', 'DOGE', 'XRP']; 
-              symbols.forEach(sym => {
-                window.PredictionMarkets.setAdaptiveWeights(sym, res.weights);
-              });
-            }
-          }
-        })
-        .catch(err => console.warn('[RL Loop] Failed to sync startup weights:', err));
-    }
-  }, 3000); 
+
 })();
 
   // ── Initialize Signal Scheduler Agent ────────────────────────────────────
@@ -454,26 +423,7 @@
     } catch (e) {
       console.warn('[SignalScheduler] Initialization failed:', e.message);
     }
-    // =========================================================================
-  // RL Weights Synchronization
-  // =========================================================================
-  setTimeout(() => {
-    if (window.wecryp?.getSystemWeights) {
-      window.wecryp.getSystemWeights()
-        .then(res => {
-          if (res.success && res.weights) {
-            console.log('[RL Loop] ?? Fetched system_weights from Firebase on startup');
-            if (window.PredictionMarkets?.setAdaptiveWeights) {
-              const symbols = ['BTC', 'ETH', 'SOL', 'DOGE', 'XRP']; 
-              symbols.forEach(sym => {
-                window.PredictionMarkets.setAdaptiveWeights(sym, res.weights);
-              });
-            }
-          }
-        })
-        .catch(err => console.warn('[RL Loop] Failed to sync startup weights:', err));
-    }
-  }, 3000); 
+
 })();
 
   function savePredLog() {
@@ -1771,26 +1721,7 @@
     } catch {
       return {};
     }
-    // =========================================================================
-  // RL Weights Synchronization
-  // =========================================================================
-  setTimeout(() => {
-    if (window.wecryp?.getSystemWeights) {
-      window.wecryp.getSystemWeights()
-        .then(res => {
-          if (res.success && res.weights) {
-            console.log('[RL Loop] ?? Fetched system_weights from Firebase on startup');
-            if (window.PredictionMarkets?.setAdaptiveWeights) {
-              const symbols = ['BTC', 'ETH', 'SOL', 'DOGE', 'XRP']; 
-              symbols.forEach(sym => {
-                window.PredictionMarkets.setAdaptiveWeights(sym, res.weights);
-              });
-            }
-          }
-        })
-        .catch(err => console.warn('[RL Loop] Failed to sync startup weights:', err));
-    }
-  }, 3000); 
+
 })();
   if (uiState.currentView) currentView = uiState.currentView;
   if (Number.isFinite(uiState.refreshSecs)) refreshSecs = uiState.refreshSecs;
@@ -1917,6 +1848,63 @@
   const PYTH_HISTORY_BASE = 'https://pyth.dourolabs.app';
   const HL_BASE = 'https://api.hyperliquid.xyz';
   const CB_BASE = 'https://api.exchange.coinbase.com';
+  const CDC_TRANSIENT_STATUS = new Set([429, 502, 503, 504]);
+  const CDC_DEFAULT_TRANSIENT_COOLDOWN_MS = 90_000;
+
+  function cdcProviderHealth() {
+    window._cdcProviderHealth = window._cdcProviderHealth || { cooldownUntil: 0, lastStatus: 0, lastReason: '', lastWarnTs: 0 };
+    return window._cdcProviderHealth;
+  }
+
+  function cdcCooldownMs() {
+    return Math.max(0, (cdcProviderHealth().cooldownUntil || 0) - Date.now());
+  }
+
+  function cdcTransientCooldownMs(status) {
+    const code = Number(status || 0);
+    if (code === 429) return 120_000;
+    if (code === 502 || code === 503 || code === 504) return 60_000;
+    return CDC_DEFAULT_TRANSIENT_COOLDOWN_MS;
+  }
+
+  function publishCdcTransientHealth(reason = '') {
+    const health = cdcProviderHealth();
+    const cooldownRemainingMs = cdcCooldownMs();
+    window.NetworkHealth?.update?.('Crypto.com', {
+      status: 'degraded',
+      lastFetch: health.lastFailureTs || Date.now(),
+      fallback: true,
+      transient: true,
+      reason: reason || health.lastReason || 'Crypto.com transient failure',
+      bucket: 'provider/api',
+      bucketReason: health.lastStatus ? `upstream API reject (${health.lastStatus})` : 'upstream API reject',
+      cooldownUntil: health.cooldownUntil || 0,
+      retryAt: health.cooldownUntil || 0,
+      cooldownRemainingMs,
+    });
+  }
+
+  function noteCdcTransient(status, reason = '') {
+    const health = cdcProviderHealth();
+    const nowTs = Date.now();
+    health.cooldownUntil = Math.max(health.cooldownUntil || 0, nowTs + cdcTransientCooldownMs(status));
+    health.lastStatus = Number(status || 0);
+    health.lastFailureTs = nowTs;
+    health.lastReason = reason || (status ? `HTTP ${status}` : 'transient failure');
+    if (Date.now() - (health.lastWarnTs || 0) > 30_000) {
+      health.lastWarnTs = Date.now();
+      console.warn(`[WE] Crypto.com transient ${health.lastReason}; using fallback feeds for ${Math.ceil(cdcCooldownMs() / 1000)}s`);
+    }
+    publishCdcTransientHealth(health.lastReason);
+  }
+
+  function noteCdcCooldownActive() {
+    const health = cdcProviderHealth();
+    if (cdcCooldownMs() <= 0) return;
+    if (Date.now() - (health.lastHealthUpdateTs || 0) < 10_000) return;
+    health.lastHealthUpdateTs = Date.now();
+    publishCdcTransientHealth(health.lastReason);
+  }
 
   function resolveRuntimeKeyLocal(name) {
     try {
@@ -2164,10 +2152,21 @@
     if (cache.data && Date.now() - cache.age < 20000) {
       return cache.data;
     }
+    const cooldown = cdcCooldownMs();
+    if (cooldown > 0) {
+      noteCdcCooldownActive();
+      throw new Error(`Crypto.com circuit open (${Math.ceil(cooldown / 1000)}s)`);
+    }
     const res = await fetchWithTimeout(`${CDC_BASE}/get-tickers`, 15000);  // 15s for Stockholm/DERP routing
-    if (!res.ok) throw new Error(`Tickers HTTP ${res.status}`);
+    if (!res.ok) {
+      if (CDC_TRANSIENT_STATUS.has(res.status)) noteCdcTransient(res.status, `HTTP ${res.status} ${res.statusText || ''}`.trim());
+      throw new Error(`Tickers HTTP ${res.status}`);
+    }
     const json = await res.clone().json();
-    if (json.code !== 0) throw new Error(`Tickers error code ${json.code}`);
+    if (json.code !== 0) {
+      if (json.code >= 500 || json.code === 429) noteCdcTransient(json.code, `CDC code ${json.code}`);
+      throw new Error(`Tickers error code ${json.code}`);
+    }
     const normalized = json.result.data.map(normalizeTicker);
     // Populate shared cache for other engines
     window._sharedTickerCache = { data: normalized, raw: json.result.data, age: Date.now() };
@@ -3661,33 +3660,36 @@
       _lastPredictionRunTs = Date.now();
       predsLoaded = true;
       try { snapshotPredictions(); } catch (_) { }
-      if (['predictions', 'cfm', 'universe'].includes(currentView)) refreshActiveView();
+      if (['predictions', 'cfm', 'universe'].includes(currentView)) {
+        scheduleAsyncUiRefresh('predictions');
+      }
       scheduleWebStatePublish('async-predictions', 100);
     });
 
-    window._asyncRefreshEngine.on('orderbook:imbalance', () => {
-      try { window._runAdaptiveLiveRetune?.('orderbook-imbalance-event'); } catch (_) {}
-      if (['predictions', 'cfm', 'universe'].includes(currentView)) {
-        refreshActiveView();
+    window._asyncRefreshEngine.on('orderbook:imbalance', (payload) => {
+      // Live tuner already observes per-coin inside the stream — avoid re-scanning all coins here.
+      if (payload?.updates?.length && ['predictions', 'cfm', 'universe'].includes(currentView)) {
+        scheduleAsyncUiRefresh('orderbook');
       }
       scheduleWebStatePublish('async-orderbook', 50);
     });
 
     window._asyncRefreshEngine.on('market:data-updated', () => {
       if (['cfm', 'predictions', 'universe', 'markets5m', 'charts'].includes(currentView)) {
-        refreshActiveView();
+        scheduleAsyncUiRefresh('market');
       }
       scheduleWebStatePublish('async-market', 100);
     });
 
     window._asyncRefreshEngine.on('settlement:pulse', () => {
-      refreshActiveView();
+      scheduleAsyncUiRefresh('settlement', true);
       scheduleWebStatePublish('async-settlement', 100);
     });
 
     void window._asyncRefreshEngine.start().catch(err => {
       console.warn('[WE] Async refresh engine start failed:', err.message);
       _asyncRefreshEngineBooted = false;
+      resetTimer();
     });
   }
 
@@ -3702,8 +3704,9 @@
   // Start polling on app init
   startKalshiPolling();
 
-  // ── Historical Settlement Fetcher & Adaptive Learning (30-second cycle) ────
+  // ── Historical Settlement Fetcher & Adaptive Learning (5-minute cycle) ────
   let historicalPollTimer = null;
+  let historicalPollInFlight = false;
   let settledFetcher = null;
   let learningEngine = null;
 
@@ -3744,6 +3747,8 @@
     initHistoricalLearning();
 
     historicalPollTimer = setInterval(async () => {
+      if (historicalPollInFlight) return;
+      historicalPollInFlight = true;
       try {
         if (!settledFetcher || !learningEngine) {
           initHistoricalLearning();
@@ -3758,10 +3763,11 @@
 
           // Add historical settlements to _kalshiLog for scorecard display
           settled.forEach(contract => {
+            const resolvedAt = contract.resolvedAt ?? contract.closeTime ?? contract.raw?.settleTime ?? contract.raw?.close_time ?? null;
             // Check if already in log (avoid duplicates)
             const isDuplicate = window._kalshiLog.some(e =>
               e.sym === contract.symbol &&
-              e.resolved_at === contract.resolvedAt
+              e.resolved_at === resolvedAt
             );
 
             if (!isDuplicate) {
@@ -3783,9 +3789,9 @@
                 actualOutcome: _actualOutcome,
                 modelCorrect: contract.modelCorrect ?? null,
                 marketCorrect: contract.marketCorrect ?? null,
-                settledTs: contract.resolvedAt ? new Date(contract.resolvedAt).getTime() : Date.now(),
+                settledTs: resolvedAt ? new Date(resolvedAt).getTime() : Date.now(),
                 ts: contract.openTime ? new Date(contract.openTime).getTime() : Date.now(),
-                resolved_at: contract.resolvedAt,
+                resolved_at: resolvedAt,
                 created_at: contract.openTime,
                 _settled: true,
                 _historical: true  // Mark as loaded from historical fetcher
@@ -3806,8 +3812,11 @@
           saveKalshiLog();
           if (currentView === 'log' || currentView === 'debuglog') render();
 
-          // Record outcomes for learning engine
-          for (const contract of settled) {
+          // Record outcomes for learning engine without monopolizing the UI thread.
+          const learningSample = settled.slice(0, 50);
+          let learningIndex = 0;
+          for (const contract of learningSample) {
+            if (++learningIndex % 5 === 0) await new Promise(resolve => setTimeout(resolve, 0));
             if (contract.symbol && contract.result) {
               // Simulate prediction from model at contract open time
               const prediction = await getPredictionForCoin(contract.symbol, contract.openTime);
@@ -3853,8 +3862,10 @@
         }
       } catch (err) {
         console.error('[Historical] Polling error:', err.message);
+      } finally {
+        historicalPollInFlight = false;
       }
-    }, 30000); // poll every 30 seconds
+    }, 300000); // poll every 5 minutes, matching HistoricalSettlementFetcher cache TTL
   }
 
   function stopHistoricalPolling() {
@@ -3979,10 +3990,11 @@
   });
 
   window.addEventListener('predictions:microstructure-updated', () => {
-    try { window._runAdaptiveLiveRetune?.('microstructure-updated'); } catch (_) {}
     scheduleWebStatePublish('microstructure-prediction', 50);
     if (!predsLoaded || predictionRunInFlight) return;
-    if (['predictions', 'cfm', 'universe'].includes(currentView)) refreshActiveView();
+    if (['predictions', 'cfm', 'universe'].includes(currentView)) {
+      scheduleAsyncUiRefresh('microstructure');
+    }
   });
 
   // ================================================================
@@ -4012,12 +4024,19 @@
 
     PREDICTION_COINS.forEach(coin => {
       const p = preds[coin.sym];
-      
+
       const pm = window.PredictionMarkets?.getCoin?.(coin.sym);
       const k15Close = pm?.kalshi15m?.closeTime;
       const currentBucket = k15Close ? new Date(k15Close).getTime() : Math.ceil((nowMs + 45000) / _BUCKET_MS) * _BUCKET_MS;
 
       // ── Record missing or disabled prediction as error ─────────────────────
+      if (p && !p.price) {
+        const cmcPrice = Number(window._cmcProFeed?.getCachedQuote?.(coin.sym)?.price || 0);
+        if (Number.isFinite(cmcPrice) && cmcPrice > 0) {
+          p.price = cmcPrice;
+        }
+      }
+
       if (!p || !p.price) {
         if (window._aggregator) {
           try {
@@ -4212,6 +4231,10 @@
           ref: ka.ref,
           kYesPct: ka.kalshiYesPct,
           mYesPct: ka.modelYesPct,
+          yesAsk: ka.yesAsk,
+          yesBid: ka.yesBid,
+          noAsk: ka.noAsk,
+          noBid: ka.noBid,
           modelDir: _snapDir,
           ts: nowMs,
           // Contract structural fields — now passed through from prediction-markets.js
@@ -4760,6 +4783,10 @@
           proxyConfidence,
           kYesPct: kSnap.kYesPct,
           mYesPct: kSnap.mYesPct,
+          yesAsk: kSnap.yesAsk ?? null,
+          yesBid: kSnap.yesBid ?? null,
+          noAsk: kSnap.noAsk ?? null,
+          noBid: kSnap.noBid ?? null,
           modelDir: kSnap.modelDir,
           cdfImpliedDir: kSnap.cdfImpliedDir ?? null,
           dirConflict,
@@ -4814,7 +4841,7 @@
             const currentWeights = window.PredictionMarkets?.getAdaptiveWeights?.(sym) || {};
             const rlOutput = window.update_indicator_weights(trade_result, currentWeights, activeFeatures);
             console.log(`[RL Loop] 🧠 ${sym} Adaptive Alpha: ${(rlOutput.meta.alpha * 100).toFixed(2)}%. Weight adjustments triggered.`);
-            
+
             if (window.PredictionMarkets?.setAdaptiveWeights) {
               window.PredictionMarkets.setAdaptiveWeights(sym, rlOutput.new_weights);
             }
@@ -5265,26 +5292,7 @@
             return; // done — skip remaining sources
           } catch { /* try next source */ }
         }
-        // =========================================================================
-  // RL Weights Synchronization
-  // =========================================================================
-  setTimeout(() => {
-    if (window.wecryp?.getSystemWeights) {
-      window.wecryp.getSystemWeights()
-        .then(res => {
-          if (res.success && res.weights) {
-            console.log('[RL Loop] ?? Fetched system_weights from Firebase on startup');
-            if (window.PredictionMarkets?.setAdaptiveWeights) {
-              const symbols = ['BTC', 'ETH', 'SOL', 'DOGE', 'XRP']; 
-              symbols.forEach(sym => {
-                window.PredictionMarkets.setAdaptiveWeights(sym, res.weights);
-              });
-            }
-          }
-        })
-        .catch(err => console.warn('[RL Loop] Failed to sync startup weights:', err));
-    }
-  }, 3000); 
+
 })();
     }
 
@@ -5361,7 +5369,7 @@
       sparkline: 'false',
       price_change_percentage: '24h',
     });
-    
+
     let fetchPromise;
     if (typeof window._proxyOrchestrator !== 'undefined' && window._proxyOrchestrator) {
       fetchPromise = window._proxyOrchestrator.fetch(cgReq.url, {
@@ -5433,7 +5441,58 @@
     _predScrollTrackerBound = true;
   }
 
+  let _activeViewRefreshTimer = null;
+  let _lastActiveViewRefreshTs = 0;
+
+  const ASYNC_UI_REFRESH_GAPS = {
+    microstructure: 4000,
+    orderbook: 4000,
+    market: 2000,
+    predictions: 2500,
+    settlement: 400,
+    default: 2000,
+  };
+
+  function scheduleAsyncUiRefresh(kind = 'default', force = false) {
+    const gap = ASYNC_UI_REFRESH_GAPS[kind] || ASYNC_UI_REFRESH_GAPS.default;
+    if (force) {
+      if (_asyncUiRefreshTimer) {
+        clearTimeout(_asyncUiRefreshTimer);
+        _asyncUiRefreshTimer = null;
+        _asyncUiRefreshCoalesce = false;
+      }
+      refreshActiveView(true);
+      return;
+    }
+    if (_asyncUiRefreshTimer) {
+      _asyncUiRefreshCoalesce = true;
+      return;
+    }
+    const since = Date.now() - _lastActiveViewRefreshTs;
+    const delay = Math.max(80, gap - since);
+    _asyncUiRefreshTimer = setTimeout(() => {
+      _asyncUiRefreshTimer = null;
+      const again = _asyncUiRefreshCoalesce;
+      _asyncUiRefreshCoalesce = false;
+      refreshActiveView();
+      if (again) scheduleAsyncUiRefresh(kind);
+    }, delay);
+  }
+
   function refreshActiveView(force = false) {
+    const now = Date.now();
+    const minGap = (_asyncRefreshEngineBooted && window._asyncRefreshEngine?.running) ? 900 : 250;
+    if (!force && now - _lastActiveViewRefreshTs < minGap) {
+      if (!_activeViewRefreshTimer) {
+        const waitMs = Math.max(80, minGap - (now - _lastActiveViewRefreshTs));
+        _activeViewRefreshTimer = setTimeout(() => {
+          _activeViewRefreshTimer = null;
+          refreshActiveView(force);
+        }, waitMs);
+      }
+      return;
+    }
+    _lastActiveViewRefreshTs = now;
     // NOTE: do NOT increment _rv here — refreshActiveView is a same-panel data refresh,
     // not navigation. Only render() (user nav click) should bump the version counter.
     const view = currentView;
@@ -5560,12 +5619,25 @@
   // ==== 5-Minute Markets Tab =========================================
 
   let _markets5mCountdown = null;
+  let _markets5mFetchKickTs = 0;
+  let _markets5mPolyRefreshKickTs = 0;
   function renderMarkets5M() {
     if (_markets5mCountdown) { clearInterval(_markets5mCountdown); _markets5mCountdown = null; }
     const pm = window.PredictionMarkets?.getAll() || {};
     const pred = window.PredictionEngine?.getAll() || {};
     const snipes = window.PredictionMarkets?.getSnipes?.() || [];
-    const COINS_5M = ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'BNB'];  // ★ REMOVED HYPE (48%)
+    const COINS_5M = ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'BNB', 'HYPE'];
+    const hasMarketData = Object.values(pm).some((coin) =>
+      coin?.kalshi15m || coin?.poly != null || coin?.poly5m
+    );
+    if (!hasMarketData && window.PredictionMarkets?.fetchAll && Date.now() - _markets5mFetchKickTs > 10_000) {
+      _markets5mFetchKickTs = Date.now();
+      window.PredictionMarkets.fetchAll()
+        .then(() => {
+          if (currentView === 'markets5m') renderMarkets5M();
+        })
+        .catch((err) => console.warn('[Markets5M] PredictionMarkets fetch failed:', err?.message || err));
+    }
 
     function _pct(v) {
       if (v == null) return '—';
@@ -5585,8 +5657,8 @@
     function _side(prob, large) {
       if (prob == null) return '<span style="color:var(--color-text-faint)">—</span>';
       const sz = large ? 'font-size:20px;font-weight:800' : 'font-size:13px;font-weight:700';
-      if (prob >= 0.55) return `<span class="badge-up" style="${sz}">▲ BUY YES</span>`;
-      if (prob <= 0.45) return `<span class="badge-down" style="${sz}">▼ BUY NO</span>`;
+      if (prob >= 0.55) return `<span class="badge-up" style="${sz}">▲ BUY UP</span>`;
+      if (prob <= 0.45) return `<span class="badge-down" style="${sz}">▼ BUY DOWN</span>`;
       return `<span class="badge-neutral" style="${sz}">◆ WAIT</span>`;
     }
     function _confBar(prob) {
@@ -5645,22 +5717,22 @@
 
       return null;
     }
-    function _marketNote(sym, kalshiProb) {
-      if (kalshiProb == null) return '';
+    function _marketNote(sym, marketProb, marketLabel = 'market') {
+      if (marketProb == null) return '';
       const modelOdds = _modelOdds(sym);
       if (modelOdds == null) return '';
-      const kYes = Math.round(kalshiProb * 100);
+      const marketYes = Math.round(marketProb * 100);
       const mYes = Math.round(modelOdds * 100);
-      const divergence = _modelDivergence(sym, kalshiProb);
+      const divergence = _modelDivergence(sym, marketProb);
 
       if (divergence === 'DIVERGENCE') {
-        const dir = modelOdds > kalshiProb ? 'Model bullish' : 'Model bearish';
-        return `🔴 ${divergence}: ${dir} vs Kalshi`;
+        const dir = modelOdds > marketProb ? 'Model bullish' : 'Model bearish';
+        return `🔴 ${divergence}: ${dir} vs ${marketLabel}`;
       } else if (divergence === 'MISMATCH') {
-        const dir = modelOdds > kalshiProb ? 'slight model bullish' : 'slight model bearish';
+        const dir = modelOdds > marketProb ? 'slight model bullish' : 'slight model bearish';
         return `🟡 ${divergence}: ${dir}`;
       }
-      return `✅ Aligned: Both ${kYes > 50 ? 'bullish' : 'bearish'}`;
+      return `✅ Aligned: Both ${marketYes > 50 ? 'bullish' : 'bearish'}`;
     }
     function _fmtVol(v) {
       if (!v || v < 1) return '';
@@ -5690,26 +5762,24 @@
     // ── Per-coin cards ──────────────────────────────────────────────────
     const cards = COINS_5M.map(sym => {
       const coin = pm[sym] || {};
-      const k5 = coin.kalshi15m || coin.kalshi5m;
-      const p5 = coin.poly != null ? { probability: coin.poly } : coin.poly5m;
+      const p5 = coin.poly5m;
       const polyAll = coin.polyMarkets || [];   // all Poly markets for coin
       const poly5m = coin.poly5mMkts || [];   // short-term Poly markets
       const tick = tickers[WATCHLIST.find(w => w.sym === sym)?.instrument] || null;
       const curPx = tick ? price(tick) : null;
       const proj = _modelProj(sym);
 
-      const k5prob = k5?.probability ?? null;
       const p5prob = p5?.probability ?? null;
+      const primaryMarketProb = p5prob;
+      const primaryMarketLabel = 'Poly 5M';
 
       let combined5m = null;
-      if (k5prob != null && p5prob != null) combined5m = k5prob * 0.50 + p5prob * 0.50;
-      else if (k5prob != null) combined5m = k5prob;
-      else if (p5prob != null) combined5m = p5prob;
+      if (p5prob != null) combined5m = p5prob;
 
       const coinColor = sym === 'BTC' ? '#f7931a' : sym === 'ETH' ? '#627eea' : sym === 'SOL' ? '#9945ff' : sym === 'XRP' ? '#0085c0' : sym === 'BNB' ? '#f3ba2f' : sym === 'HYPE' ? '#34d399' : '#ba9f33';
 
       // Pick the best Poly markets to display (short-term first, then high-vol)
-      const displayPolyMkts = (polyAll.length ? polyAll : poly5m).slice(0, 4);
+      const displayPolyMkts = (poly5m.length ? poly5m : polyAll).slice(0, 4);
 
       return `
         <div class="opp-card" style="border-left:3px solid ${coinColor};padding:14px 16px;">
@@ -5722,7 +5792,7 @@
             </div>
             <div style="display:flex;align-items:center;gap:8px;">
               ${combined5m != null ? _side(combined5m, true) : ''}
-              ${combined5m != null ? `<span style="font-size:12px;color:var(--color-text-muted)">${_pct(combined5m)} YES</span>` : ''}
+              ${combined5m != null ? `<span style="font-size:12px;color:var(--color-text-muted)">${_pct(combined5m)} UP</span>` : ''}
             </div>
           </div>
 
@@ -5744,8 +5814,8 @@
         })()}
 
           <!-- Market Divergence Alert -->
-          ${k5prob != null ? (() => {
-          const note = _marketNote(sym, k5prob);
+          ${primaryMarketProb != null ? (() => {
+          const note = _marketNote(sym, primaryMarketProb, primaryMarketLabel);
           const isDivergent = note.includes('DIVERGENCE');
           const isMismatch = note.includes('MISMATCH');
           const bgColor = isDivergent ? 'rgba(255,77,77,0.1)' : isMismatch ? 'rgba(255,193,7,0.1)' : 'rgba(76,175,80,0.1)';
@@ -5753,21 +5823,23 @@
           return `<div style="background:${bgColor};border:1px solid ${borderColor};border-radius:5px;padding:7px 10px;margin-bottom:8px;font-size:11px;color:var(--color-text);">${note}</div>`;
         })() : ''}
 
-          <!-- Kalshi + Model row -->
+          <!-- Polymarket + Model row -->
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px;">
 
             <div style="background:var(--color-surface-2);border-radius:6px;padding:10px;">
               <div style="font-size:10px;color:var(--color-text-faint);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:5px;">
-                ${k5?._proxy15m ? 'Kalshi Nearest ★' : 'Kalshi Odds'}
+                Polymarket 5M
               </div>
-              ${k5 ? `
+              ${p5 ? `
                 <div style="display:flex;gap:8px;align-items:baseline;margin-bottom:4px;">
-                  <span style="color:var(--color-green);font-size:14px;font-weight:700">${_pct(k5prob)}</span>
-                  <span style="font-size:12px;color:var(--color-text-muted)">YES</span>
+                  <span style="color:var(--color-green);font-size:14px;font-weight:700">${_pct(p5prob)}</span>
+                  <span style="font-size:12px;color:var(--color-text-muted)">UP</span>
                 </div>
-                <div style="font-size:11px;color:var(--color-text-faint);margin-top:3px;" id="k5cd-${sym}" data-close="${k5.closeTime}">⏱ ${_countdown(k5.closeTime)}</div>
-                <div style="margin-top:5px">${_side(k5prob)}</div>
-              ` : `<div style="color:var(--color-text-faint);font-size:11px">No contract</div>`}
+                <div style="font-size:11px;color:var(--color-text-faint);margin-top:3px;" id="p5cd-${sym}" data-close="${p5.closeTime || p5.endDate || ''}">⏱ ${_countdown(p5.closeTime || p5.endDate)}</div>
+                ${p5.targetPrice ? `<div style="font-size:11px;color:var(--color-text);margin-top:4px;">Price to beat <strong>${p5.targetPriceApprox ? '~' : ''}${p5.targetPrice}</strong></div>` : ''}
+                <div style="font-size:10px;color:var(--color-text-faint);margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="${p5.slug || ''}">${p5.slug || 'poly5m'}</div>
+                <div style="margin-top:5px">${_side(p5prob)}</div>
+              ` : `<div style="color:var(--color-text-faint);font-size:11px">No Poly 5M market</div>`}
             </div>
 
             <div style="background:var(--color-surface-2);border-radius:6px;padding:10px;">
@@ -5810,9 +5882,9 @@
 
     content.innerHTML = `
       <div class="section-header">
-        <span class="section-title">Fast Markets (15m Logic)</span>
+        <span class="section-title">Fast Markets (5m)</span>
         <span style="font-size:11px;color:var(--color-text-faint);">
-          1m/5m polling cadence · Kalshi 15m-aligned decisioning
+          Polymarket 5m odds · model comparison
         </span>
       </div>
       ${snipeBanner}
@@ -5829,12 +5901,23 @@
     // Live countdown tick
     _markets5mCountdown = setInterval(() => {
       if (currentView !== 'markets5m') { clearInterval(_markets5mCountdown); _markets5mCountdown = null; return; }
+      let expiredPoly5m = false;
       COINS_5M.forEach(sym => {
-        const el = document.getElementById(`k5cd-${sym}`);
+        const el = document.getElementById(`p5cd-${sym}`);
         if (!el) return;
         const close = el.dataset.close;
-        if (close) el.textContent = `⏱ ${_countdown(close)}`;
+        if (close) {
+          el.textContent = `⏱ ${_countdown(close)}`;
+          const closeMs = new Date(close).getTime();
+          if (Number.isFinite(closeMs) && closeMs <= Date.now()) expiredPoly5m = true;
+        }
       });
+      if (expiredPoly5m && window.PredictionMarkets?.refreshPoly5M && Date.now() - _markets5mPolyRefreshKickTs > 8_000) {
+        _markets5mPolyRefreshKickTs = Date.now();
+        window.PredictionMarkets.refreshPoly5M('panel-expiry')
+          .then(() => { if (currentView === 'markets5m') renderMarkets5M(); })
+          .catch((err) => console.warn('[Markets5M] Poly5M refresh failed:', err?.message || err));
+      }
     }, 1000);
   }
 
@@ -6089,7 +6172,7 @@
       velRows
     ))}
 
-        ${card(`🎯 Per-Coin Settlement Accuracy 
+        ${card(`🎯 Per-Coin Settlement Accuracy
           <select id="accuracyDataSource" style="float:right;padding:4px 8px;font-size:11px;border-radius:4px;border:1px solid var(--color-border);background:var(--color-surface-2);color:var(--color-text);cursor:pointer" onchange="(function(){const e=event.target.value;window._accuracySource=e;window.refreshDebugLog?.()})()">
             <option value="auto" ${window._accuracySource !== 'historical' ? 'selected' : ''}>Auto (Real-time + Historical)</option>
             <option value="historical" ${window._accuracySource === 'historical' ? 'selected' : ''}>📊 Historical Only (Backtest)</option>
@@ -6233,22 +6316,73 @@
     return out;
   }
 
-let _llmObsStats = { completions: 0, queues: 0, provider: 'none', model: 'none', enabled: false };
+let _llmObsStats = { completions: 0, queues: 0, accepted: 0, rejected: 0, provider: 'none', model: 'none', enabled: false };
+let _telegramStatus = { connected: false, apiId: '', apiHash: '', channelToListen: 'polycool_copytrade_channel' };
+let _telegramAuthRequest = null;
+let _telegramFeeds = [];
+
+function renderTelegramFeedsHtml() {
+  if (!_telegramFeeds.length) {
+    return `<div style="color:var(--color-text-faint); font-style:italic">No signal feeds captured yet.</div>`;
+  }
+  return _telegramFeeds.map(msg => {
+    const time = new Date(msg.date * 1000).toLocaleTimeString();
+    return `<div style="border-bottom:1px solid var(--color-border); padding-bottom:4px; margin-bottom:4px">
+      <div style="display:flex; justify-content:space-between; font-size:9px; color:var(--color-text-faint); margin-bottom:2px">
+        <span>\${_obsEsc(msg.chatTitle || 'Signals')}</span>
+        <span>\${time}</span>
+      </div>
+      <div style="white-space:pre-wrap; word-break:break-all">\${_obsEsc(msg.text)}</div>
+    </div>`;
+  }).join('');
+}
     setInterval(async () => {
-      if (!window.electron) return;
       try {
-        const diag = await window.electron.invoke('llm:getStats');
-        const qStats = window._signalScheduler?.getStats()?.lanes?.validation?.queued || 0;
+        let diag = null;
+        let qStats = 0;
+        if (window.electron && typeof window.electron.invoke === 'function') {
+          const rawDiag = await window.electron.invoke('llm:getStats');
+          diag = rawDiag?.diagnostics || rawDiag;
+          qStats = window._signalScheduler?.getHealthStatus()?.lanes?.validation?.queued || 0;
+        } else {
+          const response = await fetch('/api/llm-diagnostics');
+          if (response.ok) {
+            const rawDiag = await response.json();
+            diag = rawDiag?.diagnostics || rawDiag;
+          }
+        }
         if (diag && diag.stats) {
           _llmObsStats.completions = diag.stats.successes || diag.stats.total_calls || diag.stats.calls || 0;
+          _llmObsStats.accepted = diag.stats.successes || 0;
+          _llmObsStats.rejected = diag.stats.failures || diag.stats.errors || 0;
           _llmObsStats.provider = diag.provider || 'none';
           _llmObsStats.model = diag.model || 'none';
           _llmObsStats.enabled = diag.enabled || false;
         } else if (diag) {
           _llmObsStats.completions = diag.successes || diag.calls || 0;
+          _llmObsStats.accepted = diag.successes || 0;
+          _llmObsStats.rejected = diag.failures || diag.errors || 0;
+          _llmObsStats.provider = diag.provider || 'none';
+          _llmObsStats.model = diag.model || 'none';
+          _llmObsStats.enabled = diag.enabled || false;
         }
         _llmObsStats.queues = qStats;
-      } catch(e) {}
+
+        const sEl = document.getElementById('llm-obs-status');
+        if (sEl) sEl.innerHTML = _llmObsStats.enabled ? `🟢 ${_llmObsStats.provider.toUpperCase()} | ${_llmObsStats.model}` : '🔴 Offline';
+        const qEl = document.getElementById('llm-obs-queues');
+        if (qEl) {
+          qEl.innerText = _llmObsStats.queues;
+          qEl.style.color = _llmObsStats.queues > 0 ? 'var(--color-orange)' : 'var(--color-green)';
+        }
+        const aEl = document.getElementById('llm-obs-accepted');
+        if (aEl) aEl.innerText = _llmObsStats.accepted;
+        const rEl = document.getElementById('llm-obs-rejected');
+        if (rEl) {
+          rEl.innerText = _llmObsStats.rejected;
+          rEl.style.color = _llmObsStats.rejected > 0 ? 'var(--color-red)' : 'var(--color-text-faint)';
+        }
+      } catch(e) { console.error('[LLMObs] Update Error:', e); }
     }, 2000);
 
   function _obsBuildMetrics() {
@@ -6717,6 +6851,57 @@ let _llmObsStats = { completions: 0, queues: 0, provider: 'none', model: 'none',
       }).join('')
       : '<tr><td colspan="5" style="color:var(--color-text-faint)">No drawdown clusters yet.</td></tr>';
 
+    // Build Telegram Card HTML
+    let tgStatusText = '🔴 Disconnected';
+    let tgStatusColor = 'var(--color-red)';
+    if (_telegramStatus.connected) {
+      tgStatusText = '🟢 Connected';
+      tgStatusColor = 'var(--color-green)';
+    } else if (_telegramAuthRequest) {
+      tgStatusText = '🟡 Connecting...';
+      tgStatusColor = 'var(--color-orange)';
+    }
+
+    const tgHtml = `
+      <div class="card" style="padding:12px; display:flex; flex-direction:column; gap:8px;">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <div class="card-title" style="margin:0;">Telegram &amp; Polycool</div>
+          <span style="font-size:10px; font-weight:700; color:${tgStatusColor}; border:1px solid ${tgStatusColor}; padding:1px 6px; border-radius:999px;">${tgStatusText}</span>
+        </div>
+        <div style="font-size:11px; color:var(--color-text-muted);">
+          Channel: <code>${_obsEsc(_telegramStatus.channelToListen || 'polycool_copytrade_channel')}</code>
+        </div>
+        
+        <!-- Login fields -->
+        <div id="tg-login-form" style="display:${(!_telegramStatus.connected && !_telegramAuthRequest) ? 'flex' : 'none'}; flex-direction:column; gap:6px;">
+          <div style="font-size:10px; color:var(--color-text-faint);">Connect using your Telegram API Developer credentials:</div>
+          <input type="text" id="tg-api-id" placeholder="Telegram API ID" value="${_telegramStatus.apiId || ''}" style="padding:4px 8px; border-radius:4px; border:1px solid var(--color-border); background:var(--color-surface-2); color:var(--color-text); font-size:11px;" />
+          <input type="password" id="tg-api-hash" placeholder="Telegram API Hash" value="${_telegramStatus.apiHash || ''}" style="padding:4px 8px; border-radius:4px; border:1px solid var(--color-border); background:var(--color-surface-2); color:var(--color-text); font-size:11px;" />
+          <button id="tg-btn-connect" class="btn btn-sm" style="padding:4px; font-size:11px; width:100%; margin-top:4px;">Connect Telegram</button>
+        </div>
+
+        <!-- Auth challenge inputs -->
+        <div id="tg-auth-challenge" style="display:${_telegramAuthRequest ? 'flex' : 'none'}; flex-direction:column; gap:6px;">
+          <div style="font-size:11px; color:var(--color-orange); font-weight:600;">
+            ${_telegramAuthRequest?.type === 'code' ? '🔑 Verification Code Required:' : _telegramAuthRequest?.type === 'password' ? '🔐 2FA Password Required:' : '📱 Phone Number Required:'}
+          </div>
+          <input type="text" id="tg-challenge-input" placeholder="Enter value..." style="padding:4px 8px; border-radius:4px; border:1px solid var(--color-border); background:var(--color-surface-2); color:var(--color-text); font-size:11px;" />
+          <button id="tg-btn-submit-challenge" class="btn btn-sm" style="padding:4px; font-size:11px; width:100%;">Submit Challenge</button>
+        </div>
+
+        <!-- Live Signals list -->
+        <div id="tg-signals-container" style="display:${_telegramStatus.connected ? 'block' : 'none'}; flex:1; min-height:100px;">
+          <div style="font-size:11px; font-weight:600; margin-bottom:4px; display:flex; justify-content:space-between; align-items:center;">
+            <span>Live Message Feed:</span>
+            <button id="tg-btn-test-polycool" class="btn btn-sm" style="padding:2px 6px; font-size:9px;">Test Signal</button>
+          </div>
+          <div id="tg-signals-feed" style="max-height:140px; overflow-y:auto; font-size:10px; font-family:var(--font-mono); line-height:1.45; padding:6px; background:var(--color-surface-2); border-radius:4px; border:1px solid var(--color-border); display:flex; flex-direction:column; gap:6px;">
+            ${renderTelegramFeedsHtml()}
+          </div>
+        </div>
+      </div>
+    `;
+
     content.innerHTML = `
       <div class="section-header">
         <span class="section-title">Trading Reliability Observability</span>
@@ -6728,20 +6913,24 @@ let _llmObsStats = { completions: 0, queues: 0, provider: 'none', model: 'none',
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:12px;margin-bottom:12px;">
         <div class="card" style="padding:12px">
           <div class="card-title">ASI1 LLM Engine</div>
-          <div style="font-size:10px; color:var(--color-text-faint); margin-bottom:4px">
+          <div id="llm-obs-status" style="font-size:10px; color:var(--color-text-faint); margin-bottom:4px">
             ${_llmObsStats.enabled ? `🟢 ${_llmObsStats.provider.toUpperCase()} | ${_llmObsStats.model}` : '🔴 Offline'}
           </div>
-          <div style="display:flex; justify-content: space-between; align-items: center; margin-top: 6px;">
-            <div>
-              <div style="font-size:22px;font-weight:800;color:var(--color-primary);font-family:var(--font-mono)">${_llmObsStats.completions}</div>
-              <div style="font-size:11px;color:var(--color-text-muted);">Chat Completions</div>
+                    <div style="display:flex; justify-content: space-between; align-items: center; margin-top: 6px;">
+            <div style="text-align: left;">
+              <div id="llm-obs-queues" style="font-size:22px;font-weight:800;color:${_llmObsStats.queues > 0 ? 'var(--color-orange)' : 'var(--color-green)'};font-family:var(--font-mono)">${_llmObsStats.queues}</div>
+              <div style="font-size:11px;color:var(--color-text-muted);">Queued</div>
+            </div>
+            <div style="text-align: center;">
+              <div id="llm-obs-accepted" style="font-size:22px;font-weight:800;color:var(--color-green);font-family:var(--font-mono)">${_llmObsStats.accepted}</div>
+              <div style="font-size:11px;color:var(--color-text-muted);">Accepted</div>
             </div>
             <div style="text-align: right;">
-              <div style="font-size:22px;font-weight:800;color:${_llmObsStats.queues > 0 ? 'var(--color-orange)' : 'var(--color-green)'};font-family:var(--font-mono)">${_llmObsStats.queues}</div>
-              <div style="font-size:11px;color:var(--color-text-muted);">AIs in Queue</div>
+              <div id="llm-obs-rejected" style="font-size:22px;font-weight:800;color:${_llmObsStats.rejected > 0 ? 'var(--color-red)' : 'var(--color-text-faint)'};font-family:var(--font-mono)">${_llmObsStats.rejected}</div>
+              <div style="font-size:11px;color:var(--color-text-muted);">Rejected</div>
             </div>
           </div>
-        </div>
+          </div>
         <div class="card" style="padding:12px">
           <div class="card-title">Feature Drift Status</div>
           <div style="font-size:22px;font-weight:800;color:${driftCol};font-family:var(--font-mono)">${m.featureDrift.driftStatus}</div>
@@ -6765,6 +6954,7 @@ let _llmObsStats = { completions: 0, queues: 0, provider: 'none', model: 'none',
             Pipeline histograms show signal→quote→fill→settle where available, with quote→settle fallback when fill is missing.
           </div>
         </div>
+        ${tgHtml}
         <div class="card" style="padding:12px">
           <div class="card-title">Top Drift/Error Flags</div>
           <div style="display:flex;gap:6px;flex-wrap:wrap;line-height:1.8">
@@ -6857,6 +7047,70 @@ let _llmObsStats = { completions: 0, queues: 0, provider: 'none', model: 'none',
         </div>
       </div>
     `;
+
+    // Wire up Telegram UI events if electron bridge is present
+    if (window.electron && window.electron.telegram) {
+      const btnConnect = document.getElementById('tg-btn-connect');
+      if (btnConnect) {
+        btnConnect.addEventListener('click', async () => {
+          const apiId = document.getElementById('tg-api-id').value.trim();
+          const apiHash = document.getElementById('tg-api-hash').value.trim();
+          if (!apiId || !apiHash) {
+            alert('API ID and API Hash are required.');
+            return;
+          }
+          btnConnect.innerText = 'Connecting...';
+          btnConnect.disabled = true;
+          _telegramAuthRequest = null;
+          _telegramStatus.connected = false;
+          _telegramStatus.apiId = apiId;
+          _telegramStatus.apiHash = apiHash;
+          renderObservability();
+
+          try {
+            const res = await window.electron.telegram.login(apiId, apiHash);
+            console.log('[Telegram] Login completed:', res);
+            _telegramStatus.connected = res.success;
+            _telegramStatus.session = res.session;
+          } catch (err) {
+            console.error('[Telegram] Login error:', err);
+            alert('Telegram connection failed: ' + err.message);
+          } finally {
+            _telegramAuthRequest = null;
+            renderObservability();
+          }
+        });
+      }
+
+      const btnSubmit = document.getElementById('tg-btn-submit-challenge');
+      if (btnSubmit) {
+        btnSubmit.addEventListener('click', () => {
+          const valInput = document.getElementById('tg-challenge-input');
+          const value = valInput.value.trim();
+          if (!value) return;
+          const type = _telegramAuthRequest?.type;
+          console.log('[Telegram] Submitting auth response:', type, value);
+          window.electron.telegram.sendAuthResponse(type, value);
+          _telegramAuthRequest = null;
+          renderObservability();
+        });
+      }
+      
+      const btnTest = document.getElementById('tg-btn-test-polycool');
+      if (btnTest) {
+        btnTest.addEventListener('click', () => {
+          const testMsg = {
+            chatTitle: 'Polycool Copytrade Test',
+            date: Math.floor(Date.now() / 1000),
+            text: '🚨 [COPYTRADE SIGNAL] buy 100 YES contracts on BTC-260610-2300 at 0.54. Leverage: 1x. Direct link: https://kalshi.com'
+          };
+          _telegramFeeds.unshift(testMsg);
+          if (_telegramFeeds.length > 30) _telegramFeeds.pop();
+          const feedEl = document.getElementById('tg-signals-feed');
+          if (feedEl) feedEl.innerHTML = renderTelegramFeedsHtml();
+        });
+      }
+    }
   }
 
   function renderMarkets() {
@@ -7718,6 +7972,7 @@ let _llmObsStats = { completions: 0, queues: 0, provider: 'none', model: 'none',
         chainRefreshBtn.disabled = true;
         chainRefreshBtn.textContent = '…';
         window.BlockchainScan?.fetchAll().then(() => {
+          refreshChainScanUI();
           chainRefreshBtn.disabled = false;
           chainRefreshBtn.textContent = '↻ Refresh';
         });
@@ -8287,26 +8542,7 @@ let _llmObsStats = { completions: 0, queues: 0, provider: 'none', model: 'none',
       } finally {
         cleanupCFMScrollListener();
       }
-      // =========================================================================
-  // RL Weights Synchronization
-  // =========================================================================
-  setTimeout(() => {
-    if (window.wecryp?.getSystemWeights) {
-      window.wecryp.getSystemWeights()
-        .then(res => {
-          if (res.success && res.weights) {
-            console.log('[RL Loop] ?? Fetched system_weights from Firebase on startup');
-            if (window.PredictionMarkets?.setAdaptiveWeights) {
-              const symbols = ['BTC', 'ETH', 'SOL', 'DOGE', 'XRP']; 
-              symbols.forEach(sym => {
-                window.PredictionMarkets.setAdaptiveWeights(sym, res.weights);
-              });
-            }
-          }
-        })
-        .catch(err => console.warn('[RL Loop] Failed to sync startup weights:', err));
-    }
-  }, 3000); 
+
 })();
   }
 
@@ -8541,10 +8777,10 @@ let _llmObsStats = { completions: 0, queues: 0, provider: 'none', model: 'none',
 
     const pm = window.PredictionMarkets?.getCoin?.(coin?.sym);
     const kalshiYesPrice = pm?.kalshi15m?.probability ?? null;
-    const entryIsTailRisk = kalshiYesPrice !== null && kalshiYesPrice >= 0.85; 
-    const entryIsLeveraged = kalshiYesPrice !== null && kalshiYesPrice <= 0.15; 
+    const entryIsTailRisk = kalshiYesPrice !== null && kalshiYesPrice >= 0.85;
+    const entryIsLeveraged = kalshiYesPrice !== null && kalshiYesPrice <= 0.15;
     const lossErasesWins = entryIsTailRisk
-      ? Math.round(kalshiYesPrice / (1 - kalshiYesPrice))   
+      ? Math.round(kalshiYesPrice / (1 - kalshiYesPrice))
       : null;
 
     let tier, tierColor, tierDesc;
@@ -8578,15 +8814,15 @@ let _llmObsStats = { completions: 0, queues: 0, provider: 'none', model: 'none',
     const dirBias = predictionDirection(pred, (cfm.momentum || 0) >= 0 ? 1 : -1);
     const dir = dirBias >= 0 ? 'up' : 'down';
     const entryPrice = dir === 'up'
-      ? price * (1 - atrPct / 200) 
-      : price * (1 + atrPct / 200); 
+      ? price * (1 - atrPct / 200)
+      : price * (1 + atrPct / 200);
     const stopLoss = dir === 'up'
-      ? price * (1 - atrPct * 1.5 / 100) 
+      ? price * (1 - atrPct * 1.5 / 100)
       : price * (1 + atrPct * 1.5 / 100);
     const takeProfit = dir === 'up'
-      ? price * (1 + atrPct * 2 / 100) 
+      ? price * (1 + atrPct * 2 / 100)
       : price * (1 - atrPct * 2 / 100);
-    const riskReward = atrPct > 0 ? 2.0 : 0; 
+    const riskReward = atrPct > 0 ? 2.0 : 0;
 
     return {
       price, atrPct, expected15m, expected60m, totalCostPct, edge15, edge60,
@@ -8603,8 +8839,8 @@ let _llmObsStats = { completions: 0, queues: 0, provider: 'none', model: 'none',
     if (dir === 0) return 0;
 
     const rsi = ind.rsi?.value ?? 50;
-    if (dir > 0 && rsi < 40) count++; 
-    if (dir < 0 && rsi > 60) count++; 
+    if (dir > 0 && rsi < 40) count++;
+    if (dir < 0 && rsi > 60) count++;
     if (dir > 0 && (ind.ema?.value ?? 0) > 0.1) count++;
     if (dir < 0 && (ind.ema?.value ?? 0) < -0.1) count++;
     if (dir > 0 && (ind.obv?.slope ?? 0) > 5) count++;
@@ -8618,8 +8854,8 @@ let _llmObsStats = { completions: 0, queues: 0, provider: 'none', model: 'none',
     if (dir > 0 && bookImbal > 0.2) count++;
     if (dir < 0 && bookImbal < -0.2) count++;
     const funding = pred?.derivatives?.funding ?? 0;
-    if (dir > 0 && funding < -0.1) count++; 
-    if (dir < 0 && funding > 0.1) count++; 
+    if (dir > 0 && funding < -0.1) count++;
+    if (dir < 0 && funding > 0.1) count++;
     const cvdSlope = pred?.cvd?.slope ?? 0;
     if (dir > 0 && cvdSlope > 10) count++;
     if (dir < 0 && cvdSlope < -10) count++;
@@ -9015,27 +9251,15 @@ let _llmObsStats = { completions: 0, queues: 0, provider: 'none', model: 'none',
           const strikeC = ki.strikeStr || (() => {
             const m = (ki.contractTicker || '').match(/T(\d+(?:\.\d+)?)$/);
             return m ? 'T' + Number(m[1]).toLocaleString() : '';
-            // =========================================================================
-  // RL Weights Synchronization
-  // =========================================================================
-  setTimeout(() => {
-    if (window.wecryp?.getSystemWeights) {
-      window.wecryp.getSystemWeights()
-        .then(res => {
-          if (res.success && res.weights) {
-            console.log('[RL Loop] ?? Fetched system_weights from Firebase on startup');
-            if (window.PredictionMarkets?.setAdaptiveWeights) {
-              const symbols = ['BTC', 'ETH', 'SOL', 'DOGE', 'XRP']; 
-              symbols.forEach(sym => {
-                window.PredictionMarkets.setAdaptiveWeights(sym, res.weights);
-              });
-            }
-          }
-        })
-        .catch(err => console.warn('[RL Loop] Failed to sync startup weights:', err));
-    }
-  }, 3000); 
+
 })();
+          const intentK15 = window.PredictionMarkets?.getCoin?.(ki.sym || v.sym)?.kalshi15m ?? null;
+          const intentTargetNum = Number(ki.targetPriceNum ?? intentK15?.targetPriceNum ?? intentK15?.floorPrice ?? intentK15?.capPrice);
+          const intentTargetPrice = ki.targetPrice || intentK15?.targetPrice || (Number.isFinite(intentTargetNum) && intentTargetNum > 0 ? `$${intentTargetNum.toLocaleString()}` : '');
+          const intentStrikeDir = (intentK15?.strikeDir ?? 'above') === 'below' ? 'below' : 'above';
+          const priceToBeatLabel = intentTargetPrice
+            ? `${intentStrikeDir === 'below' ? 'Below' : 'Beat'} ${intentTargetPrice}`
+            : strikeC;
           const msNow = ki.closeTimeMs ? Math.max(0, ki.closeTimeMs - Date.now()) : null;
           const secsNow = msNow != null ? msNow / 1000 : null;
           const timeStr = secsNow == null ? null
@@ -9057,7 +9281,7 @@ let _llmObsStats = { completions: 0, queues: 0, provider: 'none', model: 'none',
                           </div>`
                 : `<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
                             <span style="background:${sideBg};color:${sideColor};padding:3px 12px;border-radius:4px;font-size:14px;font-weight:800;letter-spacing:.7px">${ki.side}</span>
-                            <span style="font-size:12px;font-weight:700;color:var(--color-text);font-family:var(--font-mono)">KALSHI${strikeC ? ' · ' + strikeC : ''}</span>
+                            <span style="font-size:12px;font-weight:700;color:var(--color-text);font-family:var(--font-mono)">KALSHI${priceToBeatLabel ? ' · ' + priceToBeatLabel : ''}</span>
                             ${ki.isInversion ? '<span style="background:rgba(255,120,0,0.22);color:#ff8c00;padding:2px 7px;border-radius:3px;font-size:11px;font-weight:800">🔥 INVERSION</span>' : ''}
                             ${ki.timingLabel ? `<span style="background:rgba(90,160,255,0.18);color:#7db7ff;padding:2px 7px;border-radius:3px;font-size:11px;font-weight:800">${ki.timingLabel}</span>` : ''}
                             ${ki.mcts?.ran ? `<span style="background:rgba(170,110,255,0.18);color:#caa7ff;padding:2px 7px;border-radius:3px;font-size:11px;font-weight:800">MCTS ${ki.mcts.voteAction || '?'} ${Number.isFinite(Number(ki.mcts.voteStrength)) ? Number(ki.mcts.voteStrength).toFixed(2) : ''}</span>` : ''}
@@ -9089,7 +9313,7 @@ let _llmObsStats = { completions: 0, queues: 0, provider: 'none', model: 'none',
                      <div style="font-size:11px;color:var(--color-text-faint);margin-top:4px;display:flex;gap:10px;flex-wrap:wrap">
                        ${ki.modelProbUp != null ? `<span>Model <strong style="color:var(--color-text)">${Math.round(ki.modelProbUp * 100)}%</strong> ↑</span>` : ''}
                        ${ki.kalshiYesPrice != null ? `<span>Kalshi <strong style="color:var(--color-text)">${Math.round(ki.kalshiYesPrice * 100)}%</strong> YES</span>` : ''}
-                       ${ki.targetPrice ? `<span>Strike <strong style="color:var(--color-text)">${ki.targetPrice}</strong></span>` : ''}
+                       ${intentTargetPrice ? `<span>Price to beat <strong style="color:var(--color-text)">${intentStrikeDir === 'below' ? 'below ' : ''}${intentTargetPrice}</strong></span>` : ''}
                        ${timeStr && !isLastCall ? `<span id="kalshi-min-${ki.sym}" data-close-ms="${ki.closeTimeMs}">⏱ <strong>${timeStr}</strong></span>` : ''}
                        <span style="color:${isTrade ? 'var(--color-green)' : 'var(--color-orange)'}"><strong>${ki.confidence}%</strong> conf</span>
                      </div>
@@ -9199,7 +9423,7 @@ let _llmObsStats = { completions: 0, queues: 0, provider: 'none', model: 'none',
     }
 
     const rawInner = innerCount > 0 ? innerScore / innerCount : 0;
-    const innerNorm = clamp(rawInner, -1, 1) * 0.7; 
+    const innerNorm = clamp(rawInner, -1, 1) * 0.7;
 
     let outerBoost = 0;
     const triggers = [];
@@ -9353,7 +9577,7 @@ let _llmObsStats = { completions: 0, queues: 0, provider: 'none', model: 'none',
     const regime = detectMarketRegime(pred);
     const eq = computeEntryQuality(gs, regime, pred);
 
-    const barPct = Math.abs(gs.score) * 50; 
+    const barPct = Math.abs(gs.score) * 50;
     const barFill = `left:${gs.dir === 'down' ? 50 - barPct : 50}%;width:${barPct}%;`;
 
     const triggerBadges = gs.triggers.map(t =>
@@ -10033,7 +10257,7 @@ let _llmObsStats = { completions: 0, queues: 0, provider: 'none', model: 'none',
           `;
 
           return `<tr style="background:rgba(128,203,196,0.02)">
-            <td style="${tdBase};color:#fff;font-weight:700;cursor:pointer;user-select:none;padding:6px;border-radius:4px 0 0 4px" 
+            <td style="${tdBase};color:#fff;font-weight:700;cursor:pointer;user-select:none;padding:6px;border-radius:4px 0 0 4px"
                 onclick="const d=document.getElementById('${detailsId}');d.style.display=d.style.display==='none'?'table-row':'none'">
               ${coin.sym} <span style="color:#666;font-size:9px">▸</span>
             </td>
@@ -11066,11 +11290,13 @@ let _llmObsStats = { completions: 0, queues: 0, provider: 'none', model: 'none',
           ` ${agBadge}`;
       }
 
-      // Reference threshold — "meets or exceeds $85.32"
+      // Reference threshold — "Beat $85.32" for above, "Below $85.32" for below.
       // Prefer the raw API string (targetPrice) to avoid rounding the Kalshi strike.
-      const refLine = _kAlign?.ref != null
-        ? ` <span class="k15-target">≥ ${_k15m?.targetPrice ?? fmtPrice(_kAlign.ref)}</span>`
-        : (_k15m?.targetPrice ? ` <span class="k15-target">≥ ${_k15m.targetPrice}</span>` : '');
+      const refTarget = _k15m?.targetPrice ?? (_kAlign?.ref != null ? fmtPrice(_kAlign.ref) : null);
+      const refVerb = _rowStrikeDir === 'below' ? 'Below' : 'Beat';
+      const refLine = refTarget
+        ? ` <span class="k15-target">${refVerb} ${refTarget}</span>`
+        : '';
 
       // Gap from current price to reference — show dollar amount + % + BORDERLINE warning
       const _gapRaw = _kAlign?.gapPct ?? null;
@@ -11117,6 +11343,38 @@ let _llmObsStats = { completions: 0, queues: 0, provider: 'none', model: 'none',
       const gapDollar = Math.abs(p5.target - p.price);
       const gapLine = ` <span class="k15-gap ${gapPct > 0 ? 'k15-gap-up' : 'k15-gap-down'}">${gapPct > 0 ? '▲' : '▼'} $${gapDollar.toFixed(4)} (${gapPct > 0 ? '+' : ''}${gapPct.toFixed(3)}%)</span>`;
       return `<div class="ind-item k15m-row" style="background:rgba(255,255,255,0.03); border-left:2px solid var(--color-${dir === 'UP' ? 'green' : 'red'}); padding-left: 6px;"><span class="ind-name">Model 5M</span><span class="ind-val ${cls}"><span class="k15-side-label" style="opacity:0.6">PROJ</span><span class="k15-${dir.toLowerCase()}" style="font-weight:700">${dir}</span><span class="k15-target"> ≥ $${fmtPrice(p5.target)}</span>${gapLine}</span></div>`;
+    })();
+
+    const lazerRow = (() => {
+      const ms = window.tickers?.[p.sym]?.microstructure;
+      if (!ms || !ms.signal) return '';
+      
+      const sig = ms.signal;
+      const isAccel = sig === "MOMENTUM_ACCELERATING";
+      const isExhaust = sig === "MOMENTUM_EXHAUSTION";
+      const dir = ms.velocity > 0 ? "UP" : "DOWN";
+      
+      let color = "var(--color-text-muted)";
+      let icon = "➡️";
+      let text = "FLAT";
+      
+      if (isAccel) {
+        color = dir === "UP" ? "var(--color-green)" : "var(--color-red)";
+        icon = "🔥";
+        text = "ACCELERATING";
+      } else if (isExhaust) {
+        color = "var(--color-orange)";
+        icon = "⚠️";
+        text = "EXHAUSTION";
+      }
+      
+      return `<div class="ind-item k15m-row" style="background:rgba(255,255,255,0.03); border-left:2px solid ${color}; padding-left: 6px;">
+        <span class="ind-name">Pyth Lazer 5M</span>
+        <span class="ind-val" style="color:${color}; font-weight:700; display:flex; align-items:center; gap:6px;">
+          <span>${icon} MOMENTUM ${text} ${dir}</span>
+          <span style="font-size:9px; opacity:0.8; font-family:var(--font-mono);">(Vel: ${Number(ms.velocity).toFixed(2)})</span>
+        </span>
+      </div>`;
     })();
 
     return `
@@ -11459,27 +11717,16 @@ let _llmObsStats = { completions: 0, queues: 0, provider: 'none', model: 'none',
         const sideColor = ki.side === 'YES' ? 'var(--color-green)' : ki.side === 'NO' ? 'var(--color-red)' : 'var(--color-orange)';
         const sideBg = ki.side === 'YES' ? 'rgba(0,200,100,0.18)' : ki.side === 'NO' ? 'rgba(220,60,60,0.18)' : 'transparent';
         const actionLabel = isTrade ? '🟢 TRADE' : isExit ? '🔴 EXIT' : isHold ? '⏳ HOLD' : '👁 WATCH';
-        const strikeLabel = (() => { const m = ki.contractTicker?.match(/T(\d+(?:\.\d+)?)$/); return m ? 'T' + Number(m[1]).toLocaleString() : '';   // =========================================================================
-  // RL Weights Synchronization
-  // =========================================================================
-  setTimeout(() => {
-    if (window.wecryp?.getSystemWeights) {
-      window.wecryp.getSystemWeights()
-        .then(res => {
-          if (res.success && res.weights) {
-            console.log('[RL Loop] ?? Fetched system_weights from Firebase on startup');
-            if (window.PredictionMarkets?.setAdaptiveWeights) {
-              const symbols = ['BTC', 'ETH', 'SOL', 'DOGE', 'XRP']; 
-              symbols.forEach(sym => {
-                window.PredictionMarkets.setAdaptiveWeights(sym, res.weights);
-              });
-            }
-          }
-        })
-        .catch(err => console.warn('[RL Loop] Failed to sync startup weights:', err));
-    }
-  }, 3000); 
+        const strikeLabel = (() => { const m = ki.contractTicker?.match(/T(\d+(?:\.\d+)?)$/); return m ? 'T' + Number(m[1]).toLocaleString() : '';
+
 })();
+        const intentK15 = window.PredictionMarkets?.getCoin?.(p.sym)?.kalshi15m ?? null;
+        const intentTargetNum = Number(ki.targetPriceNum ?? intentK15?.targetPriceNum ?? intentK15?.floorPrice ?? intentK15?.capPrice);
+        const intentTargetPrice = ki.targetPrice || intentK15?.targetPrice || (Number.isFinite(intentTargetNum) && intentTargetNum > 0 ? `$${intentTargetNum.toLocaleString()}` : '');
+        const intentStrikeDir = (intentK15?.strikeDir ?? _strikeDirKi ?? 'above') === 'below' ? 'below' : 'above';
+        const priceToBeatLabel = intentTargetPrice
+          ? `${intentStrikeDir === 'below' ? 'Below' : 'Beat'} ${intentTargetPrice}`
+          : strikeLabel;
         const liveSecsLeft = ki.closeTimeMs ? Math.max(0, (ki.closeTimeMs - Date.now()) / 1000) : null;
         const fmtSecsLeft = s => s == null ? null : s < 60 ? Math.round(s) + 's' : (s / 60).toFixed(1) + 'm';
         const minsStr = fmtSecsLeft(liveSecsLeft);
@@ -11507,7 +11754,7 @@ let _llmObsStats = { completions: 0, queues: 0, provider: 'none', model: 'none',
                    </div>`
               : `<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
                      <span style="background:${sideBg};color:${sideColor};padding:4px 14px;border-radius:4px;font-size:15px;font-weight:800;letter-spacing:.8px">${ki.side}</span>
-                     <span style="font-size:12px;font-weight:700;color:var(--color-text)">KALSHI${strikeLabel ? ' · ' + strikeLabel : ''}</span>
+                     <span style="font-size:12px;font-weight:700;color:var(--color-text)">KALSHI${priceToBeatLabel ? ' · ' + priceToBeatLabel : ''}</span>
                      <span style="margin-left:auto;background:${isTrade ? 'rgba(0,200,100,0.15)' : 'rgba(200,200,0,0.12)'};color:${isTrade ? 'var(--color-green)' : 'var(--color-orange)'};padding:3px 10px;border-radius:3px;font-size:12px;font-weight:700">${actionLabel}</span>
                    </div>`}
               <!-- Model vs Kalshi probability — the primary insight -->
@@ -11539,6 +11786,7 @@ let _llmObsStats = { completions: 0, queues: 0, provider: 'none', model: 'none',
               </div>
               <div style="display:flex;gap:12px;font-size:11px;color:var(--color-text-faint);margin-top:5px;flex-wrap:wrap;align-items:center">
                 ${ki.closeTimeMs ? `<span id="kalshi-min-${p.sym}" data-close-ms="${ki.closeTimeMs}">⏱ <strong>${minsStr ?? '…'}</strong> left</span>` : minsStr ? `<span>⏱ <strong>${minsStr}</strong> left</span>` : ''}
+                ${intentTargetPrice ? `<span>Price to beat <strong style="color:var(--color-text)">${intentStrikeDir === 'below' ? 'below ' : ''}${intentTargetPrice}</strong></span>` : ''}
                 ${ki.suggestedEntry != null ? `<span>Entry ~<strong>$${ki.suggestedEntry.toFixed(2)}</strong></span>` : ''}
                 <span style="color:${isTrade ? 'var(--color-green)' : isDivergent ? 'var(--color-orange)' : 'var(--color-text-muted)'}">${alignTag} · <strong>${ki.confidence}%</strong></span>
               </div>
@@ -12716,6 +12964,18 @@ let _llmObsStats = { completions: 0, queues: 0, provider: 'none', model: 'none',
       (Date.now() - _appBootTs) < 6000;
 
     if (bootGateActive) {
+      if (!_bootGateTimer) {
+        const remainingMs = Math.max(250, 6100 - (Date.now() - _appBootTs));
+        _bootGateTimer = setTimeout(() => {
+          _bootGateTimer = null;
+          if (!_fetchAttempted && Object.keys(tickers).length === 0) {
+            _fetchAttempted = true;
+            setFeedStatus('degraded');
+            console.warn('[boot] benchmark feed gate expired — rendering dashboard while feeds continue in background');
+          }
+          render();
+        }, remainingMs);
+      }
       updateHeaderSummary();
       content.innerHTML = `<div class="loading-screen">
         <div class="loader-ring"></div>
@@ -12724,6 +12984,11 @@ let _llmObsStats = { completions: 0, queues: 0, provider: 'none', model: 'none',
         <button onclick="window._fetchAllNow?.()" style="margin-top:16px;padding:6px 18px;background:var(--color-accent);color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:12px">Retry</button>
       </div>`;
       return;
+    }
+
+    if (_bootGateTimer) {
+      clearTimeout(_bootGateTimer);
+      _bootGateTimer = null;
     }
 
     updateHeaderSummary();
@@ -13000,280 +13265,54 @@ let _llmObsStats = { completions: 0, queues: 0, provider: 'none', model: 'none',
           <table style="width:100%;border-collapse:collapse;font-size:12px">
             <thead>
               <tr style="border-bottom:2px solid rgba(255,255,255,0.1)">
-                ${['Sym', 'Time', 'Model Dir', 'Outcome', '✓', 'Model%', 'Kalshi%', 'Align', 'Action', 'Flags', 'Wick', 'Snap', 'Source'].map(h =>
-      `<th style="padding:6px 8px;text-align:left;font-size:10px;font-weight:700;color:var(--color-text-muted);text-transform:uppercase;letter-spacing:.5px">${h}</th>`
-    ).join('')}
+                ${['Sym','Time','Model Dir','Outcome','✓','Model%','Kalshi%','Align','Action','Flags','Wick','Snap','Source'].map(h =>
+                  `<th style="padding:6px 8px;text-align:left;font-size:10px;font-weight:700;color:var(--color-text-muted);text-transform:uppercase;letter-spacing:.5px">${h}</th>`
+                ).join('')}
               </tr>
             </thead>
-            <tbody>${rows || '<tr><td colspan="13" style="padding:20px;color:var(--color-text-muted);text-align:center">No contracts found in any source</td></tr>'}</tbody>
+            <tbody>${rows || '<tr><td colspan="13" style="padding:20px;color:var(--color-text-muted);text-align:center">No contracts settled yet this session</td></tr>'}</tbody>
           </table>
         </div>
+        ${log.length === 0 && lsLog.length > 0 ? `<div style="margin-top:12px;font-size:11px;color:var(--color-text-muted)">ℹ ${lsLog.length} contracts in localStorage cache from prior sessions</div>` : ''}
       </div>`;
   }
 
-  // ── Export contract log to all discovered drives + local ──────────────────
-  window._exportContractLog = async function () {
-    const log = window._15mResolutionLog || [];
-    const content = log.map(e => JSON.stringify(e)).join('\n');
-    // Use DataLogger's discovered paths so we always write everywhere
-    const paths = window.DataLogger?.getWritePaths('contract-export') || [];
-    if (!paths.length) {
-      alert('DataLogger not ready — try again in a moment');
-      return;
-    }
-    let written = 0;
-    for (const p of paths) {
-      try {
-        const ok = await window.dataStore.writeFile(p, content);
-        if (ok) written++;
-      } catch (_) { }
-    }
-    alert(`Exported ${log.length} contracts to ${written}/${paths.length} paths`);
-  };
+  // ── 5M Markets auto-refresh: re-render the view when prediction data arrives ──
+  // PredictionMarkets fetches async; if the user opens the 5M view before the
+  // first fetch completes, the cards show "No active contract". This listener
+  // re-renders the view as soon as fresh data is available.
+  let _pmReadyDebounceTimer = null;
+  let _lastPmReadyRefresh = 0;
+  window.addEventListener('predictionmarketsready', () => {
+    if (_pmReadyDebounceTimer) return; // Prevent clearing the timer so it actually fires
 
-  // ================================================================
-  // BOOT
-  // ================================================================
-
-  // Start Coinbase Advanced Trade WebSocket for live 15-min candle buckets
-  if (window.CandleWS) {
-    CandleWS.start();
-    window.addEventListener('candleWS:connected', () => {
-      const el = document.getElementById('feedStatusText');
-      if (el) el.textContent = 'Live · WS connected';
-    });
-    window.addEventListener('candleWS:disconnected', () => {
-      const el = document.getElementById('feedStatusText');
-      if (el) el.textContent = 'WS reconnecting…';
-    });
-  }
-
-  // ── CFM Floating Router — start early exit polling ─────────────
-  if (window.CFMRouter) {
-    CFMRouter.startExitPolling();
-  }
-
-  // ── CFM Early Exit Toast ────────────────────────────────────────
-  // DISABLED: cfm:earlyExit listener
-  // Early exit toasts were firing too frequently (flips + macro moves in last 2-4 min)
-  // Re-enable after stabilizing MIN_FLIP_STREAK and macro consensus thresholds
-  /*
-  window.addEventListener('cfm:earlyExit', (e) => {
-    const { sym, reason, strength, prediction, type } = e.detail || {};
-    if (!sym) return;
-    showEarlyExitToast(sym, prediction, reason, strength, type, e.detail || {});
-  });
-  */
-
-  // ── Shell Router Veto Toasts ────────────────────────────────────
-  window.addEventListener('shell:vetoConfirmed', (e) => {
-    const { sym, amplifiedEnergy } = e.detail || {};
-    if (!sym) return;
-    const coin = (typeof PREDICTION_COINS !== 'undefined' ? PREDICTION_COINS : []).find(c => c.sym === sym);
-    const icon = coin?.icon || sym;
-    const pct = Math.round((amplifiedEnergy || 0) * 100 * 10) / 10;
-    showEarlyExitToast(sym, 'current', `Shell energy ${pct}% — stand aside`, Math.min((amplifiedEnergy || 0) * 8, 1), 'coordinated_sell');
-    console.log(`[ShellRouter] Toast: ${sym} wall CONFIRMED`);
-  });
-
-  window.addEventListener('shell:vetoReleased', (e) => {
-    const { sym, reason } = e.detail || {};
-    if (!sym) return;
-    // Show a brief green "wall absorbed" notification
-    if (activeToasts.has(sym)) {
-      activeToasts.get(sym).remove();
-      activeToasts.delete(sym);
-    }
-    const coin = (typeof PREDICTION_COINS !== 'undefined' ? PREDICTION_COINS : []).find(c => c.sym === sym);
-    const icon = coin?.icon || sym;
-    const toast = document.createElement('div');
-    toast.setAttribute('data-exit-toast', sym + '-released');
-    toast.style.cssText = [
-      'position:fixed', 'top:68px', 'right:16px', 'z-index:9999',
-      'background:var(--color-surface,#12192e)', 'border:1px solid rgba(0,200,100,0.35)',
-      'border-radius:10px', 'padding:10px 14px', 'min-width:200px', 'max-width:280px',
-      'box-shadow:0 4px 20px rgba(0,0,0,.45)', 'animation:fadeInRight .25s ease', 'cursor:pointer',
-    ].join(';');
-    toast.innerHTML = `
-      <div style="display:flex;align-items:center;gap:8px">
-        <span style="font-size:16px">${icon}</span>
-        <span style="font-weight:700;color:var(--color-green)">✅ ${sym} — wall absorbed</span>
-      </div>
-      <div style="font-size:11px;color:var(--color-text-muted);margin-top:3px">
-        ${reason ?? 'Wall pressure resolved — prediction resumes'}
-      </div>`;
-    toast.addEventListener('click', () => toast.remove());
-    document.body.appendChild(toast);
-    setTimeout(() => { if (toast.isConnected) toast.remove(); }, 25000);
-    console.log(`[ShellRouter] Toast: ${sym} wall released (${reason})`);
-  });
-
-  // ── 15M Market Resolution listener ─────────────────────────────────
-  // Kalshi 15M settled result fed back into CFM calibration and debug panel.
-  window.addEventListener('market15m:resolved', (e) => {
-    const { sym, outcome, modelCorrect, prob, orchestratorAction, edgeCents } = e.detail || {};
-    if (!sym) return;
-    const icon = modelCorrect === true ? '✅' : modelCorrect === false ? '❌' : '❓';
-    const coin = (typeof PREDICTION_COINS !== 'undefined' ? PREDICTION_COINS : []).find(c => c.sym === sym);
-    const label = coin?.icon ? coin.icon + ' ' + sym : sym;
-    const orchStr = orchestratorAction ? ` orch:${orchestratorAction}` : '';
-    const edgeStr = edgeCents != null ? ` edge:${edgeCents}¢` : '';
-    console.log('[Resolver] ' + label + ' 15M ' + outcome + ' ' + icon + ' | prob:' + Math.round((prob || 0.5) * 100) + '%' + orchStr + edgeStr);
-    if (currentView === 'predictions' && predsLoaded) {
-      updateAccuracyBadge();
-      // Refresh the debug panel so settled contracts appear immediately
-      const panel = document.getElementById('kalshi-debug-panel');
-      if (panel) {
-        const open = panel.hasAttribute('open');
-        panel.outerHTML = buildKalshiDebugPanel();
-        if (open) {
-          const np = document.getElementById('kalshi-debug-panel');
-          if (np) np.setAttribute('open', '');
-        }
-      }
-    }
-    if (currentView === 'log' || currentView === 'debuglog') render();
-  });
-
-  // ── Real-time ms countdown for last-call Kalshi contracts ────────────────
-  // Updates every 100ms so traders see sub-second precision when < 10s left.
-  // Targets elements with data-close-ms attribute — set during render.
-  setInterval(() => {
+    // Throttle UI redraws to at most once every 5 seconds to prevent "frozen/unclickable" UI
+    // caused by Kalshi WebSocket ticks constantly wiping the DOM.
     const now = Date.now();
-    // Scope to the active view to avoid scanning the entire document on every 100ms tick
-    const activeView = document.querySelector('.view.active') || document.body;
-    activeView.querySelectorAll('[data-close-ms]').forEach(el => {
-      const closeMs = parseInt(el.getAttribute('data-close-ms'), 10);
-      const msLeft = Math.max(0, closeMs - now);
-      const secsLeft = msLeft / 1000;
-      let label;
-      if (secsLeft < 10) label = msLeft.toFixed(0) + 'ms';
-      else if (secsLeft < 90) label = Math.round(secsLeft) + 's';
-      else label = (secsLeft / 60).toFixed(1) + 'm';
-      if (el.id && el.id.startsWith('kalshi-lc-')) {
-        el.textContent = '⚡ ' + label;
-        // Pulse red when < 10s
-        el.style.opacity = secsLeft < 10 && Math.floor(now / 300) % 2 === 0 ? '0.5' : '1';
-      } else if (el.id && el.id.startsWith('kalshi-min-')) {
-        if (closeMs && (now - closeMs) > 5_000) { el.innerHTML = '⏱ <strong>—</strong>'; return; } // contract expired — new one pending
-        el.innerHTML = '⏱ <strong' + (secsLeft < 30 ? ' style="color:var(--color-red)"' : '') + '>' + label + '</strong>';
-      }
-    });
-    // Live-tick sweet-spot countdown (kalshi-ss-* elements)
-    activeView.querySelectorAll('[data-close-ms][id^="kalshi-ss-"]').forEach(el => {
-      const closeMs = parseInt(el.getAttribute('data-close-ms'), 10);
-      if (!closeMs) return;
-      const msLeft = closeMs - now;
-      if (msLeft <= 0) { el.textContent = '—'; return; } // contract expired — new one pending
-      const secsLeft = msLeft / 1000;
-      el.textContent = secsLeft < 60 ? Math.round(secsLeft) + 's' : (secsLeft / 60).toFixed(1) + 'm';
-    });
-    // Live-tick Market Divergence timers without requiring a full re-render
-    activeView.querySelectorAll('[data-mdiv-ts]').forEach(el => {
-      const firstDivTs = parseInt(el.getAttribute('data-mdiv-ts'), 10);
-      if (!firstDivTs) return;
-      const sec = Math.floor((now - firstDivTs) / 1000);
-      el.textContent = sec >= 60
-        ? Math.floor(sec / 60) + 'm ' + (sec % 60) + 's'
-        : sec + 's';
-    });
+    const timeSinceLast = now - (_lastPmReadyRefresh || 0);
+    const waitTime = timeSinceLast >= 5000 ? 0 : 5000 - timeSinceLast;
 
-    // ── Capture close-time snapshots for contract accuracy analysis ──────────
-    // Records Kalshi prob + model score at key seconds-to-close thresholds.
-    if (window.MarketResolver?.addCloseSnapshot) {
-      const SNAP_THRESHOLDS = [300, 180, 120, 60, 30, 10];
-      window._snapThresholdsFired = window._snapThresholdsFired || {};
-      const PREDICTION_COINS = window.PREDICTION_COINS || [];
-      for (const coin of PREDICTION_COINS) {
-        const pm = window.PredictionMarkets?.getCoin?.(coin.sym);
-        const k15 = pm?.kalshi15m;
-        if (!k15?.closeTime) continue;
-        const closeMs = new Date(k15.closeTime).getTime();
-        const secsLeft = (closeMs - now) / 1000;
-        if (secsLeft < 0 || secsLeft > 320) continue;
-        for (const thresh of SNAP_THRESHOLDS) {
-          const key = `${coin.sym}_${k15.ticker}_${thresh}`;
-          if (!window._snapThresholdsFired[key] && secsLeft <= thresh + 5 && secsLeft >= thresh - 10) {
-            window._snapThresholdsFired[key] = true;
-            const kalshiProb = k15.probability;
-            const modelScore = window._lastPrediction?.[coin.sym]?.score ?? null;
-            window.MarketResolver.addCloseSnapshot(coin.sym, Math.round(secsLeft), kalshiProb, modelScore);
-          }
-        }
-      }
-      // Clean fired keys every 15 minutes to avoid unbounded growth
-      if (!window._snapKeyCleanTs || now - window._snapKeyCleanTs > 900_000) {
-        window._snapKeyCleanTs = now;
-        window._snapThresholdsFired = {};
-      }
-    }
-  }, 100);
+    _pmReadyDebounceTimer = setTimeout(() => {
+      _pmReadyDebounceTimer = null;
+      _lastPmReadyRefresh = Date.now();
 
-
-  // ── Awaiting-card insight carousel (3s rotation) ──────────────────────────
-  setInterval(() => {
-    const map = window._kiInsights;
-    if (!map) return;
-    document.querySelectorAll('[id^="ki-await-"]').forEach(el => {
-      const sym = el.id.replace('ki-await-', '');
-      const ins = map[sym];
-      if (!ins?.length) return;
-      let idx = ((el._awaitIdx ?? -1) + 1) % ins.length;
-      el._awaitIdx = idx;
-      const cur = ins[idx];
-      // Fade out → swap content → fade in
-      el.style.opacity = '0.15';
-      setTimeout(() => {
+      if (currentView === 'markets5m') renderMarkets5M();
+      // Re-render prediction cards when Kalshi data arrives - ensures new contracts
+      // appear immediately when the burst-retry fetches them instead of waiting
+      // for the next PredictionEngine.runAll() cycle (up to 15s later).
+      if (['predictions', 'cfm', 'universe'].includes(currentView) && predsLoaded && !predictionRunInFlight) {
         try {
-          const dots = ins.map((_, j) =>
-            `<span style="width:16px;height:2px;border-radius:1px;background:${j === idx ? 'var(--color-primary,#7c6aff)' : 'rgba(255,255,255,0.12)'}" id="ki-dot-${sym}-${j}"></span>`
-          ).join('');
-          el.innerHTML = `<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-            <span style="font-size:9px;font-weight:700;color:var(--color-text-faint);letter-spacing:.5px;text-transform:uppercase;min-width:110px">${cur.label}</span>
-            <strong style="font-size:13px;color:${cur.color}">${cur.icon} ${cur.value}</strong>
-            ${cur.detail ? `<span style="margin-left:auto;font-size:10px;color:var(--color-text-faint)">${cur.detail}</span>` : ''}
-          </div>
-          <div style="display:flex;gap:3px;margin-top:4px">${dots}</div>`;
-          el.style.opacity = '1';
+          if (currentView === 'predictions') refreshActiveView();
+          else refreshActiveView();
         } catch (_) { }
-      }, 220);
-    });
-  }, 3000);
+      }
+      scheduleWebStatePublish('predictionmarkets', 100);
+    }, waitTime);
+  });
 
-  // ── Market Divergence live refresh (every 5s) ────────────────────────────
-  // Keeps _marketDivergence state fresh between prediction engine cycles using
-  // live Kalshi odds from PredictionMarkets — fixes stale %, catchupDelta, phase.
-  setInterval(() => {
-    if (!window._marketDivergence || !window._lastPrediction) return;
-    try {
-      PREDICTION_COINS.forEach(coin => {
-        const buf = window._marketDivergence[coin.sym];
-        if (!buf?.active || !buf.firstDivTs) return; // only refresh active divergence windows
-        const pm = window.PredictionMarkets?.getCoin?.(coin.sym);
-        const liveProb = pm?.kalshi15m?.probability;
-        if (liveProb == null) return;
-        const liveKalshiPct = liveProb * 100;
-        const lastPred = window._lastPrediction[coin.sym];
-        if (!lastPred) return;
-        const predObj = window._predictions?.[coin.sym] ?? null;
-        const modelScore = predObj?.score ?? 0;
-        const strikeDir = pm?.kalshi15m?.strikeDir === 'below' ? 'below' : 'above';
-        const yesDir = strikeDir === 'below' ? 'down' : 'up';
-        const noDir = yesDir === 'up' ? 'down' : 'up';
-        const modelYesPct = predObj?.projections?.p15?.kalshiAlign?.modelYesPct;
-        const modelDir = Number.isFinite(modelYesPct)
-          ? (modelYesPct >= 58 ? yesDir : modelYesPct <= 42 ? noDir : 'wait')
-          : (modelScore > 0.12 ? 'up' : modelScore < -0.12 ? 'down' : 'wait');
-        const kalshiDir = liveKalshiPct >= 50 ? yesDir : noDir;
-        updateMarketDivergence(coin.sym, modelDir, kalshiDir, liveKalshiPct, modelScore);
-      });
-    } catch (e) { /* non-critical */ }
-  }, 5000);
-
-  // ── Blockchain scan live updates ──────────────────────────────────
+  // ── Blockchain scan live updates (Wallet Intel panel) ─────────────
   window.addEventListener('blockchain-scan-update', () => {
     if (currentView === 'onchain') refreshChainScanUI();
-    scheduleWebStatePublish('blockchain-scan', 150);
   });
 
   window.addEventListener('cex-flow-update', () => {
@@ -13281,112 +13320,6 @@ let _llmObsStats = { completions: 0, queues: 0, provider: 'none', model: 'none',
       const cexEl = document.getElementById('universe-cex');
       if (cexEl && cexEl.style.display !== 'none') refreshCexFlow(_cexActiveSym, cexEl);
     }
-  });
-
-  // Boot guard — if all sources take >8s something is very wrong; force a render
-  const _bootGuard = setTimeout(() => {
-    if (Object.keys(tickers).length === 0) {
-      console.warn('[boot] fetchAll timed out after 8s — forcing render with empty tickers');
-      _fetchAttempted = true;
-      setFeedStatus('error');
-      render();
-    }
-  }, 20000);
-
-  window._fetchAllNow = () => fetchAll(true).then(() => { clearTimeout(_bootGuard); resetTimer(); });
-
-  // Prewarm coin icons — populates browser HTTP cache before first render
-  (function prewarmCoinIcons() {
-    const syms = ['BTC', 'ETH', 'SOL', 'XRP', 'HYPE', 'DOGE', 'BNB'];
-    const cgBase = 'https://assets.coingecko.com/coins/images';
-    const cgIds = {
-      BTC: '1/large/bitcoin.png', ETH: '279/large/ethereum.png', SOL: '4128/large/solana.png',
-      XRP: '44/large/xrp-symbol-white-128.png', HYPE: '39198/large/hyperliquid.png',
-      DOGE: '5/large/dogecoin.png', BNB: '825/large/bnb-icon2_2x.png'
-    };
-    syms.forEach(sym => {
-      const img = new Image();
-      img.src = `${cgBase}/${cgIds[sym]}`;
-      img.onerror = () => {
-        const fb = new Image();
-        fb.src = `https://cdn.jsdelivr.net/gh/atomiclabs/cryptocurrency-icons/128/color/${sym.toLowerCase()}.png`;
-      };
-    });
-    // =========================================================================
-  // RL Weights Synchronization
-  // =========================================================================
-  setTimeout(() => {
-    if (window.wecryp?.getSystemWeights) {
-      window.wecryp.getSystemWeights()
-        .then(res => {
-          if (res.success && res.weights) {
-            console.log('[RL Loop] ?? Fetched system_weights from Firebase on startup');
-            if (window.PredictionMarkets?.setAdaptiveWeights) {
-              const symbols = ['BTC', 'ETH', 'SOL', 'DOGE', 'XRP']; 
-              symbols.forEach(sym => {
-                window.PredictionMarkets.setAdaptiveWeights(sym, res.weights);
-              });
-            }
-          }
-        })
-        .catch(err => console.warn('[RL Loop] Failed to sync startup weights:', err));
-    }
-  }, 3000); 
-})();
-
-  // ── Staggered boot — unlock nav immediately, populate panels as data arrives ──
-  // Set _fetchAttempted now so render() never blocks on the loading screen gate.
-  // Panels render with empty state first; refreshActiveView() fills them as each
-  // source resolves.
-  _fetchAttempted = true;
-  startWebStateHeartbeat();
-  scheduleWebStatePublish('boot', 0);
-  render(); // skeleton — nav is live before any network call completes
-
-  // Fire data fetch after a single paint frame so the skeleton renders first
-  requestAnimationFrame(() => {
-    fetchAll().then(() => {
-      clearTimeout(_bootGuard);
-      resetTimer();
-      startCountdownTicker();
-      startLastUpdateTicker();
-      startAsyncRefreshEngine();
-      // Stagger heavy background modules so they don't contend with first render
-      startPythLazerStream();   // wire Lazer WS live ticker overlay
-      setTimeout(() => { if (window.PredictionMarkets) window.PredictionMarkets.start(); }, 500); // +0.5s
-      setTimeout(() => { if (window.BlockchainScan) window.BlockchainScan.start(); }, 2000); // +2s
-      setTimeout(() => { if (window.CexFlow) window.CexFlow.start(); }, 4000); // +4s
-      // ── Settlement pulse: big coordinated blast at every :00/:15/:30/:45 ──
-      // Regular streaming via resetTimer() keeps running between pulses.
-      setTimeout(() => {
-        if (!window._asyncRefreshEngine?.running) {
-          scheduleOnQuarterHours(settlementPull);
-          console.info('[WE] ⚡ Settlement pulse scheduler armed — fires at :00/:15/:30/:45');
-        } else {
-          console.info('[WE] ⚡ Async refresh engine active — settlement pulses handled in background');
-        }
-      }, 4500); // arm after all modules are up
-      // Start high-precision 15m coordinator to prefetch and confirm predictions
-      setTimeout(() => { if (window.Coordinator15m) { window.Coordinator15m.start(); console.info('[WE] Coordinator15m started'); } }, 6000);
-    });
-  });
-
-  // ── 5M Markets auto-refresh: re-render the view when prediction data arrives ──
-  // PredictionMarkets fetches async; if the user opens the 5M view before the
-  // first fetch completes, the cards show "No active contract". This listener
-  // re-renders the view as soon as fresh data is available.
-  window.addEventListener('predictionmarketsready', () => {
-    if (currentView === 'markets5m') renderMarkets5M();
-    // Re-render prediction cards when Kalshi data arrives — ensures new contracts
-    // appear immediately when the burst-retry fetches them instead of waiting
-    // for the next PredictionEngine.runAll() cycle (up to 15s later).
-    if (['predictions', 'cfm', 'universe'].includes(currentView) && predsLoaded && !predictionRunInFlight) {
-      try {
-        if (currentView === 'predictions') refreshActiveView();
-        else refreshActiveView();
-      } catch (_) { }
-    }
-    scheduleWebStatePublish('predictionmarkets', 100);
   });
 
   // Prediction live-stream watchdog — keeps cards updated between manual refreshes.
@@ -13435,27 +13368,7 @@ let _llmObsStats = { completions: 0, queues: 0, provider: 'none', model: 'none',
     } catch (err) {
       console.warn('[Birdeye] Error loading API key:', err.message);
     }
-    // =========================================================================
-  // RL Weights Synchronization
-  // =========================================================================
-  setTimeout(() => {
-    if (window.wecryp?.getSystemWeights) {
-      window.wecryp.getSystemWeights()
-        .then(res => {
-          if (res.success && res.weights) {
-            console.log('[RL Loop] ?? Fetched system_weights from Firebase on startup');
-            if (window.PredictionMarkets?.setAdaptiveWeights) {
-              const symbols = ['BTC', 'ETH', 'SOL', 'DOGE', 'XRP']; 
-              symbols.forEach(sym => {
-                window.PredictionMarkets.setAdaptiveWeights(sym, res.weights);
-              });
-            }
-          }
-        })
-        .catch(err => console.warn('[RL Loop] Failed to sync startup weights:', err));
-    }
-  }, 3000); 
-})();
+  })();
 
   // ── Initialize Adaptive Tuning Modules ────────────────────────────
   (function initializeAdaptiveModules() {
@@ -13513,20 +13426,31 @@ let _llmObsStats = { completions: 0, queues: 0, provider: 'none', model: 'none',
         }, 5000);
 
         // Outcome/indicator retune checks run on the tuner cadence instead of waiting 15m.
-        setInterval(async () => {
+        setInterval(() => {
           try {
-            const trigger = window._adaptiveTuner.shouldRetune?.() || { shouldRetune: true, trigger: 'scheduled' };
-            if (!trigger.shouldRetune) return;
-            const result = await window._adaptiveTuner.runTuningCycle({
-              validatePyth: true,
-              dryRun: false,
-              reason: trigger.trigger || 'continuous-scheduled',
-            });
-            if (result.totalAdjustments > 0) {
-              console.log(`[AdaptiveTuner] ${result.totalAdjustments} thresholds adjusted at ${new Date().toLocaleTimeString()}`);
+            const trigger = window._adaptiveTuner.shouldRetune?.();
+            if (!trigger?.shouldRetune) return;
+            const runCycle = async () => {
+              try {
+                const result = await window._adaptiveTuner.runTuningCycle({
+                  validatePyth: true,
+                  dryRun: false,
+                  reason: trigger.trigger || 'continuous-scheduled',
+                });
+                if (result.totalAdjustments > 0) {
+                  console.log(`[AdaptiveTuner] ${result.totalAdjustments} thresholds adjusted at ${new Date().toLocaleTimeString()}`);
+                }
+              } catch (err) {
+                console.warn('[AdaptiveTuner] Cycle failed:', err.message);
+              }
+            };
+            if (typeof requestIdleCallback === 'function') {
+              requestIdleCallback(() => { void runCycle(); }, { timeout: 8000 });
+            } else {
+              setTimeout(() => { void runCycle(); }, 50);
             }
           } catch (err) {
-            console.warn('[AdaptiveTuner] Cycle failed:', err.message);
+            console.warn('[AdaptiveTuner] retune scheduling failed:', err.message);
           }
         }, 60 * 1000);
 
@@ -13584,26 +13508,7 @@ let _llmObsStats = { completions: 0, queues: 0, provider: 'none', model: 'none',
     } catch (err) {
       console.warn('[App] Failed to initialize adaptive modules:', err.message);
     }
-    // =========================================================================
-  // RL Weights Synchronization
-  // =========================================================================
-  setTimeout(() => {
-    if (window.wecryp?.getSystemWeights) {
-      window.wecryp.getSystemWeights()
-        .then(res => {
-          if (res.success && res.weights) {
-            console.log('[RL Loop] ?? Fetched system_weights from Firebase on startup');
-            if (window.PredictionMarkets?.setAdaptiveWeights) {
-              const symbols = ['BTC', 'ETH', 'SOL', 'DOGE', 'XRP']; 
-              symbols.forEach(sym => {
-                window.PredictionMarkets.setAdaptiveWeights(sym, res.weights);
-              });
-            }
-          }
-        })
-        .catch(err => console.warn('[RL Loop] Failed to sync startup weights:', err));
-    }
-  }, 3000); 
+
 })();
 
   // ── KalshiDebug console API ──────────────────────────────────────
@@ -13713,25 +13618,118 @@ let _llmObsStats = { completions: 0, queues: 0, provider: 'none', model: 'none',
   };
   console.log('[ContractCacheDebug] API ready — ContractCacheDebug.status() .accuracy() .byCoins() .recent(minutes)');
 
-  // =========================================================================
-  // RL Weights Synchronization
-  // =========================================================================
-  setTimeout(() => {
-    if (window.wecryp?.getSystemWeights) {
-      window.wecryp.getSystemWeights()
-        .then(res => {
-          if (res.success && res.weights) {
-            console.log('[RL Loop] ?? Fetched system_weights from Firebase on startup');
-            if (window.PredictionMarkets?.setAdaptiveWeights) {
-              const symbols = ['BTC', 'ETH', 'SOL', 'DOGE', 'XRP']; 
-              symbols.forEach(sym => {
-                window.PredictionMarkets.setAdaptiveWeights(sym, res.weights);
-              });
-            }
-          }
-        })
-        .catch(err => console.warn('[RL Loop] Failed to sync startup weights:', err));
+  // ================================================================
+  // BOOT — initial data fetch + background pollers
+  // ================================================================
+
+  if (window.CandleWS) {
+    CandleWS.start();
+    window.addEventListener('candleWS:connected', () => {
+      const el = document.getElementById('feedStatusText');
+      if (el) el.textContent = 'Live · WS connected';
+    });
+    window.addEventListener('candleWS:disconnected', () => {
+      const el = document.getElementById('feedStatusText');
+      if (el) el.textContent = 'WS reconnecting…';
+    });
+  }
+
+  window._exportContractLog = async function() {
+    const log = window._15mResolutionLog || [];
+    const content = log.map(e => JSON.stringify(e)).join('\n');
+    // Use DataLogger's discovered paths so we always write everywhere
+    const paths = window.DataLogger?.getWritePaths('contract-export') || [];
+    if (!paths.length) {
+      alert('DataLogger not ready — try again in a moment');
+      return;
     }
-  }, 3000); 
+    let written = 0;
+    for (const p of paths) {
+      try {
+        const ok = await window.dataStore.writeFile(p, content);
+        if (ok) written++;
+      } catch (_) {}
+    }
+    alert(`Exported ${log.length} contracts to ${written}/${paths.length} paths`);
+  };
+
+  // Initialize Telegram & Polycool signals
+  if (window.electron && window.electron.telegram) {
+    window.electron.telegram.status().then(status => {
+      _telegramStatus = status;
+      if (currentView === 'observability') renderObservability();
+    }).catch(err => {
+      console.error('[Telegram] Failed to check status:', err);
+    });
+
+    window.electron.telegram.onAuthRequest((data) => {
+      console.log('[Telegram] Auth request received:', data);
+      _telegramAuthRequest = data;
+      if (currentView === 'observability') renderObservability();
+    });
+
+    window.electron.telegram.onMessage((msg) => {
+      console.log('[Telegram] Live message received:', msg);
+      _telegramFeeds.unshift(msg);
+      if (_telegramFeeds.length > 30) _telegramFeeds.pop();
+      if (currentView === 'observability') {
+        const feedEl = document.getElementById('tg-signals-feed');
+        if (feedEl) feedEl.innerHTML = renderTelegramFeedsHtml();
+      }
+    });
+  }
+
+  // Expose for AsyncRefreshEngine settlement/market streams
+  window.fetchAll = fetchAll;
+
+  const _bootGuard = setTimeout(() => {
+    if (Object.keys(tickers).length === 0) {
+      console.warn('[boot] fetchAll timed out after 10s — forcing render with empty tickers');
+      _fetchAttempted = true;
+      setFeedStatus('error');
+      render();
+    }
+  }, 10000);
+
+  window._fetchAllNow = () => fetchAll(true).then(() => {
+    clearTimeout(_bootGuard);
+    startAsyncRefreshEngine();
+    if (!_asyncRefreshEngineBooted) resetTimer();
+  });
+
+  (function prewarmCoinIcons() {
+    const syms = ['BTC', 'ETH', 'SOL', 'XRP', 'HYPE', 'DOGE', 'BNB'];
+    const cgBase = 'https://assets.coingecko.com/coins/images';
+    const cgIds = {
+      BTC: '1/large/bitcoin.png', ETH: '279/large/ethereum.png', SOL: '4128/large/solana.png',
+      XRP: '44/large/xrp-symbol-white-128.png', HYPE: '39198/large/hyperliquid.png',
+      DOGE: '5/large/dogecoin.png', BNB: '825/large/bnb-icon2_2x.png',
+    };
+    syms.forEach(sym => {
+      const img = new Image();
+      img.src = `${cgBase}/${cgIds[sym]}`;
+      img.onerror = () => {
+        const fb = new Image();
+        fb.src = `https://cdn.jsdelivr.net/gh/atomiclabs/cryptocurrency-icons/128/color/${sym.toLowerCase()}.png`;
+      };
+    });
+  })();
+
+  render();
+
+  fetchAll().then(() => {
+    clearTimeout(_bootGuard);
+    startAsyncRefreshEngine();
+    if (!_asyncRefreshEngineBooted) resetTimer();
+    if (window.PredictionMarkets) window.PredictionMarkets.start();
+    setTimeout(() => { if (window.BlockchainScan) window.BlockchainScan.start(); }, 1500);
+    setTimeout(() => { if (window.CexFlow) window.CexFlow.start(); }, 3000);
+  }).catch(err => {
+    console.warn('[boot] initial fetchAll failed:', err.message);
+    clearTimeout(_bootGuard);
+    _fetchAttempted = true;
+    render();
+  });
+
 })();
 

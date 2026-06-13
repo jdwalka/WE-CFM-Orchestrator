@@ -58,40 +58,57 @@ class ScorecardDataAggregator {
   }
 
   /**
-   * Save data to localStorage cache
+   * Save data to localStorage cache (debounced to prevent UI freezing)
    */
   _saveToCache() {
-    try {
-      const data = {
-        predictions: this.predictions,
-        settlements: this.settlements,
-        errors: this.errors.slice(-100), // Keep last 100 errors
-        correlations: this.correlations,
-        stats: this.stats,
-        timestamp: Date.now(),
-      };
-      localStorage.setItem('scorecard-data', JSON.stringify(data));
-    } catch (e) {
-      // Silently fail if localStorage is full
-      if (e.name === 'QuotaExceededError') {
-        // Clear oldest 25% of data and retry
-        this.predictions = this.predictions.slice(Math.floor(this.predictions.length * 0.25));
-        this.settlements = this.settlements.slice(Math.floor(this.settlements.length * 0.25));
-        try {
-          const data = {
-            predictions: this.predictions,
-            settlements: this.settlements,
-            errors: this.errors.slice(-50),
-            correlations: this.correlations,
-            stats: this.stats,
-            timestamp: Date.now(),
-          };
-          localStorage.setItem('scorecard-data', JSON.stringify(data));
-        } catch (e2) {
-          console.warn('[Scorecard] Cache save failed even after cleanup:', e2.message);
+    if (this._savePending) return;
+    this._savePending = true;
+
+    setTimeout(() => {
+      this._savePending = false;
+      try {
+        // Strip heavy 'signals' object from predictions before caching to prevent QuotaExceededError
+        const slimPredictions = this.predictions.map(p => {
+          const { signals, ...rest } = p;
+          return rest;
+        });
+
+        // Ensure arrays are strictly capped
+        if (this.correlations.length > 500) this.correlations = this.correlations.slice(-500);
+        if (this.backtests.length > 500) this.backtests = this.backtests.slice(-500);
+
+        const data = {
+          predictions: slimPredictions,
+          settlements: this.settlements,
+          errors: this.errors.slice(-100),
+          correlations: this.correlations,
+          stats: this.stats,
+          timestamp: Date.now(),
+        };
+        localStorage.setItem('scorecard-data', JSON.stringify(data));
+      } catch (e) {
+        // Silently fail if localStorage is full
+        if (e.name === 'QuotaExceededError') {
+          // Clear oldest 25% of data and retry
+          this.predictions = this.predictions.slice(Math.floor(this.predictions.length * 0.25));
+          this.settlements = this.settlements.slice(Math.floor(this.settlements.length * 0.25));
+          this.correlations = this.correlations.slice(Math.floor(this.correlations.length * 0.25));
+          try {
+            const data = {
+              predictions: this.predictions.map(p => ({ ...p, signals: undefined })),
+              settlements: this.settlements,
+              errors: this.errors.slice(-50),
+              correlations: this.correlations,
+              stats: this.stats,
+              timestamp: Date.now(),
+            };
+            localStorage.setItem('scorecard-data', JSON.stringify(data));
+          } catch (e2) {
+            console.warn('[Scorecard] Cache save failed even after cleanup:', e2.message);
+          }
         }
       }
-    }
+    }, 2000);
   }
 
   /**

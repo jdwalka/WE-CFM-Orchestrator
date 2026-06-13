@@ -95,7 +95,7 @@
   let lastTideRunTs = 0;
   let tideStatusCache = null;
   let tideStatusCacheTs = 0;
-  const INFERENCE_MIN_INTERVAL_MS = 25000;
+  const INFERENCE_MIN_INTERVAL_MS = 150000; // Trigger ~6 times per 15 min window
   const INFERENCE_REQUEST_TIMEOUT_MS = 7000;
   const INFERENCE_QUOTA_COOLDOWN_MS = 5 * 60 * 1000;
   const TIDE_MIN_INTERVAL_MS = 15000;
@@ -4840,6 +4840,10 @@
               modelYesPct,
               kalshiYesPct,
               divergence,
+              yesAsk: k15m?.yesAsk ?? null,
+              yesBid: k15m?.yesBid ?? null,
+              noAsk: k15m?.noAsk ?? null,
+              noBid: k15m?.noBid ?? null,
               strikeDir: kalshiStDir,  // 'above'|'below' — passed through to snapshot
               floorPrice: k15m?.floorPrice ?? kalshiRef,
               capPrice: k15m?.capPrice ?? null,

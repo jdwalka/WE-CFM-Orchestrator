@@ -65,7 +65,13 @@
         outcome: e._kalshiResult,
         ts: e.ts || e.settledTs,
         source: 'kalshi-log',
-        correct: e.modelCorrect
+        correct: e.modelCorrect,
+        confidence: e.proxyConfidence || e.modelConf || 0,
+        kalshiProb: e.kYesPct || 0,
+        kYesAsk: e.yesAsk || 0,
+        kYesBid: e.yesBid || 0,
+        kNoAsk: e.noAsk || 0,
+        kNoBid: e.noBid || 0
       })),
       ...resLog.filter(e => e.modelCorrect !== null).map(e => ({
         sym: e.sym,
@@ -73,7 +79,13 @@
         outcome: e.actualOutcome,
         ts: e.settledTs,
         source: 'resolution-log',
-        correct: e.modelCorrect
+        correct: e.modelCorrect,
+        confidence: e.confidence || e.modelConf || 0,
+        kalshiProb: e.entryProb != null ? Math.round(e.entryProb * 100) : 0,
+        kYesAsk: e.yesAsk || (e.closeSnapshots?.slice(-1)[0]?.kalshiProb != null ? Math.round(e.closeSnapshots.slice(-1)[0].kalshiProb * 100) : 0),
+        kYesBid: e.yesBid || 0,
+        kNoAsk: e.noAsk || 0,
+        kNoBid: e.noBid || 0
       }))
     ];
     
@@ -163,6 +175,7 @@
     refresh: updateDashboard,
     getStats: calculateStats,
     getSettlements: getSettlementData,
+    getAllData: getSettlementData,
     printReport: () => {
       const stats = calculateStats();
       const data = getSettlementData();

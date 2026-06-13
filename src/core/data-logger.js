@@ -3,13 +3,13 @@
 // Hybrid JSONL logger + Ctrl+D debug overlay
 //
 // Writes every 60s to ALL available storage roots discovered at startup:
-//   G:\WECRYP\data\YYYY-MM-DD\{category}.jsonl          (primary dev drive on this machine)
-//   D:\WECRYP0-data\YYYY-MM-DD\{category}.jsonl         (legacy local data root)
-//   C:\WECRYP0-data\...  E:\WECRYP0-data\...            (other local drives)
-//   H:\My Drive\WECRYP\WECRYP0-data\...                 (Google Drive mirror)
-//   \\server\share\WECRYP0-data\...                      (UNC network shares)
-//   OneDrive\WECRYP0-data\...                            (personal OneDrive)
-//   OneDrive - Azure\WECRYP0-data\...                    (business OneDrive)
+//   G:\WECRYPTO\data\YYYY-MM-DD\{category}.jsonl          (primary dev drive on this machine)
+//   D:\WECRYPTO-data\YYYY-MM-DD\{category}.jsonl         (legacy local data root)
+//   C:\WECRYPTO-data\...  E:\WECRYPTO-data\...            (other local drives)
+//   H:\My Drive\WECRYPTO\WECRYPTO-data\...                 (Google Drive mirror)
+//   \\server\share\WECRYPTO-data\...                      (UNC network shares)
+//   OneDrive\WECRYPTO-data\...                            (personal OneDrive)
+//   OneDrive - Azure\WECRYPTO-data\...                    (business OneDrive)
 //
 // Drive list is built dynamically via storage:getDrives IPC at load time.
 // Categories: predictions · decisions · cfm_snapshots · shell_events ·
@@ -19,12 +19,23 @@
 (function () {
   'use strict';
 
-  let   LOCAL_ROOT = 'G:\\WECRYP\\data';   // primary dev drive — updated during discovery when needed
+  let   LOCAL_ROOT = 'C:\\Users\\gitgo\\OneDrive\\WECRYPTO_Logs';   // primary dev drive - updated during discovery when needed
   let   DRIVE_PATHS = [];                   // populated by discoverDrives() on startup
   const FLUSH_MS   = 60_000;
+  const STORAGE_PROBE_TIMEOUT_MS = 20000;
 
   function uniquePaths(paths) {
-    return [...new Set((paths || []).filter(Boolean))];
+    const seen = new Set();
+    const unique = [];
+    for (const p of paths || []) {
+      const normalized = normalizeRoot(p);
+      if (!normalized) continue;
+      const key = normalized.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      unique.push(normalized);
+    }
+    return unique;
   }
 
   function normalizeRoot(root) {
@@ -42,56 +53,222 @@
       .map(d => String(d.letter).toUpperCase());
     const preferred = ['G', 'F', 'D', 'C'];
     const picked = preferred.find(letter => letters.includes(letter)) || letters[0];
-    return picked ? `${picked}:\\WECRYP\\data` : LOCAL_ROOT;
+    return picked ? `${picked}:\\WECRYPTO\\data` : LOCAL_ROOT;
   }
 
   function buildCloudMirrorRoots(root) {
     const base = normalizeRoot(root);
     if (!base) return [];
     return uniquePaths([
-      `${base}\\WECRYP0-data`,
-      `${base}\\WECRYP\\WECRYP0-data`,
+      `${base}\\WECRYPTO\\data`,
     ]);
   }
 
+  function isGoogleDriveRoot(root) {
+    const value = normalizeRoot(root);
+    return /(?:^|\\)(?:My Drive|Google Drive(?:\s*\(.+\))?|OneDrive.*)$/i.test(value);
+  }
+
+  function isPreferredGoogleDriveRoot(root) {
+    // Treat any cloud drive (Google Drive, OneDrive) as preferred so it's included in discovery
+    return isGoogleDriveRoot(root);
+  }
+
+  function writeResultOk(result) {
+    return result === true || !!result?.ok;
+  }
+
+  function writeResultError(result) {
+    if (result === false) return 'write rejected';
+    if (!result) return 'no result';
+    return result.error || result.code || 'write rejected';
+  }
+
+  function withTimeout(promise, timeoutMs, label) {
+    let timer = null;
+    const timeout = new Promise(resolve => {
+      timer = setTimeout(() => {
+        resolve({ ok: false, code: 'ETIMEDOUT', error: `${label || 'operation'} timed out after ${timeoutMs}ms` });
+      }, timeoutMs);
+    });
+    return Promise.race([
+      Promise.resolve(promise).catch(error => ({ ok: false, error: error?.message || String(error) })),
+      timeout,
+    ]).finally(() => {
+      if (timer) clearTimeout(timer);
+    });
+  }
+
+  async function probeStorageRoot(root) {
+    const normalized = normalizeRoot(root);
+    if (!normalized || !window.dataStore?.writeFile) {
+      return { ok: false, root: normalized, error: 'dataStore write bridge unavailable' };
+    }
+
+    const probePath = `${normalized}\\.permission-check\\data-logger-write-probe.json`;
+    const payload = JSON.stringify({
+      source: 'DataLogger',
+      ts: Date.now(),
+      root: normalized,
+    });
+    const result = await withTimeout(
+      window.dataStore.writeFile(probePath, payload),
+      STORAGE_PROBE_TIMEOUT_MS,
+      probePath
+    );
+
+    if (writeResultOk(result)) return { ok: true, root: normalized, probePath };
+    return { ok: false, root: normalized, path: probePath, error: writeResultError(result), code: result?.code || null };
+  }
+
+  
   // ── Async drive discovery — runs once on load ─────────────────────────────
   async function discoverDrives() {
     try {
-      if (!window.desktopApp?.getDrives) return;
-      const drives = await window.desktopApp.getDrives();
-      LOCAL_ROOT = pickPrimaryLocalRoot(drives);
-      const primaryLetter = localRootLetter();
-      const paths  = [];
-      for (const d of drives) {
-        if (d.type === 'local' && d.letter) {
-          const L = d.letter.toUpperCase();
-          if (L === primaryLetter) continue;     // already covered by LOCAL_ROOT
-          paths.push(`${L}:\\WECRYP0-data`);
-        } else if (d.type === 'network' && d.root) {
-          // UNC path — root already ends with '\', e.g. \\server\share\
-          paths.push(`${normalizeRoot(d.root)}\\WECRYP0-data`);
-        } else if (d.type === 'cloud' && d.root) {
-          paths.push(...buildCloudMirrorRoots(d.root));
-        }
-      }
-      DRIVE_PATHS = uniquePaths(paths);
-      console.log('[DataLogger] storage roots:', [LOCAL_ROOT, ...DRIVE_PATHS].join(' | '));
+      LOCAL_ROOT = 'C:\\Users\\gitgo\\OneDrive\\WECRYPTO_Logs';
+      DRIVE_PATHS = ['H:\\My Drive\\WECRYPTO_Logs'];
+      _storage.ready = true;
+      _storage.discoveredAt = Date.now();
+      _storage.writableRoots = [LOCAL_ROOT, ...DRIVE_PATHS];
+      
+      console.log('[DataLogger] writable storage roots:', [LOCAL_ROOT, ...DRIVE_PATHS].join(' | '));
+      
+      // Load freshest data from C: immediately
+      await loadFreshestData();
+      
+      // Background load historical from H:
+      setTimeout(backloadHistoricalData, 5000);
+      
     } catch (e) {
       console.warn('[DataLogger] drive discovery failed:', e.message);
-      // Fallback to known machine-specific roots
-      DRIVE_PATHS = uniquePaths([
-        'D:\\WECRYP0-data',
-        'H:\\My Drive\\WECRYP\\WECRYP0-data',
-      ]);
-      console.log('[DataLogger] fallback storage roots:', [LOCAL_ROOT, ...DRIVE_PATHS].join(' | '));
+    }
+  }
+
+  async function loadFreshestData() {
+    if (!window.dataStore?.readFile) return;
+    try {
+      const today = todayStr();
+      const d = new Date(); d.setDate(d.getDate() - 1);
+      const yesterday = d.toISOString().slice(0, 10);
+      
+      const cats = ['predictions', 'decisions', 'resolver_outcomes'];
+      for (const day of [yesterday, today]) {
+        for (const cat of cats) {
+          const path = `${LOCAL_ROOT}\\${day}\\${cat}.jsonl`;
+          try {
+            const res = await window.dataStore.readFile(path);
+            if (res?.data || res?.content) {
+              const content = res.data || res.content;
+              const lines = content.split('\\n');
+              for (const line of lines) {
+                if (!line.trim()) continue;
+                try {
+                  const obj = JSON.parse(line);
+                  if (cat === 'predictions') {
+                    const sym = obj.sym;
+                    if (!_stats.predictions[sym]) _stats.predictions[sym] = { total: 0, up: 0, down: 0, scores: [] };
+                    const s = _stats.predictions[sym];
+                    s.total++;
+                    if (obj.dir === 'UP') s.up++;
+                    if (obj.dir === 'DOWN') s.down++;
+                    if (obj.score != null) {
+                      s.scores.push(+obj.score);
+                      if (s.scores.length > 200) s.scores.shift();
+                    }
+                  } else if (cat === 'decisions') {
+                    const sym = obj.sym;
+                    if (!_stats.decisions[sym]) _stats.decisions[sym] = { trade: 0, watch: 0, hold: 0, exit: 0, skip: 0 };
+                    const d = _stats.decisions[sym];
+                    if (obj.action === 'trade') d.trade++;
+                    else if (obj.action === 'earlyExit') d.exit++;
+                    else if (obj.action === 'hold') d.hold++;
+                    else if (obj.action === 'skip') d.skip++;
+                    else d.watch++;
+                  } else if (cat === 'resolver_outcomes') {
+                    const sym = obj.sym;
+                    if (!_stats.resolverOutcomes[sym]) _stats.resolverOutcomes[sym] = { correct: 0, wrong: 0, total: 0 };
+                    const r = _stats.resolverOutcomes[sym];
+                    r.total++;
+                    if (obj.modelCorrect === true) r.correct++;
+                    if (obj.modelCorrect === false) r.wrong++;
+                  }
+                } catch(e) {}
+              }
+            }
+          } catch(e) {}
+        }
+      }
+      console.log('[DataLogger] loadFreshestData complete from', LOCAL_ROOT);
+    } catch(e) {
+      console.warn('[DataLogger] loadFreshestData error', e);
+    }
+  }
+
+  async function backloadHistoricalData() {
+    if (!DRIVE_PATHS[0] || !window.dataStore?.readFile) return;
+    console.log('[DataLogger] background fetching historical data from', DRIVE_PATHS[0]);
+    try {
+      const cats = ['predictions', 'decisions', 'resolver_outcomes'];
+      for (let i = 2; i <= 7; i++) {
+        const d = new Date(); d.setDate(d.getDate() - i);
+        const day = d.toISOString().slice(0, 10);
+        for (const cat of cats) {
+          const path = `${DRIVE_PATHS[0]}\\${day}\\${cat}.jsonl`;
+          try {
+            const res = await window.dataStore.readFile(path);
+            if (res?.data || res?.content) {
+              const content = res.data || res.content;
+              const lines = content.split('\\n');
+              for (const line of lines) {
+                if (!line.trim()) continue;
+                try {
+                  const obj = JSON.parse(line);
+                  // Basic historical accumulation
+                  if (cat === 'resolver_outcomes') {
+                    const sym = obj.sym;
+                    if (!_stats.resolverOutcomes[sym]) _stats.resolverOutcomes[sym] = { correct: 0, wrong: 0, total: 0 };
+                    const r = _stats.resolverOutcomes[sym];
+                    r.total++;
+                    if (obj.modelCorrect === true) r.correct++;
+                    if (obj.modelCorrect === false) r.wrong++;
+                  }
+                } catch(e) {}
+              }
+            }
+          } catch(e) {}
+        }
+      }
+      console.log('[DataLogger] backloadHistoricalData complete');
+    } catch(e) {
+      console.warn('[DataLogger] backloadHistoricalData error', e);
     }
   }
 
   // ── Buffer + Stats ──────────────────────────────────────────────────────────
   const _buf = {};   // category → string[]
+  const _storage = {
+    ready: false,
+    discoveredAt: 0,
+    drives: [],
+    accountHints: [],
+    googleRoots: [],
+    googleTargets: [],
+    writableRoots: [],
+    failedRoots: [],
+    lastWriteFailure: null,
+  };
 
   const _stats = {
-    session: { startTs: Date.now(), flushCount: 0, bytesWritten: 0 },
+    session: {
+      startTs: Date.now(),
+      flushCount: 0,
+      bytesWritten: 0,
+      writeFailures: 0,
+      storageReady: false,
+      storageRoots: 0,
+      lastStorageDiscovery: 0,
+      lastWriteFailure: null,
+    },
     predictions:      {},   // sym → { total, up, down, scores[] }
     decisions:        {},   // sym → { trade, watch, hold, exit, skip }
     resolverOutcomes: {},   // sym → { correct, wrong, total }
@@ -119,13 +296,44 @@
   async function flushCat(category) {
     const lines = _buf[category];
     if (!lines || !lines.length) return;
+    if (!window.dataStore?.appendLine) return;
+
     const block = lines.join('\n');
     _buf[category] = [];
-    if (!window.dataStore) return;
-    for (const p of filePaths(category)) {
-      try { await window.dataStore.appendLine(p, block); } catch (_) {}
+
+    const attempts = await Promise.all(filePaths(category).map(async (p) => {
+      try {
+        const result = await window.dataStore.appendLine(p, block);
+        if (writeResultOk(result)) return { ok: true, path: p };
+        return { ok: false, path: p, error: writeResultError(result), code: result?.code || null };
+      } catch (e) {
+        return { ok: false, path: p, error: e?.message || String(e), code: e?.code || null };
+      }
+    }));
+
+    const successes = attempts.filter(result => result.ok);
+    const failures = attempts.filter(result => !result.ok);
+    if (!successes.length) {
+      _buf[category] = lines.concat(_buf[category] || []);
     }
-    _stats.session.bytesWritten += block.length * 2;
+
+    if (failures.length) {
+      const failureSummary = {
+        category,
+        ts: Date.now(),
+        keptBuffered: successes.length === 0,
+        failures: failures.slice(0, 8),
+      };
+      _storage.lastWriteFailure = failureSummary;
+      _stats.session.writeFailures += failures.length;
+      _stats.session.lastWriteFailure = failureSummary;
+      console.warn('[DataLogger] write failures:', category, failures.map(f => `${f.path}: ${f.error || f.code || 'failed'}`).join(' | '));
+      try {
+        window.dispatchEvent(new CustomEvent('data-logger-write-error', { detail: failureSummary }));
+      } catch (_) {}
+    }
+
+    _stats.session.bytesWritten += block.length * successes.length;
   }
 
   async function flushAll() {
@@ -441,6 +649,8 @@
           <div>📁 Primary: <code>${LOCAL_ROOT}\\${todayStr()}</code></div>
           ${DRIVE_PATHS.map(p => `<div>💾 Mirror: <code>${p}\\${todayStr()}</code></div>`).join('')}
           ${DRIVE_PATHS.length === 0 ? '<div style="color:var(--color-gold)">⚠ Discovering drives…</div>' : ''}
+          ${_storage.accountHints.length ? `<div>Google accounts: <code>${_storage.accountHints.join('</code> · <code>')}</code></div>` : ''}
+          ${s.session.writeFailures ? `<div style="color:var(--color-red);margin-top:4px">Write failures: <b>${s.session.writeFailures}</b> · last: <code>${s.session.lastWriteFailure?.category || 'unknown'}</code></div>` : ''}
           <div style="margin-top:6px">Categories: predictions · decisions · cfm_snapshots · shell_events · resolver_outcomes · logic_debug · errors</div>
         </div>
 
@@ -541,6 +751,12 @@
     logPolymarket: (data) => push('polymarket_raw', { markets: data }),
     flush:         flushAll,
     getStats:      () => _stats,
+    getStorageRoots: () => ({
+      primary: LOCAL_ROOT,
+      mirrors: [...DRIVE_PATHS],
+      ..._storage,
+    }),
+    refreshStorageRoots: discoverDrives,
     getWritePaths: (category) => filePaths(category || 'export'),
     showDebug:     showOverlay,
     hideDebug:     hideOverlay,

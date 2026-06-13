@@ -34,11 +34,13 @@ import uuid
 import random
 import logging
 import argparse
+import threading
 from datetime import datetime, timezone
 from typing import Optional
 
 import numpy as np
 import requests
+from kafka import KafkaConsumer
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -115,10 +117,33 @@ class WecryptoNuclear:
         }
         self.calibrated_lambdas: dict[str, float] = {}
         self._active_tickers:    dict[str, Optional[str]] = {a: None for a in ASSETS}
+        
+        self.momentum_signals = {asset: None for asset in ASSETS}
+        self.kafka_broker = os.environ.get("KAFKA_BROKER_URL", "redpanda:9092")
+        
+        t = threading.Thread(target=self._listen_momentum_signals, daemon=True)
+        t.start()
 
         self._load_persistent_state()
         self._initialize_lambdas()
         log.info('=== WECRYPTO NUCLEAR ENGINE READY — dry_run=%s ===', self.dry_run)
+
+    def _listen_momentum_signals(self):
+        try:
+            consumer = KafkaConsumer(
+                "wecrypto-momentum-signals",
+                bootstrap_servers=self.kafka_broker,
+                value_deserializer=lambda m: json.loads(m.decode('utf-8'))
+            )
+            for msg in consumer:
+                data = msg.value
+                asset_sym = data.get("asset")
+                for key, val in ASSETS.items():
+                    if val.startswith(asset_sym):
+                        self.momentum_signals[key] = data
+                        break
+        except Exception as e:
+            log.warning(f"Kafka Momentum consumer failed: {e}")
 
     # ── Lambda Calibration ────────────────────────────────────────────────────
 
@@ -234,6 +259,39 @@ class WecryptoNuclear:
             'time_in_force':    'immediate_or_cancel',
         }
 
+    def _check_kalshi_orderbook(self, ticker: str, side: str) -> bool:
+        """
+        Check Bid-Ask Imbalance before firing market/IOC orders.
+        Returns True if liquidity is safe, False to delay.
+        """
+        if self.dry_run:
+            return True
+            
+        try:
+            resp = requests.get(
+                f'{KALSHI_MARKETS}/{ticker}/orderbook',
+                headers={'Authorization': f'Bearer {self.kalshi_token}'},
+                timeout=2
+            )
+            ob = resp.json().get('orderbook', {})
+            bids = ob.get('bids', [])
+            asks = ob.get('asks', [])
+            
+            bid_vol = sum(b[1] for b in bids)
+            ask_vol = sum(a[1] for a in asks)
+            
+            if side == 'bid' and ask_vol < self.max_contracts * 2:
+                log.warning(f"[{ticker}] Liquidity vacuum on ASK side! Imbalance (Ask Vol: {ask_vol}). Delaying exit.")
+                return False
+            if side == 'ask' and bid_vol < self.max_contracts * 2:
+                log.warning(f"[{ticker}] Liquidity vacuum on BID side! Imbalance (Bid Vol: {bid_vol}). Delaying exit.")
+                return False
+                
+            return True
+        except Exception as e:
+            log.warning(f"Orderbook fetch failed: {e}")
+            return True 
+
     # ── Order Execution ───────────────────────────────────────────────────────
 
     def execute_order(self, payload: dict) -> Optional[dict]:
@@ -339,6 +397,23 @@ class WecryptoNuclear:
             log.warning('[%s] s-orbital collapse: %.4f%% below ground state', asset.upper(), collapse_ratio * 100)
             return 'EXIT_DECAY'
 
+        # Momentum Circuit Breaker (5m engine integration)
+        signal_data = self.momentum_signals.get(asset)
+        if signal_data and time.time() - signal_data.get("timestamp", 0) < 300:
+            signal = signal_data.get('signal')
+            pos = state['position_side']
+            vel = signal_data.get('velocity', 0)
+            
+            # If LONG (bid) and momentum exhausts downward OR accelerates downward
+            if pos == 'bid' and vel < 0 and signal in ("MOMENTUM_EXHAUSTION", "MOMENTUM_ACCELERATING"):
+                log.warning('[%s] MOMENTUM CIRCUIT BREAKER: Early Exit triggered by 5m Engine.', asset.upper())
+                return 'EXIT_MOMENTUM'
+                
+            # If SHORT (ask) and momentum exhausts upward OR accelerates upward
+            if pos == 'ask' and vel > 0 and signal in ("MOMENTUM_EXHAUSTION", "MOMENTUM_ACCELERATING"):
+                log.warning('[%s] MOMENTUM CIRCUIT BREAKER: Early Exit triggered by 5m Engine.', asset.upper())
+                return 'EXIT_MOMENTUM'
+
         return None
 
     # ── Main Interval Processor ───────────────────────────────────────────────
@@ -377,6 +452,13 @@ class WecryptoNuclear:
         if exit_signal:
             # Flatten position: invert the entry side
             close_side = 'bid' if state['position_side'] == 'ask' else 'ask'
+            ticker = self.get_active_kalshi_ticker(asset)
+            
+            # Orderbook Check for Circuit Breakers
+            if not self._check_kalshi_orderbook(ticker, close_side):
+                log.warning('[%s] EXIT DELAYED due to orderbook liquidity vacuum.', asset.upper())
+                return None
+                
             payload    = self._build_kalshi_payload(asset, close_side, 0.50)
             self.execute_order(payload)
             state.update({'active_trade': None, 'position_side': None, 'highest_pnl': 0.0})

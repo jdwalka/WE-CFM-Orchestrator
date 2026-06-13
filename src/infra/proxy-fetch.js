@@ -43,6 +43,7 @@
     'clob.polymarket.com',
     'gamma-api.polymarket.com',
     'api.bitvavo.com',
+    'api.upbit.com',
   ]);
 
   // ── Bucket B: rate-limited public APIs — proxy for headroom ─────────────
@@ -56,7 +57,10 @@
     'api.bscscan.com',
     'api.binance.us',
     'api.binance.com',
+    'data-api.binance.vision',
     'fapi.binance.com',
+    'api.blockcypher.com',
+    'chain.so',
   ]);
 
   // ── Bucket C: open / first-party APIs — direct ok in Electron ───────────
@@ -65,8 +69,9 @@
 
   // hostname → proxy exchange prefix (config.toml keys)
   const HOST_MAP = {
-    'api.binance.us': 'binance',
-    'api.binance.com': 'binance',  // Binance spot geoblocked (451)
+    'api.binance.us': 'binance-us',
+    'api.binance.com': 'binance',
+    'data-api.binance.vision': 'binance-data',
     'fapi.binance.com': 'binance-f',
     'api.coingecko.com': 'coingecko',
     'api.coinbase.com': 'coinbase',
@@ -95,6 +100,8 @@
     'xrplcluster.com': 'xrpl',
     'api.mainnet-beta.solana.com': 'solana',
     'api.crypto.com': 'crypto-com',
+    'chain.so': 'chainso',
+    'api.upbit.com': 'upbit',
   };
 
   const _origFetch = window.fetch.bind(window);

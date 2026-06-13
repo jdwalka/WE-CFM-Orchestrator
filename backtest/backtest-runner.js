@@ -123,16 +123,16 @@ const PER_COIN_INDICATOR_BIAS = {
     // CRITICAL: rsi 82% at h15 but only 37% at h1/h5 (MASSIVE OVERFITTING)
     // Solution: Reduce RSI weight dramatically for short horizons
     rsi: 0.01,  // reduced: 39% in 4-day ETH retune
-    stochrsi: 1.087,   // mild boost: ~53% in 4-day ETH retune
-    williamsR: 1.923, // boosted: strongest consistent ETH feature
-    bands: 2.045,   // boosted: strong ETH performer in recent window
-    structure: 1.451, keltner: 1.857, cci: 0.929, fisher: 1.686, cmf: 0.607,
-    volume: 0.726, persistence: 0.01, obv: 1.055, macd: 0.837,
-    ema: 0.01, sma: 1.132, adx: 0.112, ichimoku: 0.053, vwap: 0.852, vwma: 0.484, supertrend: 0.01,
+    stochrsi: 0.6,   // mild boost: ~53% in 4-day ETH retune
+    williamsR: 1.56, // boosted: strongest consistent ETH feature
+    bands: 1.697,   // boosted: strong ETH performer in recent window
+    structure: 1.39, keltner: 1.759, cci: 0.666, fisher: 1.409, cmf: 0.396,
+    volume: 0.57, persistence: 0.01, obv: 1.618, macd: 1.226,
+    ema: 0.01, sma: 0.517, adx: 0.112, ichimoku: 0.053, vwap: 0.791, vwma: 0.114, supertrend: 0.01,
     // Kill worst performers
-    mfi: 0.843,   // reduced: weak in 4-day ETH retune
-    momentum: 0.304,   // retained mild positive edge in 4-day ETH retune
-    hma:      0.412,   // reduced: weak in 4-day ETH retune
+    mfi: 0.772,   // reduced: weak in 4-day ETH retune
+    momentum: 0.409,   // retained mild positive edge in 4-day ETH retune
+    hma:      0.77,   // reduced: weak in 4-day ETH retune
   },
   SOL: { // outcome-retuned 2026-05-20 from 122 windows
     // ── Tuned 2026-04-30 & RETUNED 2026-05-04 for h1/h5 recovery ──────────────

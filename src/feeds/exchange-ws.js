@@ -17,6 +17,12 @@
 const CIRCUIT_BREAKER = {};
 const FAILURE_THRESHOLD = 4; // Number of consecutive failures before disabling
 const COOLDOWN_MS = 2 * 60 * 1000; // 2 minutes cooldown
+const PROVIDER_BREAKER_CONFIG = {
+  // These venues are used as low-weight CEX-flow enrichments and have REST
+  // fallback. Keep reconnecting through intermittent WS edge-node failures.
+  KUCOIN: { threshold: 10, cooldownMs: 30 * 1000 },
+  GATE: { threshold: 10, cooldownMs: 30 * 1000 },
+};
 
 (function () {
   'use strict';
@@ -25,11 +31,19 @@ const COOLDOWN_MS = 2 * 60 * 1000; // 2 minutes cooldown
   const RECONNECT_BASE_MS = 3000;
   const RECONNECT_MAX_MS = 45000;
   const RECONNECT_JITTER_RATIO = 0.35;
+  const WS_STARTUP_STAGGER_MS = 900;
+  const OPTIONAL_WS_POOL_TICK_MS = 5000;
+  const OPTIONAL_WS_POOL_DEFAULT_DWELL_MS = 25000;
 
   const STORE = {}; // provider -> sym -> snapshot
   const MEMPOOL = { btcUnconfirmed: 0, btcValue: 0, lastTxTs: 0 };
   const CONNECTIONS = {}; // name -> { ws, reconnectMs, timer, active, extra }
-  const DEFAULT_DISABLED_WS_PROVIDERS = new Set(['OURBIT', 'COINW', 'BULLISH']);
+  const DEFAULT_DISABLED_WS_PROVIDERS = new Set([]);
+  const DEFAULT_BINANCE_WS_ENDPOINTS = [
+    'wss://data-stream.binance.vision',
+    'wss://stream.binance.com:9443',
+  ];
+  const OPTIONAL_WS_POOL = { timer: null, roster: [] };
 
   function flagEnabled(value) {
     if (typeof value === 'boolean') return value;
@@ -68,6 +82,20 @@ const COOLDOWN_MS = 2 * 60 * 1000; // 2 minutes cooldown
       .filter(Boolean);
   }
 
+  function splitRuntimeUrlList(value) {
+    return String(value || '')
+      .split(/[\s,;|]+/)
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+
+  function getBinanceWsEndpoints() {
+    const configured = splitRuntimeUrlList(runtimeFlag('WECRYPTO_BINANCE_WS_ENDPOINTS'));
+    return (configured.length ? configured : DEFAULT_BINANCE_WS_ENDPOINTS)
+      .map((endpoint) => endpoint.replace(/\/+$/, ''))
+      .filter((endpoint) => /^wss:\/\//i.test(endpoint));
+  }
+
   function isProviderExplicitlyOff(provider) {
     if (flagEnabled(runtimeFlag(`WECRYPTO_DISABLE_WS_${provider}`))) return true;
     return splitRuntimeList(runtimeFlag('WECRYPTO_DISABLED_WS_PROVIDERS')).includes(provider);
@@ -98,17 +126,20 @@ const COOLDOWN_MS = 2 * 60 * 1000; // 2 minutes cooldown
 
   function recordFailure(name) {
     const br = getBreakerState(name);
+    const cfg = PROVIDER_BREAKER_CONFIG[name] || {};
+    const threshold = Number(cfg.threshold || FAILURE_THRESHOLD);
+    const cooldownMs = Number(cfg.cooldownMs || COOLDOWN_MS);
     br.failures++;
-    if (!br.open && br.failures >= FAILURE_THRESHOLD) {
+    if (!br.open && br.failures >= threshold) {
       br.open = true;
-      br.openUntil = Date.now() + COOLDOWN_MS;
+      br.openUntil = Date.now() + cooldownMs;
       // User feedback: dispatch event
       if (typeof window !== 'undefined' && window.dispatchEvent && typeof CustomEvent === 'function') {
         window.dispatchEvent(new CustomEvent('provider-disabled', {
           detail: { provider: name, until: br.openUntil }
         }));
       }
-      console.warn(`[CircuitBreaker] Provider ${name} disabled for ${COOLDOWN_MS / 1000}s due to repeated failures.`);
+      console.warn(`[CircuitBreaker] Provider ${name} disabled for ${cooldownMs / 1000}s due to repeated failures.`);
     }
   }
 
@@ -303,6 +334,11 @@ const COOLDOWN_MS = 2 * 60 * 1000; // 2 minutes cooldown
     let i = 0;
     while (i < snap.trades.length && snap.trades[i].ts < cutoff) i++;
     if (i > 0) snap.trades.splice(0, i);
+
+    // Hard cap to prevent array explosion on high-volume coins (prevents CPU lockup in recalcTradeMix)
+    if (snap.trades.length > 1000) {
+      snap.trades = snap.trades.slice(-1000);
+    }
   }
 
   function recalcTradeMix(snap) {
@@ -404,6 +440,7 @@ const COOLDOWN_MS = 2 * 60 * 1000; // 2 minutes cooldown
       if (!cleanClose && !duplicateFailure) {
         c.extra.lastFailureAt = Date.now();
         recordFailure(name);
+        if (typeof c.extra.onFailure === 'function') c.extra.onFailure(ev);
       }
       scheduleReconnect(name, reconnectFn);
     };
@@ -411,8 +448,117 @@ const COOLDOWN_MS = 2 * 60 * 1000; // 2 minutes cooldown
       if (c.ws !== socket) return;
       c.extra.lastFailureAt = Date.now();
       recordFailure(name);
+      if (typeof c.extra.onFailure === 'function') c.extra.onFailure();
       try { socket.close(); } catch (_) { }
     };
+  }
+
+  function scheduleProviderStart(name, connectFn, delayMs = 0) {
+    const c = conn(name);
+    c.active = !isProviderConfiguredOff(name);
+    clearConnTimer(c);
+    if (!c.active) return;
+    c.timer = setTimeout(() => {
+      c.timer = null;
+      if (!c.active) return;
+      if (isProviderDisabled(name)) {
+        scheduleReconnect(name, connectFn);
+        return;
+      }
+      Promise.resolve()
+        .then(connectFn)
+        .catch((err) => {
+          c.extra.lastStartError = String(err?.message || err || 'startup failed');
+          recordFailure(name);
+          scheduleReconnect(name, connectFn);
+        });
+    }, Math.max(0, Number(delayMs) || 0));
+  }
+
+  function optionalPoolMaxActive() {
+    const configured = Number(runtimeFlag('WECRYPTO_OPTIONAL_WS_POOL_MAX_ACTIVE'));
+    return Number.isFinite(configured) && configured > 0 ? Math.min(6, Math.floor(configured)) : 3;
+  }
+
+  function closeProvider(name) {
+    const c = conn(name);
+    c.active = false;
+    clearConnTimer(c);
+    if (c.extra.pingTimer) {
+      clearInterval(c.extra.pingTimer);
+      c.extra.pingTimer = null;
+    }
+    try { c.ws && c.ws.close(); } catch (_) { }
+    c.ws = null;
+  }
+
+  function providerPoolRunning(name) {
+    const c = conn(name);
+    if (!c.active) return false;
+    if (c.timer) return true;
+    return c.ws && (c.ws.readyState === WebSocket.OPEN || c.ws.readyState === WebSocket.CONNECTING);
+  }
+
+  function optionalPoolTick() {
+    const roster = OPTIONAL_WS_POOL.roster || [];
+    if (!roster.length) return;
+    const nowTs = now();
+
+    for (const cfg of roster) {
+      if (isProviderExplicitlyOff(cfg.name)) {
+        closeProvider(cfg.name);
+        cfg.activeUntil = 0;
+        continue;
+      }
+      if (cfg.activeUntil && nowTs >= cfg.activeUntil) {
+        closeProvider(cfg.name);
+        cfg.activeUntil = 0;
+      }
+    }
+
+    const maxActive = optionalPoolMaxActive();
+    let activeCount = roster.filter(cfg => providerPoolRunning(cfg.name)).length;
+    if (activeCount >= maxActive) return;
+
+    const due = roster
+      .filter(cfg => !providerPoolRunning(cfg.name))
+      .filter(cfg => !isProviderExplicitlyOff(cfg.name))
+      .filter(cfg => nowTs >= Number(cfg.nextDue || 0))
+      .sort((a, b) => Number(a.nextDue || 0) - Number(b.nextDue || 0));
+
+    for (const cfg of due) {
+      if (activeCount >= maxActive) break;
+      const dwellMs = Number(cfg.dwellMs || OPTIONAL_WS_POOL_DEFAULT_DWELL_MS);
+      scheduleProviderStart(cfg.name, cfg.connectFn, 0);
+      cfg.lastStart = nowTs;
+      cfg.nextDue = nowTs + Number(cfg.intervalMs || 60000);
+      cfg.activeUntil = nowTs + dwellMs;
+      activeCount++;
+    }
+  }
+
+  function startOptionalWsPool(roster, initialDelayMs = 0) {
+    stopOptionalWsPool();
+    const startAt = now() + Math.max(0, Number(initialDelayMs) || 0);
+    OPTIONAL_WS_POOL.roster = roster.map((cfg, index) => ({
+      ...cfg,
+      nextDue: startAt + index * 2500,
+      activeUntil: 0,
+      lastStart: 0,
+    }));
+    OPTIONAL_WS_POOL.timer = setInterval(optionalPoolTick, OPTIONAL_WS_POOL_TICK_MS);
+    setTimeout(optionalPoolTick, Math.max(0, Number(initialDelayMs) || 0));
+  }
+
+  function stopOptionalWsPool() {
+    if (OPTIONAL_WS_POOL.timer) {
+      clearInterval(OPTIONAL_WS_POOL.timer);
+      OPTIONAL_WS_POOL.timer = null;
+    }
+    for (const cfg of OPTIONAL_WS_POOL.roster || []) {
+      closeProvider(cfg.name);
+      cfg.activeUntil = 0;
+    }
   }
 
   // ───────────────────────── Binance ─────────────────────────
@@ -428,10 +574,18 @@ const COOLDOWN_MS = 2 * 60 * 1000; // 2 minutes cooldown
       streams.push(`${s}@ticker`);
       streams.push(`${s}@trade`);
     }
-    const url = `wss://stream.binance.com:9443/stream?streams=${streams.join('/')}`;
+    const endpoints = getBinanceWsEndpoints();
+    const endpointIndex = Number(c.extra.endpointIndex || 0) % Math.max(1, endpoints.length);
+    const endpoint = endpoints[endpointIndex] || DEFAULT_BINANCE_WS_ENDPOINTS[0];
+    const url = `${endpoint}/stream?streams=${streams.join('/')}`;
+    c.extra.onFailure = () => {
+      if (endpoints.length > 1) c.extra.endpointIndex = (endpointIndex + 1) % endpoints.length;
+    };
     c.ws = new WebSocket(url);
     c.ws.onopen = () => {
       c.reconnectMs = RECONNECT_BASE_MS;
+      c.extra.endpointIndex = endpointIndex;
+      c.extra.lastEndpoint = endpoint;
       recordSuccess('BINANCE');
     };
     c.ws.onmessage = (ev) => {
@@ -977,6 +1131,14 @@ const COOLDOWN_MS = 2 * 60 * 1000; // 2 minutes cooldown
       const pairs = Object.values(MAP.GATE);
       c.ws.send(JSON.stringify({ time: Math.floor(now() / 1000), channel: 'spot.tickers', event: 'subscribe', payload: pairs }));
       c.ws.send(JSON.stringify({ time: Math.floor(now() / 1000), channel: 'spot.trades', event: 'subscribe', payload: pairs }));
+      if (c.extra.pingTimer) clearInterval(c.extra.pingTimer);
+      c.extra.pingTimer = setInterval(() => {
+        try {
+          if (c.ws?.readyState === WebSocket.OPEN) {
+            c.ws.send(JSON.stringify({ time: Math.floor(now() / 1000), channel: 'spot.ping' }));
+          }
+        } catch (_) { }
+      }, 25000);
     };
     c.ws.onmessage = (ev) => {
       recordSuccess('GATE');
@@ -1517,38 +1679,39 @@ const COOLDOWN_MS = 2 * 60 * 1000; // 2 minutes cooldown
   }
 
   function start() {
-    const providerNames = ['BINANCE', 'COINBASE', 'KRAKEN', 'BYBIT', 'HYPERLIQUID', 'OKX', 'KUCOIN', 'GATE', 'UPBIT', 'BITGET', 'BINGX', 'BITVAVO', 'GEMINI', 'COINW', 'LBANK', 'BITSTAMP', 'BITSO', 'BULLISH', 'WHITEBIT', 'OURBIT', 'WEEX', 'BLOCKCHAIN_MEMPOOL'];
-    for (const name of providerNames) {
-      const c = conn(name);
-      c.active = !isProviderConfiguredOff(name);
-      if (!c.active) clearConnTimer(c);
-    }
-    connectBinance();
-    connectCoinbase();
-    connectKraken();
-    connectBybit();
-    connectHyperliquid();
-    connectOKX();
-    connectKuCoin();
-    connectGate();
-    connectUpbit();
-    connectBitget();
-    connectBingX();
-    connectBitvavo();
-    connectGemini();
-    connectCoinW();
-    connectLBank();
-    connectBitstamp();
-    connectBitso();
-    connectBullish();
-    connectWhiteBIT();
-    connectOurbit();
-    connectWeex();
-    connectBlockchainMempool();
+    const startupPlan = [
+      ['BINANCE', connectBinance, 0],
+      ['COINBASE', connectCoinbase, 0],
+      ['KRAKEN', connectKraken, WS_STARTUP_STAGGER_MS],
+      ['BYBIT', connectBybit, WS_STARTUP_STAGGER_MS],
+      ['HYPERLIQUID', connectHyperliquid, WS_STARTUP_STAGGER_MS * 2],
+      ['OKX', connectOKX, WS_STARTUP_STAGGER_MS * 2],
+      ['KUCOIN', connectKuCoin, WS_STARTUP_STAGGER_MS * 3],
+      ['GATE', connectGate, WS_STARTUP_STAGGER_MS * 4],
+      ['BLOCKCHAIN_MEMPOOL', connectBlockchainMempool, WS_STARTUP_STAGGER_MS * 5],
+    ];
+    const optionalPoolPlan = [
+      { name: 'UPBIT', connectFn: connectUpbit, intervalMs: 30000 },
+      { name: 'BITGET', connectFn: connectBitget, intervalMs: 30000 },
+      { name: 'BINGX', connectFn: connectBingX, intervalMs: 60000 },
+      { name: 'BITVAVO', connectFn: connectBitvavo, intervalMs: 60000 },
+      { name: 'GEMINI', connectFn: connectGemini, intervalMs: 120000 },
+      { name: 'COINW', connectFn: connectCoinW, intervalMs: 120000 },
+      { name: 'LBANK', connectFn: connectLBank, intervalMs: 180000 },
+      { name: 'BITSTAMP', connectFn: connectBitstamp, intervalMs: 180000 },
+      { name: 'BITSO', connectFn: connectBitso, intervalMs: 180000 },
+      { name: 'BULLISH', connectFn: connectBullish, intervalMs: 300000 },
+      { name: 'WHITEBIT', connectFn: connectWhiteBIT, intervalMs: 300000 },
+      { name: 'OURBIT', connectFn: connectOurbit, intervalMs: 300000 },
+      { name: 'WEEX', connectFn: connectWeex, intervalMs: 300000 },
+    ];
+    startupPlan.forEach(([name, connectFn, delayMs]) => scheduleProviderStart(name, connectFn, delayMs));
+    startOptionalWsPool(optionalPoolPlan, WS_STARTUP_STAGGER_MS * 6);
     connectDexPaprikaSSE();
   }
 
   function stop() {
+    stopOptionalWsPool();
     for (const c of Object.values(CONNECTIONS)) {
       c.active = false;
       clearConnTimer(c);
@@ -1711,6 +1874,19 @@ const COOLDOWN_MS = 2 * 60 * 1000; // 2 minutes cooldown
       connections: status,
       disabledByDefault: [...DEFAULT_DISABLED_WS_PROVIDERS].filter(isProviderConfiguredOff),
       disabledByConfig: getConfiguredOffProviders(),
+      optionalPool: {
+        active: !!OPTIONAL_WS_POOL.timer,
+        maxActive: optionalPoolMaxActive(),
+        tickMs: OPTIONAL_WS_POOL_TICK_MS,
+        providers: (OPTIONAL_WS_POOL.roster || []).map(cfg => ({
+          name: cfg.name,
+          intervalMs: cfg.intervalMs,
+          active: providerPoolRunning(cfg.name),
+          nextDue: cfg.nextDue || 0,
+          activeUntil: cfg.activeUntil || 0,
+          lastStart: cfg.lastStart || 0,
+        })),
+      },
       sse: { active: SSE.active, lastError: SSE.lastError },
       providers: Object.keys(STORE),
       qualityGates: getQualityGates(),

@@ -47,7 +47,7 @@
     try {
       const r = await fetch(url, { ...opts, signal: ctrl.signal });
       clearTimeout(tid);
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      if (!r.ok) return Promise.reject(new Error(`HTTP ${r.status}`));
       return r;
     } catch (e) {
       clearTimeout(tid);
@@ -169,14 +169,22 @@
     return `https://${chain}-mainnet.g.alchemy.com/v2/${key}`;
   }
 
+  let _etherscanKeyIndex = 0;
   function _etherscanV2Url(module, action) {
     const qs = new URLSearchParams({
       chainid: '1',
       module: String(module || ''),
       action: String(action || ''),
     });
-    const apiKey = _readEnvLike('ETHERSCAN_API_KEY');
-    if (apiKey) qs.set('apikey', apiKey);
+    const k1 = _readEnvLike('ETHERSCAN_API_KEY');
+    const k2 = _readEnvLike('ETHERSCAN_API_KEY_2') || _readEnvLike('ETHERSCAN_API_KEY2');
+    const k3 = _readEnvLike('ETHERSCAN_API_KEY_3') || _readEnvLike('ETHERSCAN_API_KEY3');
+    const keys = [k1, k2, k3].filter(Boolean);
+    if (keys.length > 0) {
+      const apiKey = keys[_etherscanKeyIndex % keys.length];
+      qs.set('apikey', apiKey);
+      _etherscanKeyIndex++;
+    }
     return `https://api.etherscan.io/v2/api?${qs.toString()}`;
   }
 
@@ -221,7 +229,7 @@
     const m = mR.status === 'fulfilled' ? mR.value : {};
     const f = fR.status === 'fulfilled' ? fR.value : {};
     const h = hR.status === 'fulfilled' ? hR.value : null;
-    if (!m.count && !f.fastestFee) throw new Error('mempool.space empty');
+    if (!m.count && !f.fastestFee) return Promise.reject(new Error('mempool.space empty'));
     const vsize = m.vsize || 0;
     const feeFast = f.fastestFee || 0;
     const feeMed = f.halfHourFee || 0;
@@ -246,7 +254,7 @@
 
   async function btcBlockchain() {
     console.warn('[ChainRouter] blockchain.info endpoints deprecated; mempool.space only');
-    throw new Error('blockchain.info no longer available — use mempool.space');
+    return Promise.reject(new Error('blockchain.info no longer available — use mempool.space'));
   }
 
   async function btcBlockcypher() {
@@ -256,7 +264,7 @@
     const feeMed = Number(data.medium_fee_per_kb || 0) / 1e5;
     const feeSlow = Number(data.low_fee_per_kb || 0) / 1e5;
     const block = Number(data.height || 0);
-    if (!block && !txCount && !feeFast) throw new Error('BlockCypher BTC empty');
+    if (!block && !txCount && !feeFast) return Promise.reject(new Error('BlockCypher BTC empty'));
     const score = txCount > 25000 ? 0.45 : txCount > 4000 ? 0.20 : feeFast > 30 ? 0.15 : 0;
     return {
       sym: 'BTC', label: 'Bitcoin', chain: 'Bitcoin Network',
@@ -350,14 +358,14 @@
     const gRes = gR.status === 'fulfilled' ? gR.value : null;
     
     if (!bRes || !gRes || !bRes.result || !gRes.result) {
-      throw new Error('Alchemy ETH empty');
+      return Promise.reject(new Error('Alchemy ETH empty'));
     }
     
     const block   = parseInt(bRes.result, 16) || 0;
     const gasWei  = parseInt(gRes.result, 16) || 0;
     const gasGwei = gasWei / 1e9;
     
-    if (!block && !gasGwei) throw new Error('Alchemy ETH empty');
+    if (!block && !gasGwei) return Promise.reject(new Error('Alchemy ETH empty'));
     
     const score = gasGwei > 60 ? 0.50 : gasGwei > 25 ? 0.20 : gasGwei < 5 ? -0.15 : 0;
     return {
@@ -397,7 +405,7 @@
 
     // Require at least one meaningful signal from either stats or gas oracle.
     if (!block && !txsToday && !gasAvg && !gasFast && !gasSlow) {
-      throw new Error('Blockscout ETH empty');
+      return Promise.reject(new Error('Blockscout ETH empty'));
     }
 
     const score = gasAvg > 60 ? 0.50 : gasAvg > 25 ? 0.20 : gasAvg < 5 ? -0.15 : 0;
@@ -424,7 +432,7 @@
     const parsed = ethStatsMetrics(s, gRes?.result || {});
     const block = blockFromEtherscan || parsed.block;
     const gasAvg = parsed.gasAvg;
-    if (!block && !gasAvg && !parsed.txsToday) throw new Error('Etherscan ETH empty');
+    if (!block && !gasAvg && !parsed.txsToday) return Promise.reject(new Error('Etherscan ETH empty'));
     const score = gasAvg > 60 ? 0.50 : gasAvg > 25 ? 0.20 : gasAvg < 5 ? -0.15 : 0;
     return {
       sym: 'ETH', label: 'Ethereum', chain: 'Ethereum Mainnet',
@@ -443,7 +451,7 @@
     const gasAvg = firstNumber(data, ['medium_gas_price', 'gas_price', 'medium_fee_per_kb']) / 1e9;
     const gasFast = firstNumber(data, ['high_gas_price', 'high_fee_per_kb', 'gas_price']) / 1e9 || gasAvg;
     const gasSlow = firstNumber(data, ['low_gas_price', 'low_fee_per_kb', 'gas_price']) / 1e9 || gasAvg;
-    if (!block && !txCount && !gasAvg) throw new Error('BlockCypher ETH empty');
+    if (!block && !txCount && !gasAvg) return Promise.reject(new Error('BlockCypher ETH empty'));
     const score = gasAvg > 60 ? 0.50 : gasAvg > 25 ? 0.20 : gasAvg < 5 ? -0.15 : 0;
     return {
       sym: 'ETH', label: 'Ethereum', chain: 'Ethereum Mainnet',
@@ -478,7 +486,7 @@
     const samples = perfR.status === 'fulfilled' ? (perfR.value?.result || []) : [];
     const epoch = epochR.status === 'fulfilled' ? (epochR.value?.result || {}) : {};
     const slot = slotR.status === 'fulfilled' ? (slotR.value?.result ?? null) : null;
-    if (!samples.length && !slot) throw new Error("SOL RPC no samples " + rpcUrl);
+    if (!samples.length && !slot) return Promise.reject(new Error("SOL RPC no samples " + rpcUrl));
     
     const validSamples = samples.filter(s => s && s.numTransactions && s.samplePeriodSecs);
     const avgTPS = validSamples.length > 0 
@@ -518,7 +526,7 @@
     const ledger = info.validated_ledger || {};
     
     if (!info.server_state && !ledger.seq) {
-        throw new Error("XRP invalid response from " + url);
+        return Promise.reject(new Error("XRP invalid response from " + url));
     }
 
     const loadFactor = info.load_factor || 1;
@@ -569,14 +577,14 @@
     const gRes = gR.status === 'fulfilled' ? gR.value : null;
     
     if (!bRes || !gRes || !bRes.result || !gRes.result) {
-      throw new Error('Alchemy BNB empty');
+      return Promise.reject(new Error('Alchemy BNB empty'));
     }
     
     const block   = parseInt(bRes.result, 16) || 0;
     const gasWei  = parseInt(gRes.result, 16) || 0;
     const gasGwei = gasWei / 1e9;
     
-    if (!block && !gasGwei) throw new Error('Alchemy BNB empty');
+    if (!block && !gasGwei) return Promise.reject(new Error('Alchemy BNB empty'));
     
     const score = gasGwei > 8 ? 0.40 : gasGwei > 3 ? 0.10 : 0;
     return {
@@ -600,7 +608,7 @@
 
   async function bnbBlockscout() {
     const gasAvg = parseFloat(await bscRpcGasPrice() || 0);
-    if (!gasAvg) throw new Error('BSC RPC gas empty');
+    if (!gasAvg) return Promise.reject(new Error('BSC RPC gas empty'));
     const gasFast = gasAvg;
     const gasSlow = gasAvg;
     const score = gasAvg > 8 ? 0.40 : gasAvg > 3 ? 0.10 : 0;
@@ -630,12 +638,12 @@
     const gRes = gR.status === 'fulfilled' ? gR.value : null;
 
     // Validate responses aren't null
-    if (!bRes || !gRes) throw new Error('BSCScan proxy empty');
+    if (!bRes || !gRes) return Promise.reject(new Error('BSCScan proxy empty'));
 
     const block = bRes?.result ? parseInt(bRes.result, 16) || 0 : 0;
     const gasWei = gRes?.result ? parseInt(gRes.result, 16) || 0 : 0;
     const gasGwei = gasWei / 1e9;
-    if (!block && !gasGwei) throw new Error('BSCScan proxy empty');
+    if (!block && !gasGwei) return Promise.reject(new Error('BSCScan proxy empty'));
     const score = gasGwei > 8 ? 0.40 : gasGwei > 3 ? 0.10 : 0;
     return {
       sym: 'BNB', label: 'BNB Chain', chain: 'BSC Mainnet',
@@ -658,7 +666,7 @@
   async function dogeBlockcypher() {
     const data = await getJson(_blockCypherUrl('/v1/doge/main'));
     const uc = data.unconfirmed_count || 0;
-    if (!data.height) throw new Error('BlockCypher DOGE empty');
+    if (!data.height) return Promise.reject(new Error('BlockCypher DOGE empty'));
     const score = uc > 20000 ? 0.40 : uc > 3000 ? 0.20 : 0;
     return {
       sym: 'DOGE', label: 'Dogecoin', chain: 'Dogecoin Network',
@@ -680,7 +688,7 @@
   async function dogeBlockchair() {
     const data = await getJson('https://api.blockchair.com/dogecoin/stats');
     const s = data?.data || {};
-    if (!Object.keys(s).length) throw new Error('Blockchair DOGE empty');
+    if (!Object.keys(s).length) return Promise.reject(new Error('Blockchair DOGE empty'));
     const txs = s.transactions_24h || 0;
     const mTxs = s.mempool_transactions || 0;
     const score = txs > 100000 ? 0.40 : txs > 50000 ? 0.20 : 0;
@@ -706,7 +714,7 @@
   async function dogeChainSo() {
     const data = await getJson('https://chain.so/api/v2/get_info/DOGE');
     const s = data?.data || {};
-    if (data?.status !== 'success' || !s.blocks) throw new Error('chain.so DOGE empty');
+    if (data?.status !== 'success' || !s.blocks) return Promise.reject(new Error('chain.so DOGE empty'));
     const txs = s.tx_count || 0;
     const score = txs > 200000000 ? 0.30 : txs > 100000000 ? 0.10 : 0;
     return {
@@ -742,14 +750,14 @@
     const gRes = gR.status === 'fulfilled' ? gR.value : null;
 
     // Validate JSON-RPC responses aren't null/undefined
-    if (!bRes || !gRes) throw new Error('Ankr BSC RPC empty');
+    if (!bRes || !gRes) return Promise.reject(new Error('Ankr BSC RPC empty'));
 
     const block = bRes?.result ? parseInt(bRes.result, 16) || 0 : 0;
     const gasWei = gRes?.result ? parseInt(gRes.result, 16) || 0 : 0;
     const gasGwei = gasWei / 1e9;
 
     // If both are zero or invalid, try fallback
-    if (!block && !gasGwei) throw new Error('Ankr BSC RPC empty');
+    if (!block && !gasGwei) return Promise.reject(new Error('Ankr BSC RPC empty'));
 
     const score = gasGwei > 8 ? 0.40 : gasGwei > 3 ? 0.10 : 0;
     return {
@@ -775,12 +783,12 @@
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ type: 'metaAndAssetCtxs' }),
     });
-    if (!Array.isArray(data)) throw new Error(`HYPE API bad response: ${JSON.stringify(data).slice(0, 80)}`);
+    if (!Array.isArray(data)) return Promise.reject(new Error(`HYPE API bad response: ${JSON.stringify(data).slice(0, 80)}`));
     const meta = data[0] || {};
     const ctxs = data[1] || [];
     const idx = (meta?.universe || []).findIndex(a => a.name === 'HYPE');
     const ctx = idx >= 0 ? ctxs[idx] : null;
-    if (!ctx) throw new Error('HYPE not found in HL universe');
+    if (!ctx) return Promise.reject(new Error('HYPE not found in HL universe'));
     const funding = parseFloat(ctx.funding || 0);
     const oi = parseFloat(ctx.openInterest || 0);
     const vol = parseFloat(ctx.dayNtlVlm || 0);

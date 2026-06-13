@@ -70,13 +70,15 @@ const config = {
   port: 3050,
   env: 'production',
   apiKeyId: null,
-  privateKeyPem: null
+  privateKeyPem: null,
+  token: null
 };
 
 for (let i = 0; i < args.length; i++) {
   if (args[i] === '--port' && args[i + 1]) config.port = parseInt(args[i + 1]);
   if (args[i] === '--env' && args[i + 1]) config.env = args[i + 1];
   if (args[i] === '--key' && args[i + 1]) config.apiKeyId = args[i + 1];
+  if (args[i] === '--token' && args[i + 1]) config.token = args[i + 1];
   if (args[i] === '--file' && args[i + 1]) {
     const credFile = args[i + 1];
     if (fs.existsSync(credFile)) {
@@ -193,11 +195,19 @@ const server = http.createServer(async (req, res) => {
   // CORS
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'x-worker-token, Content-Type');
   res.setHeader('Content-Type', 'application/json');
 
   if (req.method === 'OPTIONS') {
     res.writeHead(200);
     res.end();
+    return;
+  }
+
+  // Enforce Worker Token Authentication
+  if (config.token && req.headers['x-worker-token'] !== config.token) {
+    res.writeHead(403);
+    res.end(JSON.stringify({ error: 'Forbidden: Invalid worker token' }));
     return;
   }
 

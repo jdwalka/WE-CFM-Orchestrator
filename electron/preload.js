@@ -43,10 +43,10 @@ function envFileCandidates() {
     path.join(path.dirname(process.execPath || __filename), '.env'),
     appData && path.join(appData, 'WE-CRYPTO-Kalshi-15m-v2.15.5', '.env'),
     appData && path.join(appData, 'we-cfm-orchestrator', '.env'),
-    appData && path.join(appData, 'WECRYP', '.env'),
+    appData && path.join(appData, 'WECRYPTO', '.env'),
     localAppData && path.join(localAppData, 'WE-CRYPTO-Kalshi-15m-v2.15.5', '.env'),
     localAppData && path.join(localAppData, 'we-cfm-orchestrator', '.env'),
-    localAppData && path.join(localAppData, 'WECRYP', '.env'),
+    localAppData && path.join(localAppData, 'WECRYPTO', '.env'),
     path.join(__dirname, '..', '.env'),
     path.join(process.resourcesPath || '', '..', '.env'),
     path.join(process.cwd(), '.env'),
@@ -104,9 +104,9 @@ function secretDirCandidates() {
     path.join(process.cwd(), 'secrets'),
     localAppData && path.join(localAppData, 'WE-CRYPTO', 'user-data', 'secrets'),
     appData && path.join(appData, 'WE-CRYPTO-Kalshi-15m-v2.15.5', 'secrets'),
-    'G:\\WECRYP\\secrets',
-    'F:\\WECRYP\\secrets',
-    'E:\\WECRYP\\secrets',
+    'G:\\WECRYPTO\\secrets',
+    'F:\\WECRYPTO\\secrets',
+    'E:\\WECRYPTO\\secrets',
   ].filter(Boolean);
   const seen = new Set();
   return candidates.filter((candidate) => {
@@ -209,14 +209,39 @@ function readPublicEnv() {
   const key = proKey || demoKey || genericKey;
   if (key) out.COINGECKO_API_KEY = key;
   if (tier) out.COINGECKO_API_TIER = tier;
-  
+
   const cmcSecret = readCMCSecret();
   const cmcKey = readEnvValue(['CMC_PRO_API_KEY', 'COINMARKETCAP_API_KEY', 'CMC_API_KEY']) || cmcSecret.value;
   if (cmcKey) {
     out.CMC_PRO_API_KEY = cmcKey;
     out.COINMARKETCAP_API_KEY = cmcKey;
   }
-  
+
+  const etherscanKey = readEnvValue(['ETHERSCAN_API_KEY']);
+  if (etherscanKey) {
+    out.ETHERSCAN_API_KEY = etherscanKey;
+  }
+  const etherscanKey2 = readEnvValue(['ETHERSCAN_API_KEY_2', 'ETHERSCAN_API_KEY2']);
+  if (etherscanKey2) {
+    out.ETHERSCAN_API_KEY_2 = etherscanKey2;
+  }
+  const etherscanKey3 = readEnvValue(['ETHERSCAN_API_KEY_3', 'ETHERSCAN_API_KEY3']);
+  if (etherscanKey3) {
+    out.ETHERSCAN_API_KEY_3 = etherscanKey3;
+  }
+
+  for (const name of [
+    'WECRYPTO_BINANCE_WS_ENDPOINTS',
+    'WECRYPTO_DISABLED_WS_PROVIDERS',
+    'WECRYPTO_DISABLE_WS_BINANCE',
+    'WECRYPTO_ENABLE_WS_BINANCE',
+    'WECRYPTO_ENABLE_OPTIONAL_WS',
+    'WECRYPTO_ENABLE_HAR_FAILING_WS',
+  ]) {
+    const value = readEnvValue([name]);
+    if (value) out[name] = value;
+  }
+
   return out;
 }
 
@@ -259,7 +284,7 @@ function createWebSocketBridge(url, options = {}) {
       if (typeof callback !== 'function') return false;
       handlers[eventName] = handlers[eventName] || [];
       handlers[eventName].push(callback);
-      
+
       // Replay buffered events
       const toReplay = bufferedEvents.filter(e => e.eventName === eventName);
       toReplay.forEach(e => {
@@ -278,7 +303,7 @@ function createWebSocketBridge(url, options = {}) {
       };
       handlers[eventName] = handlers[eventName] || [];
       handlers[eventName].push(onceCb);
-      
+
       const toReplay = bufferedEvents.find(e => e.eventName === eventName);
       if (toReplay) {
         const idx = bufferedEvents.indexOf(toReplay);
@@ -325,6 +350,12 @@ function createWebSocketBridge(url, options = {}) {
 contextBridge.exposeInMainWorld('desktopApp', {
   isElectron: true,
   publicEnv,
+  userEnv: {
+    username: process.env.USERNAME || '',
+    userProfile: process.env.USERPROFILE || '',
+    localAppData: process.env.LOCALAPPDATA || '',
+    appData: process.env.APPDATA || '',
+  },
   // Expose optional Node modules when available in preload context.
   crypto: crypto,
   ws: ws,
@@ -338,6 +369,7 @@ contextBridge.exposeInMainWorld('desktopApp', {
   generateCoinbaseJWT: (opts) => ipcRenderer.invoke('coinbase:generate-jwt', opts || {}),
   // Returns all local drives (C-Z), UNC network shares, and cloud sync folders
   getDrives: () => ipcRenderer.invoke('storage:getDrives'),
+  getGoogleDriveTargets: (options) => ipcRenderer.invoke('storage:getGoogleDriveTargets', options || {}),
   networkError: (type, details) => ipcRenderer.invoke('network:logError', type, details),
 });
 
@@ -357,6 +389,22 @@ contextBridge.exposeInMainWorld('electron', {
   llm: {
     getDiagnostics: () => ipcRenderer.invoke('llm:getDiagnostics'),
     envStatus: () => ipcRenderer.invoke('llm:envStatus'),
+  },
+  telegram: {
+    status: () => ipcRenderer.invoke('telegram:status'),
+    login: (apiId, apiHash) => ipcRenderer.invoke('telegram:login', { apiId, apiHash }),
+    getChannelHistory: (channelName, limit) => ipcRenderer.invoke('telegram:get-channel-history', { channelName, limit }),
+    onAuthRequest: (cb) => {
+      const handler = (_e, data) => cb(data);
+      ipcRenderer.on('telegram:auth-request', handler);
+      return () => ipcRenderer.removeListener('telegram:auth-request', handler);
+    },
+    sendAuthResponse: (type, value) => ipcRenderer.send('telegram:auth-response', { type, value }),
+    onMessage: (cb) => {
+      const handler = (_e, data) => cb(data);
+      ipcRenderer.on('telegram:message', handler);
+      return () => ipcRenderer.removeListener('telegram:message', handler);
+    }
   },
   sab: {
     onInit: (callback) => {
@@ -438,6 +486,20 @@ contextBridge.exposeInMainWorld('dataStore', {
   ensureDir: (dirPath) => ipcRenderer.invoke('data:ensureDir', dirPath),
   readFile: (filePath) => ipcRenderer.invoke('data:readFile', filePath),
   listDir: (dirPath) => ipcRenderer.invoke('data:listDir', dirPath),
+});
+
+contextBridge.exposeInMainWorld('multiDrive', {
+  initDirectories: (args) => ipcRenderer.send('multi-drive:init-directories', args),
+  onInitComplete: (cb) => {
+    ipcRenderer.on('multi-drive:init-complete', (_e, results) => cb(results));
+  },
+  writeSettlementLog: (args) => ipcRenderer.send('multi-drive:write-settlement-log', args),
+  onWriteComplete: (cb) => {
+    ipcRenderer.once('multi-drive:write-complete', (_e, results) => cb(results));
+  },
+  getAllLogs: (args) => ipcRenderer.invoke('multi-drive:get-all-logs', args),
+  readLog: (args) => ipcRenderer.invoke('multi-drive:read-log', args),
+  syncAllLogs: (args) => ipcRenderer.invoke('multi-drive:sync-all-logs', args),
 });
 
 contextBridge.exposeInMainWorld('auditAPI', {

@@ -47,14 +47,18 @@
       const correct = r.correct === true ? 'WIN' : r.correct === false ? 'LOSS' : 'PENDING';
       const confidence = r.confidence || 0;
       const kalshiProb = r.kalshiProb || 0;
+      const kYesAsk = r.kYesAsk || 0;
+      const kYesBid = r.kYesBid || 0;
+      const kNoAsk = r.kNoAsk || 0;
+      const kNoBid = r.kNoBid || 0;
 
-      return `${timestamp},${r.sym},${modelDir},${outcome},${correct},${confidence},${kalshiProb}`;
+      return `${timestamp},${r.sym},${modelDir},${outcome},${correct},${confidence},${kalshiProb},${kYesAsk},${kYesBid},${kNoAsk},${kNoBid}`;
     });
 
     // Write header on first write
     const isNewFile = settlementBuffer.length > 0 && !window._settlementLogHeaderWritten;
     const content = isNewFile
-      ? `timestamp,coin,model_direction,kalshi_outcome,result,confidence,kalshi_probability\n${lines.join('\n')}\n`
+      ? `timestamp,coin,model_direction,kalshi_outcome,result,confidence,kalshi_probability,kalshi_yes_ask,kalshi_yes_bid,kalshi_no_ask,kalshi_no_bid\n${lines.join('\n')}\n`
       : `${lines.join('\n')}\n`;
 
     ipcRenderer.send('write-settlement-log', {

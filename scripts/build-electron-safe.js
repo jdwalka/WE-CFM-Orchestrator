@@ -87,6 +87,21 @@ function assertNoArtifactOverwrite(artifacts) {
   }
 }
 
+function assertExtraResourcesExist() {
+  const resources = pkg.build?.extraResources || [];
+  const missing = [];
+
+  for (const resource of resources) {
+    if (!resource || typeof resource !== 'object' || !resource.from) continue;
+    const sourcePath = path.resolve(rootDir, resource.from);
+    if (!fs.existsSync(sourcePath)) missing.push(sourcePath);
+  }
+
+  if (missing.length) {
+    fail('Refusing to package without required extraResources.', missing);
+  }
+}
+
 function createConfig(buildLabel, targets) {
   const buildConfig = JSON.parse(JSON.stringify(pkg.build || {}));
   buildConfig.directories = {
@@ -121,6 +136,7 @@ function builderArgsFor(targets, configPath) {
 }
 
 assertNoSiblingDistDirs();
+assertExtraResourcesExist();
 
 const buildLabel = sanitizeLabel(process.env.WECRYPTO_BUILD_LABEL) || `build-${timestampLabel()}`;
 const { targets, artifacts } = targetPlan(buildLabel);

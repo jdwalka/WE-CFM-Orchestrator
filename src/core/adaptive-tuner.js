@@ -835,7 +835,11 @@ class AdaptiveTuner {
 
     // ── Run recommendations for each coin ──
     const TUNING_COINS = this.getTuningCoins();
+    let tuningCoinIndex = 0;
     for (const sym of TUNING_COINS) {
+      if (++tuningCoinIndex % 2 === 0) {
+        await new Promise(resolve => setTimeout(resolve, 0));
+      }
       const rec = this.recommendTuning(sym);
 
       if (rec.action !== 'none') {
@@ -859,12 +863,14 @@ class AdaptiveTuner {
     this.markTuneComplete();
     results.cycleTime = Date.now() - cycleStartTime;
 
-    // Run per-indicator gradient descent from _kalshiLog outcomes
+    // Run per-indicator gradient descent from _kalshiLog outcomes (yield first — can be heavy)
+    await new Promise(resolve => setTimeout(resolve, 0));
     try {
       results.indicatorRetune = this.retuneFromLog();
     } catch (e) {
       console.warn('[AdaptiveTuner] retuneFromLog error:', e.message);
     }
+    await new Promise(resolve => setTimeout(resolve, 0));
     try {
       results.timingRetune = this.retuneTimingFromLog();
     } catch (e) {

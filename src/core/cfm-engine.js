@@ -224,7 +224,7 @@
         if (window.desktopApp && window.desktopApp.generateCoinbaseJWT) {
           const res = await window.desktopApp.generateCoinbaseJWT({
             requestMethod: 'GET',
-            requestPath: 'api.coinbase.com/api/v3/brokerage/best_bid_ask'
+            requestPath: `api.coinbase.com/api/v3/brokerage/best_bid_ask?product_ids=${sym}-USD`
           });
           if (res && res.success) jwtStr = res.jwt;
         }

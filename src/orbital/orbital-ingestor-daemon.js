@@ -21,13 +21,29 @@ const DualSourceValidationLoop = require('./dual-source-validation-loop');
 const OracleRedundancyIntegrator = require('./oracle-redundancy-integrator');
 const Redis = require('ioredis');
 
-const redisPub = new Redis(process.env.REDIS_URL || 'redis://localhost:6379');
+let redisReady = false;
+const redisPub = new Redis(process.env.REDIS_URL || 'redis://localhost:6379', {
+    enableOfflineQueue: false,
+    maxRetriesPerRequest: 1,
+    connectTimeout: 500,
+    retryStrategy(times) {
+        return Math.min(1000 * times, 5000);
+    }
+});
+redisPub.on('ready', () => { redisReady = true; });
+redisPub.on('close', () => { redisReady = false; });
+redisPub.on('end', () => { redisReady = false; });
+redisPub.on('error', (err) => {
+    // Suppress unhandled error events that crash the process
+});
 
 function publishTickToRedis(orbitalType, asset, payload) {
+    if (!redisReady) return false;
     const channel = `orbital:ticks:${orbitalType}:${asset}`;
     redisPub.publish(channel, JSON.stringify(payload)).catch(err => {
         // suppress verbose logs unless in debug mode, but catch errors
     });
+    return true;
 }
 
 const COINGECKO_WS_URL   = 'wss://stream.coingecko.com/v1/stream';
@@ -48,9 +64,15 @@ const COINBASE_ASSETS = COINBASE_PRODUCTS.map(product => product.split('-')[0]);
 // Maintains a per-asset circular buffer of the last 20 Coinbase ticks
 // (price × volume pairs) to compute a volume-weighted average price.
 const VWAP_WINDOW = 20;
-const vwapBuffers = {};
+const vwapState = {};
 for (const asset of ASSETS) {
-    vwapBuffers[asset] = []; // [{price, volume}]
+    vwapState[asset] = {
+        samples: new Array(VWAP_WINDOW),
+        index: 0,
+        count: 0,
+        totalVol: 0,
+        totalPxVol: 0
+    };
 }
 
 /**
@@ -58,13 +80,25 @@ for (const asset of ASSETS) {
  * If the tick has no volume data, falls back to price as a neutral weight.
  */
 function updateVwap(asset, price, volume = 1) {
-    const buf = vwapBuffers[asset];
-    buf.push({ price, volume });
-    if (buf.length > VWAP_WINDOW) buf.shift();
+    const state = vwapState[asset];
+    if (!state) return price;
 
-    const totalVol = buf.reduce((s, t) => s + t.volume, 0);
-    const vwap     = totalVol > 0
-        ? buf.reduce((s, t) => s + t.price * t.volume, 0) / totalVol
+    const safeVolume = Number.isFinite(volume) && volume > 0 ? volume : 1;
+    const old = state.samples[state.index];
+    if (old) {
+        state.totalVol -= old.volume;
+        state.totalPxVol -= old.price * old.volume;
+    } else {
+        state.count += 1;
+    }
+
+    state.samples[state.index] = { price, volume: safeVolume };
+    state.totalVol += safeVolume;
+    state.totalPxVol += price * safeVolume;
+    state.index = (state.index + 1) % VWAP_WINDOW;
+
+    const vwap = state.totalVol > 0
+        ? state.totalPxVol / state.totalVol
         : price;
 
     return vwap;

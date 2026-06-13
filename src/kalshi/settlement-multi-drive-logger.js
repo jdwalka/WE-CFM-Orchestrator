@@ -12,10 +12,10 @@
 (function () {
   'use strict';
 
-  // Guard: ipcRenderer only available in Electron renderer process
-  const ipcRenderer = (typeof require !== 'undefined') ? require('electron').ipcRenderer : null;
-  if (!ipcRenderer) {
-    console.warn('[settlement-multi-drive-logger] ipcRenderer not available - module disabled');
+  // Guard: preload multiDrive API only available in Electron renderer process
+  const multiDrive = window.multiDrive;
+  if (!multiDrive) {
+    console.warn('[settlement-multi-drive-logger] multiDrive API not available - module disabled');
     return;
   }
 
@@ -25,36 +25,50 @@
       const drives = await window.desktopApp.getDrives();
       return (drives || [])
         .filter(d => d && d.type === 'network' && d.root)
-        .map(d => `${d.root}WECRYP\\settlement-logs`);
+        .map(d => `${d.root}WECRYPTO\\settlement-logs`);
     } catch (e) {
       console.warn('[SettlementLogger] Network share discovery failed:', e.message);
       return [];
     }
   }
 
-  const SYNC_TARGETS = {
+  async function discoverGoogleDriveTargets() {
+    const targets = new Set([
+      'G:\\My Drive',
+      'H:\\My Drive',
+      'I:\\My Drive',
+      'C:\\Users\\jdwal\\Google Drive',
+      'C:\\Users\\jdwal\\My Drive'
+    ]);
+
+    try {
+      if (window.desktopApp?.getGoogleDriveTargets) {
+        const status = await window.desktopApp.getGoogleDriveTargets({ force: true });
+        for (const target of status?.targets || []) {
+          if (target?.root) targets.add(target.root);
+        }
+      } else if (window.desktopApp?.getDrives) {
+        const drives = await window.desktopApp.getDrives();
+        for (const drive of drives || []) {
+          if (drive?.type === 'cloud' && /(?:^|\\)(?:My Drive|Google Drive(?:\s*\(.+\))?)$/i.test(String(drive.root || ''))) {
+            targets.add(drive.root);
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('[SettlementLogger] Google Drive discovery failed:', e.message);
+    }
+
+    return [...targets].filter(Boolean);
+  }
+
+    const SYNC_TARGETS = {
     network_drives: [],
     onedrive: [
-      // Personal OneDrive
-      process.env.ONEDRIVE || '',
-      process.env.OneDriveConsumer || '',
-      // Business OneDrive (usually OneDrive for Business)
-      process.env.ONEDRIVE_BUSINESS || '',
-      process.env.OneDriveCommercial || '',
-      // Fallback paths
-      'C:\\Users\\' + (process.env.USERNAME || 'user') + '\\OneDrive',
-      'C:\\Users\\' + (process.env.USERNAME || 'user') + '\\OneDrive - Personal',
-      'C:\\Users\\' + (process.env.USERNAME || 'user') + '\\OneDrive - ctstate.edu',
-      'C:\\Users\\' + (process.env.USERNAME || 'user') + '\\OneDrive - Azure ctstate.edu',
-      'C:\\Users\\' + (process.env.USERNAME || 'user') + '\\OneDrive - Company',
+      'C:\Users\gitgo\OneDrive\WECRYPTO_Logs'
     ],
     google_drive: [
-      // Google Drive via Backup and Sync
-      'H:\\My Drive',
-      'C:\\Users\\' + (process.env.USERNAME || 'user') + '\\Google Drive',
-      'C:\\Users\\' + (process.env.USERNAME || 'user') + '\\My Drive',
-      'G:\\My Drive',
-      process.env.GOOGLE_DRIVE_PATH || ''
+      'H:\My Drive\WECRYPTO_Logs'
     ]
   };
 
@@ -73,25 +87,29 @@
    * Initialize all target directories
    */
   function initializeTargets() {
-    discoverNetworkShareTargets().then(extraTargets => {
-      if (extraTargets.length) {
+    Promise.all([discoverNetworkShareTargets(), discoverGoogleDriveTargets()]).then(([extraTargets, googleTargets]) => {
+      if (extraTargets?.length) {
         SYNC_TARGETS.network_drives = [...new Set([...(SYNC_TARGETS.network_drives || []), ...extraTargets].filter(Boolean))];
         console.log('[SettlementLogger] Network shares discovered:', extraTargets.join(' | '));
       }
+      if (googleTargets?.length) {
+        SYNC_TARGETS.google_drive = [...new Set([...(SYNC_TARGETS.google_drive || []), ...googleTargets].filter(Boolean))];
+        console.log('[SettlementLogger] Google Drive targets exposed:', SYNC_TARGETS.google_drive.join(' | '));
+      }
 
-      ipcRenderer.send('multi-drive:init-directories', {
+      multiDrive.initDirectories({
         targets: SYNC_TARGETS,
         filename: LOG_FILENAME
       });
     }).catch(() => {
-      ipcRenderer.send('multi-drive:init-directories', {
+      multiDrive.initDirectories({
         targets: SYNC_TARGETS,
         filename: LOG_FILENAME
       });
     });
 
     // Listen for directory init results
-    ipcRenderer.on('multi-drive:init-complete', (event, results) => {
+    multiDrive.onInitComplete((results) => {
       console.log('[SettlementLogger] Directory initialization complete:', results);
       syncStatus = results;
     });
@@ -124,17 +142,21 @@
       const correct = r.correct === true ? 'WIN' : r.correct === false ? 'LOSS' : 'PENDING';
       const confidence = r.confidence || 0;
       const kalshiProb = r.kalshiProb || 0;
+      const kYesAsk = r.kYesAsk || 0;
+      const kYesBid = r.kYesBid || 0;
+      const kNoAsk = r.kNoAsk || 0;
+      const kNoBid = r.kNoBid || 0;
 
-      return `${timestamp},${r.sym},${modelDir},${outcome},${correct},${confidence},${kalshiProb}`;
+      return `${timestamp},${r.sym},${modelDir},${outcome},${correct},${confidence},${kalshiProb},${kYesAsk},${kYesBid},${kNoAsk},${kNoBid}`;
     });
 
     const isNewFile = !window._settlementLogHeaderWritten;
     const content = isNewFile
-      ? `timestamp,coin,model_direction,kalshi_outcome,result,confidence,kalshi_probability\n${lines.join('\n')}\n`
+      ? `timestamp,coin,model_direction,kalshi_outcome,result,confidence,kalshi_probability,kalshi_yes_ask,kalshi_yes_bid,kalshi_no_ask,kalshi_no_bid\n${lines.join('\n')}\n`
       : `${lines.join('\n')}\n`;
 
     // Send to main process for multi-target write
-    ipcRenderer.send('multi-drive:write-settlement-log', {
+    multiDrive.writeSettlementLog({
       filename: LOG_FILENAME,
       content: content,
       isNewFile: isNewFile,
@@ -143,7 +165,7 @@
     });
 
     // Listen for write results
-    ipcRenderer.once('multi-drive:write-complete', (event, results) => {
+    multiDrive.onWriteComplete((results) => {
       console.log('[SettlementLogger] Multi-drive write complete:', results);
       // Update sync status
       syncStatus = results.syncStatus || syncStatus;

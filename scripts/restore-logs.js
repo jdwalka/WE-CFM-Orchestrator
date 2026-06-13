@@ -3,9 +3,9 @@ const path = require('path');
 
 const dataDirs = [
     path.join(__dirname, '..', 'data'),
-    'E:\\WECRYP0-data',
-    'E:\\WECRYP\\data',
-    'D:\\WECRYP\\data'
+    'E:\\WECRYPTO-data',
+    'E:\\WECRYPTO\\data',
+    'D:\\WECRYPTO\\data'
 ];
 const loaderFile = path.join(__dirname, '..', 'src', 'kalshi', 'cloud-data-loader.js');
 

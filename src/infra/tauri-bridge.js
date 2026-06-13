@@ -175,7 +175,7 @@
     // 2. Poll /health on the default cascade
     for (const tryPort of [3010, 3011, 3012, 3013, 3014, 3015, 3016, 3017, 3018, 3019, 3020]) {
       try {
-        const r = await fetch(`http://127.0.0.1:${tryPort}/health`, { signal: AbortSignal.timeout(500) });
+        const r = await fetch(`http://127.0.0.1:${tryPort}/health`, { signal: AbortSignal.timeout(2000) });
         if (r.ok) {
           const txt = await r.text();
           if (txt.trim() === 'OK') {
@@ -221,9 +221,9 @@
 
   // ── Host → exchange slug map ─────────────────────────────────────────────────
   const HOST_MAP = {
-    'api.binance.us':                  'binance',
+    'api.binance.us':                  'binance-us',
     'api.binance.com':                 'binance',
-    'data-api.binance.vision':         'binance',
+    'data-api.binance.vision':         'binance-data',
     'fapi.binance.com':                'binance-f',
     'api.bybit.com':                   'bybit',
     'www.okx.com':                     'okx',

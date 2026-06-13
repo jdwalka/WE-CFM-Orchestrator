@@ -6,8 +6,8 @@
  * - Fear & Greed Index (macro sentiment)
  * - Global market metrics
  *
- * ★ TRIAL MODE (DEFAULT): Works WITHOUT API key — no user setup required!
- * ★ PRO MODE: Auto-upgrades when API key is provided for higher quota
+ * ★ PRO MODE: Enabled only when a valid API key is provided.
+ * Without a valid key, this module serves cache and free fallback sources.
  *
  * Trial Docs: https://pro-api.coinmarketcap.com/trial-pro-api
  * Pro Docs: https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest
@@ -20,9 +20,6 @@
   const CMC_PRO_QUOTES_BASE_URL = 'https://pro-api.coinmarketcap.com/v1';  // Requires API key
   const CMC_PRO_GLOBAL_BASE_URL = 'https://pro-api.coinmarketcap.com/v1';  // Requires API key
   const CMC_PRO_FNG_BASE_URL = 'https://pro-api.coinmarketcap.com/v3';  // Requires API key
-  const CMC_TRIAL_QUOTES_BASE_URL = 'https://pro-api.coinmarketcap.com/v1';  // Requires API key
-  const CMC_TRIAL_GLOBAL_BASE_URL = 'https://pro-api.coinmarketcap.com/v1';  // Requires API key
-  const CMC_TRIAL_FNG_BASE_URL = 'https://pro-api.coinmarketcap.com/v3';  // Requires API key
   const CMC_QUOTES_PATH = '/cryptocurrency/quotes/latest';
   const CMC_GLOBAL_PATH = '/global-metrics/quotes/latest';
   const CMC_FEAR_INDEX_PATH = '/fear-and-greed/latest';
@@ -59,7 +56,28 @@
   }
 
   function hasApiKey() { return !!getApiKey() && Date.now() >= cmcProDisabledUntil; }
-  function getBaseUrl() { return hasApiKey() ? CMC_PRO_QUOTES_BASE_URL : CMC_TRIAL_QUOTES_BASE_URL; }
+  function getBaseUrl() { return hasApiKey() ? CMC_PRO_QUOTES_BASE_URL : ''; }
+
+  function cmcUnavailableReason() {
+    if (!getApiKey()) return 'missing CMC API key';
+    if (Date.now() < cmcProDisabledUntil) return 'CMC API key rejected; cooldown active';
+    if (Date.now() < cmcRateLimitedUntil) return 'CMC rate-limit cooldown active';
+    return '';
+  }
+
+  function markCmcUnavailable(reason) {
+    try {
+      window.NetworkHealth?.update('CoinMarketCap', {
+        status: 'degraded',
+        fallback: true,
+        transient: true,
+        reason,
+        bucket: 'provider/api',
+        bucketReason: reason,
+        lastFetch: Date.now(),
+      });
+    } catch (_) {}
+  }
 
   function symbolList(symbols) {
     return Array.isArray(symbols)
@@ -91,7 +109,7 @@
     }
     if (status === 401 || /api key|unauthorized/i.test(message || '')) {
       cmcProDisabledUntil = Date.now() + CMC_AUTH_COOLDOWN_MS;
-      console.warn('[CMC] Pro key rejected; using keyless trial mode for this session window.');
+      console.warn('[CMC] Pro key rejected; disabling CMC Pro for this session window.');
       try {
         localStorage.removeItem('cmc_pro_api_key');
       } catch (_) { }
@@ -104,16 +122,28 @@
 
   // ── Rate limiter (CMC Trial: ~30 req/min; Pro: 10K/month = ~14 req/min) ──────────────────
   let _lastRequestTime = 0;
-  const REQUEST_MIN_GAP_MS = 2000; // ~30 req/min; safe for both modes
+  let _fetchQueue = Promise.resolve();
+  let _fetchQueueLength = 0;
+  const REQUEST_MIN_GAP_MS = 2000;
 
   async function _rateLimitedFetch(url, options) {
-    const now = Date.now();
-    const gap = now - _lastRequestTime;
-    if (gap < REQUEST_MIN_GAP_MS) {
-      await new Promise(r => setTimeout(r, REQUEST_MIN_GAP_MS - gap));
+    if (_fetchQueueLength > 10) {
+      return Promise.reject(new Error('Rate limit queue too long, rejecting CMC fetch'));
     }
-    _lastRequestTime = Date.now();
-    return fetch(url, options);
+    _fetchQueueLength++;
+    const p = _fetchQueue.then(async () => {
+      const now = Date.now();
+      const gap = now - _lastRequestTime;
+      if (gap < REQUEST_MIN_GAP_MS) {
+        await new Promise(r => setTimeout(r, REQUEST_MIN_GAP_MS - gap));
+      }
+      _lastRequestTime = Date.now();
+      return fetch(url, options);
+    });
+    _fetchQueue = p.catch(() => {}).finally(() => {
+      _fetchQueueLength--;
+    });
+    return p;
   }
 
   // ── Latest quotes (multi-symbol) ────────────────────────────────────────────
@@ -123,12 +153,17 @@
     const isProMode = hasApiKey();
 
     if (!symbolStr) return {};
+    if (!isProMode) {
+      const reason = cmcUnavailableReason();
+      markCmcUnavailable(reason);
+      return cachedQuotes(symbols);
+    }
     if (isCoolingDown()) return cachedQuotes(symbols);
 
     try {
       const buildUrl = (mode) => {
-        const base = mode === 'pro' ? CMC_PRO_QUOTES_BASE_URL : CMC_TRIAL_QUOTES_BASE_URL;
-        return `${base}${CMC_QUOTES_PATH}?symbol=${encodeURIComponent(symbolStr)}&convert=USD`;
+        if (mode !== 'pro') throw new Error('CMC requires a valid API key');
+        return `${CMC_PRO_QUOTES_BASE_URL}${CMC_QUOTES_PATH}?symbol=${encodeURIComponent(symbolStr)}&convert=USD`;
       };
       const buildHeaders = (mode) => {
         const headers = { Accept: 'application/json' };
@@ -143,7 +178,7 @@
             endpoint: 'cmc',
             cacheType: 'price-quotes',
             retries: 2,
-            fallbackChain: ['cmc', 'pyth', 'cache'],
+            fallbackChain: ['cmc', 'coingecko', 'coinbase', 'cache'],
             requestOptions: { headers: buildHeaders(isProMode ? 'pro' : 'trial') },
           });
 
@@ -171,6 +206,11 @@
           console.info(`[CMC ${isProMode ? 'Pro' : 'Trial'}] Quotes via proxy: ${Object.keys(result?.data || {}).length} coins ✓`);
           return result?.data || {};
         } catch (err) {
+          if (/401|403|unauthorized|forbidden|api key/i.test(err?.message || '')) {
+            handleCmcFailure(401, err?.message || '');
+            markCmcUnavailable(cmcUnavailableReason());
+            return cachedQuotes(symbols);
+          }
           console.warn(`[CMC] ProxyOrchestrator failed, falling back:`, err.message);
         }
       }
@@ -183,21 +223,21 @@
       }
 
       const tryFetch = (mode) => _rateLimitedFetch(buildUrl(mode), { method: 'GET', headers: buildHeaders(mode) });
-      let resp = await tryFetch(isProMode ? 'pro' : 'trial');
+      let resp = await tryFetch('pro');
 
+      let errText = '';
       if (!resp.ok) {
-        const err = await resp.text().catch(() => '');
+        errText = await resp.text().catch(() => '');
         if (isProMode && (resp.status === 401 || resp.status === 403)) {
-          handleCmcFailure(resp.status, err);
-          console.error('[CMC] Pro key rejected - retrying in trial mode');
-          resp = await tryFetch('trial');
+          handleCmcFailure(resp.status, errText);
+          markCmcUnavailable(cmcUnavailableReason());
+          return cachedQuotes(symbols);
         }
       }
 
       if (!resp.ok) {
-        const err = await resp.text().catch(() => '');
-        handleCmcFailure(resp.status, err);
-        console.warn(`[CMC ${isProMode ? 'Pro' : 'Trial'}] Quotes (${resp.status}):`, err.slice(0, 100));
+        handleCmcFailure(resp.status, errText);
+        console.warn(`[CMC ${isProMode ? 'Pro' : 'Trial'}] Quotes (${resp.status}):`, errText.slice(0, 100));
         return cachedQuotes(symbols);
       }
 
@@ -236,29 +276,36 @@
     const isProMode = hasApiKey();
     const apiKey = getApiKey();
 
+    if (!isProMode) {
+      markCmcUnavailable(cmcUnavailableReason());
+      return globalMetrics;
+    }
     if (isCoolingDown()) return globalMetrics;
 
     try {
-      const buildUrl = (mode) => `${mode === 'pro' ? CMC_PRO_GLOBAL_BASE_URL : CMC_TRIAL_GLOBAL_BASE_URL}${CMC_GLOBAL_PATH}?convert=USD`;
+      const buildUrl = (mode) => {
+        if (mode !== 'pro') throw new Error('CMC requires a valid API key');
+        return `${CMC_PRO_GLOBAL_BASE_URL}${CMC_GLOBAL_PATH}?convert=USD`;
+      };
       const buildHeaders = (mode) => {
         const headers = { Accept: 'application/json' };
         if (mode === 'pro' && apiKey) headers['X-CMC_PRO_API_KEY'] = apiKey;
         return headers;
       };
-      let resp = await _rateLimitedFetch(buildUrl(isProMode ? 'pro' : 'trial'), { method: 'GET', headers: buildHeaders(isProMode ? 'pro' : 'trial') });
+      let resp = await _rateLimitedFetch(buildUrl('pro'), { method: 'GET', headers: buildHeaders('pro') });
 
+      let errText = '';
       if (!resp.ok) {
-        const err = await resp.text().catch(() => '');
+        errText = await resp.text().catch(() => '');
         if (isProMode && (resp.status === 401 || resp.status === 403)) {
-          handleCmcFailure(resp.status, err);
-          console.error('[CMC] Pro key rejected for metrics - retrying in trial mode');
-          resp = await _rateLimitedFetch(buildUrl('trial'), { method: 'GET', headers: buildHeaders('trial') });
+          handleCmcFailure(resp.status, errText);
+          markCmcUnavailable(cmcUnavailableReason());
+          return globalMetrics;
         }
       }
 
       if (!resp.ok) {
-        const err = await resp.text().catch(() => '');
-        handleCmcFailure(resp.status, err);
+        handleCmcFailure(resp.status, errText);
         console.warn(`[CMC ${isProMode ? 'Pro' : 'Trial'}] Metrics (${resp.status})`);
         return globalMetrics;
       }
@@ -293,18 +340,16 @@
       // Primary: CoinMarketCap (if available)
       if (!isCoolingDown() && !cmcFearGreedUnsupported) {
         const usePro = hasApiKey();
-        const cmcUrl = `${usePro ? CMC_PRO_FNG_BASE_URL : CMC_TRIAL_FNG_BASE_URL}${CMC_FEAR_INDEX_PATH}`;
+        const cmcUrl = usePro ? `${CMC_PRO_FNG_BASE_URL}${CMC_FEAR_INDEX_PATH}` : '';
         const cmcHeaders = { Accept: 'application/json' };
         if (usePro) cmcHeaders['X-CMC_PRO_API_KEY'] = getApiKey();
         try {
+          if (!usePro) throw new Error(cmcUnavailableReason());
           let resp = await _rateLimitedFetch(cmcUrl, { method: 'GET', headers: cmcHeaders });
           if (!resp.ok && usePro && (resp.status === 401 || resp.status === 403)) {
             handleCmcFailure(resp.status, await resp.text().catch(() => ''));
-            console.error('[CMC] Pro key rejected for F&G - retrying in trial mode');
-            resp = await _rateLimitedFetch(`${CMC_TRIAL_FNG_BASE_URL}${CMC_FEAR_INDEX_PATH}`, {
-              method: 'GET',
-              headers: { Accept: 'application/json' },
-            });
+            markCmcUnavailable(cmcUnavailableReason());
+            throw new Error(cmcUnavailableReason());
           }
           if (resp.ok) {
             // Add rate limiter call before processing response
@@ -414,5 +459,5 @@
     fearGreed: () => fearGreed
   };
 
-  console.info(`[CMC] Stack initialized: ${hasApiKey() ? '✓ Pro mode' : '✓ Trial mode (keyless)'}`);
+  console.info(`[CMC] Stack initialized: ${hasApiKey() ? 'Pro mode' : 'cache/fallback mode (no valid key)'}`);
 })();

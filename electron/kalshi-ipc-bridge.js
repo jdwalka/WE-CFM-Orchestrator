@@ -11,7 +11,10 @@ const { ipcMain, app } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
+const crypto = require('crypto');
 const { resolveKalshiCredentialFile } = require('./kalshi-credentials.js');
+
+const workerToken = crypto.randomUUID();
 
 // Kalshi worker state
 let kalshiWorker = null;
@@ -49,7 +52,10 @@ async function probeWorkerHealth(timeoutMs = 800) {
         try { ctrl.abort(); } catch (_) { }
       }
     }, timeoutMs);
-    const res = await fetch(`${kalshiWorkerUrl}/health`, { signal: ctrl.signal });
+    const res = await fetch(`${kalshiWorkerUrl}/health`, { 
+      signal: ctrl.signal,
+      headers: { 'x-worker-token': workerToken }
+    });
     clearTimeout(timeout);
     return !!res.ok;
   } catch (_) {
@@ -95,6 +101,7 @@ async function startKalshiWorker(options = {}) {
       workerScript,
       '--port', '3050',
       '--env', 'production',
+      '--token', workerToken,
       '--file', credentialFile
     ], {
       detached: false,
@@ -160,7 +167,9 @@ async function waitForWorkerReady(maxMs = 12000, pollMs = 150) {
 
   while (Date.now() < deadline) {
     try {
-      const res = await fetch(`${kalshiWorkerUrl}/health`);
+      const res = await fetch(`${kalshiWorkerUrl}/health`, {
+        headers: { 'x-worker-token': workerToken }
+      });
       if (res.ok) {
         kalshiWorkerState.ready = true;
         kalshiWorkerState.readyLatencyMs = Date.now() - (kalshiWorkerState.bootStartedAt || Date.now());
@@ -221,7 +230,10 @@ async function proxyToWorker(method, path, body = null) {
   try {
     const options = {
       method,
-      headers: { 'Content-Type': 'application/json' }
+      headers: { 
+        'Content-Type': 'application/json',
+        'x-worker-token': workerToken
+      }
     };
 
     if (body) {

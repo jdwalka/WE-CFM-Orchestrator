@@ -14,10 +14,44 @@ const KAFKA_BROKERS      = process.env.KAFKA_BROKERS ? process.env.KAFKA_BROKERS
 const INTERVAL_MS        = 15 * 60 * 1000; // 15 minutes
 const BARRIER_TOLERANCE_MS  = 15 * 1000;   // 15 seconds — orbital is "decayed" if no tick in this window
 const MAX_PRICE_DELTA_PCT   = 0.005;        // 0.5% divergence threshold between CoinGecko and Coinbase
+const BUFFER_RETENTION_MS = Math.max(30_000, Number(process.env.WECRYPTO_ORBITAL_BUFFER_RETENTION_MS || 120_000));
+const BUFFER_MAX_TICKS_PER_RING = Math.max(8, Number(process.env.WECRYPTO_ORBITAL_BUFFER_MAX_TICKS || 120));
 
 // In-Memory Buffer: Map<Asset, { s: Tick[], p: Tick[], d: Tick[], f: Tick[] }>
 // Each Tick = { data: object, ts: number (epoch ms) }
 const buffer = new Map();
+let bufferedTicks = 0;
+let droppedBufferedTicks = 0;
+
+function getOrCreateAssetState(asset) {
+    if (!buffer.has(asset)) {
+        buffer.set(asset, { s: [], p: [], d: [], f: [] });
+    }
+    return buffer.get(asset);
+}
+
+function pushBoundedTick(state, type, tick) {
+    const ring = state[type];
+    if (!ring) return false;
+
+    ring.push(tick);
+    bufferedTicks += 1;
+
+    const cutoff = tick.ts - BUFFER_RETENTION_MS;
+    while (ring.length && (ring.length > BUFFER_MAX_TICKS_PER_RING || ring[0].ts < cutoff)) {
+        ring.shift();
+        droppedBufferedTicks += 1;
+    }
+
+    return true;
+}
+
+function findLatestBySource(ticks, source) {
+    for (let i = ticks.length - 1; i >= 0; i -= 1) {
+        if (ticks[i]?.data?.source === source) return ticks[i];
+    }
+    return null;
+}
 
 // Shared Kafka client for the consumer
 const kafka = new Kafka({
@@ -30,6 +64,7 @@ const consumer = kafka.consumer({ groupId: 'orbital-coherence-group' });
 
 // The setInterval handle for the barrier loop (returned so the orchestrator can clear it)
 let barrierInterval = null;
+let consumerRunning = false;
 
 /**
  * Start the Matrix Processor:
@@ -66,20 +101,13 @@ async function startProcessor() {
 
             const type = topic.split('.').pop(); // 's', 'p', 'd', 'f'
 
-            if (!buffer.has(asset)) {
-                buffer.set(asset, { s: [], p: [], d: [], f: [] });
-            }
-
-            const state = buffer.get(asset);
+            const state = getOrCreateAssetState(asset);
             if (!state[type]) return; // guard against unknown type
 
-            state[type].push({ data: payload, ts: Date.now() });
-
-            // Trim to last 20 minutes to prevent unbounded memory growth
-            const cutoff = Date.now() - 20 * 60 * 1000;
-            state[type] = state[type].filter(tick => tick.ts > cutoff);
+            pushBoundedTick(state, type, { data: payload, ts: Date.now() });
         }
     });
+    consumerRunning = true;
 
     console.log('[OrbitalProcessor] Consumer running. Starting 15-min coherence barrier...');
 
@@ -87,6 +115,20 @@ async function startProcessor() {
     barrierInterval = setInterval(() => runBarrier(), INTERVAL_MS);
 
     return barrierInterval;
+}
+
+async function stopProcessor() {
+    if (barrierInterval) {
+        clearInterval(barrierInterval);
+        barrierInterval = null;
+    }
+    if (!consumerRunning) return;
+    try {
+        await consumer.disconnect();
+    } finally {
+        consumerRunning = false;
+        buffer.clear();
+    }
 }
 
 /**
@@ -105,8 +147,8 @@ function runBarrier() {
         // ── 1. Cross-Reference Price Check ──────────────────────────────────────
         // Find the most-recent CoinGecko tick and most-recent Coinbase tick
         // separately (each message is single-source, so we search by source field).
-        const cgTick  = [...state.s].reverse().find(t => t.data?.source === 'coingecko');
-        const cbTick  = [...state.s].reverse().find(t => t.data?.source === 'coinbase');
+        const cgTick  = findLatestBySource(state.s, 'coingecko');
+        const cbTick  = findLatestBySource(state.s, 'coinbase');
         const cgPrice = cgTick?.data?.price_usd;
         const cbPrice = cbTick?.data?.price_usd;
 
@@ -187,11 +229,30 @@ function getLatestPrices() {
     for (const [asset, state] of buffer.entries()) {
         if (!state.s.length) continue;
         // Prefer Coinbase tick (lowest latency)
-        const cbTick = [...state.s].reverse().find(t => t.data?.source === 'coinbase');
-        const cgTick = [...state.s].reverse().find(t => t.data?.source === 'coingecko');
+        const cbTick = findLatestBySource(state.s, 'coinbase');
+        const cgTick = findLatestBySource(state.s, 'coingecko');
         prices[asset] = cbTick?.data?.price_usd ?? cgTick?.data?.price_usd ?? null;
     }
     return prices;
 }
 
-module.exports = { startProcessor, getLatestPrices };
+function getBufferStats() {
+    const assets = {};
+    for (const [asset, state] of buffer.entries()) {
+        assets[asset] = {
+            s: state.s.length,
+            p: state.p.length,
+            d: state.d.length,
+            f: state.f.length,
+        };
+    }
+    return {
+        assets,
+        bufferedTicks,
+        droppedBufferedTicks,
+        retentionMs: BUFFER_RETENTION_MS,
+        maxTicksPerRing: BUFFER_MAX_TICKS_PER_RING,
+    };
+}
+
+module.exports = { startProcessor, stopProcessor, getLatestPrices, getBufferStats };

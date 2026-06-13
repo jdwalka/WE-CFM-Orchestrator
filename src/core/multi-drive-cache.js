@@ -21,12 +21,10 @@
   class MultiDriveCache {
     constructor() {
       this.cacheFile = 'contract-cache-2h.json';
-      const username = (typeof process !== 'undefined' && process.env && process.env.USERNAME)
-        ? process.env.USERNAME
-        : 'user';
 
       // Detect Electron via contextBridge (works with contextIsolation:true + nodeIntegration:false)
       this.isElectron = typeof window !== 'undefined' && window.desktopApp?.isElectron === true;
+      this.userEnv = this._getUserEnv();
 
       // Drive paths (Windows) — mounted roots discovered asynchronously
       this.drivePaths = this._uniquePaths([
@@ -38,6 +36,8 @@
       this.onedriveFolders = [];
       this.onedriveFolder = null;
       this.googleDriveFolder = null;
+      this.googleDriveFolders = [];
+      this.lastSyncFailures = [];
 
       // In-memory cache
       this.data = {
@@ -79,9 +79,42 @@
       const base = this._normalizePath(root);
       if (!base) return [];
       return this._uniquePaths([
-        this._join(base, 'WECRYP', 'WE-CRYPTO-CACHE'),
+        this._join(base, 'WECRYPTO', 'WE-CRYPTO-CACHE'),
         this._join(base, 'WE-CRYPTO-CACHE'),
       ]);
+    }
+
+    _isCloudFolderName(name) {
+      const value = String(name || '');
+      return value.startsWith('OneDrive')
+        || /^Google Drive(?:\s*\(.+\))?$/i.test(value)
+        || /^My Drive(?:\s*\(.+\))?$/i.test(value);
+    }
+
+    _isGoogleDriveRoot(root) {
+      return /(?:^|\\)(?:My Drive|Google Drive(?:\s*\(.+\))?)$/i.test(this._normalizePath(root));
+    }
+
+    _writeOk(result) {
+      return result === true || !!result?.ok;
+    }
+
+    _writeError(result) {
+      if (result === false) return 'write rejected';
+      if (!result) return 'no result';
+      return result.error || result.code || 'write rejected';
+    }
+
+    async _probeWritableDir(dirPath) {
+      if (!window.dataStore?.writeFile) return { ok: false, dirPath, error: 'dataStore write bridge unavailable' };
+      const probePath = this._join(dirPath, '.permission-check', 'multi-drive-cache-probe.json');
+      try {
+        const result = await window.dataStore.writeFile(probePath, JSON.stringify({ source: 'MultiDriveCache', ts: Date.now() }));
+        if (this._writeOk(result)) return { ok: true, dirPath };
+        return { ok: false, dirPath, error: this._writeError(result), code: result?.code || null };
+      } catch (e) {
+        return { ok: false, dirPath, error: e?.message || String(e), code: e?.code || null };
+      }
     }
 
     _allDrivePaths() {
@@ -89,6 +122,7 @@
         ...this.drivePaths,
         ...this.networkDrivePaths,
         ...this.onedriveFolders,
+        ...this.googleDriveFolders,
         ...(this.googleDriveFolder ? [this.googleDriveFolder] : []),
       ]);
     }
@@ -138,7 +172,7 @@
     async _discoverCloudFolders() {
       if (!this.isElectron || !window.dataStore?.listDir) return;
       try {
-        // Discover OneDrive folders under common user home paths
+        // Discover cloud folders under common user home paths
         const username = (typeof process !== 'undefined' && process.env && process.env.USERNAME)
           ? process.env.USERNAME
           : 'user';
@@ -153,6 +187,13 @@
             if (entry.startsWith('OneDrive')) {
               this.onedriveFolders.push(...this._candidateCacheDirs(this._join(home, entry)));
             }
+            if (this._isGoogleDriveRoot(entry)) {
+              for (const dir of this._candidateCacheDirs(this._join(home, entry))) {
+                const probe = await this._probeWritableDir(dir);
+                if (probe.ok) this.googleDriveFolders.push(dir);
+                else this.lastSyncFailures.push({ path: probe.dirPath, error: probe.error || probe.code || 'probe failed' });
+              }
+            }
           }
         }
         this.onedriveFolders = this._uniquePaths(this.onedriveFolders);
@@ -160,14 +201,25 @@
           this.onedriveFolder = this.onedriveFolders[0];
         }
 
-        // Google Drive — scan mounted roots and prefer the WECRYP cache mirror
+        // Google Drive - use the Electron-exposed mounted account roots first.
         const googleCandidates = new Set([
-          'H:\\My Drive',
-          'H:\\Google Drive',
           'G:\\My Drive',
-          'G:\\Google Drive',
+          'H:\\My Drive',
+          'I:\\My Drive',
+          `C:\\Users\\${username}\\Google Drive`,
+          `C:\\Users\\${username}\\My Drive`,
         ]);
-        const driveRoots = new Set(['H:\\', 'G:\\']);
+
+        if (window.desktopApp?.getGoogleDriveTargets) {
+          try {
+            const status = await window.desktopApp.getGoogleDriveTargets({ force: true });
+            for (const target of status?.targets || []) {
+              if (target?.root) googleCandidates.add(target.root);
+            }
+          } catch (e) {
+            console.warn('[MultiDriveCache] Google target bridge failed:', e.message);
+          }
+        }
 
         if (window.desktopApp?.getDrives) {
           try {
@@ -176,30 +228,36 @@
               if (!drive?.root) continue;
               const root = this._normalizePath(drive.root);
               if (!root) continue;
-              const rootWithSlash = /^[A-Za-z]:$/i.test(root) ? `${root}\\` : root;
-              driveRoots.add(rootWithSlash);
+              if (drive.type === 'cloud' && this._isGoogleDriveRoot(root)) {
+                googleCandidates.add(root);
+              }
             }
           } catch (e) {
             console.warn('[MultiDriveCache] Drive scan for Google mounts failed:', e.message);
           }
         }
 
-        for (const root of driveRoots) {
+        for (const root of ['G:\\', 'H:\\', 'I:\\', 'Y:\\', 'Z:\\']) {
           const base = this._normalizePath(root).replace(/\\$/, '');
           if (!base) continue;
           googleCandidates.add(`${base}\\My Drive`);
           googleCandidates.add(`${base}\\Google Drive`);
         }
 
-        findGoogleDrive:
         for (const candidate of this._uniquePaths([...googleCandidates])) {
           for (const dir of this._candidateCacheDirs(candidate)) {
-            const res = await window.dataStore.listDir(dir);
-            if (res?.ok) {
-              this.googleDriveFolder = dir;
-              break findGoogleDrive;
-            }
+            const probe = await this._probeWritableDir(dir);
+            if (probe.ok) this.googleDriveFolders.push(dir);
+            else this.lastSyncFailures.push({ path: probe.dirPath, error: probe.error || probe.code || 'probe failed' });
           }
+        }
+
+        this.googleDriveFolders = this._uniquePaths(this.googleDriveFolders);
+        this.googleDriveFolder = this.googleDriveFolders[0] || null;
+        if (this.googleDriveFolders.length) {
+          console.log('[MultiDriveCache] Writable Google Drive targets:', this.googleDriveFolders.join(' | '));
+        } else {
+          console.warn('[MultiDriveCache] No writable Google Drive cache targets found');
         }
       } catch (e) {
         console.warn('[MultiDriveCache] Cloud folder discovery error:', e.message);
@@ -384,16 +442,47 @@
     _syncAllDrives() {
       if (!this.isElectron || !window.dataStore?.writeFile) return;
 
-      const cacheJson = JSON.stringify(this.data, null, 2);
-      const allPaths = this._allDrivePaths();
+      if (this._syncPending) return;
+      this._syncPending = true;
 
-      this.data.lastSyncTime = Date.now();
+      // Debounce writing to avoid starving the main thread on every prediction
+      setTimeout(() => {
+        this._syncPending = false;
+        try {
+          // Do not use formatting (null, 2) to reduce stringification overhead
+          const cacheJson = JSON.stringify(this.data);
+          const allPaths = this._allDrivePaths();
 
-      // Fire-and-forget: each write is independent
-      allPaths.forEach(dirPath => {
-        const filePath = this._join(dirPath, this.cacheFile);
-        window.dataStore.writeFile(filePath, cacheJson).catch(() => { });
-      });
+          this.data.lastSyncTime = Date.now();
+
+          // Fire-and-forget: each write is independent
+          allPaths.forEach(dirPath => {
+            const filePath = this._join(dirPath, this.cacheFile);
+            window.dataStore.writeFile(filePath, cacheJson)
+              .then(result => {
+                if (!this._writeOk(result)) {
+                  this.lastSyncFailures.push({
+                    path: filePath,
+                    error: this._writeError(result),
+                    ts: Date.now(),
+                  });
+                  this.lastSyncFailures = this.lastSyncFailures.slice(-30);
+                  console.warn('[MultiDriveCache] Write failed:', filePath, this._writeError(result));
+                }
+              })
+              .catch(e => {
+                this.lastSyncFailures.push({
+                  path: filePath,
+                  error: e?.message || String(e),
+                  ts: Date.now(),
+                });
+                this.lastSyncFailures = this.lastSyncFailures.slice(-30);
+              });
+          });
+        } catch (err) {
+          console.warn('[MultiDriveCache] Sync failed:', err.message);
+        }
+      }, 2000);
     }
 
     /**
@@ -450,19 +539,19 @@
       if (key === 'errors') {
         this.data.errors = this.data.errors.filter(e => now - e.timestamp < maxAge).slice(-500);
       } else if (key === 'predictions') {
-        this.data.predictions = this.data.predictions.filter(p => now - p.timestamp < maxAge);
+        this.data.predictions = this.data.predictions.filter(p => now - p.timestamp < maxAge).slice(-1000);
       } else if (key === 'settlements') {
-        this.data.settlements = this.data.settlements.filter(s => now - s.timestamp < maxAge);
+        this.data.settlements = this.data.settlements.filter(s => now - s.timestamp < maxAge).slice(-1000);
       } else if (key === 'candles') {
-        this.data.candles = this.data.candles.filter(c => now - c.timestamp < maxAge);
+        this.data.candles = this.data.candles.filter(c => now - c.timestamp < maxAge).slice(-1000);
       } else if (key === 'orders') {
-        this.data.orders = this.data.orders.filter(o => now - o.timestamp < maxAge);
+        this.data.orders = this.data.orders.filter(o => now - o.timestamp < maxAge).slice(-1000);
       } else if (key === 'correlations') {
-        this.data.correlations = this.data.correlations.filter(c => now - c.timestamp < maxAge);
+        this.data.correlations = this.data.correlations.filter(c => now - c.timestamp < maxAge).slice(-1000);
       } else if (key === 'marketContexts') {
-        this.data.marketContexts = this.data.marketContexts.filter(c => now - c.timestamp < maxAge);
+        this.data.marketContexts = this.data.marketContexts.filter(c => now - c.timestamp < maxAge).slice(-3000);
       } else if (key === 'inferences') {
-        this.data.inferences = this.data.inferences.filter(i => now - i.timestamp < maxAge);
+        this.data.inferences = this.data.inferences.filter(i => now - i.timestamp < maxAge).slice(-1500);
       }
 
       if (maxCount) {
@@ -488,8 +577,11 @@
         onedriveConfigured: this.onedriveFolders.length > 0,
         onedriveTargets: this.onedriveFolders.length,
         googleDriveConfigured: this.googleDriveFolder ? true : false,
+        googleDriveTargets: this.googleDriveFolders.length,
+        googleDriveFolders: [...this.googleDriveFolders],
         networkTargets: this.networkDrivePaths.length,
-        totalTargets: this.drivePaths.length + this.networkDrivePaths.length + this.onedriveFolders.length + (this.googleDriveFolder ? 1 : 0),
+        totalTargets: this._allDrivePaths().length,
+        lastSyncFailures: this.lastSyncFailures.slice(-10),
       };
     }
 
@@ -556,6 +648,10 @@
       syncNow: () => {
         multiDriveCache._syncAllDrives();
         console.log('✓ Manual sync complete');
+      },
+      googleTargets: () => {
+        console.table(multiDriveCache.googleDriveFolders);
+        return [...multiDriveCache.googleDriveFolders];
       },
     };
   }

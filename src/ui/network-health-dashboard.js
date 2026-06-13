@@ -129,63 +129,76 @@
     let lastProbeTime = 0;
     let lastProbeResult = null;
     let probeBackoffMs = 2500;
+    let probePromise = null;
 
     async function probeOrbitalLocalEndpoints() {
         if (Date.now() - lastProbeTime < probeBackoffMs && lastProbeResult) {
             return lastProbeResult;
         }
 
-        const out = {
-            docker: 'unknown',
-            redpanda: 'unknown',
-            nodes: 0,
-            topics: [],
-            notifications: [],
-        };
-
-        try {
-            const brokers = await fetchJsonWithTimeout('http://localhost:9644/v1/brokers', 2500);
-            out.docker = 'healthy';
-            out.redpanda = 'healthy';
-            out.nodes = Array.isArray(brokers) ? brokers.length : 0;
-            out.notifications.push({
-                ts: Date.now(),
-                level: 'success',
-                source: 'renderer-probe',
-                message: `Redpanda admin API reachable (${out.nodes} node${out.nodes === 1 ? '' : 's'})`,
-            });
-        } catch (_) { }
-
-        try {
-            const topicData = await fetchJsonWithTimeout('http://localhost:8081/api/topics', 2500);
-            const topics = Array.isArray(topicData?.topics)
-                ? topicData.topics.map((topic) => topic?.topicName).filter((name) => name && name.includes('wecrypto.orbital'))
-                : [];
-            if (topics.length || out.redpanda === 'healthy') {
-                out.docker = 'healthy';
-                out.redpanda = 'healthy';
-            }
-            out.topics = topics;
-            if (topics.length) {
-                out.notifications.push({
-                    ts: Date.now(),
-                    level: 'info',
-                    source: 'renderer-probe',
-                    message: `Topic API reachable (${topics.length} orbital topics)`,
-                });
-            }
-        } catch (_) { }
-
-        lastProbeTime = Date.now();
-        lastProbeResult = out;
-        
-        if (out.redpanda !== 'healthy') {
-            probeBackoffMs = Math.min(30000, probeBackoffMs * 1.5);
-        } else {
-            probeBackoffMs = 2500;
+        if (probePromise) {
+            return probePromise;
         }
 
-        return out;
+        probePromise = (async () => {
+            const out = {
+                docker: 'unknown',
+                redpanda: 'unknown',
+                nodes: 0,
+                topics: [],
+                notifications: [],
+            };
+
+            try {
+                const brokers = await fetchJsonWithTimeout('http://127.0.0.1:9644/v1/brokers', 2500);
+                out.docker = 'healthy';
+                out.redpanda = 'healthy';
+                out.nodes = Array.isArray(brokers) ? brokers.length : 0;
+                out.notifications.push({
+                    ts: Date.now(),
+                    level: 'success',
+                    source: 'renderer-probe',
+                    message: `Redpanda admin API reachable (${out.nodes} node${out.nodes === 1 ? '' : 's'})`,
+                });
+            } catch (_) { }
+
+            try {
+                const topicData = await fetchJsonWithTimeout('http://127.0.0.1:8081/api/topics', 2500);
+                const topics = Array.isArray(topicData?.topics)
+                    ? topicData.topics.map((topic) => topic?.topicName).filter((name) => name && name.includes('wecrypto.orbital'))
+                    : [];
+                if (topics.length || out.redpanda === 'healthy') {
+                    out.docker = 'healthy';
+                    out.redpanda = 'healthy';
+                }
+                out.topics = topics;
+                if (topics.length) {
+                    out.notifications.push({
+                        ts: Date.now(),
+                        level: 'info',
+                        source: 'renderer-probe',
+                        message: `Topic API reachable (${topics.length} orbital topics)`,
+                    });
+                }
+            } catch (_) { }
+
+            lastProbeTime = Date.now();
+            lastProbeResult = out;
+
+            if (out.redpanda !== 'healthy') {
+                probeBackoffMs = Math.min(30000, probeBackoffMs * 1.5);
+            } else {
+                probeBackoffMs = 2500;
+            }
+
+            return out;
+        })();
+
+        try {
+            return await probePromise;
+        } finally {
+            probePromise = null;
+        }
     }
 
     function renderTransport() {
@@ -297,6 +310,9 @@
                 `<span>Provider/API: ${bucketCounts['provider/api'] || 0}</span>`;
         }
         const list = Object.entries(state).map(([provider, v]) => {
+            const retryAt = Number(v.retryAt || v.cooldownUntil || 0);
+            const cooldownMs = retryAt > Date.now() ? retryAt - Date.now() : 0;
+            const retryLabel = cooldownMs > 0 ? `Retry ${formatMs(cooldownMs)}` : '';
             const bucketLabel = v.bucket && v.bucket !== 'unknown' ? ` [${v.bucket}]` : '';
             const reasonParts = [v.reason, v.bucketReason]
                 .map((x) => String(x || '').trim())
@@ -310,6 +326,7 @@
         <span style="font-weight:500;width:110px;display:inline-block;">${provider}</span>
         <span style="color:#aaa;font-size:12px;width:80px;display:inline-block;">${formatAgo(v.lastFetch)}</span>
         <span style="font-size:12px;color:${v.fallback ? '#ffd166' : '#aaa'};margin-left:6px;">${v.fallback ? 'Fallback' : ''}</span>
+        <span style="font-size:12px;color:#8ab4f8;margin-left:6px;">${retryLabel}</span>
         <span style="font-size:12px;color:#ff5e5e;margin-left:6px;">${bucketLabel}${reason ? ` ${reason}` : ''}</span>
       </div>`;
         }).join('');

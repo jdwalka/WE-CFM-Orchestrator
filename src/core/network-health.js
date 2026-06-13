@@ -380,6 +380,314 @@
         return { ...bucketCounters };
     }
 
+    const LOCAL_STATUS_BRIDGE_MS = 2_000;
+    const LOCAL_STATUS_BRIDGE_REFRESH_MS = 10_000;
+    const POLYMARKET_STALE_MS = 5 * 60_000;
+    const POLYMARKET_STARTUP_GRACE_MS = 45_000;
+    const localStatusBridgeStartedAt = Date.now();
+    let localStatusBridgeTimer = null;
+    let localStatusBridgeInFlight = false;
+
+    function bridgeUpdate(provider, statusObj) {
+        const name = canonicalProviderName(provider);
+        const current = state[name] || {};
+        const now = Date.now();
+        const changed =
+            current.status !== statusObj.status ||
+            current.reason !== statusObj.reason ||
+            current.fallback !== statusObj.fallback ||
+            current.bucket !== statusObj.bucket ||
+            current.bucketReason !== statusObj.bucketReason;
+        if (!changed && current._bridgeTs && (now - current._bridgeTs) < LOCAL_STATUS_BRIDGE_REFRESH_MS) return;
+        update(name, {
+            ...statusObj,
+            _bridgeTs: now,
+        });
+    }
+
+    function summarizeProxyHealth(health = {}) {
+        const optionalProxyEndpoints = new Set([
+            'cmc',
+            'coinmarketcap',
+            'blockcypher',
+            'chainso',
+            'chain.so',
+            'bscscan',
+            'etherscan',
+            'coingecko',
+            'dexscreener',
+        ]);
+        const sumEndpointCounts = (counts = {}, includeOptional = true) => Object.entries(counts || {})
+            .filter(([endpoint]) => includeOptional || !optionalProxyEndpoints.has(String(endpoint).toLowerCase()))
+            .reduce((total, [, count]) => total + Number(count || 0), 0);
+        const requests = Number(
+            health.requests?.total ??
+            health.totalRequests ??
+            health.requestCount ??
+            0
+        );
+        const rawFailures = Number(
+            health.failures?.total ??
+            health.totalFailures ??
+            health.failureCount ??
+            0
+        );
+        const endpointRequests = health.requests?.byEndpoint || {};
+        const endpointFailures = health.failures?.byEndpoint || {};
+        const rollingRequests = health.rolling?.byEndpoint || endpointRequests;
+        const rollingFailures = health.rolling?.failuresByEndpoint || endpointFailures;
+        const criticalRequests = sumEndpointCounts(endpointRequests, false);
+        const criticalFailures = sumEndpointCounts(endpointFailures, false);
+        const recentCriticalRequests = sumEndpointCounts(rollingRequests, false);
+        const recentCriticalFailures = sumEndpointCounts(rollingFailures, false);
+        const optionalFailures = Math.max(0, rawFailures - criticalFailures);
+        const failures = recentCriticalRequests > 0 ? recentCriticalFailures : 0;
+        const cacheHits = Number(
+            health.cache?.hits ??
+            health.cacheHits ??
+            0
+        );
+        const avgLatency = Number(
+            health.latency?.avg ??
+            health.averageLatency ??
+            health.avgLatency ??
+            0
+        );
+        const failureRate = recentCriticalRequests > 0
+            ? recentCriticalFailures / recentCriticalRequests
+            : 0;
+        const degraded = recentCriticalFailures >= 3 && failureRate > 0.5;
+        const parts = ['initialized'];
+        if (requests > 0) parts.push(`${requests} req`);
+        if (recentCriticalFailures > 0) parts.push(`${recentCriticalFailures} recent critical fail`);
+        else if (criticalFailures > 0) parts.push(`${criticalFailures} historical critical fail`);
+        if (optionalFailures > 0) parts.push(`${optionalFailures} optional fail`);
+        if (cacheHits > 0) parts.push(`${cacheHits} cache`);
+        if (avgLatency > 0) parts.push(`${Math.round(avgLatency)}ms avg`);
+        return {
+            status: degraded ? 'degraded' : 'healthy',
+            fallback: degraded || !!health.fallback?.active || !!health.fallbackActive,
+            reason: parts.join(' · '),
+            transient: degraded,
+            bucket: degraded ? BUCKETS.PROVIDER_API : BUCKETS.UNKNOWN,
+            bucketReason: degraded ? 'recent critical proxy request failures exceed successful requests' : '',
+            lastFetch: health.lastRequestTs || health.lastUpdate || Date.now(),
+        };
+    }
+
+    function refreshProxyOrchestratorStatus(now) {
+        const orchestrator = window._proxyOrchestrator;
+        if (!orchestrator) {
+            bridgeUpdate('ProxyOrchestrator', {
+                status: 'degraded',
+                lastFetch: now,
+                fallback: true,
+                transient: true,
+                reason: 'Waiting for ProxyOrchestrator initialization',
+                bucket: BUCKETS.APP_LOGIC,
+                bucketReason: 'orchestrator instance not yet available',
+            });
+            return;
+        }
+
+        if (typeof orchestrator.getHealthStatus !== 'function') {
+            bridgeUpdate('ProxyOrchestrator', {
+                status: 'healthy',
+                lastFetch: now,
+                fallback: false,
+                reason: 'initialized',
+                bucket: BUCKETS.UNKNOWN,
+                bucketReason: '',
+            });
+            return;
+        }
+
+        try {
+            bridgeUpdate('ProxyOrchestrator', summarizeProxyHealth(orchestrator.getHealthStatus()));
+        } catch (err) {
+            bridgeUpdate('ProxyOrchestrator', {
+                status: 'degraded',
+                lastFetch: now,
+                fallback: true,
+                transient: true,
+                reason: `Health probe failed: ${err?.message || err}`,
+                bucket: BUCKETS.APP_LOGIC,
+                bucketReason: 'orchestrator health API threw',
+            });
+        }
+    }
+
+    function refreshPolymarketStatus(now) {
+        const predictionMarkets = window.PredictionMarkets;
+        if (!predictionMarkets || typeof predictionMarkets.getStatus !== 'function') {
+            if (now - localStatusBridgeStartedAt < POLYMARKET_STARTUP_GRACE_MS) {
+                bridgeUpdate('Polymarket', {
+                    status: 'unknown',
+                    lastFetch: null,
+                    fallback: false,
+                    transient: true,
+                    reason: 'Waiting for PredictionMarkets initialization',
+                    bucket: BUCKETS.UNKNOWN,
+                    bucketReason: '',
+                });
+                return;
+            }
+            bridgeUpdate('Polymarket', {
+                status: 'degraded',
+                lastFetch: now,
+                fallback: true,
+                transient: true,
+                reason: 'Waiting for PredictionMarkets initialization',
+                bucket: BUCKETS.APP_LOGIC,
+                bucketReason: 'prediction markets module not yet available',
+            });
+            return;
+        }
+
+        try {
+            const status = predictionMarkets.getStatus() || {};
+            const poly = status.polymarket || {};
+            const marketCount = Number(poly.marketCount || 0);
+            const hasData = !!poly.hasData || marketCount > 0;
+            const lastFetch = Number(poly.lastFetch || 0);
+            const source = poly.source ? ` via ${poly.source}` : '';
+            const age = lastFetch ? Math.max(0, now - lastFetch) : null;
+            const stale = age != null && age > POLYMARKET_STALE_MS;
+            let reason = hasData
+                ? `${marketCount} markets${source}`
+                : (poly.lastError || 'Waiting for first Polymarket fetch');
+            if (stale) reason = `${reason} · stale ${Math.round(age / 1000)}s`;
+            bridgeUpdate('Polymarket', {
+                status: hasData && !stale ? 'healthy' : 'degraded',
+                lastFetch: lastFetch || status.lastFetch || now,
+                fallback: !!poly.lastError || stale,
+                transient: !hasData || stale,
+                reason,
+                bucket: hasData && !stale ? BUCKETS.UNKNOWN : BUCKETS.PROVIDER_API,
+                bucketReason: hasData && !stale ? '' : (poly.lastError || 'no current Polymarket data'),
+            });
+        } catch (err) {
+            bridgeUpdate('Polymarket', {
+                status: 'degraded',
+                lastFetch: now,
+                fallback: true,
+                transient: true,
+                reason: `Status probe failed: ${err?.message || err}`,
+                bucket: BUCKETS.APP_LOGIC,
+                bucketReason: 'PredictionMarkets status API threw',
+            });
+        }
+    }
+
+    function promiseTimeout(ms, value) {
+        return new Promise((resolve) => setTimeout(() => resolve(value), ms));
+    }
+
+    async function refreshPythStatus(now) {
+        const current = state.Pyth || {};
+        if (!window.pythLazer || typeof window.pythLazer.getStatus !== 'function') {
+            if (!current.status || current.status === 'unknown') {
+                bridgeUpdate('Pyth', {
+                    status: 'degraded',
+                    lastFetch: now,
+                    fallback: true,
+                    transient: true,
+                    reason: 'Pyth status bridge unavailable',
+                    bucket: BUCKETS.APP_LOGIC,
+                    bucketReason: 'renderer IPC API not available',
+                });
+            }
+            return;
+        }
+
+        let payload;
+        try {
+            payload = await Promise.race([
+                window.pythLazer.getStatus(),
+                promiseTimeout(1500, { success: false, error: 'Pyth status timeout' }),
+            ]);
+        } catch (err) {
+            payload = { success: false, error: err?.message || String(err) };
+        }
+
+        const ok = !payload || payload.success !== false;
+        const initialized = !!payload?.initialized;
+        const connected = !!payload?.connected;
+        const lastDataTs = Number(payload?.lastDataTs || 0);
+        const age = lastDataTs ? Math.max(0, now - lastDataTs) : null;
+        const dataCount = Number(payload?.dataCount || 0);
+        const timeoutCount = Number(payload?.timeoutCount || 0);
+        const currentFreshHealthy = current.status === 'healthy' &&
+            Number(current.lastFetch || 0) > 0 &&
+            (now - Number(current.lastFetch)) < 30_000;
+
+        if (currentFreshHealthy && !(ok && connected && age != null && age < 15_000)) return;
+
+        let status = 'degraded';
+        let reason = payload?.error || 'Pyth Lazer status unavailable';
+        let bucket = BUCKETS.APP_LOGIC;
+        let bucketReason = reason;
+
+        if (ok && connected && age != null && age < 15_000) {
+            status = 'healthy';
+            reason = `${dataCount} ticks · ${Math.round(age / 1000)}s old`;
+            bucket = BUCKETS.UNKNOWN;
+            bucketReason = '';
+        } else if (ok && dataCount > 0) {
+            reason = age == null
+                ? `${dataCount} ticks · stale`
+                : `${dataCount} ticks · stale ${Math.round(age / 1000)}s`;
+            bucket = BUCKETS.NETWORK_TRANSPORT;
+            bucketReason = 'Pyth feed has not delivered a fresh tick';
+        } else if (ok && initialized) {
+            reason = 'Waiting for first Pyth tick';
+            bucket = BUCKETS.NETWORK_TRANSPORT;
+            bucketReason = 'Pyth Lazer connected but no prices received yet';
+        } else if (ok && !initialized) {
+            reason = 'Pyth Lazer client not initialized';
+            bucket = BUCKETS.APP_LOGIC;
+            bucketReason = 'main process has not started the Pyth client';
+        }
+
+        if (timeoutCount > 0 && status !== 'healthy') {
+            reason = `${reason} · ${timeoutCount} timeout${timeoutCount === 1 ? '' : 's'}`;
+        }
+
+        bridgeUpdate('Pyth', {
+            status,
+            lastFetch: lastDataTs || now,
+            fallback: status !== 'healthy',
+            transient: status !== 'healthy',
+            reason,
+            bucket,
+            bucketReason,
+        });
+    }
+
+    function refreshLocalProviderStatuses() {
+        if (localStatusBridgeInFlight) return;
+        localStatusBridgeInFlight = true;
+        const now = Date.now();
+        Promise.resolve()
+            .then(async () => {
+                refreshProxyOrchestratorStatus(now);
+                refreshPolymarketStatus(now);
+                await refreshPythStatus(now);
+            })
+            .catch((err) => {
+                console.warn('[NetworkHealth] Local status bridge failed:', err?.message || err);
+            })
+            .finally(() => {
+                localStatusBridgeInFlight = false;
+            });
+    }
+
+    function startLocalStatusBridge() {
+        if (localStatusBridgeTimer) return;
+        setTimeout(refreshLocalProviderStatuses, 250);
+        localStatusBridgeTimer = setInterval(refreshLocalProviderStatuses, LOCAL_STATUS_BRIDGE_MS);
+    }
+
     window.NetworkHealth = {
         update,
         updateTransport,
@@ -392,4 +700,5 @@
         PROVIDERS,
         failureCounters,
     };
+    startLocalStatusBridge();
 })();

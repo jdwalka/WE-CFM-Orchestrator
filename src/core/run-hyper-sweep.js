@@ -4,7 +4,7 @@
 /**
  * Offline regime-multiplier hyperparameter sweep.
  *
- * Uses local WECRYP/data JSONL logs only:
+ * Uses local WECRYPTO/data JSONL logs only:
  *   - predictions.jsonl: model score + RSI at decision time
  *   - cfm_snapshots.jsonl: localized Pyth/CFM price history proxies
  *   - resolver_outcomes.jsonl: resolved Kalshi/Pyth settlement direction
@@ -18,7 +18,7 @@ const path = require('path');
 
 const ROOT = path.resolve(__dirname, '../..');
 const DEFAULT_DATA_ROOTS = [
-  path.join(ROOT, 'WECRYP0-data'),
+  path.join(ROOT, 'WECRYPTO-data'),
   path.join(ROOT, 'data'),
 ].filter((p) => fs.existsSync(p));
 
@@ -545,7 +545,7 @@ function printTop(result, options) {
 function main() {
   const options = parseArgs();
   if (!options.dataRoots.length) {
-    throw new Error('No local data roots found. Pass --data-root=PATH or create WECRYP0-data/data logs.');
+    throw new Error('No local data roots found. Pass --data-root=PATH or create WECRYPTO-data/data logs.');
   }
 
   const dataset = loadLocalDataset(options);

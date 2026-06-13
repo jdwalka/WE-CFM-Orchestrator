@@ -6,7 +6,7 @@
 
 // Mock browser globals
 global.localStorage = {
-  getItem: () => '2f84e1a8fd0346568a51bbc18657bd5f',
+  getItem: () => '55dd8c8c83964b9aa8c7960a600959b7',
   setItem: () => {},
   removeItem: () => {}
 };
@@ -19,7 +19,7 @@ global.window = {
 global.document = {};
 
 // Load CMC feed
-require('./src/feeds/coinmarketcap-pro-feed.js');
+require('../src/feeds/coinmarketcap-pro-feed.js');
 const cmcFeed = window._cmcProFeed;
 
 async function runTests() {

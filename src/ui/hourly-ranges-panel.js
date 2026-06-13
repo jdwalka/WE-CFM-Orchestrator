@@ -35,12 +35,13 @@
     BTC: '#f7931a', ETH: '#627eea', SOL: '#00d4aa',
     XRP: '#00aae4', DOGE: '#c2a633',
   };
-
-  const VISIBLE_BUCKETS = 13;   // 6 above + current + 6 below
-  const POLL_NORMAL_MS  = 30000;
-  const POLL_FAST_MS    = 20000; // last 10 mins of hour
-  const FAST_WINDOW_MS  = 10 * 60 * 1000;
-  const CACHE_TTL_MS    = 20000; // lowered to 8s so 10s fast-polling works
+  const VISIBLE_BUCKETS = 11;   // 5 above + current + 5 below
+  const POLL_NORMAL_MS  = 30000;  // First 30 mins
+  const POLL_HALF_MS    = 15000;  // Last 30 mins
+  const POLL_FAST_MS    = 5000;   // Last 15 mins
+  const HALF_WINDOW_MS  = 30 * 60 * 1000;
+  const FAST_WINDOW_MS  = 15 * 60 * 1000;
+  const CACHE_TTL_MS    = 3000;   // Allow 5s fast-polling
 
   // ── State ──────────────────────────────────────────────────────
   let _prices  = {}; // sym → number
@@ -114,7 +115,7 @@
         const data = await window.EndpointTransport.fetchKalshiMarkets({
           series_ticker: seriesTicker,
           status: 'open',
-          limit: 200,
+          limit: 1000,
         });
         const markets = Array.isArray(data?.markets) ? data.markets : [];
         _apiCache[seriesTicker] = { ts: now, markets };
@@ -124,8 +125,8 @@
       }
     }
 
-    // Fetch up to 200 markets for this series
-    const url = `${KALSHI_BASE}/markets?series_ticker=${seriesTicker}&status=open&limit=200`;
+    // Fetch up to 1000 markets for this series
+    const url = `${KALSHI_BASE}/markets?series_ticker=${seriesTicker}&status=open&limit=1000`;
     try {
       const data = await apiFetch(url, 25000);
       const markets = Array.isArray(data?.markets) ? data.markets : [];
@@ -144,7 +145,8 @@
     const byClose = new Map();
 
     for (const m of markets) {
-      if (m.strike_type !== 'between') continue;
+      const isBetween = m.strike_type === 'between' || (m.strike_type === 'custom' && m.custom_strike?.strike_type === 'between');
+      if (!isBetween) continue;
       const closeMs = Date.parse(m.close_time);
       if (!Number.isFinite(closeMs)) continue;
 
@@ -209,15 +211,16 @@
 
     // Filter to chosen close bucket, 'between' only — compare by parsed timestamp
     const buckets = markets.filter(m => {
-      if (m.strike_type !== 'between') return false;
+      const isBetween = m.strike_type === 'between' || (m.strike_type === 'custom' && m.custom_strike?.strike_type === 'between');
+      if (!isBetween) return false;
       if (!closeTimeMs) return true;
       return Date.parse(m.close_time) === closeTimeMs;
     });
 
     // Map to our format
     const ranges = buckets.map(m => ({
-      low:      parseFloat(m.floor_strike),
-      high:     parseFloat(m.cap_strike),
+      low:      parseFloat(m.floor_strike || m.custom_strike?.floor_strike),
+      high:     parseFloat(m.cap_strike || m.custom_strike?.cap_strike),
       yesAsk:   parseFloat(m.yes_ask_dollars) || 0,
       yesBid:   parseFloat(m.yes_bid_dollars) || 0,
       noAsk:    parseFloat(m.no_ask_dollars) || 0,
@@ -485,13 +488,13 @@
     await Promise.allSettled(COINS.map(sym => loadCoin(sym)));
   }
 
-  // ── Compute poll interval based on proximity to hour end ───────
   function nextPollMs() {
     // Check if any close time is within the fast window
     const now = Date.now();
     for (const iso of Object.values(_closeTimes)) {
       const ms = Date.parse(iso) - now;
       if (ms > 0 && ms < FAST_WINDOW_MS) return POLL_FAST_MS;
+      if (ms > 0 && ms < HALF_WINDOW_MS) return POLL_HALF_MS;
     }
     return POLL_NORMAL_MS;
   }

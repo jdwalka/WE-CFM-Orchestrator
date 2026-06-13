@@ -61,6 +61,7 @@
         constructor() {
             this.bus = new EventBus();
             this.running = false;
+            this.runId = 0;
             this.streams = new Map();
             this.clockOffsetMs = 0;
             this.clockSource = 'system';
@@ -81,6 +82,15 @@
                 timeZoneName: 'short'
             });
             this.timeSyncSources = [
+                {
+                    name: 'time.akamai.com',
+                    url: 'https://time.akamai.com/',
+                    isText: true,
+                    parse: (text) => {
+                        const secs = parseInt(text, 10);
+                        return isNaN(secs) ? null : secs * 1000;
+                    }
+                },
                 {
                     name: 'timeapi.io/america-new_york',
                     url: 'https://timeapi.io/api/Time/current/zone?timeZone=America/New_York',
@@ -113,17 +123,19 @@
             }
 
             this.running = true;
+            this.runId++;
+            const currentRunId = this.runId;
             this.metrics.startMs = Date.now();
-            console.log('[AsyncRefreshEngine] ⚡ Starting async streams...');
+            console.log(`[AsyncRefreshEngine] ⚡ Starting async streams... (runId: ${currentRunId})`);
 
             await this.syncClock(true);
 
             // Fire all streams in parallel — they run independently and never block startup.
-            void this.streamPredictions().catch(err => console.error('[AsyncRefreshEngine] predictions stream failed:', err));
-            void this.streamOrderBookImbalance().catch(err => console.error('[AsyncRefreshEngine] order-book stream failed:', err));
-            // void this.streamKalshiBalance().catch(err => console.error('[AsyncRefreshEngine] balance stream failed:', err));
-            void this.streamMarketData().catch(err => console.error('[AsyncRefreshEngine] market stream failed:', err));
-            void this.streamSettlementPulse().catch(err => console.error('[AsyncRefreshEngine] settlement stream failed:', err));
+            void this.streamPredictions(currentRunId).catch(err => console.error('[AsyncRefreshEngine] predictions stream failed:', err));
+            void this.streamOrderBookImbalance(currentRunId).catch(err => console.error('[AsyncRefreshEngine] order-book stream failed:', err));
+            // void this.streamKalshiBalance(currentRunId).catch(err => console.error('[AsyncRefreshEngine] balance stream failed:', err));
+            void this.streamMarketData(currentRunId).catch(err => console.error('[AsyncRefreshEngine] market stream failed:', err));
+            void this.streamSettlementPulse(currentRunId).catch(err => console.error('[AsyncRefreshEngine] settlement stream failed:', err));
 
             return this.getMetrics();
         }
@@ -224,10 +236,10 @@
                     }, 2500);
                     try {
                         const res = await fetch(source.url, { signal: ctrl.signal });
-                        if (!res.ok) throw new Error(`${source.name} HTTP ${res.status}`);
-                        const json = await res.json();
-                        const sourceMs = source.parse(json);
-                        if (!Number.isFinite(sourceMs)) throw new Error(`${source.name} returned invalid timestamp`);
+                        if (!res.ok) return Promise.reject(new Error(`${source.name} HTTP ${res.status}`));
+                        const data = source.isText ? await res.text() : await res.json();
+                        const sourceMs = source.parse(data);
+                        if (!Number.isFinite(sourceMs)) return Promise.reject(new Error(`${source.name} returned invalid timestamp`));
                         return { ...source, sourceMs };
                     } finally {
                         clearTimeout(timeoutId);
@@ -278,15 +290,15 @@
          * STREAM 1: Predictions (30s cycle)
          * Runs in background continuously. UI gets notified of new predictions via event.
          */
-        async streamPredictions() {
+        async streamPredictions(runId) {
             const streamId = 'predictions';
             let cycle = 0;
             let nextRunAt = this.nextAlignedAt(30_000);
 
-            while (this.running) {
+            while (this.running && this.runId === runId) {
                 try {
                     await this.sleepUntil(nextRunAt);
-                    if (!this.running) break;
+                    if (!this.running || this.runId !== runId) break;
 
                     cycle++;
                     const cycleStart = this.nowMs();
@@ -344,28 +356,35 @@
          * cycle and asks the prediction engine to rescore only when imbalance is
          * meaningful or changing fast.
          */
-        async streamOrderBookImbalance() {
+        async streamOrderBookImbalance(runId) {
             const streamId = 'orderbook-imbalance';
             const coins = () => (window.PREDICTION_COINS || [])
                 .map(c => c && c.sym)
                 .filter(Boolean);
             let cycle = 0;
             const lastBySym = {};
+            const lastRescoreTs = {};    // Per-coin rescore cooldown tracker
+            const RESCORE_COOLDOWN_MS = 10000; // Min 10s between rescores per coin (was 5s — caused main-thread pile-up)
+            const OBSERVE_COOLDOWN_MS = 3000; // Min 3s between tuner observations per coin
+            const lastObserveTs = {};
 
-            while (this.running) {
+            while (this.running && this.runId === runId) {
                 try {
-                    const intervalMs = document.hidden ? 5000 : 1000;
+                    const hidden = typeof document !== 'undefined' && document.hidden;
+                    const intervalMs = hidden ? 5000 : 1000;
                     await this.sleep(intervalMs);
-                    if (!this.running) break;
+                    if (!this.running || this.runId !== runId) break;
+                    if (hidden) continue; // Skip all work when tab is backgrounded
 
                     cycle++;
+                    const nowMs = this.nowMs();
                     const updates = [];
                     for (const sym of coins()) {
                         const book = window.OB?.getFreshBook?.(sym, 3000) || window.OB?.books?.[sym] || null;
                         const balance = window.OB?.getBalanceMetrics?.(sym) || null;
                         const imbalance = Number(balance?.imbalance?.value ?? 0);
                         const band = balance?.imbalance?.band || 'unknown';
-                        const ageMs = book?.timestamp ? Math.max(0, this.nowMs() - book.timestamp) : Infinity;
+                        const ageMs = book?.timestamp ? Math.max(0, nowMs - book.timestamp) : Infinity;
                         if (!book || ageMs > 3500) continue;
 
                         const prev = lastBySym[sym] || {};
@@ -374,42 +393,56 @@
                         const closeMs = (() => {
                             const close = window.PredictionMarkets?.getCoin?.(sym)?.kalshi15m?.closeTime;
                             if (!close) return null;
-                            const ms = new Date(close).getTime() - this.nowMs();
+                            const ms = new Date(close).getTime() - nowMs;
                             return Number.isFinite(ms) ? ms : null;
                         })();
                         const closeValueWindow = Number.isFinite(closeMs) && closeMs <= 210000 && closeMs >= 45000;
-                        try {
-                            window._adaptiveTuner?.observeLiveMarketState?.(sym, {
-                                pred: window._predictions?.[sym] || window._lastPrediction?.[sym] || null,
-                                cfm: window._cfmAll?.[sym] || window.CFMEngine?.getAll?.()?.[sym] || null,
-                                secsLeft: Number.isFinite(closeMs) ? closeMs / 1000 : null,
-                                bookImbalance: imbalance,
-                                buyRatio: balance?.flow?.buyRatio,
-                                reason: 'orderbook-imbalance-scan',
-                            });
-                        } catch (_) {}
+
+                        // Throttled adaptive tuner observation — skip if called recently
+                        const observeAge = nowMs - (lastObserveTs[sym] || 0);
+                        if (observeAge >= OBSERVE_COOLDOWN_MS) {
+                            try {
+                                window._adaptiveTuner?.observeLiveMarketState?.(sym, {
+                                    pred: window._predictions?.[sym] || window._lastPrediction?.[sym] || null,
+                                    cfm: window._cfmAll?.[sym] || window.CFMEngine?.getAll?.()?.[sym] || null,
+                                    secsLeft: Number.isFinite(closeMs) ? closeMs / 1000 : null,
+                                    bookImbalance: imbalance,
+                                    buyRatio: balance?.flow?.buyRatio,
+                                    reason: 'orderbook-imbalance-scan',
+                                });
+                                lastObserveTs[sym] = nowMs;
+                            } catch (_) {}
+                        }
+
                         const shouldRescore = closeValueWindow
                             || absImb >= 0.20
                             || delta >= 0.07
                             || /strong|extreme/.test(String(band));
 
-                        lastBySym[sym] = { imbalance, band, ts: this.nowMs() };
+                        lastBySym[sym] = { imbalance, band, ts: nowMs };
                         if (!shouldRescore) continue;
+
+                        // Per-coin rescore cooldown — prevents computePrediction from
+                        // being called every 1s during close windows (was causing freeze)
+                        const rescoreAge = nowMs - (lastRescoreTs[sym] || 0);
+                        if (rescoreAge < RESCORE_COOLDOWN_MS) continue;
 
                         let prediction = null;
                         if (window.PredictionEngine?.rescoreLiveMicrostructure) {
                             prediction = window.PredictionEngine.rescoreLiveMicrostructure(sym, {
                                 reason: closeValueWindow ? 'close-window-book-scan' : 'orderbook-imbalance-scan',
                             });
+                            lastRescoreTs[sym] = nowMs;
                         }
                         updates.push({ sym, imbalance, band, delta, closeMs, rescored: !!prediction });
+                        await this.sleep(0); // Yield to prevent UI freeze during mass repricing
                     }
 
                     if (updates.length) {
                         this.bus.emit('orderbook:imbalance', {
                             cycle,
                             updates,
-                            timestamp: this.nowMs(),
+                            timestamp: nowMs,
                         });
                     }
 
@@ -434,15 +467,15 @@
          * STREAM 2: Kalshi Balance (5s cycle)
          * Polls balance independently, emits updates for UI badge refresh.
          */
-        async streamKalshiBalance() {
+        async streamKalshiBalance(runId) {
             const streamId = 'kalshi-balance';
             let cycle = 0;
             let nextRunAt = this.nextAlignedAt(5_000);
 
-            while (this.running) {
+            while (this.running && this.runId === runId) {
                 try {
                     await this.sleepUntil(nextRunAt);
-                    if (!this.running) break;
+                    if (!this.running || this.runId !== runId) break;
 
                     cycle++;
                     const start = this.nowMs();
@@ -500,11 +533,11 @@
          * Fetches market data on a dynamic schedule.
          * Fast during settlement windows, slower during quiet periods.
          */
-        async streamMarketData() {
+        async streamMarketData(runId) {
             const streamId = 'market-data';
             let cycle = 0;
 
-            while (this.running) {
+            while (this.running && this.runId === runId) {
                 try {
                     const msUntilSettlement = this.msUntilNextSettlementBoundary();
                     const nearBoundary = msUntilSettlement < 60000; // < 1 min before boundary
@@ -512,7 +545,7 @@
                     const nextRunAt = this.nextAlignedAt(desiredInterval);
 
                     await this.sleepUntil(nextRunAt);
-                    if (!this.running) break;
+                    if (!this.running || this.runId !== runId) break;
 
                     cycle++;
                     const start = this.nowMs();
@@ -566,18 +599,18 @@
          * Fires at every :00/:15/:30/:45 boundary.
          * Triggers high-priority data fetches and contract list updates.
          */
-        async streamSettlementPulse() {
+        async streamSettlementPulse(runId) {
             const streamId = 'settlement-pulse';
             let pulseCount = 0;
 
-            while (this.running) {
+            while (this.running && this.runId === runId) {
                 try {
                     const nextBoundaryTs = this.nextSettlementBoundaryTs();
 
                     // Wait until next settlement boundary
                     await this.sleepUntil(nextBoundaryTs + 100); // +100ms buffer
 
-                    if (!this.running) break;
+                    if (!this.running || this.runId !== runId) break;
 
                     pulseCount++;
                     const now = new Date();

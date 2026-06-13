@@ -46,9 +46,9 @@ if (!process.env.WECRYP_ROOT) {
   const candidates = [
     process.cwd(),
     path.join(__dirname, '..'),
-    'G:\\WECRYP',
-    'F:\\WECRYP',
-    'E:\\WECRYP'
+    'G:\\WECRYPTO',
+    'F:\\WECRYPTO',
+    'E:\\WECRYPTO'
   ];
   
   for (const candidate of candidates) {
@@ -131,10 +131,10 @@ function getEnvFileCandidates() {
     userDataDir && path.join(userDataDir, '.env'),
     appData && path.join(appData, 'WE-CRYPTO-Kalshi-15m-v2.15.5', '.env'),
     appData && path.join(appData, 'we-cfm-orchestrator', '.env'),
-    appData && path.join(appData, 'WECRYP', '.env'),
+    appData && path.join(appData, 'WECRYPTO', '.env'),
     localAppData && path.join(localAppData, 'WE-CRYPTO-Kalshi-15m-v2.15.5', '.env'),
     localAppData && path.join(localAppData, 'we-cfm-orchestrator', '.env'),
-    localAppData && path.join(localAppData, 'WECRYP', '.env'),
+    localAppData && path.join(localAppData, 'WECRYPTO', '.env'),
     path.join(__dirname, '..', '.env'),
     path.join(process.resourcesPath || '', '..', '.env'),
     path.join(process.cwd(), '.env'),
@@ -197,9 +197,9 @@ function getSecretDirCandidates() {
     path.join(process.resourcesPath || '', '..', 'secrets'),
     path.join(__dirname, '..', 'secrets'),
     path.join(process.cwd(), 'secrets'),
-    'G:\\WECRYP\\secrets',
-    'F:\\WECRYP\\secrets',
-    'E:\\WECRYP\\secrets',
+    'G:\\WECRYPTO\\secrets',
+    'F:\\WECRYPTO\\secrets',
+    'E:\\WECRYPTO\\secrets',
   ]);
 }
 
@@ -377,14 +377,14 @@ function loadCoinbaseCredential() {
   if (process.platform === 'win32') {
     for (let code = 67; code <= 90; code += 1) {
       const driveRoot = `${String.fromCharCode(code)}:\\`;
-      legacyCandidates.push(path.join(driveRoot, 'WECRYP', 'secrets', 'cdp_api_key-WECRYPTO-ECDSA.json'));
-      legacyCandidates.push(path.join(driveRoot, 'My Drive', 'WECRYP', 'secrets', 'cdp_api_key-WECRYPTO-ECDSA.json'));
+      legacyCandidates.push(path.join(driveRoot, 'WECRYPTO', 'secrets', 'cdp_api_key-WECRYPTO-ECDSA.json'));
+      legacyCandidates.push(path.join(driveRoot, 'My Drive', 'WECRYPTO', 'secrets', 'cdp_api_key-WECRYPTO-ECDSA.json'));
       legacyCandidates.push(path.join(driveRoot, 'secrets', 'cdp_api_key-WECRYPTO-ECDSA.json'));
       legacyCandidates.push(path.join(driveRoot, 'My Drive', 'secrets', 'cdp_api_key-WECRYPTO-ECDSA.json'));
     }
   } else {
-    legacyCandidates.push('F:\\WECRYP\\secrets\\cdp_api_key-WECRYPTO-ECDSA.json');
-    legacyCandidates.push('G:\\WECRYP\\secrets\\cdp_api_key-WECRYPTO-ECDSA.json');
+    legacyCandidates.push('F:\\WECRYPTO\\secrets\\cdp_api_key-WECRYPTO-ECDSA.json');
+    legacyCandidates.push('G:\\WECRYPTO\\secrets\\cdp_api_key-WECRYPTO-ECDSA.json');
   }
   for (const p of legacyCandidates) {
     try {
@@ -406,9 +406,11 @@ function normalizeCoinbaseJwtUri(method, requestPath) {
     if (/^https?:\/\//i.test(target)) {
       const u = new URL(target);
       target = `${u.hostname}${u.pathname}`;
+    } else {
+      target = target.split('?')[0];
     }
   } catch (_) {
-    // keep original target
+    target = target.split('?')[0];
   }
   target = target.replace(/^\/+/, '');
   if (/^api\/v3\//i.test(target)) target = `api.coinbase.com/${target}`;
@@ -459,6 +461,13 @@ try {
     console.log(`[Env] Loaded .env from ${loadedEnvPath}`);
   } else {
     console.log('[Env] No .env file found in startup candidates');
+  }
+
+  // Load Gated Switch Router component for Coinbase, Kalshi, Polymarket SDKs and Telegram
+  try {
+    require('../src/infra/gated-switch-router');
+  } catch (e) {
+    console.error('[Startup] Failed to load Gated Switch Router:', e.message);
   }
 } catch (e) {
   // dotenv not installed, skip silently
@@ -674,18 +683,17 @@ async function startPythLazerService(win) {
       console.log(`[PythLazer] Connecting (attempt ${retries}/${MAX_RETRIES}, channel=${activeChannel})...`);
 
       const { PythLazerClient } = require('@pythnetwork/pyth-lazer-sdk');
-      pythLazerClient = await PythLazerClient.create({
+      const endpoints = [
+        'wss://pyth-lazer-0.dourolabs.app/v1/stream',
+        'wss://pyth-lazer-1.dourolabs.app/v1/stream',
+        'wss://pyth-lazer-2.dourolabs.app/v1/stream',
+      ];
+      pythLazerClient = await Promise.all(endpoints.map(url => PythLazerClient.create({
         token,
-        webSocketPoolConfig: {
-          urls: [
-            'wss://pyth-lazer-0.dourolabs.app/v1/stream',
-            'wss://pyth-lazer-1.dourolabs.app/v1/stream',
-            'wss://pyth-lazer-2.dourolabs.app/v1/stream',
-          ],
-        },
-      });
+        webSocketPoolConfig: { urls: [url] }
+      })));
 
-      pythLazerClient.subscribe({
+      pythLazerClient.forEach(c => c.subscribe({
         type: 'subscribe',
         subscriptionId: 1,
         priceFeedIds: LAZER_FEED_IDS,
@@ -698,7 +706,7 @@ async function startPythLazerService(win) {
         jsonBinaryEncoding: 'hex',
         parsed: true,
         ignoreInvalidFeeds: true,
-      });
+      }));
 
       let lastPush = 0;
       let pythTimeoutHandle = null;
@@ -746,7 +754,7 @@ async function startPythLazerService(win) {
       }
       resetPythTimeout(); // Start watching immediately
 
-      pythLazerClient.addMessageListener((message) => {
+      pythLazerClient.forEach(c => c.addMessageListener((message) => {
         if (message.type !== 'json') return;
         const feeds = message.value?.parsed?.priceFeeds;
         if (!feeds?.length) return;
@@ -791,9 +799,9 @@ async function startPythLazerService(win) {
             win.webContents.send('pyth:status', pythLazerStatus);
           }
         }
-      });
+      }));
 
-      pythLazerClient.addAllConnectionsDownListener(() => {
+      pythLazerClient.forEach(c => c.addAllConnectionsDownListener(() => {
         console.error('[PythLazer] ⚠️ All WebSocket connections down — auto-reconnect triggered');
         if (pythTimeoutHandle) {
           clearTimeout(pythTimeoutHandle);
@@ -811,8 +819,10 @@ async function startPythLazerService(win) {
           setTimeout(async () => {
             try {
               if (pythLazerClient) {
-                try { pythLazerClient.unsubscribe(1); } catch (_) { }
-                try { await pythLazerClient.shutdown(); } catch (_) { }
+                pythLazerClient.forEach(async c => {
+                  try { c.unsubscribe(1); } catch (_) { }
+                  try { await c.shutdown(); } catch (_) { }
+                });
                 pythLazerClient = null;
               }
 
@@ -829,7 +839,7 @@ async function startPythLazerService(win) {
             }
           }, 500);
         }
-      });
+      }));
 
       console.log(`[PythLazer] ✅ Client started — feeds: ${LAZER_FEED_IDS.join(',')} (channel=${activeChannel})`);
       return true;
@@ -1005,7 +1015,7 @@ async function startProxy() {
   // If exe is in asar (read-only), write config to temp dir; otherwise beside exe
   let proxyDir = path.dirname(exePath);
   if (proxyDir.includes('app.asar')) {
-    proxyDir = path.join(process.env.TEMP || path.join(app.getPath('appData'), 'WECRYP'), 'proxy-config');
+    proxyDir = path.join(process.env.TEMP || path.join(app.getPath('appData'), 'WECRYPTO'), 'proxy-config');
     fs.mkdirSync(proxyDir, { recursive: true });
     console.log(`[proxy] writing config to temp: ${proxyDir}`);
   }
@@ -1037,7 +1047,7 @@ async function startProxy() {
     proxyRestartTimer = setTimeout(async () => {
       try {
         console.warn(`[proxy] restarting after unexpected exit (attempt ${proxyRestartAttempts}, delay ${delayMs}ms)`);
-        await startProxy();
+        // Proxy startup handled by orchestrator
         await waitForProxy(5000, 150);
       } catch (e) {
         console.error('[proxy] restart failed:', e?.message || e);
@@ -1102,6 +1112,8 @@ function waitForProxy(maxMs = 5000, pollMs = 150) {
 ipcMain.handle('proxy:port', () => proxyPort);
 
 // ── IPC: Pyth Lazer handlers ──────────────────────────────────────────────
+ipcMain.handle('pyth:getStatus', () => pythLazerStatus);
+
 ipcMain.handle('pyth:getCandles', async (_, { symbol, resolution, from, to }) => {
   try {
     if (!pythLazerClient) {
@@ -1138,20 +1150,77 @@ ipcMain.handle('pyth:getCandles', async (_, { symbol, resolution, from, to }) =>
 
 ipcMain.handle('pyth:getProxyLatest', async (_, feedIds) => {
   try {
-    // Use Pyth Lazer proxy REST (no-auth) for latest prices
-    const url = `https://pyth-lazer-proxy-0.dourolabs.app/v1/latest_price?price_feed_ids=${feedIds.join(',')}`;
-    const response = await fetch(url);
+    const proxies = [
+      'https://pyth-lazer-proxy-1.dourolabs.app',
+      'https://pyth-lazer-proxy-2.dourolabs.app',
+      'https://pyth-lazer-proxy-3.dourolabs.app',
+    ];
 
-    if (!response.ok) {
-      return { success: false, error: `HTTP ${response.status}` };
+    const payload = JSON.stringify({
+      channel: 'real_time',
+      formats: ['evm'],
+      properties: ['price'],
+      priceFeedIds: feedIds,
+      parsed: true,
+      jsonBinaryEncoding: 'hex',
+    });
+
+    let lastError = null;
+    let prices = [];
+
+    // Common parser for the JsonUpdate response
+    const parseResponse = async (response) => {
+      const data = await response.json();
+      const feeds = data.parsed?.priceFeeds || [];
+      return feeds.map(f => ({
+        instrument_name: LAZER_ID_MAP ? LAZER_ID_MAP[f.priceFeedId] : f.priceFeedId,
+        last: Number(f.price) * Math.pow(10, f.exponent ?? -8),
+      }));
+    };
+
+    // First try the proxies (no authentication required)
+    for (const proxyBase of proxies) {
+      try {
+        const url = `${proxyBase}/v1/latest_price`;
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: payload,
+          timeout: 3000
+        });
+        if (response.ok) {
+          prices = await parseResponse(response);
+          return { success: true, prices };
+        }
+      } catch (err) {
+        lastError = err;
+      }
     }
 
-    const data = await response.json();
+    // Fall back to official REST API
+    const token = process.env.PYTH_LAZER_TOKEN || process.env.PYTH_API_KEY || process.env.LAZER_TOKEN;
+    if (token) {
+      try {
+        const url = 'https://pyth-lazer.dourolabs.app/v1/latest_price';
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+          body: payload,
+          timeout: 4000
+        });
+        if (response.ok) {
+          prices = await parseResponse(response);
+          return { success: true, prices };
+        }
+      } catch (err) {
+        lastError = err;
+      }
+    }
 
-    return {
-      success: true,
-      prices: data.prices || []
-    };
+    return { success: false, error: lastError?.message || 'All proxies and REST API failed' };
   } catch (e) {
     console.warn('[PythLazer] getProxyLatest failed:', e.message);
     return { success: false, error: e.message };
@@ -1325,12 +1394,12 @@ ipcMain.handle('network:logError', async (_, errorType, details) => {
 ipcMain.handle('kalshi:loadCSVTrades', async (event, browserStateJson) => {
   try {
     // Try multiple locations in order:
-    // 1. F:\WECRYP\ (home location)
-    // 2. D:\WECRYP\ (backup)
+    // 1. F:\WECRYPTO\ (home location)
+    // 2. D:\WECRYPTO\ (backup)
     // 3. Relative to app.getAppPath()
     const candidates = [
-      'F:\\WECRYP\\Kalshi-Recent-Activity-All.csv',
-      'D:\\WECRYP\\Kalshi-Recent-Activity-All.csv',
+      'F:\\WECRYPTO\\Kalshi-Recent-Activity-All.csv',
+      'D:\\WECRYPTO\\Kalshi-Recent-Activity-All.csv',
       path.join(app.getAppPath(), '..', '..', 'Kalshi-Recent-Activity-All.csv'),
       path.join(app.getAppPath(), 'Kalshi-Recent-Activity-All.csv'),
     ];
@@ -1545,10 +1614,10 @@ function buildDynamicCloudDriveCandidates(driveRoots = []) {
 function buildStaticContractCacheFiles(home) {
   return dedupePaths([
     // Primary working drives
-    'F:\\WECRYP\\data\\contract-cache.json',
-    'F:\\WECRYP\\contract-cache.json',
+    'F:\\WECRYPTO\\data\\contract-cache.json',
+    'F:\\WECRYPTO\\contract-cache.json',
     'D:\\WE-CRYPTO-CACHE\\contract-cache-2h.json',
-    'D:\\WECRYP\\data\\contract-cache.json',
+    'D:\\WECRYPTO\\data\\contract-cache.json',
 
     // OneDrive locations
     `${home}\\OneDrive\\WE-CRYPTO-CACHE\\contract-cache-2h.json`,
@@ -1559,41 +1628,41 @@ function buildStaticContractCacheFiles(home) {
     `${home}\\OneDrive - ctstate.edu\\WE-CRYPTO-CACHE\\contract-cache.json`,
     `${home}\\OneDrive - Azure ctstate.edu\\WE-CRYPTO-CACHE\\contract-cache-2h.json`,
     `${home}\\OneDrive - Azure ctstate.edu\\WE-CRYPTO-CACHE\\contract-cache.json`,
-    `${home}\\OneDrive\\WECRYP\\contract-cache-2h.json`,
-    `${home}\\OneDrive\\WECRYP\\contract-cache.json`,
-    `${home}\\OneDrive - Personal\\WECRYP\\contract-cache-2h.json`,
-    `${home}\\OneDrive - Personal\\WECRYP\\contract-cache.json`,
-    `${home}\\OneDrive - ctstate.edu\\WECRYP\\contract-cache-2h.json`,
-    `${home}\\OneDrive - ctstate.edu\\WECRYP\\contract-cache.json`,
-    `${home}\\OneDrive - Azure ctstate.edu\\WECRYP\\contract-cache-2h.json`,
-    `${home}\\OneDrive - Azure ctstate.edu\\WECRYP\\contract-cache.json`,
+    `${home}\\OneDrive\\WECRYPTO\\contract-cache-2h.json`,
+    `${home}\\OneDrive\\WECRYPTO\\contract-cache.json`,
+    `${home}\\OneDrive - Personal\\WECRYPTO\\contract-cache-2h.json`,
+    `${home}\\OneDrive - Personal\\WECRYPTO\\contract-cache.json`,
+    `${home}\\OneDrive - ctstate.edu\\WECRYPTO\\contract-cache-2h.json`,
+    `${home}\\OneDrive - ctstate.edu\\WECRYPTO\\contract-cache.json`,
+    `${home}\\OneDrive - Azure ctstate.edu\\WECRYPTO\\contract-cache-2h.json`,
+    `${home}\\OneDrive - Azure ctstate.edu\\WECRYPTO\\contract-cache.json`,
 
     // Google Drive
     `${home}\\Google Drive\\WE-CRYPTO-CACHE\\contract-cache-2h.json`,
     `${home}\\Google Drive\\WE-CRYPTO-CACHE\\contract-cache.json`,
-    `${home}\\Google Drive\\WECRYP\\contract-cache-2h.json`,
-    `${home}\\Google Drive\\WECRYP\\contract-cache.json`,
+    `${home}\\Google Drive\\WECRYPTO\\contract-cache-2h.json`,
+    `${home}\\Google Drive\\WECRYPTO\\contract-cache.json`,
     `${home}\\My Drive\\WE-CRYPTO-CACHE\\contract-cache-2h.json`,
     `${home}\\My Drive\\WE-CRYPTO-CACHE\\contract-cache.json`,
-    `${home}\\My Drive\\WECRYP\\contract-cache-2h.json`,
-    `${home}\\My Drive\\WECRYP\\contract-cache.json`,
+    `${home}\\My Drive\\WECRYPTO\\contract-cache-2h.json`,
+    `${home}\\My Drive\\WECRYPTO\\contract-cache.json`,
     'Z:\\My Drive\\WE-CRYPTO-CACHE\\contract-cache-2h.json',
     'Z:\\My Drive\\WE-CRYPTO-CACHE\\contract-cache.json',
-    'Z:\\My Drive\\WECRYP\\contract-cache-2h.json',
-    'Z:\\My Drive\\WECRYP\\contract-cache.json',
+    'Z:\\My Drive\\WECRYPTO\\contract-cache-2h.json',
+    'Z:\\My Drive\\WECRYPTO\\contract-cache.json',
     'G:\\My Drive\\WE-CRYPTO-CACHE\\contract-cache-2h.json',
     'G:\\My Drive\\WE-CRYPTO-CACHE\\contract-cache.json',
 
     // C: drive (OS/temp)
     'C:\\WE-CRYPTO-CACHE\\contract-cache.json',
-    'C:\\WECRYP\\contract-cache.json',
-    `${home}\\AppData\\Local\\WECRYP\\contract-cache.json`,
+    'C:\\WECRYPTO\\contract-cache.json',
+    `${home}\\AppData\\Local\\WECRYPTO\\contract-cache.json`,
 
     // Network drives (Z:, Y:, etc.)
     'Z:\\WE-CRYPTO-CACHE\\contract-cache-2h.json',
     'Z:\\WE-CRYPTO-CACHE\\contract-cache.json',
-    'Z:\\WECRYP\\contract-cache-2h.json',
-    'Z:\\WECRYP\\contract-cache.json',
+    'Z:\\WECRYPTO\\contract-cache-2h.json',
+    'Z:\\WECRYPTO\\contract-cache.json',
     'Y:\\WE-CRYPTO-CACHE\\contract-cache-2h.json',
     'Y:\\WE-CRYPTO-CACHE\\contract-cache.json',
   ]);
@@ -1646,10 +1715,10 @@ function buildAutoDiscoveryDirectories(home) {
     const expanded = [
       root,
       `${root}\\WE-CRYPTO-CACHE`,
-      `${root}\\WECRYP`,
-      `${root}\\WECRYP\\data`,
-      `${root}\\WECRYP\\cache`,
-      `${root}\\WECRYP\\settlement-logs`,
+      `${root}\\WECRYPTO`,
+      `${root}\\WECRYPTO\\data`,
+      `${root}\\WECRYPTO\\cache`,
+      `${root}\\WECRYPTO\\settlement-logs`,
     ];
     for (const dirPath of expanded) {
       const normalized = normalizeCachePath(dirPath);
@@ -2069,7 +2138,7 @@ ipcMain.handle('drive:sync-backup', async (_event, payload = {}) => {
     const serialized = JSON.stringify(backupPayload, null, 2);
     for (const root of cloudRoots) {
       try {
-        const dir = path.join(root, 'WECRYP', 'backups');
+        const dir = path.join(root, 'WECRYPTO', 'backups');
         fs.mkdirSync(dir, { recursive: true });
         const filePath = path.join(dir, backupName);
         fs.writeFileSync(filePath, serialized, 'utf8');
@@ -2120,7 +2189,7 @@ ipcMain.handle('drive:recover-backups', async (_event, options = {}) => {
 
     const matches = [];
     for (const root of cloudRoots) {
-      const backupDir = path.join(root, 'WECRYP', 'backups');
+      const backupDir = path.join(root, 'WECRYPTO', 'backups');
       if (!fs.existsSync(backupDir)) continue;
       let files = [];
       try {
@@ -2605,7 +2674,7 @@ function createWindow() {
 app.whenReady().then(async () => {
 
 
-  await startProxy();
+  // Proxy startup handled by orchestrator
   await startKalshiWorker({ bootTimeoutMs: 12000, pollMs: 150 });
   
   // --- Orbital Matrix (Redpanda Orchestration + Ingestion & Sync) ---
@@ -2682,9 +2751,9 @@ app.whenReady().then(async () => {
 });
 
 app.on('window-all-closed', async () => {
-  stopProxy();
+  // Proxy stop handled by orchestrator
   stopKalshiWorker();
-  if (pythLazerClient) { try { pythLazerClient.shutdown(); } catch (_) { } pythLazerClient = null; }
+  if (pythLazerClient) { try { await Promise.all(pythLazerClient.map(c => c.shutdown())); } catch (_) { } pythLazerClient = null; }
   
   // Gracefully shutdown Orbital System (Docker Compose, Redpanda, ingestor, processor)
   try {

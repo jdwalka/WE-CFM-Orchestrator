@@ -1,7 +1,7 @@
 const fs = require('fs');
 
 function refactorPredictionMarkets() {
-  const path = 'g:/WECRYP/src/kalshi/prediction-markets.js';
+  const path = 'g:/WECRYPTO/src/kalshi/prediction-markets.js';
   let code = fs.readFileSync(path, 'utf8');
 
   // Remove API constants
@@ -55,7 +55,7 @@ function refactorPredictionMarkets() {
 }
 
 function refactorPredictions() {
-  const path = 'g:/WECRYP/src/core/predictions.js';
+  const path = 'g:/WECRYPTO/src/core/predictions.js';
   let code = fs.readFileSync(path, 'utf8');
   
   // Remove polymarket weight logic if any
@@ -65,7 +65,7 @@ function refactorPredictions() {
 }
 
 function refactorApp() {
-  const path = 'g:/WECRYP/src/core/app.js';
+  const path = 'g:/WECRYPTO/src/core/app.js';
   let code = fs.readFileSync(path, 'utf8');
 
   // Remove polymarket tooltips
@@ -82,28 +82,28 @@ function refactorApp() {
 }
 
 function refactorInfra() {
-  const bridgePath = 'g:/WECRYP/src/infra/tauri-bridge.js';
+  const bridgePath = 'g:/WECRYPTO/src/infra/tauri-bridge.js';
   let bridgeCode = fs.readFileSync(bridgePath, 'utf8');
   bridgeCode = bridgeCode.replace(/.*?gamma-api.polymarket.com.*?\n/g, '');
   bridgeCode = bridgeCode.replace(/.*?clob.polymarket.com.*?\n/g, '');
   bridgeCode = bridgeCode.replace(/.*?polymarket\.com.*?\n/g, '');
   fs.writeFileSync(bridgePath, bridgeCode);
 
-  const fetchPath = 'g:/WECRYP/src/infra/proxy-fetch.js';
+  const fetchPath = 'g:/WECRYPTO/src/infra/proxy-fetch.js';
   let fetchCode = fs.readFileSync(fetchPath, 'utf8');
   fetchCode = fetchCode.replace(/.*?gamma-api.polymarket.com.*?\n/g, '');
   fetchCode = fetchCode.replace(/.*?clob.polymarket.com.*?\n/g, '');
   fetchCode = fetchCode.replace(/.*?polymarket\.com.*?\n/g, '');
   fs.writeFileSync(fetchPath, fetchCode);
 
-  const orchPath = 'g:/WECRYP/src/infra/proxy-orchestrator.js';
+  const orchPath = 'g:/WECRYPTO/src/infra/proxy-orchestrator.js';
   let orchCode = fs.readFileSync(orchPath, 'utf8');
   orchCode = orchCode.replace(/polymarket: \{[\s\S]*?\},/g, '');
   orchCode = orchCode.replace(/, 'polymarket'/g, '');
   orchCode = orchCode.replace(/'polymarket', /g, '');
   fs.writeFileSync(orchPath, orchCode);
   
-  const logPath = 'g:/WECRYP/src/infra/network-log.js';
+  const logPath = 'g:/WECRYPTO/src/infra/network-log.js';
   let logCode = fs.readFileSync(logPath, 'utf8');
   logCode = logCode.replace(/.*?polymarket:.*?,\n/g, '');
   logCode = logCode.replace(/.*?polymarket-clob:.*?,\n/g, '');

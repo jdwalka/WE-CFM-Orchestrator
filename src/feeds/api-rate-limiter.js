@@ -109,7 +109,7 @@
 
   // Registry of all limiters by name
   const limiters = {
-    'coingecko': new RateLimiter('coingecko', 1 / 60), // hard backoff: 1 req/min
+    'coingecko': new RateLimiter('coingecko', 0.33), // ~20 req/min (1 every 3s) matches 20s queue timeout
     'coinbase': new RateLimiter('coinbase', 4),        // adaptive floor/ceiling handled by orchestrator
     'okx': new RateLimiter('okx', 10),
     'okc': new RateLimiter('okc', 10),

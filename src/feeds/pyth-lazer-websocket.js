@@ -46,18 +46,17 @@ class PythLazerWebSocketHandler {
       }
       console.log("[PythLazerWS] Initializing official SDK client...");
 
-      this.client = await PythLazerClient.create({
+      const endpoints = [
+        "wss://pyth-lazer-0.dourolabs.app/v1/stream",
+        "wss://pyth-lazer-1.dourolabs.app/v1/stream",
+        "wss://pyth-lazer-2.dourolabs.app/v1/stream",
+      ];
+      this.client = await Promise.all(endpoints.map(url => PythLazerClient.create({
         token: LAZER_TOKEN,
-        webSocketPoolConfig: {
-          urls: [
-            "wss://pyth-lazer-0.dourolabs.app/v1/stream",
-            "wss://pyth-lazer-1.dourolabs.app/v1/stream",
-            "wss://pyth-lazer-2.dourolabs.app/v1/stream",
-          ],
-        },
-      });
+        webSocketPoolConfig: { urls: [url] }
+      })));
 
-      console.log("[PythLazerWS] ✅ Client created, subscribing to price feeds...");
+      console.log("[PythLazerWS] ✅ Clients created, subscribing to price feeds...");
 
       // --- Network Health Reporting ---
       if (typeof window !== 'undefined' && window.NetworkHealth) {
@@ -70,53 +69,59 @@ class PythLazerWebSocketHandler {
       }
 
       // Subscribe to all price feeds with enhanced properties
-      this.client.subscribe({
-        type: "subscribe",
-        subscriptionId: this.subscriptionId,
-        priceFeedIds: SUBSCRIPTION_PRICE_FEED_IDS,
-        properties: [
-          "price",
-          "marketSession",
-          "fundingRateInterval",
-          "feedUpdateTimestamp",
-          "confidence",
-          "fundingRate",
-          "bestAskPrice",
-          "publisherCount",
-          "bestBidPrice",
-          "exponent",
-          "fundingTimestamp",
-        ],
-        formats: ["solana", "leUnsigned", "leEcdsa", "evm"], // Multiple encoding formats
-        channel: "real_time", // Real-time updates (no 200ms throttle)
-        deliveryFormat: "json",
-        jsonBinaryEncoding: "hex",
-        parsed: true,
-        ignoreInvalidFeeds: true,
+      this.client.forEach(c => {
+        c.subscribe({
+          type: "subscribe",
+          subscriptionId: this.subscriptionId,
+          priceFeedIds: SUBSCRIPTION_PRICE_FEED_IDS,
+          properties: [
+            "price",
+            "marketSession",
+            "fundingRateInterval",
+            "feedUpdateTimestamp",
+            "confidence",
+            "fundingRate",
+            "bestAskPrice",
+            "publisherCount",
+            "bestBidPrice",
+            "exponent",
+            "fundingTimestamp",
+          ],
+          formats: ["solana", "leUnsigned", "leEcdsa", "evm"], // Multiple encoding formats
+          channel: "real_time", // Real-time updates (no 200ms throttle)
+          deliveryFormat: "json",
+          jsonBinaryEncoding: "hex",
+          parsed: true,
+          ignoreInvalidFeeds: true,
+        });
       });
 
       console.log(`[PythLazerWS] Subscribed to price feeds: ${SUBSCRIPTION_PRICE_FEED_IDS.join(',')} (real-time)`);
 
       // Listen for price updates
-      this.client.addMessageListener((message) => {
-        if (message.type === "json") {
-          this.handlePriceUpdate(message.value);
-        }
+      this.client.forEach(c => {
+        c.addMessageListener((message) => {
+          if (message.type === "json") {
+            this.handlePriceUpdate(message.value);
+          }
+        });
       });
 
       // Handle connection failures
-      this.client.addAllConnectionsDownListener(() => {
-        console.error("[PythLazerWS] ⚠️ All WebSocket connections down, reconnecting...");
-        this.connected = false;
-        // SDK handles reconnection automatically
-        if (typeof window !== 'undefined' && window.NetworkHealth) {
-          window.NetworkHealth.update('Pyth', {
-            status: 'down',
-            lastFetch: Date.now(),
-            fallback: true,
-            reason: 'All connections down',
-          });
-        }
+      this.client.forEach(c => {
+        c.addAllConnectionsDownListener(() => {
+          console.error("[PythLazerWS] ⚠️ A WebSocket connection went down, reconnecting...");
+          // If all 3 go down, we consider it disconnected.
+          // SDK handles reconnection automatically
+          if (typeof window !== 'undefined' && window.NetworkHealth) {
+            window.NetworkHealth.update('Pyth', {
+              status: 'down',
+              lastFetch: Date.now(),
+              fallback: true,
+              reason: 'Connection down',
+            });
+          }
+        });
       });
 
       this.connected = true;
@@ -171,57 +176,6 @@ class PythLazerWebSocketHandler {
           publisherCount: feed.publisherCount || null,
           bestBidPrice: feed.bestBidPrice || null,
           exponent,
-          fundingTimestamp: feed.fundingTimestamp || null,
-        };
-
-        // Relay to all connected clients
-        this.clients.forEach((client) => {
-          try {
-            if (client.readyState === 1) { // WebSocket.OPEN
-              client.send(JSON.stringify(update));
-            }
-          } catch (e) {
-            console.error(`[PythLazerWS] Send error: ${e.message}`);
-          }
-        });
-      });
-    } catch (err) {
-      console.error(`[PythLazerWS] Parse error: ${err.message}`);
-    }
-  }
-
-  /**
-   * Register a client to receive updates
-   */
-  addClient(client) {
-    this.clients.add(client);
-    console.log(`[PythLazerWS] Client added (total: ${this.clients.size})`);
-  }
-
-  /**
-   * Unregister a client
-   */
-  removeClient(client) {
-    this.clients.delete(client);
-    console.log(`[PythLazerWS] Client removed (total: ${this.clients.size})`);
-  }
-
-  /**
-   * Shutdown the client
-   */
-  async disconnect() {
-    if (this.client) {
-      this.client.unsubscribe(this.subscriptionId);
-      await this.client.shutdown();
-      this.connected = false;
-      console.log("[PythLazerWS] Disconnected");
-    }
-  }
-
-  /**
-   * Get connection status
-   */
-  getStatus() {
     return {
       connected: this.connected,
       clients: this.clients.size,
