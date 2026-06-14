@@ -211,7 +211,7 @@
   // API LAYER — Crypto.com Exchange public endpoints (no auth)
   // ================================================================
 
-  const CDC_BASE = 'https://api.crypto.com/exchange/v1/public';
+  const CDC_BASE = 'https://api.crypto.com/v2/public';
   const GECKO_BASE = 'https://api.coingecko.com/api/v3';
   const BIN_BASE = 'https://api.binance.com/api/v3';
   const MEXC_BASE = 'https://api.mexc.com/api/v3';
@@ -254,7 +254,7 @@
     if (cache.data && Date.now() - cache.age < 8000) {
       return cache.data;
     }
-    const res = await fetchWithTimeout(`${CDC_BASE}/get-tickers`, 8000);
+    const res = await fetchWithTimeout(`${CDC_BASE}/get-ticker`, 8000);
     if (!res.ok) throw new Error(`Tickers HTTP ${res.status}`);
     const json = await res.json();
     if (json.code !== 0) throw new Error(`Tickers error code ${json.code}`);

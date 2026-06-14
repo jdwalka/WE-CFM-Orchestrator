@@ -1,5 +1,5 @@
 const fs = require("fs");
-const path = "G:/WECRYP/src/core/app.js";
+const path = "G:/WECRYPTO/src/core/app.js";
 let content = fs.readFileSync(path, "utf8");
 
 const startTag = "async function renderCFM() {";

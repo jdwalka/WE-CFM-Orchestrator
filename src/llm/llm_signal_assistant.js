@@ -53,6 +53,8 @@ const LLM_API_KEY = resolveCompatibleApiKey();
 const LLM_MODEL = process.env.LLM_MODEL || process.env.OPENAI_MODEL || "gpt-4-mini";
 const GOOGLE_API_KEY = resolveGoogleApiKey();
 const GOOGLE_MODEL = process.env.GOOGLE_MODEL || process.env.GEMINI_MODEL || "gemini-2.0-flash";
+const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || '';
+const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || "~openai/gpt-latest";
 const LLM_PROVIDER = (process.env.LLM_PROVIDER || "auto").toLowerCase();
 const CONTEXT_CACHE_TTL_MS = Number(process.env.LLM_CONTEXT_CACHE_TTL_MS || 15000);
 const MARKET_MEMORY_LIMIT = Number(process.env.LLM_MARKET_MEMORY_LIMIT || 12);
@@ -63,9 +65,15 @@ const LLM_RATE_LIMIT_LOG_DEBOUNCE_MS = Number(process.env.LLM_RATE_LIMIT_LOG_DEB
 class LLMSignalAssistant {
   constructor() {
     this.provider = this.resolveProvider();
-    this.enabled = this.provider === "google"
-      ? !!GOOGLE_API_KEY
-      : !!(LLM_API_URL && LLM_API_KEY);
+    
+    if (this.provider === "openrouter") {
+      this.enabled = !!OPENROUTER_API_KEY;
+    } else if (this.provider === "google") {
+      this.enabled = !!GOOGLE_API_KEY;
+    } else {
+      this.enabled = !!(LLM_API_URL && LLM_API_KEY);
+    }
+
     this.contextCache = new Map();      // short-lived prompt/result cache
     this.marketMemory = new Map();      // per-coin rolling recall memory
     this._googleClient = null;
@@ -105,9 +113,11 @@ class LLMSignalAssistant {
   }
 
   resolveProvider() {
+    if (LLM_PROVIDER === "openrouter") return "openrouter";
     if (LLM_PROVIDER === "google") return "google";
     if (LLM_PROVIDER === "openai" || LLM_PROVIDER === "compatible") return "compatible";
     if (GOOGLE_API_KEY) return "google";
+    if (OPENROUTER_API_KEY) return "openrouter";
     return "compatible";
   }
 
@@ -223,11 +233,26 @@ Use this recall only as context, and prioritize current market snapshot data if 
    * Call the LLM API with specialized prompts
    */
   async callAPI(systemPrompt, userPrompt) {
-    const cascade = ['asi1', 'google', 'openai'];
+    const cascade = ['openai', 'asi1', 'google', 'openrouter'];
     let lastErr = null;
 
     for (const p of cascade) {
       try {
+        if (p === 'openrouter' && OPENROUTER_API_KEY) {
+          return await this.callCompatibleAPI(systemPrompt, userPrompt, {
+            url: "https://openrouter.ai/api/v1/chat/completions",
+            model: OPENROUTER_MODEL,
+            key: OPENROUTER_API_KEY,
+            extraHeaders: {
+              "HTTP-Referer": process.env.OPENROUTER_REFERER || "http://localhost:3000",
+              "X-OpenRouter-Title": process.env.OPENROUTER_TITLE || "WE-CFM"
+            },
+            tools: [
+              { type: "openrouter:web_search" },
+              { type: "openrouter:datetime" }
+            ]
+          });
+        }
         if (p === 'asi1' && process.env.ASI_ONE_API_KEY) {
           return await this.callCompatibleAPI(systemPrompt, userPrompt, {
             url: "https://api.asi1.ai/v1/chat/completions",
@@ -261,6 +286,7 @@ Use this recall only as context, and prioritize current market snapshot data if 
     const url = config.url || LLM_API_URL;
     const model = config.model || LLM_MODEL;
     const key = config.key || LLM_API_KEY;
+    const extraHeaders = config.extraHeaders || {};
 
     if (!key) throw new Error("API key missing for compatible provider");
 
@@ -279,13 +305,19 @@ Use this recall only as context, and prioritize current market snapshot data if 
       temperature: 0.1, // low temp for consistency
       max_tokens: 1500,
       stream: true,
+      response_format: { type: "json_object" },
     };
+
+    if (config.tools) {
+      payload.tools = config.tools;
+    }
 
     const response = await fetch(url, {
       method: "POST",
       headers: {
         "Authorization": `Bearer ${key}`,
         "Content-Type": "application/json",
+        ...extraHeaders
       },
       body: JSON.stringify(payload),
     });
@@ -392,6 +424,8 @@ Use this recall only as context, and prioritize current market snapshot data if 
         config: {
           temperature: 0.1,
           responseMimeType: "application/json",
+          thinkingConfig: { thinkingLevel: "HIGH" },
+          tools: [{ googleSearch: {} }]
         },
       });
       content = typeof response?.text === "function" ? response.text() : response?.text;
@@ -402,6 +436,7 @@ Use this recall only as context, and prioritize current market snapshot data if 
           temperature: 0.1,
           responseMimeType: "application/json",
         },
+        tools: [{ googleSearch: {} }]
       });
       const result = await model.generateContent(prompt);
       const response = await result.response;

@@ -5,9 +5,9 @@
 ### 1. Set Environment Variables (PowerShell)
 
 ```powershell
-$env:LLM_API_URL = "https://api.openai.com/v1/chat/completions"
-$env:LLM_API_KEY = "sk-..."  # Your OpenAI API key
-$env:LLM_MODEL = "gpt-4-mini"
+$env:OPENROUTER_API_KEY = "sk-or-v1-..."  # Your OpenRouter API key
+$env:OPENROUTER_MODEL = "~openai/gpt-latest"
+$env:LLM_PROVIDER = "openrouter"
 ```
 
 ### 2. Test the LLM Layer
@@ -134,7 +134,7 @@ console.log(diag);
 // {
 //   enabled: true,
 //   api_url: "https://...",
-//   model: "gpt-4-mini",
+//   model: "~openai/gpt-latest",
 //   stats: {
 //     total_calls: 142,
 //     successes: 138,
@@ -151,13 +151,16 @@ console.log(diag);
 
 | Env Var | Default | Purpose |
 |---------|---------|---------|
-| `LLM_API_URL` | `https://api.openai.com/v1/chat/completions` | Your LLM provider endpoint |
-| `LLM_API_KEY` | *(required)* | API key (never commit!) |
+| `OPENROUTER_API_KEY` | *(required if openrouter)* | OpenRouter API key |
+| `OPENROUTER_MODEL` | `~openai/gpt-latest` | OpenRouter model to use |
+| `LLM_PROVIDER` | `auto` | Set to `openrouter` to force OpenRouter |
+| `LLM_API_URL` | `https://api.openai.com/v1/chat/completions` | Your compatible LLM provider endpoint |
+| `LLM_API_KEY` | *(required if compatible)* | Compatible API key (never commit!) |
 | `LLM_MODEL` | `gpt-4-mini` | Model to use (gpt-4, claude-3, etc.) |
 
 ## 🚀 Next Steps
 
-1. **Test with real API key**: Set `LLM_API_KEY` and run `node tools\test-llm.js`
+1. **Test with real API key**: Set `OPENROUTER_API_KEY` and run `node tools\test-llm.js`
 2. **Monitor influence**: Track how often LLM suggestions are applied
 3. **Tune prompts**: Refine regime definitions based on live performance
 4. **Measure edge**: Compare accuracy with/without LLM layer
@@ -166,10 +169,9 @@ console.log(diag);
 ## 🐛 Debugging
 
 ### LLM Disabled?
-Check that both `LLM_API_URL` and `LLM_API_KEY` are set:
+Check that your chosen provider's API key is set:
 ```powershell
-$env:LLM_API_URL
-$env:LLM_API_KEY
+$env:OPENROUTER_API_KEY
 ```
 
 ### API Errors?

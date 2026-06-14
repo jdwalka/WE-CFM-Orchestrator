@@ -124,7 +124,7 @@ async function waitForRedpandaReady(maxWaitMs = 60000) {
     const pollInterval = 2000;
     console.log('[OrbitalOrchestrator] Waiting for Redpanda to be ready...');
     while (Date.now() - startTime < maxWaitMs) {
-        const isReady = await checkPort(9092, 'localhost', 1000);
+        const isReady = await checkPort(9092, '127.0.0.1', 1000);
         if (isReady) {
             console.log('[OrbitalOrchestrator] ✓ Redpanda is ready!');
             return true;
@@ -251,6 +251,14 @@ async function startOrbitalSystem(workspacePath) {
     try {
         console.log('[OrbitalOrchestrator] ===== Starting Orbital System =====');
 
+        // Start WE-CRYPTO Proxies early and independently of Docker/Redpanda
+        try {
+            await startProxies(workspacePath);
+            await new Promise(r => setTimeout(r, 2000));
+        } catch (proxyErr) {
+            console.error('[OrbitalOrchestrator] Non-fatal: Proxies failed to start:', proxyErr.message);
+        }
+
         // Step 1: Check Docker availability
         const dockerAvailable = await isDockerAvailable();
         if (!dockerAvailable) {
@@ -270,10 +278,6 @@ async function startOrbitalSystem(workspacePath) {
         // Step 4: Pre-create orbital topics (idempotent)
         await initTopics(workspacePath);
         recordStatusEvent('info', 'Orbital topics initialized');
-
-        // Step 4b: Start WE-CRYPTO Proxies
-        await startProxies(workspacePath);
-        await new Promise(r => setTimeout(r, 2000));
 
         // Step 5: Connect KafkaJS producer via the bridge
         await initBridge();
@@ -297,7 +301,7 @@ async function startOrbitalSystem(workspacePath) {
     } catch (err) {
         console.error('[OrbitalOrchestrator] FATAL: Failed to start Orbital System:', err.message);
         recordStatusEvent('error', 'Orbital system failed to start', { error: err.message });
-        await shutdownOrbitalSystem();
+        await shutdownOrbitalSystem(false); // Do not kill proxies if Orbital fails
         throw err;
     }
 }
@@ -305,12 +309,14 @@ async function startOrbitalSystem(workspacePath) {
 /**
  * Graceful shutdown: stop all services and bring down docker-compose.
  */
-async function shutdownOrbitalSystem() {
+async function shutdownOrbitalSystem(stopProxiesFlag = true) {
     console.log('[OrbitalOrchestrator] Initiating graceful shutdown...');
 
     try {
-        await stopProxies();
-        console.log('[OrbitalOrchestrator] Proxies stopped');
+        if (stopProxiesFlag) {
+            await stopProxies();
+            console.log('[OrbitalOrchestrator] Proxies stopped');
+        }
         if (processorIntervalHandle) {
             clearInterval(processorIntervalHandle);
             processorIntervalHandle = null;
@@ -404,7 +410,7 @@ async function getOrbitalStatus() {
                 );
             }
 
-            const redpandaReady = await checkPort(9092, 'localhost', 5000);
+            const redpandaReady = await checkPort(9092, '127.0.0.1', 5000);
             status.redpanda = redpandaReady ? 'healthy' : 'down';
             if (lastProbeState.redpanda !== status.redpanda) {
                 lastProbeState.redpanda = status.redpanda;

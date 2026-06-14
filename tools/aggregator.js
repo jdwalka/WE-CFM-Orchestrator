@@ -16,7 +16,7 @@ const axios = require('axios');
 // --- CONFIGURATION ---
 const ASSET_ID            = 'SOL-USD';   // Coinbase Advanced Trade product ID
 const COINGECKO_ID        = 'solana';    // CoinGecko coin ID
-const COINGECKO_POLL_MS   = 15_000;      // Poll CoinGecko every 15s (respects free-tier rate limits)
+const COINGECKO_POLL_MS   = 60_000;      // Poll CoinGecko every 60s to stretch the 10k credits
 const HIGH_VARIANCE_PCT   = 1.0;         // Flag divergences > 1%
 
 // NOTE: wss://ws-feed.exchange.coinbase.com (Coinbase Pro) is DEPRECATED and shut down.
@@ -82,7 +82,7 @@ function connectCoinbase() {
 async function fetchCoinGeckoPrice() {
     try {
         const response = await axios.get(
-            `https://api.coingecko.com/api/v3/simple/price?ids=${COINGECKO_ID}&vs_currencies=usd`,
+            `https://api.coingecko.com/api/v3/simple/price?ids=${COINGECKO_ID}&vs_currencies=usd&x_cg_demo_api_key=${process.env.COINGECKO_API_KEY || ''}`,
             { timeout: 8000 }
         );
         const price = response.data?.[COINGECKO_ID]?.usd;

@@ -82,6 +82,9 @@
   }
 
   function resolveRuntimeKey(name) {
+    if (typeof process !== 'undefined' && process.env && process.env[name]) {
+      return process.env[name];
+    }
     try {
       if (typeof window.resolveRuntimeKey === 'function') return window.resolveRuntimeKey(name) || '';
     } catch (_) { }
@@ -92,38 +95,36 @@
     }
   }
 
-  function withCoinGeckoAuth(url, options = {}) {
-    const key = String(resolveRuntimeKey('COINGECKO_API_KEY') || '').trim();
-    if (!key) return options;
-    const host = (() => {
-      try { return new URL(String(url), window.location.href).hostname.toLowerCase(); } catch (_) { return ''; }
-    })();
-    const tier = String(resolveRuntimeKey('COINGECKO_API_TIER') || '').trim().toLowerCase();
-    const usePro = /^(pro|paid|enterprise|trial)$/.test(tier) || host.includes('pro-api.coingecko.com');
-    const headerName = usePro ? 'x-cg-pro-api-key' : 'x-cg-demo-api-key';
-    const headers = { ...(options.headers || {}) };
-    if (!headers[headerName] && !headers[headerName.toUpperCase()]) {
-      headers[headerName] = key;
+    function withCoinGeckoAuth(url, options = {}) {
+      // Return options unchanged, auth is handled in URL query params now
+      return options;
     }
-    return { ...options, headers };
-  }
-
-  function coinGeckoUrl(url) {
-    const key = String(resolveRuntimeKey('COINGECKO_API_KEY') || '').trim();
-    if (!key) return url;
-    const tier = String(resolveRuntimeKey('COINGECKO_API_TIER') || '').trim().toLowerCase();
-    const usePro = /^(pro|paid|enterprise|trial)$/.test(tier);
-    if (!usePro) return url;
-    try {
-      const u = new URL(String(url), window.location.href);
-      if (u.hostname.includes('coingecko')) {
-        u.hostname = 'pro-api.coingecko.com';
+  
+    function coinGeckoUrl(url) {
+      const key = String(resolveRuntimeKey('COINGECKO_API_KEY') || '').trim();
+      const tier = String(resolveRuntimeKey('COINGECKO_API_TIER') || '').trim().toLowerCase();
+      if (!key) return url;
+      try {
+        const u = new URL(String(url), window.location.href);
+        if (u.hostname.includes('coingecko')) {
+          const isDemo = key.startsWith('CG-') || tier === 'demo' || tier === 'free';
+          if (!isDemo) {
+            u.hostname = 'pro-api.coingecko.com';
+            u.searchParams.set('x_cg_pro_api_key', key);
+            u.searchParams.delete('x_cg_demo_api_key');
+            u.searchParams.delete('x-cg-demo-api-key');
+          } else {
+            u.hostname = 'api.coingecko.com';
+            u.searchParams.set('x_cg_demo_api_key', key);
+            u.searchParams.delete('x_cg_pro_api_key');
+            u.searchParams.delete('x-cg-pro-api-key');
+          }
+        }
+        return u.toString();
+      } catch (_) {
+        return url;
       }
-      return u.toString();
-    } catch (_) {
-      return url;
     }
-  }
 
   async function throttledFetch(url, options = {}) {
     const apiName = inferApiName(url);

@@ -78,7 +78,25 @@ class DualSourceValidationLoop extends EventEmitter {
         // Mocked implementation for exact timestamp querying
         const idMap = { 'BTC': 'bitcoin', 'ETH': 'ethereum' };
         const id = idMap[asset] || asset.toLowerCase();
-        const response = await axios.get(`${this.coingeckoUrl}?ids=${id}&vs_currencies=usd`);
+        
+        let url = this.coingeckoUrl;
+        const tier = (process.env.COINGECKO_API_TIER || '').toLowerCase();
+        const key = process.env.COINGECKO_API_KEY || '';
+        let usePro = tier === 'trial' || tier === 'pro' || url.includes('pro-api');
+        if (key.startsWith('CG-') || tier === 'demo' || tier === 'free') usePro = false;
+        
+        if (usePro && url.includes('api.coingecko.com')) {
+            url = url.replace('api.coingecko.com', 'pro-api.coingecko.com');
+        } else if (!usePro && url.includes('pro-api.coingecko.com')) {
+            url = url.replace('pro-api.coingecko.com', 'api.coingecko.com');
+        }
+        
+        const headers = {};
+        if (key) {
+            headers[usePro ? 'x-cg-pro-api-key' : 'x-cg-demo-api-key'] = key;
+        }
+
+        const response = await axios.get(`${url}?ids=${id}&vs_currencies=usd`, { headers });
         return { price: response.data[id].usd, timestamp: Date.now() };
     }
 

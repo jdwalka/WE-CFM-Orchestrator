@@ -176,14 +176,44 @@ class PythLazerWebSocketHandler {
           publisherCount: feed.publisherCount || null,
           bestBidPrice: feed.bestBidPrice || null,
           exponent,
+        };
+
+        const msg = JSON.stringify(update);
+        this.clients.forEach((ws) => {
+          if (ws.readyState === 1) { // WebSocket.OPEN
+            try { ws.send(msg); } catch (e) {}
+          }
+        });
+      });
+    } catch (e) {
+      console.error("[PythLazerWS] Error handling price update:", e);
+    }
+  }
+
+  addClient(ws) {
+    this.clients.add(ws);
+  }
+
+  removeClient(ws) {
+    this.clients.delete(ws);
+  }
+
+  async disconnect() {
+    if (this.client) {
+      this.client.forEach(c => {
+        try { c.close(); } catch (e) {}
+      });
+    }
+    this.connected = false;
+  }
+
+  status() {
     return {
       connected: this.connected,
       clients: this.clients.size,
       updateRate: "real-time (lowest latency)",
       endpoints: 3,
       priceFeedsCount: Object.keys(PRICE_FEED_IDS).length,
-      properties: 11,
-      formats: ["solana", "leUnsigned", "leEcdsa", "evm"],
     };
   }
 }

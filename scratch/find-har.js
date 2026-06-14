@@ -21,7 +21,7 @@ function scan(dir) {
   return results;
 }
 
-const harFiles = scan('G:\\WECRYP');
+const harFiles = scan('G:\\WECRYPTO');
 harFiles.sort((a, b) => b.mtime - a.mtime);
 
 console.log('HAR FILES FOUND (newest first):');

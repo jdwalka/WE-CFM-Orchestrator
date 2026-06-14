@@ -1,6 +1,6 @@
 const fs = require('fs');
 
-const file = 'G:\\WECRYP\\src\\core\\app.js';
+const file = 'G:\\WECRYPTO\\src\\core\\app.js';
 let content = fs.readFileSync(file, 'utf8');
 
 const targetRegex = /function renderFifteenMinuteMovePlan\(ki, compact = false\) \{[\s\S]*?return `\n\s*<div style="margin-top:\$\{compact \? 3 : 5\}px;padding:\$\{compact \? '4px 6px' : '6px 8px'\};border-radius:4px;background:rgba\(90,110,255,0\.08\);border:1px solid rgba\(120,140,255,0\.18\);line-height:1\.35\">\n\s*<div style="display:flex;gap:7px;align-items:center;flex-wrap:wrap">\n\s*<span style="font-size:\$\{compact \? '9px' : '10px'\};font-weight:700;color:var\(--color-text-faint\);letter-spacing:\.45px\">15M MOVE[^<]*?<\/span>\n\s*<span style="font-size:\$\{lineFont\};font-weight:800;color:\$\{plan\.tone\}">\$\{plan\.title\}<\/span>\n\s*<\/div>\n\s*<div style="font-size:\$\{lineFont\};color:var\(--color-text-muted\);margin-top:2px">\$\{plan\.detail\}<\/div>\n\s*<\/div>\n\s*`;\n\s*\}/m;

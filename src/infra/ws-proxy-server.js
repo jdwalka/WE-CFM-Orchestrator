@@ -24,6 +24,17 @@ try {
     async disconnect() { }
   };
 }
+const pythHandler = new PythLazerWebSocketHandler();
+let coinGeckoPoller;
+try {
+  coinGeckoPoller = require('../feeds/coingecko-poller');
+} catch (e) {
+  console.warn(`[CoinGeckoPoller] Optional handler unavailable: ${e.message}`);
+  coinGeckoPoller = {
+    addClient: (ws) => { try { ws.close(1013, 'CoinGecko poller unavailable'); } catch (_) { } },
+    removeClient: () => { }
+  };
+}
 
 function stripEnvValue(value) {
   let v = String(value ?? '').trim();
@@ -166,14 +177,11 @@ function normalizeCoinbaseJwtUri(method, requestPath) {
   try {
     if (/^https?:\/\//i.test(target)) {
       const u = new URL(target);
-      target = `${u.hostname}${u.pathname}`;
-    } else {
-      target = target.split('?')[0];
+      target = `${u.hostname}${u.pathname}${u.search}`;
     }
-  } catch (_) {
-    target = target.split('?')[0];
-  }
+  } catch (_) { }
   target = target.replace(/^\/+/, '');
+  target = target.replace(/^coinbase\//i, '');
   if (/^api\/v3\//i.test(target)) target = `api.coinbase.com/${target}`;
   if (!/^[a-z0-9.-]+\/api\/v3\//i.test(target)) target = `api.coinbase.com/${target}`;
   return `${verb} ${target}`;
@@ -265,9 +273,6 @@ if (CDP_KEY_NAME && CDP_PRIVATE_KEY) {
 const PORT = Number(process.env.WECRYPTO_WS_PROXY_PORT || process.env.WS_PROXY_PORT || 3011);
 const WSS_PORT = 3012;
 
-// Initialize Pyth Lazer WebSocket handler (official SDK)
-const pythHandler = new PythLazerWebSocketHandler();
-
 // Log with timestamp
 function log(msg, type = 'INFO') {
   const ts = new Date().toISOString().split('T')[1];
@@ -281,7 +286,7 @@ const UPSTREAM = {
   'mempool': 'wss://mempool.space/api/v1/blocksBitcoin',
   'pyth': 'POLLER', // Special marker - uses HTTP polling instead of WebSocket
   'pyth-lazer': 'POLLER', // Special marker - uses HTTP polling
-  'coingecko': 'wss://stream.coingecko.com/v1/stream'
+  'coingecko': 'POLLER' // Special marker - uses HTTP polling
 };
 
 const DEFAULT_DISABLED_PRECONNECT = new Set(['mempool', 'coingecko', 'pyth']);
@@ -426,9 +431,11 @@ class ProxyManager {
 
     log(`Client connected to ${service} (${clientConnections.get(service).size} clients)`, 'CLIENT');
 
-    // Special handling for Pyth services - register with handler
+    // Special handling for Poller services - register with handler
     if (service === 'pyth' || service === 'pyth-lazer') {
       pythHandler.addClient(ws);
+    } else if (service === 'coingecko') {
+      coinGeckoPoller.addClient(ws);
     }
 
     // Ensure upstream is connected
@@ -440,8 +447,8 @@ class ProxyManager {
     }
 
     ws.on('message', (data) => {
-      // Pyth services don't accept client messages (WebSocket streaming only)
-      if (service !== 'pyth' && service !== 'pyth-lazer') {
+      // Poller services don't accept client messages (Server-to-client streaming only)
+      if (service !== 'pyth' && service !== 'pyth-lazer' && service !== 'coingecko') {
         const upstream = upstreamConnections.get(service);
         if (upstream && upstream.readyState === WebSocket.OPEN) {
           try {
@@ -458,9 +465,11 @@ class ProxyManager {
     });
 
     ws.on('close', () => {
-      // Deregister from handler if Pyth
+      // Deregister from handler if Poller
       if (service === 'pyth' || service === 'pyth-lazer') {
         pythHandler.removeClient(ws);
+      } else if (service === 'coingecko') {
+        coinGeckoPoller.removeClient(ws);
       }
       
       const clients = clientConnections.get(service);

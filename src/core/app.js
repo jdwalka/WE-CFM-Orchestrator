@@ -1833,7 +1833,7 @@
   // API LAYER — Crypto.com Exchange public endpoints (no auth)
   // ================================================================
 
-  const CDC_BASE = 'https://api.crypto.com/exchange/v1/public';
+  const CDC_BASE = 'https://api.crypto.com/v2/public';
   const GECKO_BASE = 'https://api.coingecko.com/api/v3';
   const GECKO_PRO_BASE = 'https://pro-api.coingecko.com/api/v3';
   const COINCAP_BASE = 'https://rest.coincap.io/v3';
@@ -2157,7 +2157,7 @@
       noteCdcCooldownActive();
       throw new Error(`Crypto.com circuit open (${Math.ceil(cooldown / 1000)}s)`);
     }
-    const res = await fetchWithTimeout(`${CDC_BASE}/get-tickers`, 15000);  // 15s for Stockholm/DERP routing
+    const res = await fetchWithTimeout(`${CDC_BASE}/get-ticker`, 15000);  // 15s for Stockholm/DERP routing
     if (!res.ok) {
       if (CDC_TRANSIENT_STATUS.has(res.status)) noteCdcTransient(res.status, `HTTP ${res.status} ${res.statusText || ''}`.trim());
       throw new Error(`Tickers HTTP ${res.status}`);
@@ -4265,10 +4265,10 @@
         };
         capturePredictionTrail2m(coin.sym, window._lastKalshiSnapshot[coin.sym]);
         if (ka.dirConflict) {
-          console.warn(
-            `[Snapshot] ⚠️ ${coin.sym} momentum=${dir} conflicts with CDF direction=${ka.cdfImpliedDir} ` +
-            `(mYesPct=${ka.modelYesPct}% kYesPct=${ka.kalshiYesPct}% strike=${ka.strikeDir} ref=${ka.ref})`
-          );
+          // console.warn(
+          //   `[Snapshot] ⚠️ ${coin.sym} momentum=${dir} conflicts with CDF direction=${ka.cdfImpliedDir} ` +
+          //   `(mYesPct=${ka.modelYesPct}% kYesPct=${ka.kalshiYesPct}% strike=${ka.strikeDir} ref=${ka.ref})`
+          // );
         }
       }
     });
@@ -13678,6 +13678,62 @@ function renderTelegramFeedsHtml() {
       }
     });
   }
+
+  window.addEventListener('coingecko:markets', (e) => {
+    const rows = e.detail;
+    if (!Array.isArray(rows)) return;
+    
+    const targets = trackedMarketCoins().filter(c => c.geckoId);
+    const byId = Object.fromEntries(rows.map(row => [row.id, row]));
+    
+    const mapped = targets.map(c => {
+      const row = byId[c.geckoId];
+      if (!row) return null;
+      
+      const sym = GECKO_ID_TO_SYMBOL[row.id];
+      if (sym && typeof screenerMetaCache !== 'undefined') {
+        const orbital = window.ShellRouter?.getAtomicProfile?.(sym) || null;
+        screenerMetaCache[sym] = {
+          marketCap: row.market_cap || 0,
+          totalVolume: row.total_volume || 0,
+          image: row.image || '',
+          rank: row.market_cap_rank || null,
+          geckoId: row.id,
+          tvlUsd: orbital?.tvlUsd || 0,
+          atomicWeight: orbital?.atomicWeightUsd || row.market_cap || 0,
+          orbitalFocus: orbital?.orbitalFocus || null,
+          classification: orbital?.classification || null,
+        };
+      }
+      
+      return {
+        instrument_name: c.instrument,
+        last: String(row.current_price),
+        bid: String(row.current_price),
+        ask: String(row.current_price),
+        change: String(row.price_change_percentage_24h),
+        vol24h: String(row.total_volume || 0),
+        baseVolume: String(row.total_volume || 0),
+        quoteVolume: String(row.total_volume || 0),
+        source: 'coingecko'
+      };
+    }).filter(Boolean);
+    
+    _lastGeckoSupplementalResult = mapped;
+    _lastGeckoSupplementalTs = Date.now() + 60 * 60_000; // Block HTTP fetches for 1h since WS is live
+    if (typeof screenerMetaAge !== 'undefined') screenerMetaAge = Date.now();
+    
+    if (window._appTickers) {
+      let updated = false;
+      mapped.forEach(t => { 
+        if (!window._appTickers[t.instrument_name]) {
+          window._appTickers[t.instrument_name] = t; 
+          updated = true;
+        }
+      });
+      if (updated && typeof render === 'function') render();
+    }
+  });
 
   // Expose for AsyncRefreshEngine settlement/market streams
   window.fetchAll = fetchAll;

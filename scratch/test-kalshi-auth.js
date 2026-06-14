@@ -3,7 +3,7 @@ const path = require('path');
 const crypto = require('crypto');
 
 // Load API Keys from KALSHI-API-KEY.txt
-const keysFile = 'G:\\WECRYP\\secrets\\KALSHI-API-KEY.txt';
+const keysFile = 'G:\\WECRYPTO\\secrets\\KALSHI-API-KEY.txt';
 if (!fs.existsSync(keysFile)) {
   console.error(`Keys file not found: ${keysFile}`);
   process.exit(1);

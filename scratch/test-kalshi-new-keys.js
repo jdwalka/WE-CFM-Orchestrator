@@ -61,8 +61,8 @@ async function testKey(keyObj, name) {
 }
 
 async function run() {
-  const key1 = parseKeyFile('G:\\WECRYP\\secrets\\KALSHI_API_SHA256_WeCrypto.txt');
-  const key2 = parseKeyFile('G:\\WECRYP\\secrets\\KALSHI_WEBSOCKETS and WORKER READ_ONLY.txt');
+  const key1 = parseKeyFile('G:\\WECRYPTO\\secrets\\KALSHI_API_SHA256_WeCrypto.txt');
+  const key2 = parseKeyFile('G:\\WECRYPTO\\secrets\\KALSHI_WEBSOCKETS and WORKER READ_ONLY.txt');
 
   if (key1) await testKey(key1, 'KALSHI_API_SHA256_WeCrypto.txt');
   if (key2) await testKey(key2, 'KALSHI_WEBSOCKETS and WORKER READ_ONLY.txt');

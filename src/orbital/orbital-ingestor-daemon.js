@@ -150,7 +150,7 @@ class OrbitalIngestor {
         // Start validation loop for primary asset tracking (e.g., BTC)
         this.validationLoop.start('BTC');
         
-        this.connectCoinGecko();
+        this.startCoinGeckoRESTPolling();
         this.connectCoinbase();
         this.connectHyperliquid();
         this.startKalshiPoll();
@@ -164,6 +164,10 @@ class OrbitalIngestor {
             clearInterval(this._kalshiPollTimer);
             this._kalshiPollTimer = null;
         }
+        if (this._coingeckoPollTimer) {
+            clearInterval(this._coingeckoPollTimer);
+            this._coingeckoPollTimer = null;
+        }
         for (const [, ws] of this.connections) {
             if (ws && typeof ws.close === 'function') ws.close();
         }
@@ -172,48 +176,63 @@ class OrbitalIngestor {
 
     // ─── s-orbital: CoinGecko WebSocket ────────────────────────────────────────
 
-    connectCoinGecko() {
+    startCoinGeckoRESTPolling() {
         if (this._stopped) return;
-        const ws = new WebSocket(COINGECKO_WS_URL);
-        this.connections.set('coingecko', ws);
-
-        ws.on('open', () => {
-            console.log('[OrbitalIngestor] CoinGecko connected.');
-        });
-
-        ws.on('message', (data) => {
+        
+        const pollIntervalMs = 30000;
+        console.log(`[OrbitalIngestor] Starting CoinGecko REST polling (${pollIntervalMs}ms interval).`);
+        
+        this._coingeckoPollTimer = setInterval(async () => {
+            if (this._stopped || this.oracleIntegrator.activeSource === 'DECENTRALIZED') return;
+            
             try {
-                const msg = JSON.parse(data);
-                if (msg.asset && msg.price && ASSETS.includes(msg.asset)) {
-                    // Prevent ingesting corrupted data if we've fallen back
-                    if (this.oracleIntegrator.activeSource === 'DECENTRALIZED') {
-                        return;
-                    }
-                    const payload = {
-                        source: 'coingecko',
-                        price_usd: parseFloat(msg.price),
-                        ts: Date.now()
-                    };
-                    produceOrbitalTick('s', msg.asset, payload);
-                    publishTickToRedis('s', msg.asset, payload);
+                const baseApiUrl = 'https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum,solana,ripple,dogecoin,hyperliquid&vs_currencies=usd';
+                let url = baseApiUrl;
+                if (typeof window !== 'undefined' && typeof window.coinGeckoUrl === 'function') {
+                    url = window.coinGeckoUrl(baseApiUrl);
+                } else if (typeof process !== 'undefined' && process.env && process.env.COINGECKO_API_KEY) {
+                    url = `${baseApiUrl}&x_cg_demo_api_key=${process.env.COINGECKO_API_KEY}`;
                 }
-            } catch (err) { /* ignore malformed frames */ }
-        });
 
-        ws.on('error', (err) => {
-            if (err.message.includes('401')) {
-                if (!this._coinGeckoBlocked) {
-                    console.warn('[OrbitalIngestor] CoinGecko is blocking this IP (VPN/Tor). Disabling feed to prevent log spam. The system will rely on Coinbase/Hyperliquid.');
-                    this._coinGeckoBlocked = true;
+                let fetchOptions = {};
+                if (typeof window !== 'undefined' && typeof window.withCoinGeckoAuth === 'function') {
+                    fetchOptions = window.withCoinGeckoAuth(url) || {};
                 }
-            } else {
-                console.warn('[OrbitalIngestor] CoinGecko error:', err.message);
+                
+                const fetchFn = typeof window !== 'undefined' && window.throttledFetch 
+                    ? window.throttledFetch 
+                    : fetch;
+                    
+                const res = await fetchFn(fetchOptions.url || url, fetchOptions);
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                
+                const data = await res.json();
+                
+                const idMap = {
+                    'bitcoin': 'BTC',
+                    'ethereum': 'ETH',
+                    'solana': 'SOL',
+                    'ripple': 'XRP',
+                    'dogecoin': 'DOGE',
+                    'hyperliquid': 'HYPE'
+                };
+                
+                for (const [cgId, cgData] of Object.entries(data)) {
+                    const asset = idMap[cgId];
+                    if (asset && cgData && cgData.usd) {
+                        const payload = {
+                            source: 'coingecko',
+                            price_usd: parseFloat(cgData.usd),
+                            ts: Date.now()
+                        };
+                        produceOrbitalTick('s', asset, payload);
+                        publishTickToRedis('s', asset, payload);
+                    }
+                }
+            } catch (err) {
+                console.warn('[OrbitalIngestor] CoinGecko REST error:', err.message);
             }
-        });
-        ws.on('close', () => {
-            this.connections.delete('coingecko');
-            if (!this._stopped && !this._coinGeckoBlocked) setTimeout(() => this.connectCoinGecko(), 5000);
-        });
+        }, pollIntervalMs);
     }
 
     // ─── s + p orbital: Coinbase WebSocket ─────────────────────────────────────

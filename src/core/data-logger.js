@@ -125,8 +125,8 @@
   // ── Async drive discovery — runs once on load ─────────────────────────────
   async function discoverDrives() {
     try {
-      LOCAL_ROOT = 'C:\\Users\\gitgo\\OneDrive\\WECRYPTO_Logs';
-      DRIVE_PATHS = ['H:\\My Drive\\WECRYPTO_Logs'];
+      LOCAL_ROOT = 'H:\\My Drive\\WECRYPTO_Logs';
+      DRIVE_PATHS = ['I:\\My Drive\\WECRYPTO_Logs'];
       _storage.ready = true;
       _storage.discoveredAt = Date.now();
       _storage.writableRoots = [LOCAL_ROOT, ...DRIVE_PATHS];

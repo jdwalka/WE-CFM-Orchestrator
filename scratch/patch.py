@@ -1,6 +1,6 @@
 import re
 
-with open(r'G:\WECRYP\src\core\app.js', 'r', encoding='utf-8') as f:
+with open(r'G:\WECRYPTO\src\core\app.js', 'r', encoding='utf-8') as f:
     content = f.read()
 
 pattern = re.compile(r'function renderFifteenMinuteMovePlan\(ki, compact = false\) \{.*?return `.*?`;\n    \}', re.DOTALL)
@@ -44,7 +44,7 @@ rep = """function renderFifteenMinuteMovePlan(ki, compact = false) {
 
 new_content = pattern.sub(rep, content)
 
-with open(r'G:\WECRYP\src\core\app.js', 'w', encoding='utf-8') as f:
+with open(r'G:\WECRYPTO\src\core\app.js', 'w', encoding='utf-8') as f:
     f.write(new_content)
 
 print("Replaced!")

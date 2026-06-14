@@ -24,7 +24,8 @@
 
       // Detect Electron via contextBridge (works with contextIsolation:true + nodeIntegration:false)
       this.isElectron = typeof window !== 'undefined' && window.desktopApp?.isElectron === true;
-      this.userEnv = this._getUserEnv();
+      this.userEnv = this.isElectron ? window.desktopApp.userEnv : {};
+      const username = this.userEnv.username || 'unknown';
 
       // Drive paths (Windows) — mounted roots discovered asynchronously
       this.drivePaths = this._uniquePaths([
@@ -467,7 +468,7 @@
                     ts: Date.now(),
                   });
                   this.lastSyncFailures = this.lastSyncFailures.slice(-30);
-                  console.warn('[MultiDriveCache] Write failed:', filePath, this._writeError(result));
+                  // Console warn removed to reduce spam for Google Drive lock contention
                 }
               })
               .catch(e => {

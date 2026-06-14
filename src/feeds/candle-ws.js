@@ -127,6 +127,12 @@
   function handleMessage(raw) {
     let msg;
     try { msg = JSON.parse(raw); } catch { return; }
+    
+    if (msg?.type === 'price_update' && msg?.source === 'coingecko_poller') {
+      dispatchEvent(new CustomEvent('coingecko:markets', { detail: msg.data }));
+      return;
+    }
+    
     if (!msg || !msg.events) return;
 
     if (msg.channel === 'candles') {

@@ -30,10 +30,10 @@ function envFileCandidates() {
     path.join(path.dirname(process.execPath || __filename), '.env'),
     appData && path.join(appData, 'WE-CRYPTO-Kalshi-15m-v2.15.5', '.env'),
     appData && path.join(appData, 'we-cfm-orchestrator', '.env'),
-    appData && path.join(appData, 'WECRYP', '.env'),
+    appData && path.join(appData, 'WECRYPTO', '.env'),
     localAppData && path.join(localAppData, 'WE-CRYPTO-Kalshi-15m-v2.15.5', '.env'),
     localAppData && path.join(localAppData, 'we-cfm-orchestrator', '.env'),
-    localAppData && path.join(localAppData, 'WECRYP', '.env'),
+    localAppData && path.join(localAppData, 'WECRYPTO', '.env'),
     path.join(__dirname, '..', '.env'),
     path.join(process.resourcesPath || '', '..', '.env'),
     path.join(process.cwd(), '.env'),
@@ -89,9 +89,9 @@ function secretDirCandidates() {
     path.join(process.cwd(), 'secrets'),
     localAppData && path.join(localAppData, 'WE-CRYPTO', 'user-data', 'secrets'),
     appData && path.join(appData, 'WE-CRYPTO-Kalshi-15m-v2.15.5', 'secrets'),
-    'G:\\WECRYP\\secrets',
-    'F:\\WECRYP\\secrets',
-    'E:\\WECRYP\\secrets',
+    'G:\\WECRYPTO\\secrets',
+    'F:\\WECRYPTO\\secrets',
+    'E:\\WECRYPTO\\secrets',
   ].filter(Boolean);
   const seen = new Set();
   return candidates.filter((candidate) => {

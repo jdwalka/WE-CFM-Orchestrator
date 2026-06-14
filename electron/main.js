@@ -614,13 +614,13 @@ let pythLazerClient = null;
 let pythLazerStatus = { connected: false, lastDataTs: 0, dataCount: 0, timeoutCount: 0 };
 let proxyHealthy = false;
 let webServiceHealth = { started: false, mode: 'stopped', protocol: 'http', port: 3443 };
-const LAZER_FEED_IDS = [1, 2, 6, 10, 13, 14, 15, 110]; // BTC,ETH,SOL,DOGE,F13,XRP,BNB,F110
+const LAZER_FEED_IDS = [1, 2, 6, 13, 14, 15]; // BTC,ETH,SOL,F13,XRP,BNB
 const LAZER_ID_MAP = { 1: 'BTCUSD', 2: 'ETHUSD', 6: 'SOLUSD', 10: 'DOGEUSD', 14: 'XRPUSD', 15: 'BNBUSD' };
 const PYTH_FALLBACK_TIMEOUT_MS = Number(process.env.PYTH_FALLBACK_TIMEOUT_MS || 6000);
 const PYTH_FALLBACK_GRACE_MS = Number(process.env.PYTH_FALLBACK_GRACE_MS || 2000);
 const PYTH_TIMEOUT_CONSECUTIVE_LIMIT = Number(process.env.PYTH_TIMEOUT_CONSECUTIVE_LIMIT || 3);
 const PYTH_FALLBACK_EVENT_COOLDOWN_MS = Number(process.env.PYTH_FALLBACK_EVENT_COOLDOWN_MS || 30000);
-const PYTH_LAZER_CHANNEL = process.env.PYTH_LAZER_CHANNEL || 'fixed_rate@1000ms';
+const PYTH_LAZER_CHANNEL = process.env.PYTH_LAZER_CHANNEL || 'fixed_rate@200ms';
 const PYTH_LIVE_FEED_BACKOFF_MS = Math.max(0, Number(process.env.PYTH_LIVE_FEED_BACKOFF_MS || 5));
 
 function configureCachePaths() {
@@ -688,25 +688,23 @@ async function startPythLazerService(win) {
         'wss://pyth-lazer-1.dourolabs.app/v1/stream',
         'wss://pyth-lazer-2.dourolabs.app/v1/stream',
       ];
-      pythLazerClient = await Promise.all(endpoints.map(url => PythLazerClient.create({
+      pythLazerClient = await PythLazerClient.create({
         token,
-        webSocketPoolConfig: { urls: [url] }
-      })));
+        webSocketPoolConfig: { urls: endpoints }
+      });
 
-      pythLazerClient.forEach(c => c.subscribe({
+      pythLazerClient.subscribe({
         type: 'subscribe',
         subscriptionId: 1,
         priceFeedIds: LAZER_FEED_IDS,
-        properties: ['price', 'bestBidPrice', 'bestAskPrice', 'confidence', 'exponent',
-          'publisherCount', 'feedUpdateTimestamp', 'marketSession',
-          'fundingRate', 'fundingTimestamp', 'fundingRateInterval'],
-        formats: ['solana', 'leUnsigned', 'leEcdsa', 'evm'],
+        properties: ["price", "bestBidPrice", "bestAskPrice", "confidence", "fundingRate", "fundingRateInterval", "marketSession", "feedUpdateTimestamp", "fundingTimestamp", "publisherCount", "exponent"],
+        formats: ['solana'],
         channel: activeChannel,
         deliveryFormat: 'json',
         jsonBinaryEncoding: 'hex',
         parsed: true,
         ignoreInvalidFeeds: true,
-      }));
+      });
 
       let lastPush = 0;
       let pythTimeoutHandle = null;
@@ -754,7 +752,7 @@ async function startPythLazerService(win) {
       }
       resetPythTimeout(); // Start watching immediately
 
-      pythLazerClient.forEach(c => c.addMessageListener((message) => {
+      pythLazerClient.addMessageListener((message) => {
         if (message.type !== 'json') return;
         const feeds = message.value?.parsed?.priceFeeds;
         if (!feeds?.length) return;
@@ -799,9 +797,9 @@ async function startPythLazerService(win) {
             win.webContents.send('pyth:status', pythLazerStatus);
           }
         }
-      }));
+      });
 
-      pythLazerClient.forEach(c => c.addAllConnectionsDownListener(() => {
+      pythLazerClient.addAllConnectionsDownListener(() => {
         console.error('[PythLazer] ⚠️ All WebSocket connections down — auto-reconnect triggered');
         if (pythTimeoutHandle) {
           clearTimeout(pythTimeoutHandle);
@@ -819,10 +817,8 @@ async function startPythLazerService(win) {
           setTimeout(async () => {
             try {
               if (pythLazerClient) {
-                pythLazerClient.forEach(async c => {
-                  try { c.unsubscribe(1); } catch (_) { }
-                  try { await c.shutdown(); } catch (_) { }
-                });
+                try { pythLazerClient.unsubscribe(1); } catch (_) { }
+                try { await pythLazerClient.shutdown(); } catch (_) { }
                 pythLazerClient = null;
               }
 
@@ -839,7 +835,7 @@ async function startPythLazerService(win) {
             }
           }, 500);
         }
-      }));
+      });
 
       console.log(`[PythLazer] ✅ Client started — feeds: ${LAZER_FEED_IDS.join(',')} (channel=${activeChannel})`);
       return true;
@@ -1116,10 +1112,6 @@ ipcMain.handle('pyth:getStatus', () => pythLazerStatus);
 
 ipcMain.handle('pyth:getCandles', async (_, { symbol, resolution, from, to }) => {
   try {
-    if (!pythLazerClient) {
-      return { success: false, error: 'Pyth Lazer client not initialized' };
-    }
-
     // Use Pyth History API to fetch candles
     const historyUrl = `https://api.dourolabs.app/v1/ohlc?instrument_name=${symbol}&resolution=${resolution}&start_time=${from}&end_time=${to}`;
     const response = await fetch(historyUrl);
@@ -1596,7 +1588,7 @@ function enumerateReadableDriveRoots() {
   // Disabled C-Z brute-force scan to prevent Electron main thread freezing on disconnected network drives.
   // Known drives are already hardcoded in buildStaticContractCacheFiles.
   return dedupePaths([
-    'C:\\', 'D:\\', 'E:\\', 'F:\\', 'G:\\', 'Y:\\', 'Z:\\'
+    'C:\\', 'D:\\', 'E:\\', 'F:\\', 'G:\\', 'H:\\', 'I:\\'
   ]);
 }
 
@@ -1624,18 +1616,10 @@ function buildStaticContractCacheFiles(home) {
     `${home}\\OneDrive\\WE-CRYPTO-CACHE\\contract-cache.json`,
     `${home}\\OneDrive - Personal\\WE-CRYPTO-CACHE\\contract-cache-2h.json`,
     `${home}\\OneDrive - Personal\\WE-CRYPTO-CACHE\\contract-cache.json`,
-    `${home}\\OneDrive - ctstate.edu\\WE-CRYPTO-CACHE\\contract-cache-2h.json`,
-    `${home}\\OneDrive - ctstate.edu\\WE-CRYPTO-CACHE\\contract-cache.json`,
-    `${home}\\OneDrive - Azure ctstate.edu\\WE-CRYPTO-CACHE\\contract-cache-2h.json`,
-    `${home}\\OneDrive - Azure ctstate.edu\\WE-CRYPTO-CACHE\\contract-cache.json`,
     `${home}\\OneDrive\\WECRYPTO\\contract-cache-2h.json`,
     `${home}\\OneDrive\\WECRYPTO\\contract-cache.json`,
     `${home}\\OneDrive - Personal\\WECRYPTO\\contract-cache-2h.json`,
     `${home}\\OneDrive - Personal\\WECRYPTO\\contract-cache.json`,
-    `${home}\\OneDrive - ctstate.edu\\WECRYPTO\\contract-cache-2h.json`,
-    `${home}\\OneDrive - ctstate.edu\\WECRYPTO\\contract-cache.json`,
-    `${home}\\OneDrive - Azure ctstate.edu\\WECRYPTO\\contract-cache-2h.json`,
-    `${home}\\OneDrive - Azure ctstate.edu\\WECRYPTO\\contract-cache.json`,
 
     // Google Drive
     `${home}\\Google Drive\\WE-CRYPTO-CACHE\\contract-cache-2h.json`,
@@ -1646,10 +1630,10 @@ function buildStaticContractCacheFiles(home) {
     `${home}\\My Drive\\WE-CRYPTO-CACHE\\contract-cache.json`,
     `${home}\\My Drive\\WECRYPTO\\contract-cache-2h.json`,
     `${home}\\My Drive\\WECRYPTO\\contract-cache.json`,
-    'Z:\\My Drive\\WE-CRYPTO-CACHE\\contract-cache-2h.json',
-    'Z:\\My Drive\\WE-CRYPTO-CACHE\\contract-cache.json',
-    'Z:\\My Drive\\WECRYPTO\\contract-cache-2h.json',
-    'Z:\\My Drive\\WECRYPTO\\contract-cache.json',
+    'I:\\My Drive\\WE-CRYPTO-CACHE\\contract-cache-2h.json',
+    'I:\\My Drive\\WE-CRYPTO-CACHE\\contract-cache.json',
+    'I:\\My Drive\\WECRYPTO\\contract-cache-2h.json',
+    'I:\\My Drive\\WECRYPTO\\contract-cache.json',
     'G:\\My Drive\\WE-CRYPTO-CACHE\\contract-cache-2h.json',
     'G:\\My Drive\\WE-CRYPTO-CACHE\\contract-cache.json',
 
@@ -1659,12 +1643,12 @@ function buildStaticContractCacheFiles(home) {
     `${home}\\AppData\\Local\\WECRYPTO\\contract-cache.json`,
 
     // Network drives (Z:, Y:, etc.)
-    'Z:\\WE-CRYPTO-CACHE\\contract-cache-2h.json',
-    'Z:\\WE-CRYPTO-CACHE\\contract-cache.json',
-    'Z:\\WECRYPTO\\contract-cache-2h.json',
-    'Z:\\WECRYPTO\\contract-cache.json',
-    'Y:\\WE-CRYPTO-CACHE\\contract-cache-2h.json',
-    'Y:\\WE-CRYPTO-CACHE\\contract-cache.json',
+    'I:\\WE-CRYPTO-CACHE\\contract-cache-2h.json',
+    'I:\\WE-CRYPTO-CACHE\\contract-cache.json',
+    'I:\\WECRYPTO\\contract-cache-2h.json',
+    'I:\\WECRYPTO\\contract-cache.json',
+    'H:\\WE-CRYPTO-CACHE\\contract-cache-2h.json',
+    'H:\\WE-CRYPTO-CACHE\\contract-cache.json',
   ]);
 }
 
@@ -1687,8 +1671,8 @@ function buildAutoDiscoveryDirectories(home) {
     `${home}\\Google Drive`,
     `${home}\\My Drive`,
     'G:\\My Drive',
-    'Z:\\My Drive',
-    'Y:\\My Drive',
+    'I:\\My Drive',
+    'H:\\My Drive',
     process.env.GOOGLE_DRIVE_PATH || null,
     ...dynamicCloudRoots,
   ].forEach((p) => { if (p) rootCandidates.add(normalizeCachePath(p)); });
@@ -2050,8 +2034,18 @@ ipcMain.handle('storage:writeContractCache', async (_event, payload = [], option
   }
 });
 
-// ── IPC: Enumerate all available storage roots (local, network, cloud) ──────
-let storageDrivesCache = { ts: 0, value: null };
+  // ── IPC: Enumerate all available storage roots (local, network, cloud) ──────
+  ipcMain.handle('storage:getGoogleDriveTargets', async () => {
+    return {
+      targets: [
+        { root: 'H:\\My Drive', type: 'cloud', name: 'Google Drive Main' },
+        { root: 'I:\\My Drive', type: 'cloud', name: 'Google Drive Fallback' },
+        { root: 'G:\\My Drive', type: 'cloud', name: 'Google Drive Legacy' }
+      ]
+    };
+  });
+
+  let storageDrivesCache = { ts: 0, value: null };
 ipcMain.handle('storage:getDrives', async (_event, options = {}) => {
   const now = Date.now();
   if (!options?.force && storageDrivesCache.value && (now - storageDrivesCache.ts) < 60000) {
@@ -2085,9 +2079,7 @@ ipcMain.handle('storage:getDrives', async (_event, options = {}) => {
   const cloudCandidates = [
     `${home}\\OneDrive`,
     `${home}\\OneDrive - Personal`,
-    `${home}\\OneDrive - ctstate.edu`,
-    `${home}\\OneDrive - Azure ctstate.edu`,
-    'Z:\\My Drive',
+    'I:\\My Drive',
     'G:\\My Drive',
     `${home}\\Google Drive`,
     `${home}\\My Drive`,

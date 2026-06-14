@@ -43,6 +43,7 @@
     "tauri:build": "tauri build"
   },
   "build": {
+    "npmRebuild": false,
     "appId": "com.walkerenterprise.wecfmorchestrator",
     "productName": "WE-CRYPTO-Kalshi-15m-v2.15.6",
     "electronVersion": "41.4.0",
@@ -104,10 +105,12 @@
     "@coinbase/coinbase-sdk": "^0.25.0",
     "@google/genai": "^1.52.0",
     "@google/generative-ai": "^0.24.1",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@polymarket/clob-client": "^5.8.1",
     "@polymarket/clob-client-v2": "^1.0.6",
     "@pythnetwork/pyth-lazer-sdk": "^6.2.2",
     "dotenv": "^17.4.2",
+    "eventsource": "^4.1.0",
     "express": "^5.1.0",
     "firebase": "^12.13.0",
     "firebase-admin": "^12.7.0",
@@ -117,6 +120,7 @@
     "kalshi-typescript": "^3.20.0",
     "node-addon-api": "^8.7.0",
     "node-fetch": "^2.7.0",
+    "openai": "^6.42.0",
     "selfsigned": "^5.5.0",
     "socks-proxy-agent": "^10.0.0",
     "telegram": "^2.26.22",

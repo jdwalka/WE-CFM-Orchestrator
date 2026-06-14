@@ -41,7 +41,7 @@
     writer.call(console, msg);
   }
 
-  const CDC_BASE = 'https://api.crypto.com/exchange/v1/public';
+  const CDC_BASE = 'https://api.crypto.com/v2/public';
   const GECKO_BASE = 'https://api.coingecko.com/api/v3';
   const BIN_BASE = 'https://data-api.binance.vision/api/v3';  // market-data fallback after WS
   const MEXC_BASE = 'https://api.mexc.com/api/v3';
@@ -109,7 +109,7 @@
   const LIVE_BOOK_REPRICE_DELTA = 0.06;
   const GECKO_MIN_GAP_MS = 60_000; // hard-backoff: max ~1 req/min
   const GECKO_RATE_LIMIT_PAUSE_MS = 5 * 60_000;
-  const GECKO_AUTH_PAUSE_MS = 60 * 60_000;
+  const GECKO_AUTH_PAUSE_MS = 5 * 60_000;
   let inferenceCooldownUntilTs = 0;
   let inferenceCooldownReason = '';
   let tideDisabledUntilTs = 0;
@@ -1140,7 +1140,7 @@
   async function fetchCDCTrades(instrument) {
     const apiInstr = instrument.replace(/([A-Z]+)(USD[T]?)$/, '$1_$2');
     await waitExchangeJitter();
-    const res = await fetchWithTimeout(`${CDC_BASE}/get-trades?instrument_name=${apiInstr}&count=100`, 20000);
+    const res = await fetchWithTimeout(`${CDC_BASE.replace('/v1/', '/v2/')}/get-trades?instrument_name=${apiInstr}&count=100`, 20000);
     if (!res.ok) return [];
     const json = await res.json();
     if (json.code !== 0) return [];
@@ -1447,10 +1447,7 @@
 
   async function fetchGeckoMaxHistory(geckoId) {
     try {
-      const geckoCfg = typeof window.resolveCoinGeckoConfig === 'function'
-        ? window.resolveCoinGeckoConfig()
-        : null;
-      const days = geckoCfg?.key && geckoCfg?.tier === 'pro' ? 'max' : '365';
+      const days = '365'; // Hardcoded for Demo tier per CoinGecko specs
       const json = await fetchGeckoJSON(`/coins/${geckoId}/market_chart?vs_currency=usd&days=${days}`);
       const prices = Array.isArray(json.prices) ? json.prices : [];
       const volumes = Array.isArray(json.total_volumes) ? json.total_volumes : [];

@@ -131,7 +131,7 @@
   const OKX_SYMS = { BTC: 'BTC-USDT', ETH: 'ETH-USDT', SOL: 'SOL-USDT', XRP: 'XRP-USDT', HYPE: 'HYPE-USDT', DOGE: 'DOGE-USDT', BNB: 'BNB-USDT' };
   const KRK_SYMS = { BTC: 'XBTUSD', ETH: 'ETHUSD', SOL: 'SOLUSD', XRP: 'XRPUSD', DOGE: 'XDGUSD', BNB: 'BNBUSD' }; // HYPE not listed on Kraken
 
-  const CDC_BASE = 'https://api.crypto.com/exchange/v1/public';
+  const CDC_BASE = 'https://api.crypto.com/v2/public';
   const CB_BASE = 'https://api.coinbase.com/v2/prices';
   const GKO_BASE = 'https://api.coingecko.com/api/v3';
   const DEX_BASE = 'https://api.dexscreener.com/latest/dex';
@@ -178,7 +178,7 @@
     if (cdcTickerCache && Date.now() - cdcTickerAge < 20000) return cdcTickerCache;
     try {
       hit('CDC');
-      const r = await fetchWithTimeout(`${CDC_BASE}/get-tickers`);
+      const r = await fetchWithTimeout(`${CDC_BASE}/get-ticker`);
       if (!r.ok) return null;
       const j = await r.json();
       if (j.code !== 0) return null;

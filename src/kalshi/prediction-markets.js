@@ -877,6 +877,10 @@
           clearTimeout(timerId);
           finish(null);
         };
+        socket.onclose = () => {
+          clearTimeout(timerId);
+          finish(null);
+        };
       } catch (_) {
         clearTimeout(timerId);
         finish(null);

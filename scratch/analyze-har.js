@@ -2,7 +2,7 @@ const fs = require('fs');
 const path = require('path');
 
 function analyzeHar() {
-  const harPath = 'G:\\WECRYP\\COPILOT_DEBUG\\anti.har';
+  const harPath = 'G:\\WECRYPTO\\COPILOT_DEBUG\\anti.har';
   console.log(`Reading ${harPath}...`);
   
   if (!fs.existsSync(harPath)) {

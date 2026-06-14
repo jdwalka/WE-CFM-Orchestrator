@@ -232,10 +232,12 @@ class ContractWinRateCalculator {
 
       // Determine model direction and outcome
       const pred = predictions[sym];
-      const modelDir = pred?.direction; // 'UP' or 'DOWN'
+      const modelDir = contract.modelDir || pred?.direction; // 'UP' or 'DOWN'
 
       let actualDir = null;
-      if (contract.source === 'kalshi') {
+      if (contract.outcome === 'UP' || contract.outcome === 'DOWN') {
+        actualDir = contract.outcome;
+      } else if (contract.source === 'kalshi') {
         // Kalshi: YES direction depends on strike type ('above' vs 'below').
         const strike = String(contract.strikeType ?? contract.raw?.strike_type ?? 'above').toLowerCase();
         const yesDir = strike === 'below' ? 'DOWN' : 'UP';
@@ -251,16 +253,20 @@ class ContractWinRateCalculator {
       stats.overall.total++;
 
       // Is this prediction correct?
-      const isWin = modelDir && actualDir && modelDir === actualDir;
+      let isWin = false;
+      if (typeof contract.modelCorrect === 'boolean') {
+        isWin = contract.modelCorrect;
+      } else {
+        isWin = !!(modelDir && actualDir && modelDir === actualDir);
+        contract.modelCorrect = isWin;
+      }
 
       if (isWin) {
         stats.bySymbol[sym].wins++;
         stats.overall.wins++;
-        contract.modelCorrect = true;
       } else {
         stats.bySymbol[sym].losses++;
         stats.overall.losses++;
-        contract.modelCorrect = false;
       }
 
       // Track recent for trending

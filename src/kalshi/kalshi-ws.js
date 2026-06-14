@@ -31,7 +31,7 @@
   // Heartbeat: Kalshi closes idle connections; ping every 20 s
   const HEARTBEAT_INTERVAL_MS = 20_000;
   const RECONNECT_BASE_MS = 1_000;
-  const RECONNECT_MAX_MS = 30_000;
+  const RECONNECT_MAX_MS = 120_000;
   const PERSISTENT_FAIL_WINDOW_MS = 120_000;
   const PERSISTENT_FAIL_THRESHOLD = 6;
   const SUSPEND_BASE_MS = 3 * 60_000;

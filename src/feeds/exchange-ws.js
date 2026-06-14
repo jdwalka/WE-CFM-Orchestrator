@@ -29,7 +29,7 @@ const PROVIDER_BREAKER_CONFIG = {
 
   const TRADE_WINDOW_MS = 120000;
   const RECONNECT_BASE_MS = 3000;
-  const RECONNECT_MAX_MS = 45000;
+  const RECONNECT_MAX_MS = 120000;
   const RECONNECT_JITTER_RATIO = 0.35;
   const WS_STARTUP_STAGGER_MS = 900;
   const OPTIONAL_WS_POOL_TICK_MS = 5000;
@@ -38,7 +38,7 @@ const PROVIDER_BREAKER_CONFIG = {
   const STORE = {}; // provider -> sym -> snapshot
   const MEMPOOL = { btcUnconfirmed: 0, btcValue: 0, lastTxTs: 0 };
   const CONNECTIONS = {}; // name -> { ws, reconnectMs, timer, active, extra }
-  const DEFAULT_DISABLED_WS_PROVIDERS = new Set([]);
+  const DEFAULT_DISABLED_WS_PROVIDERS = new Set(['BULLISH', 'OURBIT', 'COINW']);
   const DEFAULT_BINANCE_WS_ENDPOINTS = [
     'wss://data-stream.binance.vision',
     'wss://stream.binance.com:9443',

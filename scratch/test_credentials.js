@@ -22,14 +22,14 @@ function coinbaseCredentialFromObject(obj, source) {
 
 function loadCoinbaseCredential() {
   const legacyCandidates = [
-    'F:\\WECRYP\\secrets\\cdp_api_key-WECRYPTO-ECDSA.json',
-    'G:\\WECRYP\\secrets\\cdp_api_key-WECRYPTO-ECDSA.json',
+    'F:\\WECRYPTO\\secrets\\cdp_api_key-WECRYPTO-ECDSA.json',
+    'G:\\WECRYPTO\\secrets\\cdp_api_key-WECRYPTO-ECDSA.json',
   ];
   if (process.platform === 'win32') {
     for (let code = 67; code <= 90; code += 1) {
       const driveRoot = `${String.fromCharCode(code)}:\\`;
-      legacyCandidates.push(path.join(driveRoot, 'WECRYP', 'secrets', 'cdp_api_key-WECRYPTO-ECDSA.json'));
-      legacyCandidates.push(path.join(driveRoot, 'My Drive', 'WECRYP', 'secrets', 'cdp_api_key-WECRYPTO-ECDSA.json'));
+      legacyCandidates.push(path.join(driveRoot, 'WECRYPTO', 'secrets', 'cdp_api_key-WECRYPTO-ECDSA.json'));
+      legacyCandidates.push(path.join(driveRoot, 'My Drive', 'WECRYPTO', 'secrets', 'cdp_api_key-WECRYPTO-ECDSA.json'));
       legacyCandidates.push(path.join(driveRoot, 'secrets', 'cdp_api_key-WECRYPTO-ECDSA.json'));
       legacyCandidates.push(path.join(driveRoot, 'My Drive', 'secrets', 'cdp_api_key-WECRYPTO-ECDSA.json'));
     }

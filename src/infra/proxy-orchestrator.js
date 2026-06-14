@@ -204,15 +204,15 @@ if (
   const FALLBACK_CHAINS = {
     'kalshi-markets': ['kalshi', 'cache'],
     'kalshi-markets-legacy': ['kalshi', 'cache'],
-    'cmc-quotes': ['cmc', 'coinbase', 'binance', 'blockchainraw', 'cache'],
-    'cmc': ['cmc', 'coingecko', 'coinbase', 'cache'],
-    'pyth': ['pyth', 'binance', 'coinbase', 'cache'],
+    'cmc-quotes': ['cmc', 'cache'],
+    'cmc': ['cmc', 'cache'],
+    'pyth': ['pyth', 'cache'],
     'polymarket': ['polymarket', 'kalshi', 'cache'],
     'kalshi': ['kalshi', 'cache'],
     'kalshi-settlement': ['kalshi', 'cache'],
     'polymarket-markets': ['kalshi', 'cache'],
-    'market-data': ['coinbase', 'okx', 'binance', 'blockchainraw', 'coingecko', 'cmc', 'cache'],
-    'coingecko': ['coingecko', 'cmc', 'coinbase', 'cache'],
+    'market-data': ['coinbase', 'okx', 'binance', 'blockchainraw', 'cache'],
+    'coingecko': ['coingecko', 'cache'],
   };
 
   // ── CACHE TTL CONFIGURATION ────────────────────────────────────
@@ -1099,8 +1099,9 @@ if (
           await new Promise(r => setTimeout(r, waitMs));
         } else {
           console.warn(`[ProxyOrchestrator] Rate limited (${endpoint}), using cache...`);
-          if (this.canUseCache(endpoint, cacheType, options)) {
-            return this.getFromCache(endpoint, cacheType);
+          const cached = this.cache.get(cacheKey, cacheType);
+          if (cached) {
+            return cached;
           } else {
             return Promise.reject(new Error(`Rate limited and no cache available: ${endpoint}`));
           }
@@ -1214,17 +1215,6 @@ if (
                 const cmcKey = window.resolveRuntimeKey('CMC_PRO_API_KEY') || window.resolveRuntimeKey('COINMARKETCAP_API_KEY');
                 if (cmcKey && !headers['X-CMC_PRO_API_KEY'] && !headers['x-cmc_pro-api-key']) {
                   headers['X-CMC_PRO_API_KEY'] = cmcKey;
-                }
-              } else if (isGecko) {
-                const cgKey = window.resolveRuntimeKey('COINGECKO_API_KEY');
-                if (cgKey) {
-                  const host = (() => {
-                    try { return new URL(String(fetchUrl)).hostname.toLowerCase(); } catch (_) { return ''; }
-                  })();
-                  const tier = String(window.resolveRuntimeKey('COINGECKO_API_TIER') || '').trim().toLowerCase();
-                  const usePro = /^(pro|paid|enterprise|trial)$/.test(tier) || host.includes('pro-api.coingecko.com');
-                  const headerName = usePro ? 'x-cg-pro-api-key' : 'x-cg-demo-api-key';
-                  headers[headerName] = cgKey;
                 }
               }
               const requestWithAuth = isGecko && typeof window !== 'undefined' && typeof window.withCoinGeckoAuth === 'function'

@@ -1716,7 +1716,7 @@ const PREDICTION_COINS = [
   const BIN_SYMS = { BTC:'BTCUSDT', ETH:'ETHUSDT', SOL:'SOLUSDT', XRP:'XRPUSDT', HYPE:'HYPEUSDT', DOGE:'DOGEUSDT', BNB:'BNBUSDT' };
   const OKX_SYMS = { BTC:'BTC-USDT', ETH:'ETH-USDT', SOL:'SOL-USDT', XRP:'XRP-USDT', HYPE:'HYPE-USDT', DOGE:'DOGE-USDT', BNB:'BNB-USDT' };
 
-  const CDC_BASE = 'https://api.crypto.com/exchange/v1/public';
+  const CDC_BASE = 'https://api.crypto.com/v2/public';
   const CB_BASE  = 'https://api.coinbase.com/v2/prices';
   const GKO_BASE = 'https://api.coingecko.com/api/v3';
   const DEX_BASE = 'https://api.dexscreener.com/latest/dex';
@@ -1756,7 +1756,7 @@ const PREDICTION_COINS = [
     if (cdcTickerCache && Date.now() - cdcTickerAge < 10000) return cdcTickerCache;
     try {
       hit('CDC');
-      const r = await fetch(`${CDC_BASE}/get-tickers`);
+      const r = await fetch(`${CDC_BASE}/get-ticker`);
       if (!r.ok) return null;
       const j = await r.json();
       if (j.code !== 0) return null;
@@ -2197,7 +2197,7 @@ const PREDICTION_COINS = [
 (function () {
   'use strict';
 
-  const CDC_BASE = 'https://api.crypto.com/exchange/v1/public';
+  const CDC_BASE = 'https://api.crypto.com/v2/public';
   const GECKO_BASE = 'https://api.coingecko.com/api/v3';
   const GECKO_ONLY = new Set(['HYPE', 'BNB']);
 
@@ -3946,7 +3946,7 @@ const PREDICTION_COINS = [
   // API LAYER — Crypto.com Exchange public endpoints (no auth)
   // ================================================================
 
-  const CDC_BASE = 'https://api.crypto.com/exchange/v1/public';
+  const CDC_BASE = 'https://api.crypto.com/v2/public';
   const GECKO_BASE = 'https://api.coingecko.com/api/v3';
 
   // ---- Shared HTTP cache: prevents duplicate CDC calls across engines ----
@@ -3979,7 +3979,7 @@ const PREDICTION_COINS = [
     if (cache.data && Date.now() - cache.age < 8000) {
       return cache.data;
     }
-    const res = await fetch(`${CDC_BASE}/get-tickers`);
+    const res = await fetch(`${CDC_BASE}/get-ticker`);
     if (!res.ok) throw new Error(`Tickers HTTP ${res.status}`);
     const json = await res.json();
     if (json.code !== 0) throw new Error(`Tickers error code ${json.code}`);
