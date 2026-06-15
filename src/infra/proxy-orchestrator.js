@@ -71,7 +71,7 @@ if (
     bitfinex: { reqs_per_second: 10, reqs_per_minute: 600, burst: 25, backoff_start: 1500, backoff_max: 25000 },
     cryptocom: { reqs_per_second: 10, reqs_per_minute: 600, burst: 25, backoff_start: 1400, backoff_max: 25000 },
     pyth: { reqs_per_second: 20, burst: 50, backoff_start: 1000, backoff_max: 20000 },
-    coingecko: { reqs_per_minute: 500, burst: 10, backoff_start: 3000, backoff_max: 90000 },
+    coingecko: { reqs_per_minute: 20, burst: 10, backoff_start: 3000, backoff_max: 90000 },
     blockchainraw: { reqs_per_second: 10, reqs_per_minute: 500, burst: 20, backoff_start: 1000, backoff_max: 20000 },
     default: { reqs_per_second: 5, reqs_per_minute: 240, burst: 10, backoff_start: 1500, backoff_max: 30000 },
   };
@@ -222,6 +222,7 @@ if (
     'settlement': 3600000,          // 1h for settlement (never changes)
     'fear-greed': 3600000,          // 1h for macro sentiment
     'global-metrics': 300000,       // 5min for global metrics
+    'coingecko': 120000,            // 2min for CoinGecko
   };
 
   // ── METRICS COLLECTION ────────────────────────────────────────
@@ -352,7 +353,12 @@ if (
     recordFailure(status = 'network') {
       const now = Date.now();
       this.lastRequestTime = now;
-      this.failures++;
+      // Immediate circuit break on gateway errors
+      if (status === 502 || status === 503 || status === '502' || status === '503') {
+        this.failures = Math.max(this.failures, this.CIRCUIT_BREAK_THRESHOLD);
+      } else {
+        this.failures++;
+      }
       this.failureHistory.push(now);
 
       // Prune old failures outside window
