@@ -74,7 +74,7 @@
     'data-api.binance.vision': 'binance-data',
     'fapi.binance.com': 'binance-f',
     'api.coingecko.com': 'coingecko',
-    'pro-api.coingecko.com': 'coingecko',
+    'pro-api.coingecko.com': 'coingecko-pro',
     'api.coinbase.com': 'coinbase',
     'api.exchange.coinbase.com': 'coinbase-ex',
     'api.kraken.com': 'kraken',

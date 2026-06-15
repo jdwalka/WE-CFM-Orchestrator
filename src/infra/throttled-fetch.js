@@ -107,7 +107,7 @@
       try {
         const u = new URL(String(url), window.location.href);
         if (u.hostname.includes('coingecko')) {
-          const isDemo = key.startsWith('CG-') || tier === 'demo' || tier === 'free';
+          const isDemo = tier === 'demo' || tier === 'free' || key.startsWith('CG-') || (tier !== 'pro' && tier !== 'trial');
           if (!isDemo) {
             u.hostname = 'pro-api.coingecko.com';
             u.searchParams.set('x_cg_pro_api_key', key);
