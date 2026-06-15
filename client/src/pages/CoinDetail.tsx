@@ -1,4 +1,4 @@
-import { useParams, useNavigate } from "wouter";
+import { useParams, useLocation } from "wouter";
 import { ArrowLeft, TrendingUp, TrendingDown, Target, Zap } from "lucide-react";
 import {
   LineChart,
@@ -22,7 +22,7 @@ const pct = new Intl.NumberFormat("en-US", {
 
 export default function CoinDetail() {
   const params = useParams();
-  const [, navigate] = useNavigate();
+  const [, navigate] = useLocation();
   const coin = params?.coin?.toUpperCase() || "BTC";
 
   // Fetch live metrics for this coin
