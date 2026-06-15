@@ -3,24 +3,18 @@
     "source": "functions",
     "runtime": "nodejs20"
   },
-  "emulators": {
-    "firestore": {
-      "host": "127.0.0.1",
-      "port": 8080
-    },
-    "ui": {
-      "enabled": true,
-      "host": "127.0.0.1",
-      "port": 4000
-    },
-    "singleProjectMode": true
-  },
   "hosting": {
-    "public": "public",
+    "public": "dist/public",
     "ignore": [
       "firebase.json",
       "**/.*",
       "**/node_modules/**"
+    ],
+    "rewrites": [
+      {
+        "source": "**",
+        "destination": "/index.html"
+      }
     ]
   },
   "emulators": {
