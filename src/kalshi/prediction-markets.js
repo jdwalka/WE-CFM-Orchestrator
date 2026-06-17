@@ -1085,7 +1085,6 @@
   }
 
   let _poly5mCache = {};
-  let _polycoolPriceToBeatCache = {};
   let _poly5mPriceToBeatCache = {};
   let _poly5mRtdsOpenCache = {};
   let _poly5mEventScanCache = { fetchedAt: 0, events: [], source: '', error: '' };
@@ -1132,36 +1131,9 @@
     return null;
   }
 
-  // (Approximate Binance fetch removed - prices must come from Polymarket or Polycool oracles)
-
-  async function fetchPolycoolPriceToBeat(slug) {
-    if (!slug) return null;
-    const cached = _polycoolPriceToBeatCache[slug];
-    if (cached && (cached.value != null || Date.now() - cached.fetchedAt < 60_000)) return cached.value;
-
-    const urls = [
-      `https://polycool.app/markets/${encodeURIComponent(slug)}`,
-      `https://polycool.app/market/${encodeURIComponent(slug)}`,
-      `https://polycool.app/event/${encodeURIComponent(slug)}`,
-      `https://polycool.app/markets?slug=${encodeURIComponent(slug)}`,
-    ];
-
-    for (const url of urls) {
-      try {
-        const text = await textFetch(url, { headers: { Accept: 'text/html,application/json,*/*' } });
-        const value = _parseGenericPriceToBeat(text, slug);
-        if (value != null) {
-          _polycoolPriceToBeatCache[slug] = { value, fetchedAt: Date.now() };
-          return value;
-        }
-      } catch (_) {
-        // Polycool may block non-browser routes or fail DNS on some hosts; continue fallback chain.
-      }
-    }
-
-    _polycoolPriceToBeatCache[slug] = { value: null, fetchedAt: Date.now() };
-    return null;
-  }
+  // Approximate exchange fallback removed: 5M PTB must come from Polymarket metadata
+  // or the Polymarket RTDS Chainlink opening tick. Do not call external trading-app routes here;
+  // its DNS/fetch failures pollute transport health and add avoidable latency.
 
   async function fetchPolymarketPriceToBeat(slug) {
     if (!slug) return null;
@@ -1307,11 +1279,6 @@
           if (match) {
             priceToBeatNum = parseFloat(match[1].replace(/,/g, ''));
           }
-        }
-
-        if (priceToBeatNum == null) {
-          priceToBeatSource = 'polycool';
-          priceToBeatNum = await fetchPolycoolPriceToBeat(marketSlug);
         }
 
         if (priceToBeatNum == null) {
