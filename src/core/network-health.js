@@ -36,6 +36,7 @@
         'DexScreener',
         'Chain.so',
         'Bullish',
+        'Polymarket',
     ]);
     const OPTIONAL_PROVIDER_KEYS = new Set([
         'alternative.me',
@@ -49,6 +50,7 @@
         'chain.so',
         'chainso',
         'bullish',
+        'polymarket',
     ]);
     const TRANSIENT_REASON_RE = /(abort|timed?\s*out|timeout|502|503|504|429|network\s*changed|econnreset|socket hang up|failed to fetch)/i;
     const APP_LOGIC_RE = /(stale[-\s]*watchdog|stale[-\s]*demote|demote|hysteresis|scheduler|circuit|loop|oscillat|internal|state bug|coordination|reconnect storm|thrash|browser websocket cannot send|requires node ws|credential|crypto unavailable|signature generation)/i;
@@ -416,6 +418,7 @@
             'etherscan',
             'coingecko',
             'dexscreener',
+            'polymarket',
         ]);
         const sumEndpointCounts = (counts = {}, includeOptional = true) => Object.entries(counts || {})
             .filter(([endpoint]) => includeOptional || !optionalProxyEndpoints.has(String(endpoint).toLowerCase()))

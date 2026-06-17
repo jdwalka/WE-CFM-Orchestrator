@@ -3544,9 +3544,9 @@
       // ── ACTIVATE CMC POLLING ON FIRST APP STARTUP ────────────────
       if (window._cmcProFeed && typeof window._cmcProFeed.startPolling === 'function' && !window._cmcPollingStarted) {
         try {
-          window._cmcProFeed.startPolling(['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'BNB', 'HYPE'], 60000);
+          window._cmcProFeed.startPolling(['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'BNB', 'HYPE'], 6 * 60 * 1000);
           window._cmcPollingStarted = true;
-          console.log('[App] ✅ CMC polling activated (1-hour interval)');
+          console.log('[App] CMC polling activated (6-minute quote budget gate; hourly global metrics)');
         } catch (cmcErr) {
           console.warn('[App] Failed to start CMC polling:', cmcErr.message);
         }
@@ -5661,6 +5661,33 @@
       if (prob <= 0.45) return `<span class="badge-down" style="${sz}">▼ BUY DOWN</span>`;
       return `<span class="badge-neutral" style="${sz}">◆ WAIT</span>`;
     }
+    function _live5mSignal(p5) {
+      const current = Number(p5?.currentPriceNum);
+      const target = Number(p5?.targetPriceNum ?? p5?.priceToBeatNum);
+      if (!Number.isFinite(current) || !Number.isFinite(target) || target <= 0) return null;
+      const delta = current - target;
+      return {
+        current,
+        target,
+        delta,
+        deltaPct: delta / target,
+        dir: delta >= 0 ? 'UP' : 'DOWN',
+        state: delta >= 0 ? 'ABOVE' : 'BELOW',
+      };
+    }
+    function _liveSide(sig, large) {
+      if (!sig) return `<span class="badge-neutral" style="${large ? 'font-size:20px;font-weight:800' : 'font-size:13px;font-weight:700'}">◆ WAIT</span>`;
+      const sz = large ? 'font-size:20px;font-weight:800' : 'font-size:13px;font-weight:700';
+      const cls = sig.dir === 'UP' ? 'badge-up' : 'badge-down';
+      const icon = sig.dir === 'UP' ? '▲' : '▼';
+      return `<span class="${cls}" style="${sz}">${icon} ${sig.state}</span>`;
+    }
+    function _fmtSignedPriceDelta(v) {
+      if (!Number.isFinite(v)) return '—';
+      const abs = Math.abs(v);
+      const body = abs >= 1 ? fmtPrice(abs) : fmtPrice(abs).replace('$', '$');
+      return `${v >= 0 ? '+' : '-'}${body}`;
+    }
     function _confBar(prob) {
       if (prob == null) return '';
       const pct = Math.round(prob * 100);
@@ -5732,7 +5759,7 @@
         const dir = modelOdds > marketProb ? 'slight model bullish' : 'slight model bearish';
         return `🟡 ${divergence}: ${dir}`;
       }
-      return `✅ Aligned: Both ${marketYes > 50 ? 'bullish' : 'bearish'}`;
+      return `✅ Odds/model aligned: ${marketYes > 50 ? 'UP priced' : 'DOWN priced'}`;
     }
     function _fmtVol(v) {
       if (!v || v < 1) return '';
@@ -5770,6 +5797,7 @@
       const proj = _modelProj(sym);
 
       const p5prob = p5?.probability ?? null;
+      const live5m = _live5mSignal(p5);
       const primaryMarketProb = p5prob;
       const primaryMarketLabel = 'Poly 5M';
 
@@ -5791,8 +5819,8 @@
               ${curPx != null ? `<span style="color:var(--color-text-muted);font-size:13px">$${fmtPrice(curPx)}</span>` : ''}
             </div>
             <div style="display:flex;align-items:center;gap:8px;">
-              ${combined5m != null ? _side(combined5m, true) : ''}
-              ${combined5m != null ? `<span style="font-size:12px;color:var(--color-text-muted)">${_pct(combined5m)} UP</span>` : ''}
+              ${p5 ? _liveSide(live5m, true) : ''}
+              ${live5m ? `<span style="font-size:12px;color:var(--color-text-muted)">${_fmtSignedPriceDelta(live5m.delta)} vs PTB</span>` : combined5m != null ? `<span style="font-size:12px;color:var(--color-text-muted)">${_pct(combined5m)} UP odds</span>` : ''}
             </div>
           </div>
 
@@ -5833,12 +5861,15 @@
               ${p5 ? `
                 <div style="display:flex;gap:8px;align-items:baseline;margin-bottom:4px;">
                   <span style="color:var(--color-green);font-size:14px;font-weight:700">${_pct(p5prob)}</span>
-                  <span style="font-size:12px;color:var(--color-text-muted)">UP</span>
+                  <span style="font-size:12px;color:var(--color-text-muted)">UP odds</span>
                 </div>
                 <div style="font-size:11px;color:var(--color-text-faint);margin-top:3px;" id="p5cd-${sym}" data-close="${p5.closeTime || p5.endDate || ''}">⏱ ${_countdown(p5.closeTime || p5.endDate)}</div>
+                ${p5.currentPrice ? `<div style="font-size:11px;color:var(--color-text-muted);margin-top:4px;">Current <strong style="color:var(--color-text)">${p5.currentPrice}</strong></div>` : ''}
                 ${p5.targetPrice ? `<div style="font-size:11px;color:var(--color-text);margin-top:4px;">Price to beat <strong>${p5.targetPriceApprox ? '~' : ''}${p5.targetPrice}</strong></div>` : ''}
+                ${live5m ? `<div style="font-size:11px;color:${live5m.dir === 'UP' ? 'var(--color-green)' : 'var(--color-red)'};margin-top:4px;">${live5m.state} by <strong>${_fmtSignedPriceDelta(live5m.delta)}</strong></div>` : `<div style="font-size:11px;color:var(--color-orange);margin-top:4px;">Waiting for Polycool price-to-beat baseline</div>`}
                 <div style="font-size:10px;color:var(--color-text-faint);margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="${p5.slug || ''}">${p5.slug || 'poly5m'}</div>
-                <div style="margin-top:5px">${_side(p5prob)}</div>
+                ${(p5.priceToBeatSource || p5.discoverySource) ? `<div style="font-size:10px;color:var(--color-text-faint);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="${p5.fallbackJustification || ''}">PTB ${p5.priceToBeatSource || 'pending'} · ${p5.discoverySource || p5._source || 'poly5m'}</div>` : ''}
+                <div style="margin-top:5px">${_liveSide(live5m, false)}</div>
               ` : `<div style="color:var(--color-text-faint);font-size:11px">No Poly 5M market</div>`}
             </div>
 

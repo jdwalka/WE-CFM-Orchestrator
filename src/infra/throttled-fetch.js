@@ -96,12 +96,24 @@
   }
 
     function withCoinGeckoAuth(url, options = {}) {
-      // Return options unchanged, auth is handled in URL query params now
+      // Return options unchanged; auth is handled in URL query params.
       return options;
     }
-  
+
+    function normalizeCoinGeckoApiKey(rawValue) {
+      const value = String(rawValue || '').trim();
+      if (!value) return '';
+      const demoMatch = value.match(/\bCG-[A-Za-z0-9_-]{8,}\b/i);
+      if (demoMatch) return demoMatch[0];
+      const token = value
+        .split(/[\s"'`]+/)
+        .map(part => part.trim())
+        .find(part => /^[A-Za-z0-9_-]{20,}$/.test(part) && !/^https?:/i.test(part));
+      return token || '';
+    }
+
     function coinGeckoUrl(url) {
-      const key = String(resolveRuntimeKey('COINGECKO_API_KEY') || '').trim();
+      const key = normalizeCoinGeckoApiKey(resolveRuntimeKey('COINGECKO_API_KEY'));
       const tier = String(resolveRuntimeKey('COINGECKO_API_TIER') || '').trim().toLowerCase();
       if (!key) return url;
       try {
