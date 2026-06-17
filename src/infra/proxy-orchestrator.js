@@ -200,6 +200,20 @@ if (
     },
   };
 
+  // ── DYNAMIC RATE LIMITS MAPPING ─────────────────────────────────
+  Object.keys(PROVIDER_TIMING_AUDIT).forEach((key) => {
+    const audit = PROVIDER_TIMING_AUDIT[key];
+    const limits = RATE_LIMITS[key] || {};
+    if (audit.minRps && audit.maxRps) {
+      limits.reqs_per_minute = Math.floor(((audit.minRps + audit.maxRps) / 2) * 60);
+      limits.backoff_start = Math.max(1000, Math.round(audit.maxIntervalMs * (audit.maxRps / audit.minRps)));
+    } else if (audit.minRpm && audit.maxRpm) {
+      limits.reqs_per_minute = Math.floor((audit.minRpm + audit.maxRpm) / 2);
+      limits.backoff_start = Math.max(1000, Math.round(audit.maxIntervalMs * (audit.maxRpm / audit.minRpm)));
+    }
+    RATE_LIMITS[key] = limits;
+  });
+
   // ── FALLBACK CHAINS ─────────────────────────────────────────────
   const FALLBACK_CHAINS = {
     'kalshi-markets': ['kalshi', 'cache'],
@@ -1070,6 +1084,10 @@ if (
      * Main fetch interface: Unified logic with all layers
      */
     async fetch(url, options = {}) {
+      const pPort = window.__PROXY_PORT__ || 3010;
+      // ---- BACKEND PROXY ROUTING DISABLED ----
+      // All these are now natively routed through Tor via Chromium PAC script.
+
       const {
         endpoint: endpointOpt = null,
         cacheType = 'market-data',
@@ -1213,7 +1231,16 @@ if (
             let res;
             try {
               const isGecko = endpoint === 'coingecko' || /coingecko/i.test(String(url));
-              const headers = { Accept: 'application/json', ...(requestOptions.headers || {}) };
+              const headers = { Accept: 'application/json' };
+              if (requestOptions.headers) {
+                if (typeof Headers !== 'undefined' && requestOptions.headers instanceof Headers) {
+                  for (const [k, v] of requestOptions.headers.entries()) headers[k] = v;
+                } else if (typeof requestOptions.headers.entries === 'function') {
+                  for (const [k, v] of requestOptions.headers.entries()) headers[k] = v;
+                } else {
+                  Object.assign(headers, requestOptions.headers);
+                }
+              }
               if (endpoint === 'binance' || /binance/i.test(String(url))) {
                 const binanceKey = window.resolveRuntimeKey('BINANCE_API_KEY');
                 if (binanceKey) headers['X-MBX-APIKEY'] = binanceKey;

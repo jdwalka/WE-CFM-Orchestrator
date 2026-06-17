@@ -212,12 +212,12 @@ function readSecretScalar(raw) {
 
   for (const line of lines) {
     const kv = line.match(/^\s*([A-Za-z0-9_.-]+)\s*=\s*(.+)$/);
-    if (kv && /coingecko|coin.?gecko|gecko|^cg_|^x[-_]?cg/i.test(kv[1])) {
+    if (kv && /coingecko|coin.?gecko|gecko|^cg_|^x[-_]?cg|cmc|coinmarketcap|coin.?market.?cap/i.test(kv[1])) {
       return stripEnvValue(kv[2]);
     }
   }
 
-  const jsonKey = String(raw).match(/"(?:COINGECKO_API_KEY|COINGECKO_PRO_API_KEY|COINGECKO_DEMO_API_KEY|apiKey|key)"\s*:\s*"((?:\\.|[^"])*)"/i);
+  const jsonKey = String(raw).match(/"(?:COINGECKO_API_KEY|COINGECKO_PRO_API_KEY|COINGECKO_DEMO_API_KEY|CMC_PRO_API_KEY|CMC_API_KEY|COINMARKETCAP_API_KEY|apiKey|key)"\s*:\s*"((?:\\.|[^"])*)"/i);
   if (jsonKey) return stripEnvValue(decodeJsonStringFragment(jsonKey[1]));
 
   return stripEnvValue(lines.reduce((longest, line) => line.length > longest.length ? line : longest, ''));
@@ -268,7 +268,11 @@ function readCMCSecret() {
   return readSecretFileValue([
     'CoinMarketCapAPIKEY.txt',
     'CMC_API_KEY.txt',
-    'COINMARKETCAP_API_KEY.txt'
+    'COINMARKETCAP_API_KEY.txt',
+    'pro-api.coinmarketcap.com',
+    'pro-api.coinmarketcap.com.txt',
+    'coinmarketcap.txt',
+    'cmc.txt'
   ]);
 }
 
@@ -643,6 +647,11 @@ function configureCachePaths() {
     // V8 Optimizations for AMD Ryzen + Windows 11 Huge Pages (Fake Quant Box configuration) + WASM SIMD
     app.commandLine.appendSwitch('js-flags', '--use-largepages=on --max-old-space-size=8192 --no-lazy --turbo-fast-api-calls --experimental-wasm-simd');
     app.commandLine.appendSwitch('enable-features', 'SharedArrayBuffer');
+
+    if (process.env.WECRYPTO_TOR_SOCKS) {
+      const pacPath = require('path').join(__dirname, '..', 'proxy.pac').replace(/\\/g, '/');
+      app.commandLine.appendSwitch('proxy-pac-url', `file:///${pacPath}`);
+    }
     
     console.log(`[Startup] Cache paths configured: userData=${userDataPath} session=${sessionPath} disk=${diskCacheDir}`);
   } catch (e) {
@@ -1027,6 +1036,10 @@ async function startProxy() {
     detached: false,
     stdio: ['ignore', 'pipe', 'pipe'],
     cwd: proxyDir,
+    env: { 
+      ...process.env, 
+      ...(process.env.WECRYPTO_TOR_SOCKS ? { ALL_PROXY: process.env.WECRYPTO_TOR_SOCKS } : {}) 
+    }
   });
   proxyProcess.stdout.on('data', chunk => console.log('[proxy]', chunk.toString().trim()));
   proxyProcess.stderr?.on('data', chunk => console.warn('[proxy:stderr]', chunk.toString().trim()));

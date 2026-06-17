@@ -180,10 +180,19 @@ function normalizeCoinbaseJwtUri(method, requestPath) {
       target = `${u.hostname}${u.pathname}${u.search}`;
     }
   } catch (_) { }
+  
+  // Strip off local proxy routing prefixes
+  target = target.replace(/^(https?:\/\/)?(127\.0\.0\.1|localhost)(:\d+)?\//i, '');
   target = target.replace(/^\/+/, '');
   target = target.replace(/^coinbase\//i, '');
-  if (/^api\/v3\//i.test(target)) target = `api.coinbase.com/${target}`;
-  if (!/^[a-z0-9.-]+\/api\/v3\//i.test(target)) target = `api.coinbase.com/${target}`;
+  target = target.replace(/^\/+/, '');
+  
+  // Enforce correct Coinbase API domain structure
+  if (/^api\/v3\//i.test(target)) {
+    target = `api.coinbase.com/${target}`;
+  } else if (!/^api\.coinbase\.com\//i.test(target)) {
+    target = `api.coinbase.com/${target}`;
+  }
   return `${verb} ${target}`;
 }
 

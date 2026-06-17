@@ -158,7 +158,7 @@ async function isDockerAvailable() {
 function spawnDockerCompose(workspacePath) {
     return new Promise((resolve, reject) => {
         console.log('[OrbitalOrchestrator] Spawning docker-compose for Redpanda services...');
-        const proc = spawn('docker-compose', ['up', '-d', 'redpanda', 'redpanda-console'], {
+        const proc = spawn('docker', ['compose', 'up', '-d', 'redpanda', 'redpanda-console'], {
             cwd: workspacePath,
             stdio: ['ignore', 'pipe', 'pipe']
         });
@@ -348,7 +348,7 @@ async function shutdownOrbitalSystem(stopProxiesFlag = true) {
         if (dockerComposeProcess) {
             dockerComposeProcess.kill('SIGTERM');
             await new Promise((resolve) => {
-                exec('docker-compose down', { cwd: process.env.WECRYP_ROOT || process.cwd() }, (err) => {
+                exec('docker compose down', { cwd: process.env.WECRYP_ROOT || process.cwd() }, (err) => {
                     if (err) {
                         console.warn('[OrbitalOrchestrator] docker-compose down warning:', err.message);
                     } else {

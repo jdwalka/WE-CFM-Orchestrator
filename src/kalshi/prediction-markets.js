@@ -223,10 +223,12 @@
     let data = null;
     let transport = 'http';
     let is429 = false;
+    let ipcStatus = 0;
 
     if (window.electron && window.electron.invoke) {
       try {
         const ipcRaw = await window.electron.invoke('kalshi:markets', params);
+        if (ipcRaw) ipcStatus = ipcRaw.status;
         // proxyToWorker returns { success, data, status }
         // data itself may be { success, data: { markets: [...] } } from the REST client
         // We need to find the markets array wherever it lives in this nesting
@@ -255,6 +257,10 @@
         window._kalshiErrors.push({ ts: Date.now(), sym: params.series_ticker || 'SYS', msg: 'Proxy ' + (err?.message || 'Error') });
         if (String(err?.message || err).includes('429')) is429 = true;
       }
+    }
+
+    if (!data && ipcStatus === 429) {
+      is429 = true;
     }
 
     if (!data && !is429) {

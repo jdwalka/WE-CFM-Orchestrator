@@ -36,12 +36,12 @@
     XRP: '#00aae4', DOGE: '#c2a633',
   };
   const VISIBLE_BUCKETS = 11;   // 5 above + current + 5 below
-  const POLL_NORMAL_MS  = 30000;  // First 30 mins
-  const POLL_HALF_MS    = 15000;  // Last 30 mins
-  const POLL_FAST_MS    = 5000;   // Last 15 mins
+  const POLL_NORMAL_MS  = 10000;  // First 30 mins (10s)
+  const POLL_HALF_MS    = 5000;   // Last 30 mins (5s)
+  const POLL_FAST_MS    = 2500;   // Last 15 mins (2.5s)
   const HALF_WINDOW_MS  = 30 * 60 * 1000;
   const FAST_WINDOW_MS  = 15 * 60 * 1000;
-  const CACHE_TTL_MS    = 3000;   // Allow 5s fast-polling
+  const CACHE_TTL_MS    = 2000;   // Allow 2.5s fast-polling
 
   // ── State ──────────────────────────────────────────────────────
   let _prices  = {}; // sym → number
@@ -169,12 +169,11 @@
     const entries = [...byClose.values()].filter(e => e.closeMs > now);
     if (!entries.length) return null;
 
-    // Prefer active bucket; among actives, the one with highest max probability (most liquid)
+    // Prefer active bucket; among actives, the soonest close time
     const active = entries.filter(e => e.isActive);
     const pool = active.length ? active : entries;
     pool.sort((a, b) => {
       if (a.isActive !== b.isActive) return a.isActive ? -1 : 1;
-      if (b.maxProb !== a.maxProb) return b.maxProb - a.maxProb;
       return a.closeMs - b.closeMs; // soonest first
     });
 

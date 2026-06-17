@@ -170,6 +170,18 @@ services:
     stdin_open: true
     tty: true
 
+  # Local Nginx CORS Proxy
+  cors-proxy:
+    image: nginx:alpine
+    container_name: we-cors-proxy
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    restart: unless-stopped
+    networks:
+      - wecrypto-net
+
 volumes:
   redpanda_data:
     driver: local

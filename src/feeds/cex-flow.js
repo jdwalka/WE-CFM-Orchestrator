@@ -23,7 +23,7 @@
   const EXCHANGE_CACHE = {}; // `${exchange}_${sym}` -> { value, ts, inFlight }
   const EXCHANGE_POLL_INTERVAL_MS = {
     Binance: 30000,
-    Coinbase: 30000,
+    Coinbase: 15000,
     Kraken: 30000,
     Bybit: 30000,
     OKX: 30000,
@@ -36,7 +36,7 @@
     Gemini: 120000,
     CoinW: 120000,
     LBank: 180000,
-    Bitstamp: 180000,
+    Bitstamp: 30000,
     Bitso: 180000,
     Bullish: 300000,
     WhiteBIT: 300000,
@@ -250,13 +250,37 @@
       return { exchange, available: false, reason: 'Not listed' };
     }
     try {
-      const publicHeaders = { headers: { 'Accept': 'application/json' } };
+      let jwtStr1 = null;
+      let jwtStr2 = null;
+      try {
+        if (window.desktopApp && window.desktopApp.generateCoinbaseJWT) {
+          const [res1, res2] = await Promise.all([
+            window.desktopApp.generateCoinbaseJWT({
+              requestMethod: 'GET',
+              requestPath: `api.coinbase.com/api/v3/brokerage/market/products/${sym}-USD/ticker?limit=100`
+            }),
+            window.desktopApp.generateCoinbaseJWT({
+              requestMethod: 'GET',
+              requestPath: `api.coinbase.com/api/v3/brokerage/market/products/${sym}-USD`
+            })
+          ]);
+          if (res1 && res1.success) jwtStr1 = res1.jwt;
+          if (res2 && res2.success) jwtStr2 = res2.jwt;
+        }
+      } catch(e) { console.warn('[CexFlow] CB JWT failed:', e.message); }
+
+      const headers1 = { 'Accept': 'application/json' };
+      if (jwtStr1) headers1['Authorization'] = `Bearer ${jwtStr1}`;
+      
+      const headers2 = { 'Accept': 'application/json' };
+      if (jwtStr2) headers2['Authorization'] = `Bearer ${jwtStr2}`;
+
       const url1 = `https://api.coinbase.com/api/v3/brokerage/market/products/${sym}-USD/ticker?limit=100`;
       const url2 = `https://api.coinbase.com/api/v3/brokerage/market/products/${sym}-USD`;
 
       const [tradesRes, tickerRes] = await Promise.allSettled([
-        getJson(url1, publicHeaders),
-        getJson(url2, publicHeaders),
+        getJson(url1, { headers: headers1 }),
+        getJson(url2, { headers: headers2 }),
       ]);
 
       if (tradesRes.status === 'rejected') {

@@ -355,6 +355,9 @@
   <script src="../src/core/market-microstructure-signals.js" defer></script>
   <script src="../src/core/rl_loop.js" defer></script>
   <script src="../src/core/qft-engine.js" defer></script>
+  
+  <script src="../src/core/predictions/shared-state.js" defer></script>
+  <script src="../src/core/predictions/data-fetchers.js" defer></script>
   <script src="../src/core/predictions/regime-weights.js" defer></script>
   <script src="../src/core/predictions/kalshi-logic.js" defer></script>
   <script src="../src/core/predictions/microstructure.js" defer></script>
@@ -376,7 +379,14 @@
   <!-- Network Health Core + Dashboard (MUST load before app.js) -->
   <script src="../src/core/network-health.js"></script>
   <script src="../src/ui/network-health-dashboard.js"></script>
-  <script src="../src/core/app.js" defer></script>
+  <script src="../src/core/app-core.js" defer></script>
+  <script src="../src/core/app-state.js" defer></script>
+  <script src="../src/core/audio-notifications.js" defer></script>
+  <script src="../src/core/forensics-logger.js" defer></script>
+  <script src="../src/core/feeds/feed-adapters.js" defer></script>
+  <script src="../src/core/ui/render-layer.js" defer></script>
+  <script src="../src/quant/quant-layer.js" defer></script>
+  <script src="../src/core/app-init.js" defer></script>
   <script>
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', () => {

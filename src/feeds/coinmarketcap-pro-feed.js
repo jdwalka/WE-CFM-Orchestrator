@@ -113,8 +113,7 @@
     if (status === 429 || /rate|limit|quota/i.test(message || '')) {
       cmcRateLimitedUntil = Date.now() + CMC_RATE_LIMIT_COOLDOWN_MS;
       console.warn(`[CMC] Rate limited; cooling down until ${new Date(cmcRateLimitedUntil).toLocaleTimeString()}`);
-    }
-    if (status === 401 || /api key|unauthorized/i.test(message || '')) {
+    } else if (status === 401 || /api key|unauthorized/i.test(message || '')) {
       cmcProDisabledUntil = Date.now() + CMC_AUTH_COOLDOWN_MS;
       console.warn('[CMC] Pro key rejected; disabling CMC Pro for this session window.');
       try {
