@@ -1,4 +1,4 @@
-const { startOrbitalSystem, shutdownOrbitalSystem, getOrbitalStatus } = require('../src/infra/orbital-startup-orchestrator');
+const { startOrbitalSystem, restartOrbitalSystem, shutdownOrbitalSystem, getOrbitalStatus } = require('../src/infra/orbital-startup-orchestrator');
 const { app, BrowserWindow, Menu, shell, ipcMain } = require('electron');
 const path = require('path');
 const fs = require('fs');
@@ -2471,6 +2471,16 @@ ipcMain.handle('orbital:status', async () => {
   return { ready: false, services: {} };
 });
 
+ipcMain.handle('orbital:restart', async () => {
+  try {
+    const workspacePath = process.env.WECRYP_ROOT || path.join(__dirname, '..');
+    await restartOrbitalSystem(workspacePath);
+    return { success: true, status: await getOrbitalStatus() };
+  } catch (error) {
+    return { success: false, error: error?.message || String(error) };
+  }
+});
+
 ipcMain.handle('firebase:startupCheck', async (_event, options = {}) => {
   if (!FirebaseAdminFirestore || typeof FirebaseAdminFirestore.startupCheck !== 'function') {
     return { success: false, error: 'Firebase Admin module unavailable' };
@@ -2724,14 +2734,19 @@ app.whenReady().then(async () => {
   
   // --- Orbital Matrix (Redpanda Orchestration + Ingestion & Sync) ---
   (async () => {
-    try {
-      const workspacePath = process.env.WECRYP_ROOT || path.join(__dirname, '..');
-      await startOrbitalSystem(workspacePath);
-      console.log('[Main] Orbital Matrix architecture online.');
-    } catch (err) {
-      console.error('[Main] Orbital Matrix failed to start:', err.message);
-      // Non-fatal: app continues, but orbital services are unavailable
+    const workspacePath = process.env.WECRYP_ROOT || path.join(__dirname, '..');
+    const maxAttempts = 3;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      try {
+        await startOrbitalSystem(workspacePath);
+        console.log('[Main] Orbital Matrix architecture online.');
+        return;
+      } catch (err) {
+        console.error(`[Main] Orbital Matrix start attempt ${attempt}/${maxAttempts} failed:`, err.message);
+        if (attempt < maxAttempts) await new Promise(resolve => setTimeout(resolve, 10_000));
+      }
     }
+    console.error('[Main] Orbital Matrix unavailable after automatic retries. Use the dashboard restart control.');
   })();
   
   Menu.setApplicationMenu(null);

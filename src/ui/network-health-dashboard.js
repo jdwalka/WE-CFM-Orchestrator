@@ -558,6 +558,7 @@
                 <div style="display:flex;align-items:center;margin-bottom:4px;">
                     <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${dotColor};margin-right:8px;"></span>
                     <span style="font-weight:600;color:#e0e6f0;">Redpanda Cluster</span>
+                    ${!bridge.connected ? '<button id="orbital-restart-btn" type="button" title="Restart orbital pipeline" style="margin-left:8px;padding:2px 7px;border:1px solid #8ab4f8;background:#171c24;color:#8ab4f8;font-size:10px;cursor:pointer;">Restart</button>' : ''}
                     <span style="margin-left:auto;color:#aaa;">${nodeCount} Nodes</span>
                 </div>
                 <div style="color:#9aa6b2;margin-left:18px;">
@@ -573,6 +574,24 @@
                     </div>
                 </div>
             `;
+
+            const restartButton = document.getElementById('orbital-restart-btn');
+            if (restartButton) {
+                restartButton.addEventListener('click', async () => {
+                    restartButton.disabled = true;
+                    restartButton.textContent = 'Starting...';
+                    const result = window._orbitalBroadcaster?.restartOrbitalSystem
+                        ? await window._orbitalBroadcaster.restartOrbitalSystem()
+                        : await window.electron?.invoke?.('orbital:restart');
+                    if (!result?.success) {
+                        restartButton.disabled = false;
+                        restartButton.textContent = 'Retry';
+                        restartButton.title = result?.error || 'Orbital restart failed';
+                        return;
+                    }
+                    setTimeout(() => scheduleRender(true), 500);
+                });
+            }
         } catch (err) {
             const message = err?.message || String(err || 'unknown error');
             el.innerHTML = `<span style="color:#ff5e5e;">Failed to poll orbital status: ${escapeHtml(message)}</span>`;

@@ -478,6 +478,8 @@ contextBridge.exposeInMainWorld('_orbitalBroadcaster', {
     ipcRenderer.send('orbital:pushVertex', { kind, data: data || {} });
   },
   getDiagnostics: () => ipcRenderer.invoke('orbital:broadcaster:diagnostics'),
+  getOrbitalStatus: () => ipcRenderer.invoke('orbital:status'),
+  restartOrbitalSystem: () => ipcRenderer.invoke('orbital:restart'),
 });
 
 contextBridge.exposeInMainWorld('dataStore', {

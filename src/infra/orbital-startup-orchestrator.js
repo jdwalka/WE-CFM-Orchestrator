@@ -167,7 +167,9 @@ function spawnDockerCompose(workspacePath) {
         proc.stderr.on('data', (data) => { stderr += data.toString(); console.warn('[Docker-Compose]', data.toString().trim()); });
         proc.on('close', (code) => {
             if (code !== 0) {
-                console.warn(`[OrbitalOrchestrator] docker-compose exited with code ${code}. Assuming services are already running or externally managed.`);
+                const detail = stderr.trim().split(/\r?\n/).slice(-4).join(' | ');
+                reject(new Error(`docker compose up failed with code ${code}${detail ? `: ${detail}` : ''}`));
+                return;
             }
             resolve(proc);
         });
@@ -301,7 +303,7 @@ async function startOrbitalSystem(workspacePath) {
     } catch (err) {
         console.error('[OrbitalOrchestrator] FATAL: Failed to start Orbital System:', err.message);
         recordStatusEvent('error', 'Orbital system failed to start', { error: err.message });
-        await shutdownOrbitalSystem(false); // Do not kill proxies if Orbital fails
+        await shutdownOrbitalSystem(false, { stopDocker: false }); // Preserve containers for diagnostics/retry.
         throw err;
     }
 }
@@ -309,7 +311,7 @@ async function startOrbitalSystem(workspacePath) {
 /**
  * Graceful shutdown: stop all services and bring down docker-compose.
  */
-async function shutdownOrbitalSystem(stopProxiesFlag = true) {
+async function shutdownOrbitalSystem(stopProxiesFlag = true, options = {}) {
     console.log('[OrbitalOrchestrator] Initiating graceful shutdown...');
 
     try {
@@ -345,7 +347,7 @@ async function shutdownOrbitalSystem(stopProxiesFlag = true) {
         }
 
         // Bring down docker-compose
-        if (dockerComposeProcess) {
+        if (options.stopDocker !== false && dockerComposeProcess) {
             dockerComposeProcess.kill('SIGTERM');
             await new Promise((resolve) => {
                 exec('docker compose down', { cwd: process.env.WECRYP_ROOT || process.cwd() }, (err) => {
@@ -366,6 +368,13 @@ async function shutdownOrbitalSystem(stopProxiesFlag = true) {
         console.error('[OrbitalOrchestrator] Error during shutdown:', err.message);
         recordStatusEvent('warn', 'Orbital shutdown encountered an error', { error: err.message });
     }
+}
+
+async function restartOrbitalSystem(workspacePath) {
+    recordStatusEvent('info', 'Orbital restart requested');
+    await shutdownOrbitalSystem(false, { stopDocker: false });
+    _statusCache = null;
+    return startOrbitalSystem(workspacePath);
 }
 
 /**
@@ -592,6 +601,7 @@ async function stopProxies() {
 
 module.exports = {
     startOrbitalSystem,
+    restartOrbitalSystem,
     shutdownOrbitalSystem,
     getOrbitalStatus,
     isOrchestrationReady: () => orchestratorReady
