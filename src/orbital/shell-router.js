@@ -161,6 +161,28 @@
   const _vetoState     = {};  // sym → VetoEvaluator state object
   const _volBaseline   = {};  // shellKey → EMA of |cfmRate|
   const _volTicks      = {};  // shellKey → tick count for warm-up guard
+  const _quantumTracker = window.OrbitalQuantumState?.createQuantumStateTracker?.() || null;
+
+  function shellElectronPayload(shellKey) {
+    const payload = {};
+    if (shellKey === 'f') {
+      const markets = window.PredictionMarkets?.getAll?.() || {};
+      for (const sym of SHELLS.f.coins) {
+        const probability = Number(markets[sym]?.combinedProb);
+        const velocity = Number(window.PredictionMarkets?.getVelocity?.(sym)?.velCentsPerMin);
+        if (Number.isFinite(probability)) payload[sym + '_probability'] = probability;
+        if (Number.isFinite(velocity)) payload[sym + '_velocity'] = velocity;
+      }
+      return payload;
+    }
+
+    const cfmAll = window._cfm || {};
+    for (const sym of SHELLS[shellKey].coins) {
+      const momentum = Number(cfmAll[sym]?.momentum);
+      if (Number.isFinite(momentum)) payload[sym + '_momentum'] = momentum;
+    }
+    return payload;
+  }
 
   // ── Shell velocity ─────────────────────────────────────────────────────────
   function shellVelocity(shellKey) {
@@ -399,10 +421,24 @@
       );
     }
 
+    const quantumState = _quantumTracker
+      ? _quantumTracker.enrich(shellKey, 'SHELL_' + shellKey, shellElectronPayload(shellKey), Date.now()).quantum_state
+      : {
+          shell: shellKey,
+          ion_charge: velocity > 0 ? '+' : velocity < 0 ? '-' : '0',
+          net_charge: clamp(velocity, -1, 1),
+          coherence: Math.abs(velocity) > 0 ? 1 : 0,
+          electron_count: 0,
+          subatomic_orbital_count: 0,
+          subshells: [],
+          ts: Date.now(),
+        };
+
     _shellState[shellKey] = {
       velocity, energy: Math.abs(velocity), ionized, volSpiked,
       volSpikeMult: vol.spikeMult, volRate: vol.curRate,
       direction: velocity < 0 ? -1 : 1, lastTs: Date.now(),
+      quantum_state: quantumState,
     };
   }
 

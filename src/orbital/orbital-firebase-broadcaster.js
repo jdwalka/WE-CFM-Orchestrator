@@ -316,6 +316,7 @@ function _buildOrbitalPayload(orbital) {
       structural_state: orbital.state || null,
     },
     qsp: orbital.qsp || null,
+    quantum_state: orbital.quantum_state || orbital.quantum_states || null,
     execution_signal: {
       action: orbital.action || null,
       reason: orbital.reason || null,
@@ -399,6 +400,7 @@ async function _pushOrbitalState(sym, payload) {
       latest_ts: payload.ts,
       latest_oeq: payload.exhaustion_profile?.oeq_v1 || null,
       latest_confidence: payload?.qsp?.quantizer?.confidence || null,
+      quantum_state: payload.quantum_state || payload.quantum_states || null,
       updated_at: payload.timestamp,
     }, { merge: true });
   });

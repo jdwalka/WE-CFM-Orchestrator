@@ -59,10 +59,16 @@ function latestRingData(state, ring) {
 }
 
 function extractQuantumStates(orbitals) {
+    const canonicalShell = {
+        s_core: 's',
+        p_momentum: 'p',
+        d_complex: 'd',
+        f_diffuse: 'f',
+    };
     return Object.fromEntries(Object.entries(orbitals).map(([shell, payload]) => [
-        shell,
+        canonicalShell[shell] || shell[0],
         payload?.quantum_state || {
-            shell: shell[0],
+            shell: canonicalShell[shell] || shell[0],
             ion_charge: '0',
             net_charge: 0,
             coherence: 0,
