@@ -214,7 +214,13 @@ document.querySelectorAll('.nav-btn').forEach(btn => {
 
 if (menuBtn) menuBtn.addEventListener('click', () => $('#sidebar').classList.toggle('open'));
 
-if (refreshBtn) refreshBtn.addEventListener('click', () => fetchAll(true));
+if (refreshBtn) refreshBtn.addEventListener('click', () => {
+    if (window.NetworkRecovery?.run) {
+      void window.NetworkRecovery.run('manual-refresh');
+    } else {
+      fetchAll(true);
+    }
+  });
 
 if (refreshSel) refreshSel.addEventListener('change', e => {
     refreshSecs = parseInt(e.target.value, 10);
@@ -445,6 +451,40 @@ window.addEventListener('candleWS:bucketClosed', (e) => {
             }
           } catch (rlErr) {
             console.error('[RL Loop Error]', rlErr);
+          }
+        }
+
+        // ── DQN + MCTS + CFR stack — learn from settlement (contrarian/mispricing bonus) ──
+        if (window.TradingRLAgent?.learnFromOutcome && kSnap.signalComponents) {
+          try {
+            const actualDir = kEntry.actualOutcome === 'UP' ? 'UP' : kEntry.actualOutcome === 'DOWN' ? 'DOWN' : 'WAIT';
+            const components = {};
+            if (Array.isArray(kSnap.signalComponents)) {
+              kSnap.signalComponents.forEach(c => { if (c?.name != null) components[c.name] = c.value; });
+            } else if (typeof kSnap.signalComponents === 'object') {
+              Object.assign(components, kSnap.signalComponents);
+            }
+            const rlLearn = window.TradingRLAgent.learnFromOutcome({
+              signalVector: components,
+              predDirection: kSnap.modelDir || (kSnap.modelScore > 0.08 ? 'UP' : kSnap.modelScore < -0.08 ? 'DOWN' : 'WAIT'),
+              rlActionId: kSnap.rlActionId ?? null,
+              kalshiAlign: {
+                modelYesPct: kSnap.mYesPct,
+                kalshiYesPct: kSnap.kYesPct,
+                strikeDir: kSnap.strikeDir,
+                closeTimeMs: kSnap.closeTime ? new Date(kSnap.closeTime).getTime() : null,
+              },
+              mispricing: kSnap.mispricing ?? null,
+              probVelocity: kSnap.probVelocity ?? 0,
+              agreement: kSnap.agreement ?? 0.5,
+              conflict: kSnap.conflict ?? 0,
+              score: kSnap.modelScore ?? 0,
+            }, actualDir);
+            if (rlLearn?.reward != null) {
+              console.log(`[TradingRLAgent] ${sym} reward=${rlLearn.reward.toFixed(2)} contrarian=${!!rlLearn.mispricing?.contrarian}`);
+            }
+          } catch (stackErr) {
+            console.warn('[TradingRLAgent] learnFromOutcome failed:', stackErr?.message || stackErr);
           }
         }
 

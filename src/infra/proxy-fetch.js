@@ -91,6 +91,18 @@
     'api.crypto.com': 'crypto-com',
     'chain.so': 'chainso',
     'api.upbit.com': 'upbit',
+    'api.bitget.com': 'bitget',
+    'open-api.bingx.com': 'bingx',
+    'api.gemini.com': 'gemini',
+    'api.whitebit.com': 'whitebit',
+    'whitebit.com': 'whitebit',
+    'www.coinw.com': 'coinw',
+    'ourbit.com': 'ourbit',
+    'www.lbank.com': 'lbank',
+    'www.bitstamp.net': 'bitstamp',
+    'api.bitso.com': 'bitso',
+    'www.bullish.com': 'bullish',
+    'www.weex.com': 'weex',
   };
 
   const _origFetch = window.fetch.bind(window);

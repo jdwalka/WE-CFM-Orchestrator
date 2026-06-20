@@ -9,6 +9,7 @@
 const fs = require("fs");
 const path = require("path");
 const { generateSystemPrompt, generateUserPrompt } = require("./specialized_prompt");
+const Asi1Client = require("../infra/asi1-client");
 
 function loadLLMEnv() {
   const loadedPaths = [];
@@ -40,7 +41,11 @@ function loadLLMEnv() {
 const LLM_ENV_SOURCES = loadLLMEnv();
 
 function resolveCompatibleApiKey() {
-  return process.env.ASI_ONE_API_KEY || process.env.LLM_API_KEY || process.env.OPENAI_API_KEY || process.env.OPENAI_KEY || '';
+  return Asi1Client.resolveAsi1ApiKey()
+    || process.env.LLM_API_KEY
+    || process.env.OPENAI_API_KEY
+    || process.env.OPENAI_KEY
+    || '';
 }
 
 function resolveGoogleApiKey() {
@@ -83,6 +88,8 @@ class LLMSignalAssistant {
       dotenvSources: LLM_ENV_SOURCES,
       hasCompatibleKey: !!LLM_API_KEY,
       hasGoogleKey: !!GOOGLE_API_KEY,
+      hasAsi1Key: Asi1Client.hasAsi1Credentials(),
+      asi1KeysConfigured: Asi1Client.getDiagnostics().keysConfigured,
       providerOverride: process.env.LLM_PROVIDER || null,
     };
 
@@ -233,11 +240,30 @@ Use this recall only as context, and prioritize current market snapshot data if 
    * Call the LLM API with specialized prompts
    */
   async callAPI(systemPrompt, userPrompt) {
-    const cascade = ['openai', 'asi1', 'google', 'openrouter'];
+    const cascade = ['asi1', 'google', 'openai', 'openrouter'];
     let lastErr = null;
 
     for (const p of cascade) {
       try {
+        if (p === 'asi1' && Asi1Client.hasAsi1Credentials()) {
+          const result = await Asi1Client.chatCompletion(
+            [
+              { role: 'system', content: systemPrompt },
+              { role: 'user', content: userPrompt },
+            ],
+            {
+              model: process.env.ASI1_MODEL || 'asi1',
+              temperature: 0.1,
+              max_tokens: 1500,
+              stream: true,
+              response_format: { type: 'json_object' },
+            },
+          );
+          let content = String(result.content || '').trim();
+          const jsonMatch = content.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+          if (jsonMatch) content = jsonMatch[1];
+          return JSON.parse(content);
+        }
         if (p === 'openrouter' && OPENROUTER_API_KEY) {
           return await this.callCompatibleAPI(systemPrompt, userPrompt, {
             url: "https://openrouter.ai/api/v1/chat/completions",
@@ -251,13 +277,6 @@ Use this recall only as context, and prioritize current market snapshot data if 
               { type: "openrouter:web_search" },
               { type: "openrouter:datetime" }
             ]
-          });
-        }
-        if (p === 'asi1' && process.env.ASI_ONE_API_KEY) {
-          return await this.callCompatibleAPI(systemPrompt, userPrompt, {
-            url: "https://api.asi1.ai/v1/chat/completions",
-            model: "asi1",
-            key: process.env.ASI_ONE_API_KEY
           });
         }
         if (p === 'google' && GOOGLE_API_KEY) {

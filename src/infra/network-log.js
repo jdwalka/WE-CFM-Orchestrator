@@ -27,6 +27,53 @@
     bscscan: 'BSCScan',
     binance: 'Binance',
     'crypto.com': 'Crypto.com',
+    bitget: 'Bitget',
+    bingx: 'BingX',
+    kraken: 'Kraken',
+    gemini: 'Gemini',
+    hyperliquid: 'Hyperliquid',
+    coinw: 'CoinW',
+    ourbit: 'Ourbit',
+    lbank: 'LBank',
+    bitstamp: 'Bitstamp',
+    bitso: 'Bitso',
+    whitebit: 'WhiteBIT',
+    weex: 'Weex',
+    upbit: 'Upbit',
+    bitvavo: 'Bitvavo',
+    chainso: 'Chain.so',
+    'chain.so': 'Chain.so',
+    mempool: 'Mempool.space',
+    blockcypher: 'Blockcypher',
+    blockchair: 'Blockchair',
+    solana: 'Solana RPC',
+    alchemy: 'Alchemy RPC',
+  };
+  const HOST_TO_PROVIDER = {
+    'api.bitget.com': 'Bitget',
+    'open-api.bingx.com': 'BingX',
+    'api.kraken.com': 'Kraken',
+    'api.gemini.com': 'Gemini',
+    'api.hyperliquid.xyz': 'Hyperliquid',
+    'www.coinw.com': 'CoinW',
+    'ourbit.com': 'Ourbit',
+    'www.lbank.com': 'LBank',
+    'www.bitstamp.net': 'Bitstamp',
+    'api.bitso.com': 'Bitso',
+    'whitebit.com': 'WhiteBIT',
+    'api.whitebit.com': 'WhiteBIT',
+    'www.weex.com': 'Weex',
+    'www.bullish.com': 'Bullish',
+    'api.upbit.com': 'Upbit',
+    'api.bitvavo.com': 'Bitvavo',
+    'chain.so': 'Chain.so',
+    'api.etherscan.io': 'Etherscan',
+    'mempool.space': 'Mempool.space',
+    'api.blockcypher.com': 'Blockcypher',
+    'api.blockchair.com': 'Blockchair',
+    'api.mainnet-beta.solana.com': 'Solana RPC',
+    'eth-mainnet.g.alchemy.com': 'Alchemy RPC',
+    'polygon-mainnet.g.alchemy.com': 'Alchemy RPC',
   };
   function canonicalProviderName(input) {
     const raw = String(input || '').trim();
@@ -113,6 +160,28 @@
     if (host.includes('binance')) return 'Binance';
     if (host.includes('bybit')) return 'Bybit';
     if (host.includes('bullish')) return 'Bullish';
+    if (host.includes('bitget')) return 'Bitget';
+    if (host.includes('bingx')) return 'BingX';
+    if (host.includes('kraken')) return 'Kraken';
+    if (host.includes('gemini')) return 'Gemini';
+    if (host.includes('hyperliquid')) return 'Hyperliquid';
+    if (host.includes('coinw')) return 'CoinW';
+    if (host.includes('ourbit')) return 'Ourbit';
+    if (host.includes('lbank')) return 'LBank';
+    if (host.includes('bitstamp')) return 'Bitstamp';
+    if (host.includes('bitso')) return 'Bitso';
+    if (host.includes('whitebit')) return 'WhiteBIT';
+    if (host.includes('weex')) return 'Weex';
+    if (host.includes('upbit')) return 'Upbit';
+    if (host.includes('bitvavo')) return 'Bitvavo';
+    if (host.includes('chain.so')) return 'Chain.so';
+    if (host.includes('mempool.space')) return 'Mempool.space';
+    if (host.includes('etherscan')) return 'Etherscan';
+    if (host.includes('blockcypher')) return 'Blockcypher';
+    if (host.includes('blockchair')) return 'Blockchair';
+    if (host.includes('alchemy.com')) return 'Alchemy RPC';
+    if (host.includes('solana.com')) return 'Solana RPC';
+    if (HOST_TO_PROVIDER[host]) return HOST_TO_PROVIDER[host];
     return host || 'Network';
   }
 
@@ -197,7 +266,28 @@
   }
 
   function isOptionalProvider(provider) {
-    return new Set(['Alternative.me', 'CoinMarketCap', 'CoinGecko', 'Blockscout', 'LocalProxy', 'Bullish']).has(provider);
+    return new Set([
+      'Alternative.me', 'CoinMarketCap', 'CoinGecko', 'Blockscout', 'LocalProxy',
+      'Bullish', 'DexScreener', 'BSCScan', 'Blockcypher', 'Chain.so', 'Polymarket',
+      'Bitget', 'BingX', 'Kraken', 'Gemini', 'Hyperliquid', 'CoinW', 'Ourbit', 'LBank',
+      'Bitstamp', 'Bitso', 'WhiteBIT', 'Weex', 'Upbit', 'Bitvavo', 'Etherscan',
+      'Mempool.space', 'Blockchair', 'Solana RPC', 'Alchemy RPC', 'Bybit', 'OKX', 'KuCoin',
+    ]).has(provider);
+  }
+
+  function recordSuccess(url, started) {
+    const provider = canonicalProviderName(providerFor(url));
+    if (!isOptionalProvider(provider)) return;
+    const dedupeKey = `success:${provider}`;
+    const nowTs = now();
+    if ((nowTs - (dedupe.get(dedupeKey) || 0)) < 30_000) return;
+    dedupe.set(dedupeKey, nowTs);
+    try {
+      window.NetworkHealth?.markSuccess?.(provider, {
+        lastFetch: nowTs,
+        reason: 'HTTP OK',
+      });
+    } catch (_) { }
   }
 
   function healthStatusFor(entry) {
@@ -307,7 +397,9 @@
       const method = methodFor(input, init);
       return originalFetch(input, init)
         .then(response => {
-          if (!response || !response.ok) {
+          if (response && response.ok) {
+            recordSuccess(url, started);
+          } else if (!response || !response.ok) {
             record('HTTP_ERROR', {
               url,
               method,
@@ -349,7 +441,9 @@
       xhr.send = function () {
         started = now();
         xhr.addEventListener('loadend', () => {
-          if (xhr.status === 0 || xhr.status >= 400) {
+          if (xhr.status >= 200 && xhr.status < 400) {
+            recordSuccess(url, started);
+          } else if (xhr.status === 0 || xhr.status >= 400) {
             record(xhr.status === 0 ? 'NETWORK_ERROR' : 'HTTP_ERROR', {
               url,
               method,

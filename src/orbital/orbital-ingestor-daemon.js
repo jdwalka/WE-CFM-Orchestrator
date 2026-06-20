@@ -16,7 +16,7 @@
 
 const WebSocket = require('ws');
 const http = require('http');
-const { produceOrbitalTick } = require('../infra/orbital-redpanda-bridge');
+const { enrichOrbitalPayload, produceOrbitalTick } = require('../infra/orbital-redpanda-bridge');
 const DualSourceValidationLoop = require('./dual-source-validation-loop');
 const OracleRedundancyIntegrator = require('./oracle-redundancy-integrator');
 const Redis = require('ioredis');
@@ -44,6 +44,13 @@ function publishTickToRedis(orbitalType, asset, payload) {
         // suppress verbose logs unless in debug mode, but catch errors
     });
     return true;
+}
+
+function publishOrbitalTick(orbitalType, asset, payload) {
+    const enrichedPayload = enrichOrbitalPayload(orbitalType, asset, payload, payload?.ts || Date.now());
+    const produced = produceOrbitalTick(orbitalType, asset, enrichedPayload);
+    publishTickToRedis(orbitalType, asset, enrichedPayload);
+    return produced;
 }
 
 const COINGECKO_WS_URL   = 'wss://stream.coingecko.com/v1/stream';
@@ -137,8 +144,7 @@ class OrbitalIngestor {
                     price_usd: data.price,
                     ts: data.timestamp
                 };
-                produceOrbitalTick('s', data.asset, payload);
-                publishTickToRedis('s', data.asset, payload);
+                publishOrbitalTick('s', data.asset, payload);
             }
         });
     }
@@ -225,8 +231,7 @@ class OrbitalIngestor {
                             price_usd: parseFloat(cgData.usd),
                             ts: Date.now()
                         };
-                        produceOrbitalTick('s', asset, payload);
-                        publishTickToRedis('s', asset, payload);
+                        publishOrbitalTick('s', asset, payload);
                     }
                 }
             } catch (err) {
@@ -289,8 +294,7 @@ class OrbitalIngestor {
                     price_usd: price,
                     ts: Date.now()
                 };
-                produceOrbitalTick('s', asset, sPayload);
-                publishTickToRedis('s', asset, sPayload);
+                publishOrbitalTick('s', asset, sPayload);
 
                 // p-orbital: rolling 20-tick VWAP momentum
                 const vwap = updateVwap(asset, price, volume);
@@ -304,8 +308,7 @@ class OrbitalIngestor {
                     volume: volume,
                     ts: Date.now()
                 };
-                produceOrbitalTick('p', asset, pPayload);
-                publishTickToRedis('p', asset, pPayload);
+                publishOrbitalTick('p', asset, pPayload);
             } catch (err) { /* ignore malformed frames */ }
         });
 
@@ -346,8 +349,7 @@ class OrbitalIngestor {
                         funding_rate:      msg.data.funding || 0,
                         ts: Date.now()
                     };
-                    produceOrbitalTick('d', asset, dPayload);
-                    publishTickToRedis('d', asset, dPayload);
+                    publishOrbitalTick('d', asset, dPayload);
                 }
             } catch (err) { /* ignore malformed frames */ }
         });
@@ -398,8 +400,7 @@ class OrbitalIngestor {
                     contract_ticker: contract.ticker || '',
                     ts: Date.now()
                 };
-                produceOrbitalTick('f', asset, fPayload);
-                publishTickToRedis('f', asset, fPayload);
+                publishOrbitalTick('f', asset, fPayload);
             }
         } catch (err) {
             if (process.env.NODE_ENV !== 'production') {

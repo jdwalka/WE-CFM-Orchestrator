@@ -1086,6 +1086,7 @@
 
   let _poly5mCache = {};
   let _poly5mPriceToBeatCache = {};
+  let _poly5mCryptoPriceCache = {};
   let _poly5mRtdsOpenCache = {};
   let _poly5mEventScanCache = { fetchedAt: 0, events: [], source: '', error: '' };
   let _poly5mClobSnapshotCache = {};
@@ -1131,9 +1132,37 @@
     return null;
   }
 
-  // Approximate exchange fallback removed: 5M PTB must come from Polymarket metadata
-  // or the Polymarket RTDS Chainlink opening tick. Do not call external trading-app routes here;
-  // its DNS/fetch failures pollute transport health and add avoidable latency.
+  // Runtime PTB for active 5M windows comes from Polymarket's crypto-price API (Chainlink open).
+  // Gamma eventMetadata.priceToBeat is forensic/post-close only. RTDS is a late fallback.
+
+  async function fetchPolymarketCryptoWindowPrice(sym, startMs) {
+    const coin = POLY_5M_COIN_SLUGS[sym];
+    if (!coin || !Number.isFinite(startMs)) return null;
+    const startSec = Math.floor(startMs / 1000);
+    const cacheKey = `${sym}:${startSec}`;
+    const cached = _poly5mCryptoPriceCache[cacheKey];
+    if (cached && Date.now() - cached.fetchedAt < 5_000) return cached.value;
+
+    try {
+      const url = `https://polymarket.com/api/crypto/crypto-price?symbol=${encodeURIComponent(coin)}&eventStartTime=${startSec}`;
+      const data = await apiFetch(url);
+      const openPrice = Number(data?.openPrice);
+      const closePrice = Number(data?.closePrice);
+      const value = {
+        openPrice: Number.isFinite(openPrice) && openPrice > 0 ? openPrice : null,
+        closePrice: Number.isFinite(closePrice) && closePrice > 0 ? closePrice : null,
+        completed: Boolean(data?.completed),
+        incomplete: Boolean(data?.incomplete),
+        cached: Boolean(data?.cached),
+      };
+      _poly5mCryptoPriceCache[cacheKey] = { value, fetchedAt: Date.now() };
+      return value;
+    } catch (err) {
+      console.warn(`[PredictionMarkets] Poly5M crypto-price fetch failed for ${sym}:`, err?.message || err);
+      _poly5mCryptoPriceCache[cacheKey] = { value: null, fetchedAt: Date.now() };
+      return null;
+    }
+  }
 
   async function fetchPolymarketPriceToBeat(slug) {
     if (!slug) return null;
@@ -1153,16 +1182,21 @@
 
   function _selectOpeningChainlinkTick(rows, startMs) {
     if (!Array.isArray(rows) || !Number.isFinite(startMs)) return null;
-    let best = null;
+    let inWindow = null;
+    let nearest = null;
     for (const row of rows) {
       const ts = Number(row?.timestamp);
       const value = Number(row?.value);
       if (!Number.isFinite(ts) || !Number.isFinite(value) || value <= 0) continue;
-      if (ts >= startMs && ts <= startMs + 10_000 && (!best || ts < best.ts)) {
-        best = { ts, value };
+      if (ts >= startMs && ts <= startMs + 10_000 && (!inWindow || ts < inWindow.ts)) {
+        inWindow = { ts, value };
+      }
+      const delta = Math.abs(ts - startMs);
+      if (delta <= 120_000 && (!nearest || delta < nearest.delta)) {
+        nearest = { ts, value, delta };
       }
     }
-    return best;
+    return inWindow || (nearest ? { ts: nearest.ts, value: nearest.value } : null);
   }
 
   function _selectLatestChainlinkTick(rows) {
@@ -1271,18 +1305,23 @@
         const startDate = m.eventStartTime || m.events?.[0]?.startTime || null;
         const volume = parseFloat(m.volume24hr || m.volumeNum || m.volume || 0) || 0;
         const marketSlug = m.slug || slug;
-        let priceToBeatSource = 'polymarket-title';
+        const startMs = startDate ? new Date(startDate).getTime() : ts * 1000;
+        const [cryptoWindow, rtds] = await Promise.all([
+          fetchPolymarketCryptoWindowPrice(sym, startMs),
+          fetchPolymarketRtdsSnapshot(sym, startMs),
+        ]);
+        let priceToBeatSource = null;
         let priceToBeatNum = null;
 
         if (title) {
           const match = title.match(/\$([0-9,.]+)/);
           if (match) {
             priceToBeatNum = parseFloat(match[1].replace(/,/g, ''));
+            if (Number.isFinite(priceToBeatNum)) priceToBeatSource = 'polymarket-title';
           }
         }
 
         if (priceToBeatNum == null) {
-          priceToBeatSource = 'gamma-market-metadata';
           priceToBeatNum = _parseGenericPriceToBeat(JSON.stringify({
             market: {
               priceToBeat: m.priceToBeat,
@@ -1291,21 +1330,27 @@
             },
             event: m.events?.[0] || m._eventFallback || null,
           }), marketSlug);
+          if (Number.isFinite(priceToBeatNum)) priceToBeatSource = 'gamma-market-metadata';
+        }
+
+        if (priceToBeatNum == null && Number.isFinite(cryptoWindow?.openPrice)) {
+          priceToBeatNum = cryptoWindow.openPrice;
+          priceToBeatSource = 'polymarket-crypto-price';
         }
 
         if (priceToBeatNum == null) {
-          priceToBeatSource = 'polymarket-eventMetadata';
           priceToBeatNum = await fetchPolymarketPriceToBeat(marketSlug);
+          if (Number.isFinite(priceToBeatNum)) priceToBeatSource = 'polymarket-eventMetadata';
         }
-        
-        const startMs = startDate ? new Date(startDate).getTime() : ts * 1000;
-        const rtds = await fetchPolymarketRtdsSnapshot(sym, startMs);
-        const currentPriceNum = Number(rtds?.currentPriceNum);
-        const currentPriceTs = Number(rtds?.currentPriceTs);
+
         if (priceToBeatNum == null && Number.isFinite(rtds?.openingPriceNum)) {
           priceToBeatNum = rtds.openingPriceNum;
           priceToBeatSource = 'polymarket-rtds-chainlink-open';
         }
+
+        let currentPriceNum = Number(cryptoWindow?.closePrice);
+        const currentPriceTs = Number(rtds?.currentPriceTs);
+        if (!Number.isFinite(currentPriceNum)) currentPriceNum = Number(rtds?.currentPriceNum);
         const priceToBeat = _formatPolyPriceToBeat(priceToBeatNum);
         const hasLiveComparison = Number.isFinite(currentPriceNum) && Number.isFinite(priceToBeatNum) && priceToBeatNum > 0;
         const priceDeltaNum = hasLiveComparison ? currentPriceNum - priceToBeatNum : null;

@@ -1256,6 +1256,35 @@ ipcMain.handle('kalshi:wsAuthHeaders', async () => {
 // ── IPC: public runtime env for renderer-only API keys ─────────────────────
 ipcMain.handle('env:getPublicConfig', async () => resolveCoinGeckoPublicConfig());
 
+// ── IPC: ASI1 mini narrative velocity (renderer-safe) ───────────────────────
+ipcMain.handle('asi1:mini-narrative', async (_event, args = {}) => {
+  try {
+    const Asi1Client = require('../src/infra/asi1-client');
+    if (!Asi1Client.hasAsi1Credentials()) {
+      return { velocity: 0, narrative: 'asi1-not-configured' };
+    }
+    const prompt = String(args.prompt || 'Reply JSON only: {"velocity":0,"narrative":"flat"}');
+    const result = await Asi1Client.chatCompletion(
+      [{ role: 'user', content: prompt }],
+      {
+        model: args.model || 'asi1-mini',
+        max_tokens: 120,
+        temperature: 0.1,
+        timeoutMs: 12000,
+        response_format: { type: 'json_object' },
+      },
+    );
+    const raw = String(result.content || '').trim();
+    try {
+      return JSON.parse(raw);
+    } catch (_) {
+      return { velocity: 0, narrative: raw.slice(0, 80) };
+    }
+  } catch (err) {
+    return { velocity: 0, narrative: err?.message || 'asi1-error' };
+  }
+});
+
 // ── IPC: Coinbase Authentication ───────────────────────────────────────────
 ipcMain.handle('coinbase:generate-jwt', async (_, options = {}) => {
   try {
@@ -2497,6 +2526,13 @@ ipcMain.handle('llm:envStatus', async () => {
 
   const compatibleKey = process.env.LLM_API_KEY || process.env.OPENAI_API_KEY || process.env.OPENAI_KEY || '';
   const googleKey = process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY || '';
+  const asi1Diag = (() => {
+    try {
+      return require('../src/infra/asi1-client').getDiagnostics();
+    } catch (_) {
+      return { configured: false, keysConfigured: 0 };
+    }
+  })();
   const model = process.env.LLM_MODEL || process.env.OPENAI_MODEL || process.env.GOOGLE_MODEL || process.env.GEMINI_MODEL || null;
   const apiUrl = process.env.LLM_API_URL || process.env.OPENAI_BASE_URL || null;
   const provider = process.env.LLM_PROVIDER || 'auto';
@@ -2509,6 +2545,10 @@ ipcMain.handle('llm:envStatus', async () => {
       selectedApiUrl: apiUrl,
       hasCompatibleKey: !!compatibleKey,
       hasGoogleKey: !!googleKey,
+      hasAsi1Key: !!asi1Diag.configured,
+      asi1KeysConfigured: asi1Diag.keysConfigured || 0,
+      asi1KeyEnvNames: asi1Diag.keyEnvNames || [],
+      asi1BaseUrl: asi1Diag.baseUrl || null,
       hasDotenvPathOverride: !!process.env.LLM_ENV_PATH,
       envPathOverride: process.env.LLM_ENV_PATH || null,
       assistantLoaded: !!LLMSignalAssistant,

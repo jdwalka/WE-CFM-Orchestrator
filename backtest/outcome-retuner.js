@@ -759,6 +759,7 @@ function optimizeWeights(observations, initialBias, opts = {}) {
 
   const computeAccuracy = (W) => {
     let correct = 0;
+    let scored = 0;
     for (const obs of observations) {
       let score = 0, totalW = 0;
       for (const k of keys) {
@@ -767,24 +768,16 @@ function optimizeWeights(observations, initialBias, opts = {}) {
         totalW += Math.abs(W[k] ?? 1);
       }
       
-      // -------------------------------------------------------------
-      // SPDF ORBITAL QUANTIZATION & INVERSION (Synced 2026-05-24)
-      // -------------------------------------------------------------
+      // Match live predictions.js: amplify + deadband, no phase inversion.
       let rawNorm = totalW > 0 ? score / totalW : 0;
       const SCORE_AMPLIFIER = 1.6;
       rawNorm = rawNorm * SCORE_AMPLIFIER;
-      
-      if (Math.abs(rawNorm) < 0.15) {
-        rawNorm = 0;
-      } else {
-        rawNorm = Math.sign(rawNorm);
-      }
-      const finalNorm = rawNorm * -1;
-      
-      const predDir = finalNorm > 0 ? 'UP' : (finalNorm < 0 ? 'DOWN' : 'NEUTRAL');
+      if (Math.abs(rawNorm) < 0.15) continue; // abstain — selective accuracy
+      const predDir = rawNorm > 0 ? 'UP' : 'DOWN';
       if (predDir === obs.actualDirection) correct++;
+      scored++;
     }
-    return observations.length > 0 ? correct / observations.length : 0;
+    return scored > 0 ? correct / scored : 0;
   };
 
   const initialAccuracy = computeAccuracy(weights);
@@ -802,9 +795,6 @@ function optimizeWeights(observations, initialBias, opts = {}) {
         score  += sig * (weights[k] ?? 1);
         totalW += Math.abs(weights[k] ?? 1);
       }
-      
-      // INVERT SCORE for gradient descent (do NOT apply deadband to maintain differentiability)
-      score = score * -1;
       
       const norm   = totalW > 0 ? score / totalW : 0;
       const pred   = Math.tanh(norm * 2.5);
@@ -1151,10 +1141,15 @@ if (require.main === module) {
   main().catch(e => { console.error('FATAL:', e.stack); process.exit(1); });
 } else {
   module.exports = {
+    SYMBOL_MAP,
+    DEFAULT_COINS,
     computeSignalVector,
+    generateWindows,
+    fetchOutcome,
     fetchLookback,
+    sleep,
     optimizeWeights,
     writeWeightsToPredictions,
-    gradeSignals
+    gradeSignals,
   };
 }

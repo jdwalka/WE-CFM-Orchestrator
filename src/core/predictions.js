@@ -373,24 +373,24 @@
       // FIX: Restore momentum to 0.25 + let regime multipliers gate it
       //      trending_volatile: 2.0x (catch dumps/rallies), ranging: 0.1x (suppress noise)
       //      This allows early dump detection (May 4 case) while maintaining ranging accuracy
-      stochrsi: 0.05,   // retained: still >55% in 4-day retune
-      vwma: 0.05,   // reduced: sub-50% in 4-day BTC retune
+      stochrsi: 0.061,   // retained: still >55% in 4-day retune
+      vwma: 0.053,   // reduced: sub-50% in 4-day BTC retune
       volume: 1.2,   // reduced: sub-50% in 4-day BTC retune
       // Keep proven mean-reversion core — bands/williamsR/keltner boosted 2026-05-05 (Pyth oracle accuracy)
-      bands: 0.25, williamsR: 2.453, structure: 1.598, fisher: 1.342, keltner: 1.95, cci: 1.287,
-      cmf: 0.85, rsi: 0.92, macd: 0.538, persistence: 0.662, ema: 0.431, ichimoku: 0.261, adx: 0.265,
-      vwap: 0.176, sma: 0.143,
+      bands: 0.262, williamsR: 2.453, structure: 1.598, fisher: 1.356, keltner: 1.95, cci: 1.287,
+      cmf: 0.85, rsi: 0.92, macd: 0.538, persistence: 0.671, ema: 0.437, ichimoku: 0.264, adx: 0.277,
+      vwap: 0.182, sma: 0.145,
       // ★ FIX: Restore momentum for trending detection (gated by regime multipliers)
-      momentum: 0.188,  // reduced: <50% in 4-day BTC retune
-      obv: 1.27,  // reduced: <50% in 4-day BTC retune
+      momentum: 0.194,  // reduced: <50% in 4-day BTC retune
+      obv: 1.256,  // reduced: <50% in 4-day BTC retune
       hma: 1.30, // reduced: <50% in 4-day BTC retune
       mfi: 1.52,
-      supertrend: 1.37,
+      supertrend: 1.398,
       // Pyth oracle aggregate prices → F&G strongly correlated with BTC macro moves
       fearGreed: 1.2,
       // ★ BOOST MICROSTRUCTURE FOR h1/h5 RECOVERY ★
-      book: 0.295,  // NEW: Order book imbalance
-      flow: 0.275,  // NEW: Trade flow signal
+      book: 0.304,  // NEW: Order book imbalance
+      flow: 0.284,  // NEW: Trade flow signal
     },
     ETH: { // outcome-retuned 2026-05-20 from 286 windows
  // outcome-retuned 2026-05-20 from 119 windows
@@ -401,17 +401,17 @@
       //      trending_volatile: 2.0x (catch dumps), ranging: 0.1x (suppress noise)
       // CRITICAL: rsi 82% at h15 but only 37% at h1/h5 (MASSIVE OVERFITTING)
       // Solution: Reduce RSI weight dramatically for short horizons
-      rsi: 0.01,   // reduced: 39% in 4-day ETH retune
-      stochrsi: 1.087,   // mild boost: ~53% in 4-day ETH retune
+      rsi: 0.018,   // reduced: 39% in 4-day ETH retune
+      stochrsi: 1.101,   // mild boost: ~53% in 4-day ETH retune
       williamsR: 1.923,  // boosted: strongest consistent ETH feature
       bands: 2.045,   // boosted: strong ETH performer in recent window
-      structure: 1.451, keltner: 1.857, cci: 0.929, fisher: 1.686, cmf: 0.607,
-      volume: 0.726, persistence: 0.01, obv: 1.055, macd: 0.837,
-      ema: 0.01, sma: 1.132, adx: 0.112, ichimoku: 0.053, vwap: 0.852, vwma: 0.484, supertrend: 0.01,
+      structure: 1.466, keltner: 1.857, cci: 0.942, fisher: 1.686, cmf: 0.607,
+      volume: 0.726, persistence: 0.01, obv: 1.055, macd: 0.847,
+      ema: 0.011, sma: 1.132, adx: 0.12, ichimoku: 0.047, vwap: 0.852, vwma: 0.484, supertrend: 0.01,
       // ★ FIX: Restore momentum for trending detection (gated by regime multipliers)
-      momentum: 0.304,  // retained mild positive edge in 4-day ETH retune
+      momentum: 0.309,  // retained mild positive edge in 4-day ETH retune
       mfi: 0.843, // reduced: weak in 4-day ETH retune
-      hma: 0.412,  // reduced: weak in 4-day ETH retune
+      hma: 0.415,  // reduced: weak in 4-day ETH retune
       // ETH moderately correlated with F&G (less than BTC)
       fearGreed: 1.062,
     },
@@ -422,23 +422,23 @@
       // Solution: Remove maxScore entirely, lower h1/h5 thresholds from 0.43 → 0.30 (match ETH/XRP)
       bands: 1.2,    // ← REDUCED FROM 3.5 (prevent saturation, oscillations)
       fisher: 1.836,    // ← REDUCED FROM 2.8
-      williamsR: 0.30,    // ← REDUCED FROM 4.5 (keep strong but prevent 0.65+ scores)
-      cci: 0.51,    // ← REDUCED FROM 3.5
+      williamsR: 0.31,    // ← REDUCED FROM 4.5 (keep strong but prevent 0.65+ scores)
+      cci: 0.52,    // ← REDUCED FROM 3.5
       hma: 1.43,    // 41% WR gate is broken on h1/h5
       structure: 2.5,
       keltner: 1.54,    // ← REDUCED FROM 2.8
-      obv: 1.5,    // volume-direction breakout confirmation
-      macd: 0.928, ichimoku: 1.38, adx: 0.05,
-      vwma: 0.169, volume: 1.91, sma: 0.084,
+      obv: 1.477,    // volume-direction breakout confirmation
+      macd: 0.918, ichimoku: 1.38, adx: 0.054,
+      vwma: 0.17, volume: 1.91, sma: 0.08,
       vwap: 2.0,
       rsi: 1.5,   // 29% WR is inversely useful, but engine has no rsiInvert flag
-      persistence: 0.022,
+      persistence: 0.017,
       ema: 1.5,
-      cmf: 0.073,
-      supertrend: 0.013, // outcome-retuned 2026-05-08 (180 windows)
-      momentum: 0.072,
+      cmf: 0.071,
+      supertrend: 0.02, // outcome-retuned 2026-05-08 (180 windows)
+      momentum: 0.077,
       mfi: 1.2,
-      stochrsi: 0.046,
+      stochrsi: 0.055,
       book: 0.489,
       flow: 0.468,
       // SOL correlates with broad crypto sentiment; F&G matters
@@ -455,15 +455,15 @@
       fisher: 2.8,   // ★ BOOST 2026-05-05: precise oracle prices → cleaner price extremes detection
       rsi: 3.5,   // ★ INCREASED FROM 2.0 (80-100% at h1/h10 - massive underweight!)
       obv: 1.5,   // volume direction confirm
-      williamsR: 1.226,   // moderate keep
-      bands: 0.831, supertrend: 0.31, cci: 0.553, cmf: 0.592, keltner: 0.476,
-      macd: 0.356, stochrsi: 0.821, persistence: 0.091, ema: 0.128, adx: 0.169, ichimoku: 0.154,
-      sma: 0.013,
-      mfi: 0.145,
+      williamsR: 1.239,   // moderate keep
+      bands: 0.841, supertrend: 0.323, cci: 0.562, cmf: 0.592, keltner: 0.485,
+      macd: 0.362, stochrsi: 0.831, persistence: 0.093, ema: 0.134, adx: 0.177, ichimoku: 0.154,
+      sma: 0.016,
+      mfi: 0.152,
       // Kill confirmed worst performers
-      momentum: 0.046,
-      vwma: 0.021,
-      hma: 0.108,
+      momentum: 0.054,
+      vwma: 0.026,
+      hma: 0.113,
       // XRP is news/regulatory driven; F&G less predictive
       fearGreed: 0.7,
     },
@@ -4240,7 +4240,19 @@
     }
 
     // REMOVED PHASE INVERSION: A 45% loss rate is a 55% win rate. Flipping the score turned a winning edge into a losing one!
-    const score = clamp(consensusComposite * 1.6 * adxGate * divergenceSuppression * (ENABLE_MDT_SCORE_MULT ? mdtScoreMult : 1) * _sessMult * (tapeVelocity.scoreBoostMult || 1), -1, 1);
+    let score = clamp(consensusComposite * 1.6 * adxGate * divergenceSuppression * (ENABLE_MDT_SCORE_MULT ? mdtScoreMult : 1) * _sessMult * (tapeVelocity.scoreBoostMult || 1), -1, 1);
+
+    // Edge Committee overlay — selective voting by top-performing indicators (when config loaded)
+    let edgeCommitteeVote = null;
+    if (window.EdgeCommittee?.applyScoreGate) {
+      try {
+        const gated = window.EdgeCommittee.applyScoreGate(score, signalVector, options.sym);
+        score = gated.score;
+        edgeCommitteeVote = gated.vote || null;
+      } catch (err) {
+        console.warn('[EdgeCommittee] applyScoreGate failed:', err?.message || err);
+      }
+    }
     const agreement = summarizeAgreement(Object.fromEntries(modelActiveKeys.map(key => [key, signalVector[key]])));
     const coreAgreement = summarizeAgreement(Object.fromEntries(CORE_SIGNAL_KEYS.map(key => [key, signalVector[key]])));
 
@@ -4531,6 +4543,7 @@
         microScore: clamp(microComposite, -1, 1),
         consensusComposite,
         consensusAdjustment,
+        edgeCommittee: edgeCommitteeVote,
         liveMomentumDivergence,
         liveRealtimeMomentum,
         coreAgreement: coreAgreement.agreement,
@@ -6496,6 +6509,54 @@
     }
   }
 
+  function buildHyperShortAnchors(coin, ctx = {}) {
+    const sym = coin?.sym;
+    const price = ctx.price ?? ctx.livePrice;
+    let score = ctx.score;
+    let confidence = ctx.confidence;
+    const diag = { temporal: null, graph: null, narrative: null };
+
+    if (window.MultiAssetGraph?.update && price) {
+      window.MultiAssetGraph.update(sym, price);
+    }
+
+    if (window.TemporalFusionLite?.applyToScore) {
+      const fusion = window.TemporalFusionLite.applyToScore(score, {
+        score,
+        fastTiming: ctx.fastTiming,
+        msToClose: ctx.msToClose,
+        atrPct: ctx.atrPct,
+        volatility: ctx.volatility,
+        blend: 0.36,
+      });
+      diag.temporal = fusion;
+      score = fusion.score;
+    }
+
+    if (window.MultiAssetGraph?.applyToScore && sym !== window.MultiAssetGraph?.ANCHOR) {
+      const graph = window.MultiAssetGraph.applyToScore(score, sym, 0.11);
+      diag.graph = graph;
+      score = graph.score;
+    }
+
+    if (window.NarrativeVelocity?.applyToScore) {
+      const narrative = window.NarrativeVelocity.applyToScore(score, sym, { weight: 0.07 });
+      diag.narrative = narrative;
+      score = narrative.score;
+    }
+
+    if (diag.temporal || diag.graph || diag.narrative) {
+      const boosts = [
+        diag.temporal?.conflict ? -4 : 0,
+        diag.graph?.adjusted ? 2 : 0,
+        diag.narrative?.adjusted ? 2 : 0,
+      ];
+      confidence = Math.round(clamp(confidence + boosts.reduce((s, v) => s + v, 0), 0, 95));
+    }
+
+    return { score: clamp(score, -1, 1), confidence, diagnostics: diag };
+  }
+
   function buildExecutionGuard(model, cache) {
     const closeTimeMs = model?.projections?.p15?.kalshiAlign?.closeTimeMs;
     if (!Number.isFinite(closeTimeMs)) return null;
@@ -6611,6 +6672,30 @@
       }
     }
 
+    // Hyper-short anchors: temporal fusion + BTC spillover graph + narrative velocity
+    let hyperShortDiag = null;
+    if (window.TemporalFusionLite || window.MultiAssetGraph || window.NarrativeVelocity) {
+      try {
+        const anchorOut = buildHyperShortAnchors(coin, {
+          score: normalizedScore,
+          confidence: normalizedConfidence,
+          price: liveTimingGuard?.livePrice || timed.price,
+          fastTiming,
+          msToClose: executionGuard?.msToClose,
+          atrPct: timed.volatility?.atrPct ?? 0,
+          volatility: timed.volatility,
+        });
+        hyperShortDiag = anchorOut.diagnostics;
+        normalizedScore = anchorOut.score;
+        normalizedConfidence = anchorOut.confidence;
+        normalizedSignal = resolvedRouterAction === 'invalidated'
+          ? 'neutral'
+          : signalFromScore(normalizedScore);
+      } catch (anchorErr) {
+        console.warn('[HyperShortAnchors] fusion failed:', anchorErr?.message || anchorErr);
+      }
+    }
+
     const result = {
       sym: coin.sym,
       name: coin.name,
@@ -6659,6 +6744,7 @@
         cfmOverrideReason: cfmEnrich?.overrideReason || null,
         cfmEarlyExit: cfmEnrich?.earlyExit || null,
         // QFT Proprietary System
+        hyperShortAnchors: hyperShortDiag,
         qft: qftResult,
       },
       backtest,
@@ -6751,6 +6837,49 @@
         }
       } catch (e) {
         // Silently fail if metrics unavailable
+      }
+    }
+
+    // RL stack overlay — mispricing hunt + contrarian plays (after kalshiAlign available)
+    if (window.TradingRLAgent?.applyToScore) {
+      try {
+        const kalshiAlign = result.projections?.p15?.kalshiAlign ?? null;
+        const probVel = window.PredictionMarkets?.getProbVelocity?.(coin.sym);
+        const rlCtx = {
+          signalVector: result.diagnostics?.components || timed.components || {},
+          score: result.score,
+          agreement: result.diagnostics?.agreement ?? 0.5,
+          conflict: result.diagnostics?.conflict ?? 0,
+          tapeVelocity: result.diagnostics?.tapeVelocity || timed.diagnostics?.tapeVelocity,
+          probVelocity: probVel?.trend ?? probVel?.velocity ?? probVel ?? 0,
+          atrPct: result.volatility?.atrPct ?? 0,
+          kalshiAlign,
+          imbalanceVelocity: result.diagnostics?.liveBook?.imbalanceVelocity ?? 0,
+          liveBook: result.diagnostics?.liveBook ?? null,
+          spreadPct: effectiveBook?.spreadPct ?? timed.indicators?.book?.spreadPct ?? 0,
+          toxicity: timed.indicators?.toxicity?.meta?.score ?? timed.diagnostics?.toxicity ?? 0,
+        };
+        const rlOut = window.TradingRLAgent.applyToScore(result.score, rlCtx);
+        if (rlOut?.decision && rlOut.decision.action !== 'pass') {
+          result.score = rlOut.score;
+          result.signal = signalFromScore(result.score);
+          result.diagnostics = {
+            ...(result.diagnostics || {}),
+            rlStack: {
+              action: rlOut.decision.action,
+              confidence: rlOut.decision.confidence,
+              rapidMove: rlOut.decision.rapidMove,
+              reason: rlOut.reason,
+              mispricing: rlOut.decision.mispricing || null,
+              rlActionId: rlOut.decision.actionId,
+            },
+          };
+          if (rlOut.decision.mispricing?.huntScore > 0) {
+            result.mispricing = rlOut.decision.mispricing;
+          }
+        }
+      } catch (rlErr) {
+        console.warn('[TradingRLAgent] applyToScore failed:', rlErr?.message || rlErr);
       }
     }
 

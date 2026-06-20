@@ -419,8 +419,11 @@ function renderMarkets5M() {
       if (prob <= 0.45) return `<span class="badge-down" style="${sz}">▼ BUY DOWN</span>`;
       return `<span class="badge-neutral" style="${sz}">◆ WAIT</span>`;
     }
-    function _live5mSignal(p5) {
-      const current = Number(p5?.currentPriceNum);
+    function _live5mSignal(p5, fallbackCurrentPx = null) {
+      let current = Number(p5?.currentPriceNum);
+      if (!Number.isFinite(current) && Number.isFinite(fallbackCurrentPx)) {
+        current = Number(fallbackCurrentPx);
+      }
       const target = Number(p5?.targetPriceNum ?? p5?.priceToBeatNum);
       if (!Number.isFinite(current) || !Number.isFinite(target) || target <= 0) return null;
       const delta = current - target;
@@ -553,7 +556,7 @@ function renderMarkets5M() {
       const proj = _modelProj(sym);
 
       const p5prob = p5?.probability ?? null;
-      const live5m = _live5mSignal(p5);
+      const live5m = _live5mSignal(p5, curPx);
       const primaryMarketProb = p5prob;
       const primaryMarketLabel = 'Poly 5M';
 

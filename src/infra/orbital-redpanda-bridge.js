@@ -5,6 +5,7 @@
  */
 
 const { Kafka } = require('kafkajs');
+const { createQuantumStateTracker } = require('../orbital/quantum-state');
 
 const KAFKA_BROKERS = process.env.KAFKA_BROKERS
     ? process.env.KAFKA_BROKERS.split(',')
@@ -37,6 +38,11 @@ const PRODUCE_QUEUE_MAX_MESSAGES = Math.max(PRODUCE_BATCH_MAX_MESSAGES, Number(p
 const lastProducedKeyAt = new Map();
 const topicQueues = new Map();
 let flushTimer = null;
+const quantumStateTracker = createQuantumStateTracker();
+
+function enrichOrbitalPayload(orbital, asset, payload, timestamp = Date.now()) {
+    return quantumStateTracker.enrich(orbital, asset, payload, timestamp);
+}
 
 // Per-topic message counters (for the UI status widget)
 const messageCounts = {
@@ -212,6 +218,7 @@ function produceOrbitalTick(orbital, asset, payload) {
     const topic = TOPICS[orbital];
     if (!topic) return false;
     const now = Date.now();
+    const enrichedPayload = enrichOrbitalPayload(orbital, asset, payload, now);
     const throttleKey = `${orbital}:${asset}`;
     const lastForKey = lastProducedKeyAt.get(throttleKey) || 0;
 
@@ -238,7 +245,7 @@ function produceOrbitalTick(orbital, asset, payload) {
     lastProducedKeyAt.set(throttleKey, now);
     getTopicQueue(topic).push({
         key: asset,
-        value: JSON.stringify(payload),
+        value: JSON.stringify(enrichedPayload),
         timestamp: now.toString()
     });
     queuedTicks += 1;
@@ -347,6 +354,7 @@ function getBridgeStats() {
 module.exports = {
     initRedpanda,
     disconnectRedpanda,
+    enrichOrbitalPayload,
     produceOrbitalTick,
     getBridgeStats
 };

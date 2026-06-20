@@ -11,8 +11,11 @@
 
   // ── Constants ──────────────────────────────────────────────────
   const KALSHI_BASE = 'https://api.elections.kalshi.com/trade-api/v2';
-  const COINBASE_BASE = 'https://api.coinbase.com/api/v3/brokerage/market';
-  const KRAKEN_BASE = 'https://api.kraken.com/0/public';
+  const COINBASE_EXCH_BASE = 'https://api.exchange.coinbase.com';
+  const INSTRUMENTS = {
+    BTC: 'BTCUSD', ETH: 'ETHUSD', SOL: 'SOLUSD',
+    XRP: 'XRPUSD', DOGE: 'DOGEUSD',
+  };
 
   const COINS = ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE'];
 
@@ -25,6 +28,8 @@
     BTC: 'BTC-USD', ETH: 'ETH-USD', SOL: 'SOL-USD',
     XRP: 'XRP-USD', DOGE: 'DOGE-USD',
   };
+
+  const KRAKEN_BASE = 'https://api.kraken.com/0/public';
 
   const KRAKEN_TICKERS = {
     BTC: 'XXBTZUSD', ETH: 'XETHZUSD', SOL: 'SOLZUSD',
@@ -79,29 +84,106 @@
     return res.json();
   }
 
+  // ── Strike / market helpers ────────────────────────────────────
+  function isBetweenMarket(m) {
+    if (!m) return false;
+    if (m.strike_type === 'between') return true;
+    if (m.strike_type === 'custom' && m.custom_strike?.strike_type === 'between') return true;
+    const sub = String(m.yes_sub_title || m.subtitle || '').toLowerCase();
+    return sub.includes(' to ') || sub.includes('between');
+  }
+
+  function parseStrikeBounds(m) {
+    const cs = m.custom_strike || {};
+    const floorStrike = m.floor_strike != null ? parseFloat(m.floor_strike) : NaN;
+    const floorPrice = m.floor_price != null ? parseFloat(m.floor_price) : NaN;
+    const capStrike = m.cap_strike != null ? parseFloat(m.cap_strike) : NaN;
+    const capPrice = m.cap_price != null ? parseFloat(m.cap_price) : NaN;
+    const csFloor = cs.floor_strike != null ? parseFloat(cs.floor_strike) : NaN;
+    const csCap = cs.cap_strike != null ? parseFloat(cs.cap_strike) : NaN;
+
+    let low = Number.isFinite(floorStrike) && floorStrike > 0 ? floorStrike
+      : Number.isFinite(floorPrice) && floorPrice > 0 ? floorPrice
+        : Number.isFinite(csFloor) && csFloor > 0 ? csFloor : NaN;
+    let high = Number.isFinite(capStrike) && capStrike > 0 ? capStrike
+      : Number.isFinite(capPrice) && capPrice > 0 ? capPrice
+        : Number.isFinite(csCap) && csCap > 0 ? csCap : NaN;
+
+    if ((!Number.isFinite(low) || !Number.isFinite(high)) && m.yes_sub_title) {
+      const nums = String(m.yes_sub_title).replace(/[$,]/g, '').match(/\d+(?:\.\d+)?/g) || [];
+      if (nums.length >= 2) {
+        low = parseFloat(nums[0]);
+        high = parseFloat(nums[1]);
+      }
+    }
+
+    return { low, high };
+  }
+
+  function normalizeStrikeScale(low, high, refPrice) {
+    if (!Number.isFinite(low) || !Number.isFinite(high) || !Number.isFinite(refPrice) || refPrice <= 0) {
+      return { low, high };
+    }
+    const mid = (low + high) / 2;
+    if (mid > refPrice * 12) return { low: low / 100, high: high / 100 };
+    return { low, high };
+  }
+
+  function parseCloseMs(closeTime) {
+    const ms = Date.parse(closeTime);
+    return Number.isFinite(ms) ? ms : null;
+  }
+
+  function readLivePrice(sym) {
+    const instrument = INSTRUMENTS[sym];
+    const ticker = instrument
+      ? (window.tickers?.[instrument] || window._appTickers?.[instrument])
+      : null;
+    if (ticker) {
+      const p = parseFloat(ticker.last ?? ticker.price ?? ticker.close);
+      if (Number.isFinite(p) && p > 0) return p;
+    }
+
+    const wsProviders = ['BINANCE', 'COINBASE', 'KRAKEN', 'BYBIT'];
+    const wsQuotes = wsProviders
+      .map((provider) => window.ExchangeWS?.getTicker?.(provider, sym, 120_000)?.price)
+      .filter((p) => Number.isFinite(p) && p > 0);
+    if (wsQuotes.length) {
+      return wsQuotes.reduce((sum, p) => sum + p, 0) / wsQuotes.length;
+    }
+
+    const pred = window._predictions?.[sym]?.price;
+    if (pred && Number.isFinite(+pred) && +pred > 0) return +pred;
+
+    return null;
+  }
+
   // ── Live price fetcher ─────────────────────────────────────────
   async function fetchPrice(sym) {
-    // 1. Coinbase
-    try {
-      const d = await apiFetch(`${COINBASE_BASE}/products/${CB_PRODUCTS[sym]}`, 20000);
-      if (d?.price) return parseFloat(d.price);
-    } catch (e) { console.warn(`[HR] Coinbase price fetch failed for ${sym}:`, e.message); }
+    const cached = readLivePrice(sym);
+    if (cached !== null) return cached;
 
-    // 2. Kraken
+    try {
+      const d = await apiFetch(`${COINBASE_EXCH_BASE}/products/${CB_PRODUCTS[sym]}/ticker`, 8000);
+      if (d?.price) {
+        const p = parseFloat(d.price);
+        if (Number.isFinite(p) && p > 0) return p;
+      }
+    } catch (e) { console.warn(`[HR] Coinbase exchange ticker failed for ${sym}:`, e.message); }
+
     const kt = KRAKEN_TICKERS[sym];
     if (kt) {
       try {
-        const d = await apiFetch(`${KRAKEN_BASE}/Ticker?pair=${kt}`, 20000);
+        const d = await apiFetch(`${KRAKEN_BASE}/Ticker?pair=${kt}`, 8000);
         const c = d?.result?.[kt]?.c;
-        if (c) return parseFloat(c[0]);
+        if (c) {
+          const p = parseFloat(c[0]);
+          if (Number.isFinite(p) && p > 0) return p;
+        }
       } catch (e) { console.warn(`[HR] Kraken price fetch failed for ${sym}:`, e.message); }
     }
 
-    // 3. Cached from window._predictions
-    const p = window._predictions?.[sym]?.price;
-    if (p && Number.isFinite(+p)) return +p;
-
-    return null;
+    return readLivePrice(sym);
   }
 
   // ── Kalshi market fetcher ──────────────────────────────────────
@@ -139,46 +221,78 @@
   }
 
   // ── Pick the best close-time bucket ───────────────────────────
-  // Prefers: active (open now) with most contracts; or next upcoming
-  function pickCloseBucket(markets) {
+  // Price-aware: choose the hour whose strike ladder best matches live spot.
+  function pickCloseBucket(markets, refPrice) {
     const now = Date.now();
     const byClose = new Map();
 
     for (const m of markets) {
-      const isBetween = m.strike_type === 'between' || (m.strike_type === 'custom' && m.custom_strike?.strike_type === 'between');
-      if (!isBetween) continue;
-      const closeMs = Date.parse(m.close_time);
-      if (!Number.isFinite(closeMs)) continue;
+      if (!isBetweenMarket(m)) continue;
+      const closeMs = parseCloseMs(m.close_time);
+      if (closeMs == null || closeMs <= now) continue;
 
       let entry = byClose.get(closeMs);
       if (!entry) {
-        entry = { closeMs, count: 0, maxProb: 0, isActive: false };
+        entry = {
+          closeMs,
+          count: 0,
+          maxProb: 0,
+          isActive: false,
+          lows: [],
+          highs: [],
+        };
         byClose.set(closeMs, entry);
       }
       entry.count++;
 
-      const openMs = Date.parse(m.open_time);
-      if (Number.isFinite(openMs) && openMs <= now && closeMs > now) {
-        entry.isActive = true;
+      const openMs = parseCloseMs(m.open_time);
+      if (openMs != null && openMs <= now && closeMs > now) entry.isActive = true;
+
+      const { low, high } = parseStrikeBounds(m);
+      const scaled = normalizeStrikeScale(low, high, refPrice);
+      if (Number.isFinite(scaled.low) && Number.isFinite(scaled.high) && scaled.high >= scaled.low) {
+        entry.lows.push(scaled.low);
+        entry.highs.push(scaled.high);
       }
 
-      const prob = parseFloat(m.yes_ask_dollars) || 0;
+      const yesAsk = parseFloat(m.yes_ask_dollars) || 0;
+      const yesBid = parseFloat(m.yes_bid_dollars) || 0;
+      const prob = yesAsk > 0 && yesBid > 0 ? (yesAsk + yesBid) / 2 : (yesAsk || yesBid);
       if (prob > entry.maxProb) entry.maxProb = prob;
     }
 
-    const entries = [...byClose.values()].filter(e => e.closeMs > now);
+    const entries = [...byClose.values()];
     if (!entries.length) return null;
 
-    // Prefer active bucket; among actives, the soonest close time
-    const active = entries.filter(e => e.isActive);
-    const pool = active.length ? active : entries;
-    pool.sort((a, b) => {
-      if (a.isActive !== b.isActive) return a.isActive ? -1 : 1;
-      return a.closeMs - b.closeMs; // soonest first
-    });
+    const scoreEntry = (entry) => {
+      let score = 0;
+      const minsToClose = (entry.closeMs - now) / 60_000;
 
-    // Return the chosen closeMs as a number so we can compare by timestamp
-    return pool[0].closeMs;
+      if (Number.isFinite(refPrice) && refPrice > 0 && entry.lows.length) {
+        let bestDist = Infinity;
+        let contains = false;
+        for (let i = 0; i < entry.lows.length; i++) {
+          const low = entry.lows[i];
+          const high = entry.highs[i];
+          if (refPrice >= low && refPrice <= high) contains = true;
+          const mid = (low + high) / 2;
+          bestDist = Math.min(bestDist, Math.abs(mid - refPrice));
+        }
+        if (contains) score -= 1_000_000;
+        score += bestDist;
+      } else {
+        score += 50_000;
+      }
+
+      if (entry.isActive) score -= 25_000;
+      score += minsToClose * 5;
+      score -= entry.count * 20;
+      score -= entry.maxProb * 1000;
+      return score;
+    };
+
+    entries.sort((a, b) => scoreEntry(a) - scoreEntry(b));
+    return entries[0].closeMs;
   }
 
   // ── Build range list for a coin ────────────────────────────────
@@ -191,7 +305,7 @@
       fetchPrice(sym),
     ]).then(([m, p]) => [
       m.status === 'fulfilled' ? m.value : [],
-      p.status === 'fulfilled' ? p.value : null,
+      p.status === 'fulfilled' ? p.value : readLivePrice(sym),
     ]);
 
     // Store price
@@ -201,36 +315,53 @@
 
     if (!markets.length) return;
 
+    const refPrice = _prices[sym] ?? price;
+
     // Pick close time (returns milliseconds timestamp)
-    const closeTimeMs = pickCloseBucket(markets);
+    const closeTimeMs = pickCloseBucket(markets, refPrice);
     if (closeTimeMs) {
-      // Store as ISO string for display, but compare by ms
       _closeTimes[sym] = new Date(closeTimeMs).toISOString();
     }
 
-    // Filter to chosen close bucket, 'between' only — compare by parsed timestamp
+    // Filter to chosen close bucket, 'between' only
     const buckets = markets.filter(m => {
-      const isBetween = m.strike_type === 'between' || (m.strike_type === 'custom' && m.custom_strike?.strike_type === 'between');
-      if (!isBetween) return false;
+      if (!isBetweenMarket(m)) return false;
       if (!closeTimeMs) return true;
-      return Date.parse(m.close_time) === closeTimeMs;
+      return parseCloseMs(m.close_time) === closeTimeMs;
     });
 
     // Map to our format
-    const ranges = buckets.map(m => ({
-      low:      parseFloat(m.floor_strike || m.custom_strike?.floor_strike),
-      high:     parseFloat(m.cap_strike || m.custom_strike?.cap_strike),
-      yesAsk:   parseFloat(m.yes_ask_dollars) || 0,
-      yesBid:   parseFloat(m.yes_bid_dollars) || 0,
-      noAsk:    parseFloat(m.no_ask_dollars) || 0,
-      prob:     parseFloat(m.yes_ask_dollars) || 0,   // treat yes_ask as market probability
-      ticker:   m.ticker,
-      closeTime: m.close_time,
-      subtitle: m.yes_sub_title || '',
-    })).filter(r => Number.isFinite(r.low) && Number.isFinite(r.high));
+    const ranges = buckets.map(m => {
+      let { low, high } = parseStrikeBounds(m);
+      ({ low, high } = normalizeStrikeScale(low, high, refPrice));
+      const yesAsk = parseFloat(m.yes_ask_dollars) || 0;
+      const yesBid = parseFloat(m.yes_bid_dollars) || 0;
+      const prob = yesAsk > 0 && yesBid > 0 ? (yesAsk + yesBid) / 2 : (yesAsk || yesBid);
+      return {
+        low,
+        high,
+        yesAsk,
+        yesBid,
+        noAsk: parseFloat(m.no_ask_dollars) || 0,
+        prob,
+        ticker: m.ticker,
+        closeTime: m.close_time,
+        subtitle: m.yes_sub_title || '',
+      };
+    }).filter(r => Number.isFinite(r.low) && Number.isFinite(r.high) && r.high >= r.low);
 
     ranges.sort((a, b) => a.low - b.low);
     _ranges[sym] = ranges;
+
+    if (Number.isFinite(refPrice) && refPrice > 0 && ranges.length) {
+      const nearestDist = ranges.reduce((best, r) => {
+        const mid = (r.low + r.high) / 2;
+        return Math.min(best, Math.abs(mid - refPrice));
+      }, Infinity);
+      if (nearestDist > refPrice * 0.2) {
+        console.warn(`[HR] ${sym} ladder misaligned: spot $${refPrice.toFixed(2)}, nearest bucket off by $${nearestDist.toFixed(2)}`);
+      }
+    }
   }
 
   // ── Select visible window around current price ─────────────────
@@ -536,5 +667,5 @@
     getPrice:  (sym) => _prices[sym] || null,
   };
 
-  console.log('[HourlyRangesPanel v6] ✓ Ready');
+  console.log('[HourlyRangesPanel v7] ✓ Ready');
 })();

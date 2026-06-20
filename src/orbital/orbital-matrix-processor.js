@@ -53,6 +53,26 @@ function findLatestBySource(ticks, source) {
     return null;
 }
 
+function latestRingData(state, ring) {
+    const ticks = state?.[ring];
+    return Array.isArray(ticks) && ticks.length ? ticks[ticks.length - 1].data : {};
+}
+
+function extractQuantumStates(orbitals) {
+    return Object.fromEntries(Object.entries(orbitals).map(([shell, payload]) => [
+        shell,
+        payload?.quantum_state || {
+            shell: shell[0],
+            ion_charge: '0',
+            net_charge: 0,
+            coherence: 0,
+            electron_count: 0,
+            subatomic_orbital_count: 0,
+            subshells: [],
+        },
+    ]));
+}
+
 // Shared Kafka client for the consumer
 const kafka = new Kafka({
     clientId: 'orbital-matrix-processor',
@@ -181,17 +201,20 @@ function runBarrier() {
         // Prefer Coinbase price for s_core (more liquid / lower latency).
         const latestSCore = cbTick || latestS;
 
+        const orbitals = {
+            s_core:     latestSCore.data,
+            p_momentum: latestRingData(state, 'p'),
+            d_complex:  latestRingData(state, 'd'),
+            f_diffuse:  latestRingData(state, 'f'),
+        };
+
         const element = {
             asset,
             timestamp:         Math.floor(now / 1000),
             atomic_weight_class: determineWeightClass(asset),
             decayed_orbitals:  decayed.length > 0 ? decayed : undefined,
-            orbitals: {
-                s_core:     latestSCore.data,
-                p_momentum: state.p.length ? state.p[state.p.length - 1].data : {},
-                d_complex:  state.d.length ? state.d[state.d.length - 1].data : {},
-                f_diffuse:  state.f.length ? state.f[state.f.length - 1].data : {}
-            }
+            orbitals,
+            quantum_states: extractQuantumStates(orbitals),
         };
 
         // ── 4. Dispatch to TIDE ─────────────────────────────────────────────────
