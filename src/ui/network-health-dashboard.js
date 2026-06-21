@@ -222,6 +222,7 @@
                 docker: 'unknown',
                 redpanda: 'unknown',
                 nodes: 0,
+                nodesDown: [],
                 topics: [],
                 notifications: [],
             };
@@ -229,8 +230,13 @@
             try {
                 const brokers = await fetchJsonWithTimeout('http://127.0.0.1:9644/v1/brokers', 2500);
                 out.docker = 'healthy';
-                out.redpanda = 'healthy';
-                out.nodes = Array.isArray(brokers) ? brokers.length : 0;
+                const brokerList = Array.isArray(brokers) ? brokers : [];
+                out.nodes = brokerList.filter(broker => broker?.is_alive !== false && broker?.membership_status === 'active').length;
+                out.nodesDown = brokerList
+                    .filter(broker => broker?.is_alive === false || broker?.membership_status !== 'active')
+                    .map(broker => broker?.node_id)
+                    .filter(nodeId => Number.isFinite(nodeId));
+                out.redpanda = out.nodesDown.length ? 'degraded' : 'healthy';
                 out.notifications.push({
                     ts: Date.now(),
                     level: 'success',
@@ -525,8 +531,9 @@
                     status = {
                         ...status,
                         docker: probed.docker || status.docker,
-                        redpanda: probed.redpanda || status.redpanda,
+                        redpanda: status.redpanda === 'degraded' ? 'degraded' : (probed.redpanda || status.redpanda),
                         nodes: Number.isFinite(probed.nodes) && probed.nodes > 0 ? probed.nodes : status.nodes,
+                        nodesDown: Array.isArray(status.nodesDown) && status.nodesDown.length ? status.nodesDown : (probed.nodesDown || []),
                         topics: Array.isArray(probed.topics) && probed.topics.length ? probed.topics : (status.topics || []),
                         notifications: [...(probed.notifications || []), ...(Array.isArray(status.notifications) ? status.notifications : [])].slice(0, 8),
                     };
@@ -536,6 +543,7 @@
             const dockerStatus = status.docker === 'healthy' ? '<span style="color:#3ecf8e;">Docker UP</span>' : '<span style="color:#ff5e5e;">Docker DOWN</span>';
             const topicsCount = Array.isArray(status.topics) ? status.topics.length : 0;
             const nodeCount = Number.isFinite(status.nodes) ? status.nodes : 0;
+            const nodesDown = Array.isArray(status.nodesDown) ? status.nodesDown : [];
             const bridge = status.bridge || {};
             const activity = status.activity || {};
             const totalMessages = Number(activity.totalMessages || bridge.totalMessages || 0);
@@ -563,6 +571,7 @@
                 </div>
                 <div style="color:#9aa6b2;margin-left:18px;">
                     <div>Status: <span style="color:${dotColor};">${status.redpanda?.toUpperCase() || 'OFFLINE'}</span> &middot; ${dockerStatus}</div>
+                    ${nodesDown.length ? `<div style="color:#ffd166;">Nodes down: ${nodesDown.map(escapeHtml).join(', ')}</div>` : ''}
                     <div>Active Topics: <span style="color:#8ab4f8;">${topicsCount}</span></div>
                     <div style="font-size:10px;color:#666;margin-top:2px;">${(status.topics || []).map(escapeHtml).join(', ') || 'no active topics'}</div>
                     <div style="margin-top:5px;">${bridgeState} &middot; Messages: <span style="color:#8ab4f8;">${totalMessages}</span>${activeOrbitals.length ? ` &middot; Active orbitals: <span style="color:#e0e6f0;">${activeOrbitals.map(escapeHtml).join(', ')}</span>` : ''}</div>

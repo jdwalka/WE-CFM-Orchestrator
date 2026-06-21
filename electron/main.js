@@ -2932,9 +2932,9 @@ app.on('window-all-closed', async () => {
   stopKalshiWorker();
   if (pythLazerClient) { try { await Promise.all(pythLazerClient.map(c => c.shutdown())); } catch (_) { } pythLazerClient = null; }
   
-  // Gracefully shutdown Orbital System (Docker Compose, Redpanda, ingestor, processor)
+  // Stop app-owned workers but preserve the persistent Redpanda cluster.
   try {
-    await shutdownOrbitalSystem();
+    await shutdownOrbitalSystem(true, { stopDocker: false });
   } catch (err) {
     console.warn('[Main] Error during orbital shutdown:', err.message);
   }
@@ -2947,7 +2947,7 @@ app.on('window-all-closed', async () => {
 // Graceful shutdown on app quit (safety net)
 app.on('before-quit', async (event) => {
   try {
-    await shutdownOrbitalSystem();
+    await shutdownOrbitalSystem(true, { stopDocker: false });
   } catch (err) {
     console.warn('[Main] Error during orbital shutdown in before-quit:', err.message);
   }

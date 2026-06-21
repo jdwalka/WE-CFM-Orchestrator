@@ -38,6 +38,8 @@ let ingestorProcess = null;
 let processorIntervalHandle = null;
 let orbitalServiceProcess = null;
 let orchestratorReady = false;
+let shutdownInFlight = null;
+let shutdownComplete = false;
 
 // WE-CRYPTO proxies
 let httpProxyProcess = null;
@@ -250,6 +252,7 @@ async function startOrbitalSystem(workspacePath) {
         return true;
     }
 
+    shutdownComplete = false;
     try {
         console.log('[OrbitalOrchestrator] ===== Starting Orbital System =====');
 
@@ -311,7 +314,18 @@ async function startOrbitalSystem(workspacePath) {
 /**
  * Graceful shutdown: stop all services and bring down docker-compose.
  */
-async function shutdownOrbitalSystem(stopProxiesFlag = true, options = {}) {
+function shutdownOrbitalSystem(stopProxiesFlag = true, options = {}) {
+    if (shutdownComplete) return Promise.resolve();
+    if (shutdownInFlight) return shutdownInFlight;
+    shutdownInFlight = performShutdownOrbitalSystem(stopProxiesFlag, options)
+        .finally(() => {
+            shutdownComplete = true;
+            shutdownInFlight = null;
+        });
+    return shutdownInFlight;
+}
+
+async function performShutdownOrbitalSystem(stopProxiesFlag = true, options = {}) {
     console.log('[OrbitalOrchestrator] Initiating graceful shutdown...');
 
     try {
@@ -346,9 +360,12 @@ async function shutdownOrbitalSystem(stopProxiesFlag = true, options = {}) {
             // Bridge not initialized — safe to ignore
         }
 
-        // Bring down docker-compose
-        if (options.stopDocker !== false && dockerComposeProcess) {
-            dockerComposeProcess.kill('SIGTERM');
+        // Keep the broker persistent across Electron restarts. Cluster teardown
+        // is destructive to availability and must be explicitly requested.
+        if (options.stopDocker === true) {
+            if (dockerComposeProcess && !dockerComposeProcess.killed) {
+                dockerComposeProcess.kill('SIGTERM');
+            }
             await new Promise((resolve) => {
                 exec('docker compose down', { cwd: process.env.WECRYP_ROOT || process.cwd() }, (err) => {
                     if (err) {
@@ -359,6 +376,8 @@ async function shutdownOrbitalSystem(stopProxiesFlag = true, options = {}) {
                     resolve();
                 });
             });
+        } else {
+            console.log('[OrbitalOrchestrator] Redpanda containers left running');
         }
 
         orchestratorReady = false;
@@ -404,7 +423,8 @@ async function getOrbitalStatus() {
             docker: 'unknown',
             ingestor: !!ingestorProcess,
             processor: !!processorIntervalHandle,
-            nodes: 0,
+            nodes: Number(lastProbeState.nodes || 0),
+            nodesDown: [],
             topics: []
         };
 
@@ -435,10 +455,35 @@ async function getOrbitalStatus() {
                     const res = await fetch('http://localhost:9644/v1/brokers', { signal: AbortSignal.timeout(4000) });
                     if (res.ok) {
                         const brokers = await res.json();
-                        status.nodes = Array.isArray(brokers) ? brokers.length : 0;
+                        const brokerList = Array.isArray(brokers) ? brokers : [];
+                        const activeBrokers = brokerList.filter(broker => (
+                            broker?.is_alive !== false && broker?.membership_status === 'active'
+                        ));
+                        status.nodes = activeBrokers.length;
+                        status.nodesDown = brokerList
+                            .filter(broker => broker?.is_alive === false || broker?.membership_status !== 'active')
+                            .map(broker => broker?.node_id)
+                            .filter(nodeId => Number.isFinite(nodeId));
+                        if (status.nodesDown.length) status.redpanda = 'degraded';
                     }
                 } catch (e) {
                     console.warn('[OrbitalOrchestrator] Failed to fetch brokers:', e.message);
+                }
+
+                if (!status.nodes) {
+                    try {
+                        const res = await fetch('http://localhost:9644/v1/cluster/health_overview', { signal: AbortSignal.timeout(4000) });
+                        if (res.ok) {
+                            const health = await res.json();
+                            const allNodes = Array.isArray(health?.all_nodes) ? health.all_nodes : [];
+                            const downNodes = Array.isArray(health?.nodes_down) ? health.nodes_down : [];
+                            status.nodes = Math.max(0, allNodes.length - downNodes.length);
+                            status.nodesDown = downNodes;
+                            status.redpanda = health?.is_healthy === false ? 'degraded' : status.redpanda;
+                        }
+                    } catch (e) {
+                        console.warn('[OrbitalOrchestrator] Failed to fetch cluster health:', e.message);
+                    }
                 }
 
                 // Orbital topic list via Redpanda Console REST API
