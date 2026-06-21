@@ -420,12 +420,12 @@ function renderMarkets5M() {
       return `<span class="badge-neutral" style="${sz}">◆ WAIT</span>`;
     }
     function _live5mSignal(p5, fallbackCurrentPx = null) {
-      let current = Number(p5?.currentPriceNum);
-      if (!Number.isFinite(current) && Number.isFinite(fallbackCurrentPx)) {
+      let current = p5?.currentPriceNum == null ? NaN : Number(p5.currentPriceNum);
+      if ((!Number.isFinite(current) || current <= 0) && Number.isFinite(fallbackCurrentPx) && fallbackCurrentPx > 0) {
         current = Number(fallbackCurrentPx);
       }
       const target = Number(p5?.targetPriceNum ?? p5?.priceToBeatNum);
-      if (!Number.isFinite(current) || !Number.isFinite(target) || target <= 0) return null;
+      if (!Number.isFinite(current) || current <= 0 || !Number.isFinite(target) || target <= 0) return null;
       const delta = current - target;
       return {
         current,

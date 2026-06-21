@@ -484,7 +484,10 @@ contextBridge.exposeInMainWorld('_orbitalBroadcaster', {
 
 contextBridge.exposeInMainWorld('dataStore', {
   appendLine: (filePath, line) => ipcRenderer.invoke('data:appendLine', filePath, line),
+  appendLineDetailed: (filePath, line) => ipcRenderer.invoke('data:appendLineDetailed', filePath, line),
   writeFile: (filePath, content) => ipcRenderer.invoke('data:writeFile', filePath, content),
+  writeFileDetailed: (filePath, content) => ipcRenderer.invoke('data:writeFileDetailed', filePath, content),
+  syncFileIncremental: (request) => ipcRenderer.invoke('data:syncFileIncremental', request),
   ensureDir: (dirPath) => ipcRenderer.invoke('data:ensureDir', dirPath),
   readFile: (filePath) => ipcRenderer.invoke('data:readFile', filePath),
   listDir: (dirPath) => ipcRenderer.invoke('data:listDir', dirPath),

@@ -1349,12 +1349,126 @@ ipcMain.handle('data:appendLine', async (_, filePath, line) => {
   } catch (e) { return false; }
 });
 
+ipcMain.handle('data:appendLineDetailed', async (_, filePath, line) => {
+  try {
+    await fsp.mkdir(path.dirname(filePath), { recursive: true });
+    await fsp.appendFile(filePath, line + '\n', 'utf8');
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, code: error?.code || null, error: error?.message || String(error) };
+  }
+});
+
 ipcMain.handle('data:writeFile', async (_, filePath, content) => {
   try {
     await fsp.mkdir(path.dirname(filePath), { recursive: true });
     await fsp.writeFile(filePath, content, 'utf8');
     return true;
   } catch (e) { return false; }
+});
+
+ipcMain.handle('data:writeFileDetailed', async (_, filePath, content) => {
+  try {
+    await fsp.mkdir(path.dirname(filePath), { recursive: true });
+    await fsp.writeFile(filePath, content, 'utf8');
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, code: error?.code || null, error: error?.message || String(error) };
+  }
+});
+
+ipcMain.handle('data:syncFileIncremental', async (_, request) => {
+  const sourcePath = String(request?.sourcePath || '');
+  const targetPath = String(request?.targetPath || '');
+  const statePath = String(request?.statePath || '');
+  if (!sourcePath || !targetPath || !statePath) {
+    return { ok: false, code: 'EINVAL', error: 'sourcePath, targetPath, and statePath are required' };
+  }
+
+  try {
+    const sourceStat = await fsp.stat(sourcePath);
+    let targetStat = null;
+    let syncState = null;
+    try { targetStat = await fsp.stat(targetPath); } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+    }
+    try { syncState = JSON.parse(await fsp.readFile(statePath, 'utf8')); } catch (_) { syncState = null; }
+
+    const stateMatchesTarget = !!(
+      syncState
+      && syncState.sourcePath === sourcePath
+      && syncState.targetPath === targetPath
+      && Number.isSafeInteger(syncState.sourceOffset)
+      && syncState.sourceOffset >= 0
+      && syncState.sourceOffset <= sourceStat.size
+      && targetStat
+      && syncState.targetSize === targetStat.size
+      && syncState.targetSize === syncState.sourceOffset
+    );
+
+    await fsp.mkdir(path.dirname(targetPath), { recursive: true });
+    let sourceOffset = stateMatchesTarget ? syncState.sourceOffset : 0;
+    let bytesCopied = 0;
+    let repaired = false;
+
+    if (!stateMatchesTarget) {
+      await fsp.copyFile(sourcePath, targetPath);
+      sourceOffset = sourceStat.size;
+      bytesCopied = sourceStat.size;
+      repaired = true;
+    } else if (sourceOffset < sourceStat.size) {
+      const sourceHandle = await fsp.open(sourcePath, 'r');
+      const targetHandle = await fsp.open(targetPath, 'a');
+      try {
+        const buffer = Buffer.allocUnsafe(1024 * 1024);
+        while (sourceOffset < sourceStat.size) {
+          const requestedBytes = Math.min(buffer.length, sourceStat.size - sourceOffset);
+          const { bytesRead } = await sourceHandle.read(buffer, 0, requestedBytes, sourceOffset);
+          if (!bytesRead) break;
+          let bufferOffset = 0;
+          while (bufferOffset < bytesRead) {
+            const { bytesWritten } = await targetHandle.write(
+              buffer,
+              bufferOffset,
+              bytesRead - bufferOffset
+            );
+            if (!bytesWritten) {
+              const writeError = new Error(`zero-byte write while syncing ${targetPath}`);
+              writeError.code = 'EIO';
+              throw writeError;
+            }
+            bufferOffset += bytesWritten;
+          }
+          sourceOffset += bytesRead;
+          bytesCopied += bytesRead;
+        }
+      } finally {
+        await Promise.allSettled([sourceHandle.close(), targetHandle.close()]);
+      }
+    }
+
+    const finalTargetStat = await fsp.stat(targetPath);
+    const expectedTargetSize = sourceOffset;
+    await fsp.mkdir(path.dirname(statePath), { recursive: true });
+    await fsp.writeFile(statePath, JSON.stringify({
+      sourcePath,
+      targetPath,
+      sourceOffset,
+      targetSize: expectedTargetSize,
+      syncedAt: Date.now(),
+    }), 'utf8');
+
+    return {
+      ok: true,
+      bytesCopied,
+      sourceOffset,
+      targetSize: expectedTargetSize,
+      observedTargetSize: finalTargetStat.size,
+      repaired,
+    };
+  } catch (error) {
+    return { ok: false, code: error?.code || null, error: error?.message || String(error) };
+  }
 });
 
 ipcMain.handle('data:readFile', async (_, filePath) => {

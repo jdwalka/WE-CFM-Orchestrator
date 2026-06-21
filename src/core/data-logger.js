@@ -1,77 +1,44 @@
-// data-logger.js  v2.1
+// data-logger.js  v2.2
 // ══════════════════════════════════════════════════════════════════════════════
-// Hybrid JSONL logger + Ctrl+D debug overlay
+// Local-spool JSONL logger + durable Google Drive sync + Ctrl+D debug overlay
 //
-// Writes every 60s to ALL available storage roots discovered at startup:
-//   G:\WECRYPTO\data\YYYY-MM-DD\{category}.jsonl          (primary dev drive on this machine)
-//   D:\WECRYPTO-data\YYYY-MM-DD\{category}.jsonl         (legacy local data root)
-//   C:\WECRYPTO-data\...  E:\WECRYPTO-data\...            (other local drives)
-//   H:\My Drive\WECRYPTO\WECRYPTO-data\...                 (Google Drive mirror)
-//   \\server\share\WECRYPTO-data\...                      (UNC network shares)
-//   OneDrive\WECRYPTO-data\...                            (personal OneDrive)
-//   OneDrive - Azure\WECRYPTO-data\...                    (business OneDrive)
+// Writes low-latency batches to a local spool, then asynchronously syncs them to:
+//   H:\My Drive\WECRYP\data\YYYY-MM-DD\{category}.jsonl
+//   I:\My Drive\WECRYP\data\YYYY-MM-DD\{category}.jsonl
 //
-// Drive list is built dynamically via storage:getDrives IPC at load time.
+// Each mounted My Drive root is write-probed at startup and every five minutes.
 // Categories: predictions · decisions · cfm_snapshots · shell_events ·
-//             resolver_outcomes · logic_debug · errors
+//             resolver_outcomes · polymarket_raw · polymarket_5m · logic_debug · errors
 // ══════════════════════════════════════════════════════════════════════════════
 
 (function () {
   'use strict';
 
-  let   LOCAL_ROOT = 'C:\\Users\\gitgo\\OneDrive\\WECRYPTO_Logs';   // primary dev drive - updated during discovery when needed
-  let   DRIVE_PATHS = [];                   // populated by discoverDrives() on startup
-  const FLUSH_MS   = 60_000;
+  let LOCAL_ROOT = '';
+  let DRIVE_PATHS = [];
+  const GOOGLE_DRIVE_ROOTS = [
+    'H:\\My Drive\\WECRYP\\data',
+    'I:\\My Drive\\WECRYP\\data',
+  ];
+  const LOCAL_FLUSH_MS = 5_000;
+  const CLOUD_SYNC_MS = 60_000;
+  const DRIVE_REPROBE_MS = 300_000;
+  const POLYMARKET_RAW_SNAPSHOT_MS = 300_000;
   const STORAGE_PROBE_TIMEOUT_MS = 20000;
-
-  function uniquePaths(paths) {
-    const seen = new Set();
-    const unique = [];
-    for (const p of paths || []) {
-      const normalized = normalizeRoot(p);
-      if (!normalized) continue;
-      const key = normalized.toLowerCase();
-      if (seen.has(key)) continue;
-      seen.add(key);
-      unique.push(normalized);
-    }
-    return unique;
-  }
+  let initialDataLoadComplete = false;
+  let driveDiscoveryInFlight = null;
+  let cloudSyncInFlight = null;
+  let lastPolymarketRawSnapshotAt = 0;
 
   function normalizeRoot(root) {
     return String(root || '').replace(/[\\/]+$/, '');
   }
 
-  function localRootLetter() {
-    const match = String(LOCAL_ROOT || '').match(/^([A-Za-z]):\\/);
-    return match ? match[1].toUpperCase() : '';
-  }
-
-  function pickPrimaryLocalRoot(drives) {
-    const letters = (drives || [])
-      .filter(d => d && d.type === 'local' && d.letter)
-      .map(d => String(d.letter).toUpperCase());
-    const preferred = ['G', 'F', 'D', 'C'];
-    const picked = preferred.find(letter => letters.includes(letter)) || letters[0];
-    return picked ? `${picked}:\\WECRYPTO\\data` : LOCAL_ROOT;
-  }
-
-  function buildCloudMirrorRoots(root) {
-    const base = normalizeRoot(root);
-    if (!base) return [];
-    return uniquePaths([
-      `${base}\\WECRYPTO\\data`,
-    ]);
-  }
-
-  function isGoogleDriveRoot(root) {
-    const value = normalizeRoot(root);
-    return /(?:^|\\)(?:My Drive|Google Drive(?:\s*\(.+\))?|OneDrive.*)$/i.test(value);
-  }
-
-  function isPreferredGoogleDriveRoot(root) {
-    // Treat any cloud drive (Google Drive, OneDrive) as preferred so it's included in discovery
-    return isGoogleDriveRoot(root);
+  function resolveLocalSpoolRoot() {
+    const localAppData = normalizeRoot(window.desktopApp?.userEnv?.localAppData);
+    return localAppData
+      ? `${localAppData}\\WECRYP\\data-spool`
+      : 'C:\\WECRYP\\data-spool';
   }
 
   function writeResultOk(result) {
@@ -101,7 +68,8 @@
 
   async function probeStorageRoot(root) {
     const normalized = normalizeRoot(root);
-    if (!normalized || !window.dataStore?.writeFile) {
+    const writeFile = window.dataStore?.writeFileDetailed || window.dataStore?.writeFile;
+    if (!normalized || !writeFile) {
       return { ok: false, root: normalized, error: 'dataStore write bridge unavailable' };
     }
 
@@ -112,7 +80,7 @@
       root: normalized,
     });
     const result = await withTimeout(
-      window.dataStore.writeFile(probePath, payload),
+      writeFile(probePath, payload),
       STORAGE_PROBE_TIMEOUT_MS,
       probePath
     );
@@ -123,24 +91,49 @@
 
   
   // ── Async drive discovery — runs once on load ─────────────────────────────
-  async function discoverDrives() {
+  function discoverDrives() {
+    if (driveDiscoveryInFlight) return driveDiscoveryInFlight;
+    driveDiscoveryInFlight = runDriveDiscovery().finally(() => { driveDiscoveryInFlight = null; });
+    return driveDiscoveryInFlight;
+  }
+
+  async function runDriveDiscovery() {
     try {
-      LOCAL_ROOT = 'H:\\My Drive\\WECRYPTO_Logs';
-      DRIVE_PATHS = ['I:\\My Drive\\WECRYPTO_Logs'];
+      LOCAL_ROOT = resolveLocalSpoolRoot();
+      const localProbe = await probeStorageRoot(LOCAL_ROOT);
+      if (!localProbe.ok) {
+        throw new Error(`local spool unavailable: ${localProbe.error || localProbe.code || LOCAL_ROOT}`);
+      }
+
+      const googleProbes = await Promise.all(GOOGLE_DRIVE_ROOTS.map(probeStorageRoot));
+      DRIVE_PATHS = googleProbes.filter(result => result.ok).map(result => result.root);
       _storage.ready = true;
       _storage.discoveredAt = Date.now();
+      _storage.googleRoots = [...GOOGLE_DRIVE_ROOTS];
+      _storage.googleTargets = [...DRIVE_PATHS];
       _storage.writableRoots = [LOCAL_ROOT, ...DRIVE_PATHS];
-      
-      console.log('[DataLogger] writable storage roots:', [LOCAL_ROOT, ...DRIVE_PATHS].join(' | '));
-      
-      // Load freshest data from C: immediately
-      await loadFreshestData();
-      
-      // Background load historical from H:
-      setTimeout(backloadHistoricalData, 5000);
-      
+      _storage.failedRoots = googleProbes.filter(result => !result.ok);
+      _stats.session.storageReady = true;
+      _stats.session.storageRoots = 1 + DRIVE_PATHS.length;
+      _stats.session.lastStorageDiscovery = Date.now();
+
+      console.log('[DataLogger] local spool:', LOCAL_ROOT);
+      console.log('[DataLogger] writable Google My Drive targets:', DRIVE_PATHS.join(' | ') || 'none');
+      if (_storage.failedRoots.length) {
+        console.warn('[DataLogger] unavailable Google My Drive targets:', _storage.failedRoots.map(result => `${result.root}: ${result.error || result.code || 'probe failed'}`).join(' | '));
+      }
+
+      await trackLocalSpoolPartitions();
+      if (!initialDataLoadComplete) {
+        initialDataLoadComplete = true;
+        await loadFreshestData();
+        setTimeout(backloadHistoricalData, 5000);
+      }
     } catch (e) {
       console.warn('[DataLogger] drive discovery failed:', e.message);
+      _storage.ready = true;
+      _storage.discoveredAt = Date.now();
+      _storage.failedRoots = [{ root: LOCAL_ROOT, error: e.message }];
     }
   }
 
@@ -149,14 +142,20 @@
     try {
       const today = todayStr();
       const d = new Date(); d.setDate(d.getDate() - 1);
-      const yesterday = d.toISOString().slice(0, 10);
+      const yesterday = localDayStr(d);
       
       const cats = ['predictions', 'decisions', 'resolver_outcomes'];
       for (const day of [yesterday, today]) {
         for (const cat of cats) {
-          const path = `${LOCAL_ROOT}\\${day}\\${cat}.jsonl`;
           try {
-            const res = await window.dataStore.readFile(path);
+            let res = null;
+            for (const root of [LOCAL_ROOT, ...DRIVE_PATHS]) {
+              const candidate = await window.dataStore.readFile(`${root}\\${day}\\${cat}.jsonl`);
+              if (candidate?.data || candidate?.content) {
+                res = candidate;
+                break;
+              }
+            }
             if (res?.data || res?.content) {
               const content = res.data || res.content;
               const lines = content.split('\\n');
@@ -211,7 +210,7 @@
       const cats = ['predictions', 'decisions', 'resolver_outcomes'];
       for (let i = 2; i <= 7; i++) {
         const d = new Date(); d.setDate(d.getDate() - i);
-        const day = d.toISOString().slice(0, 10);
+        const day = localDayStr(d);
         for (const cat of cats) {
           const path = `${DRIVE_PATHS[0]}\\${day}\\${cat}.jsonl`;
           try {
@@ -245,7 +244,8 @@
   }
 
   // ── Buffer + Stats ──────────────────────────────────────────────────────────
-  const _buf = {};   // category → string[]
+  const _buf = {};   // category -> string[] awaiting local spool
+  const _cloudPartitions = new Set(); // day|category files monitored for incremental sync
   const _storage = {
     ready: false,
     discoveredAt: 0,
@@ -268,6 +268,9 @@
       storageRoots: 0,
       lastStorageDiscovery: 0,
       lastWriteFailure: null,
+      cloudSyncCount: 0,
+      cloudTrackedFiles: 0,
+      cloudSyncFailures: 0,
     },
     predictions:      {},   // sym → { total, up, down, scores[] }
     decisions:        {},   // sym → { trade, watch, hold, exit, skip }
@@ -278,13 +281,55 @@
   };
 
   // ── Helpers ─────────────────────────────────────────────────────────────────
-  function todayStr() { return new Date().toISOString().slice(0, 10); }
+  function localDayStr(date = new Date()) {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }
+
+  function todayStr() { return localDayStr(); }
 
   function filePaths(category) {
     const day = todayStr();
     const paths = [`${LOCAL_ROOT}\\${day}\\${category}.jsonl`];
     for (const d of DRIVE_PATHS) paths.push(`${d}\\${day}\\${category}.jsonl`);
     return paths;
+  }
+
+  function trackCloudPartition(day, category) {
+    _cloudPartitions.add(`${day}|${category}`);
+    _stats.session.cloudTrackedFiles = _cloudPartitions.size;
+  }
+
+  async function trackLocalSpoolPartitions() {
+    if (!LOCAL_ROOT || !window.dataStore?.listDir) return;
+    const days = [new Date()];
+    const yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+    days.push(yesterday);
+
+    for (const date of days) {
+      const day = localDayStr(date);
+      const result = await window.dataStore.listDir(`${LOCAL_ROOT}\\${day}`);
+      if (!result?.ok || !Array.isArray(result.entries)) continue;
+      for (const entry of result.entries) {
+        if (typeof entry !== 'string' || !entry.endsWith('.jsonl')) continue;
+        trackCloudPartition(day, entry.slice(0, -6));
+      }
+    }
+  }
+
+  async function appendBlock(filePath, block) {
+    const appendLine = window.dataStore?.appendLineDetailed || window.dataStore?.appendLine;
+    if (!appendLine) return { ok: false, path: filePath, error: 'dataStore append bridge unavailable' };
+    try {
+      const result = await appendLine(filePath, block);
+      if (writeResultOk(result)) return { ok: true, path: filePath };
+      return { ok: false, path: filePath, error: writeResultError(result), code: result?.code || null };
+    } catch (error) {
+      return { ok: false, path: filePath, error: error?.message || String(error), code: error?.code || null };
+    }
   }
 
   function push(category, obj) {
@@ -296,44 +341,94 @@
   async function flushCat(category) {
     const lines = _buf[category];
     if (!lines || !lines.length) return;
-    if (!window.dataStore?.appendLine) return;
 
     const block = lines.join('\n');
     _buf[category] = [];
-
-    const attempts = await Promise.all(filePaths(category).map(async (p) => {
-      try {
-        const result = await window.dataStore.appendLine(p, block);
-        if (writeResultOk(result)) return { ok: true, path: p };
-        return { ok: false, path: p, error: writeResultError(result), code: result?.code || null };
-      } catch (e) {
-        return { ok: false, path: p, error: e?.message || String(e), code: e?.code || null };
-      }
-    }));
-
-    const successes = attempts.filter(result => result.ok);
-    const failures = attempts.filter(result => !result.ok);
-    if (!successes.length) {
+    const day = todayStr();
+    const localPath = `${LOCAL_ROOT}\\${day}\\${category}.jsonl`;
+    const localResult = await appendBlock(localPath, block);
+    if (!localResult.ok) {
       _buf[category] = lines.concat(_buf[category] || []);
-    }
-
-    if (failures.length) {
       const failureSummary = {
         category,
         ts: Date.now(),
-        keptBuffered: successes.length === 0,
-        failures: failures.slice(0, 8),
+        tier: 'local-spool',
+        keptBuffered: true,
+        failures: [localResult],
       };
       _storage.lastWriteFailure = failureSummary;
-      _stats.session.writeFailures += failures.length;
+      _stats.session.writeFailures++;
       _stats.session.lastWriteFailure = failureSummary;
-      console.warn('[DataLogger] write failures:', category, failures.map(f => `${f.path}: ${f.error || f.code || 'failed'}`).join(' | '));
+      console.warn('[DataLogger] local spool write failed:', category, `${localResult.path}: ${localResult.error || localResult.code || 'failed'}`);
       try {
         window.dispatchEvent(new CustomEvent('data-logger-write-error', { detail: failureSummary }));
       } catch (_) {}
+      return;
     }
 
-    _stats.session.bytesWritten += block.length * successes.length;
+    trackCloudPartition(day, category);
+    _stats.session.bytesWritten += block.length;
+  }
+
+  function logPolymarketRaw(data) {
+    const now = Date.now();
+    if (now - lastPolymarketRawSnapshotAt < POLYMARKET_RAW_SNAPSHOT_MS) return;
+    lastPolymarketRawSnapshotAt = now;
+    push('polymarket_raw', {
+      markets: data,
+      snapshotIntervalMs: POLYMARKET_RAW_SNAPSHOT_MS,
+    });
+  }
+
+  function syncCloudPending() {
+    if (cloudSyncInFlight) return cloudSyncInFlight;
+    cloudSyncInFlight = runCloudSyncPending().finally(() => { cloudSyncInFlight = null; });
+    return cloudSyncInFlight;
+  }
+
+  async function runCloudSyncPending() {
+    if (!_storage.ready) return;
+    if (!DRIVE_PATHS.length) {
+      await discoverDrives();
+      if (!DRIVE_PATHS.length) return;
+    }
+
+    const syncFileIncremental = window.dataStore?.syncFileIncremental;
+    if (!syncFileIncremental) {
+      console.warn('[DataLogger] incremental Google My Drive sync bridge unavailable');
+      return;
+    }
+
+    for (const queueKey of _cloudPartitions) {
+      const separatorIndex = queueKey.indexOf('|');
+      const day = queueKey.slice(0, separatorIndex);
+      const category = queueKey.slice(separatorIndex + 1);
+      const sourcePath = `${LOCAL_ROOT}\\${day}\\${category}.jsonl`;
+
+      for (const root of DRIVE_PATHS) {
+        const cloudPath = `${root}\\${day}\\${category}.jsonl`;
+        const driveId = String(root).slice(0, 1).toLowerCase() || 'drive';
+        const statePath = `${LOCAL_ROOT}\\.sync-state\\${driveId}\\${day}\\${category}.json`;
+        const result = await syncFileIncremental({ sourcePath, targetPath: cloudPath, statePath });
+        if (result.ok) {
+          _stats.session.cloudSyncCount++;
+          continue;
+        }
+
+        const failureSummary = {
+          category,
+          ts: Date.now(),
+          tier: 'google-drive',
+          keptBuffered: true,
+          failures: [result],
+        };
+        _storage.lastWriteFailure = failureSummary;
+        _stats.session.writeFailures++;
+        _stats.session.cloudSyncFailures++;
+        _stats.session.lastWriteFailure = failureSummary;
+        console.warn('[DataLogger] Google My Drive sync failed; local spool retained:', `${cloudPath}: ${result.error || result.code || 'failed'}`);
+      }
+    }
   }
 
   async function flushAll() {
@@ -587,7 +682,7 @@
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;border-bottom:1px solid rgba(255,255,255,0.08);padding-bottom:10px">
       <span style="font-size:15px;font-weight:800;color:var(--color-primary,#7c6aff)">⚙ WeCrypto Debug Metrics</span>
       <span style="font-size:10px;color:var(--color-text-muted)">
-        Uptime <b>${upMin}m</b> · <b>${s.session.flushCount}</b> flushes · <b>${kb} KB</b> written ·
+        Uptime <b>${upMin}m</b> · <b>${s.session.flushCount}</b> local flushes · <b>${kb} KB</b> written ·
         <b>${1 + DRIVE_PATHS.length}</b> storage root(s) active · <kbd style="background:rgba(255,255,255,0.1);padding:1px 4px;border-radius:3px">Ctrl+D</kbd> close
       </span>
     </div>
@@ -646,16 +741,17 @@
 
         <div style="margin-top:14px;padding:10px 12px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.07);border-radius:6px;font-size:10px;color:var(--color-text-muted);line-height:1.9">
           <div style="font-weight:700;color:var(--color-text,#e2e8f0);margin-bottom:4px">💾 Storage Paths (${1 + DRIVE_PATHS.length} roots)</div>
-          <div>📁 Primary: <code>${LOCAL_ROOT}\\${todayStr()}</code></div>
-          ${DRIVE_PATHS.map(p => `<div>💾 Mirror: <code>${p}\\${todayStr()}</code></div>`).join('')}
-          ${DRIVE_PATHS.length === 0 ? '<div style="color:var(--color-gold)">⚠ Discovering drives…</div>' : ''}
+          <div>📁 Local spool: <code>${LOCAL_ROOT}\\${todayStr()}</code></div>
+          ${DRIVE_PATHS.map(p => `<div>💾 Google My Drive: <code>${p}\\${todayStr()}</code></div>`).join('')}
+          ${DRIVE_PATHS.length === 0 ? '<div style="color:var(--color-gold)">⚠ Google My Drive unavailable; retaining local spool</div>' : ''}
+          <div>Cloud monitor: <b>${s.session.cloudTrackedFiles}</b> files · sync checks: <b>${s.session.cloudSyncCount}</b> · failures: <b>${s.session.cloudSyncFailures}</b></div>
           ${_storage.accountHints.length ? `<div>Google accounts: <code>${_storage.accountHints.join('</code> · <code>')}</code></div>` : ''}
           ${s.session.writeFailures ? `<div style="color:var(--color-red);margin-top:4px">Write failures: <b>${s.session.writeFailures}</b> · last: <code>${s.session.lastWriteFailure?.category || 'unknown'}</code></div>` : ''}
-          <div style="margin-top:6px">Categories: predictions · decisions · cfm_snapshots · shell_events · resolver_outcomes · logic_debug · errors</div>
+          <div style="margin-top:6px">Categories: predictions · decisions · cfm_snapshots · shell_events · resolver_outcomes · polymarket_raw · polymarket_5m · logic_debug · errors</div>
         </div>
 
         <div style="margin-top:10px;font-size:10px;color:var(--color-text-muted)">
-          Auto-refresh every 3s · Flush every 60s · Press <kbd style="background:rgba(255,255,255,0.1);padding:1px 4px;border-radius:3px">Ctrl+D</kbd> or <kbd style="background:rgba(255,255,255,0.1);padding:1px 4px;border-radius:3px">Esc</kbd> to close
+          Auto-refresh every 3s · Local flush every 5s · Google sync every 60s · Press <kbd style="background:rgba(255,255,255,0.1);padding:1px 4px;border-radius:3px">Ctrl+D</kbd> or <kbd style="background:rgba(255,255,255,0.1);padding:1px 4px;border-radius:3px">Esc</kbd> to close
         </div>
       </div>
 
@@ -735,8 +831,10 @@
   window.addEventListener('error', e => logError('window', e.error || e.message));
   window.addEventListener('unhandledrejection', e => logError('promise', e.reason));
 
-  // ── 60s flush timer ──────────────────────────────────────────────────────────
-  setInterval(flushAll, FLUSH_MS);
+  // Local writes stay off the cloud mount's latency path; cloud sync retries independently.
+  setInterval(flushAll, LOCAL_FLUSH_MS);
+  setInterval(syncCloudPending, CLOUD_SYNC_MS);
+  setInterval(discoverDrives, DRIVE_REPROBE_MS);
 
   // ── Public API ───────────────────────────────────────────────────────────────
   window.DataLogger = {
@@ -748,8 +846,12 @@
     logLogicDebug,
     logError,
     logPolymarketOutcome: (sym, record) => push('polymarket_outcomes', { sym, ...record, ts: Date.now() }),
-    logPolymarket: (data) => push('polymarket_raw', { markets: data }),
-    flush:         flushAll,
+    logPolymarket: logPolymarketRaw,
+    logPolymarket5M: (data) => push('polymarket_5m', { markets: data }),
+    flush:         async () => {
+      await flushAll();
+      await syncCloudPending();
+    },
     getStats:      () => _stats,
     getStorageRoots: () => ({
       primary: LOCAL_ROOT,
@@ -764,5 +866,5 @@
 
   // Kick off async drive discovery — populates DRIVE_PATHS before first flush
   discoverDrives();
-  console.log('[DataLogger] v2.1 — dynamic storage discovery started | primary=' + LOCAL_ROOT + ' | flush=60s | Ctrl+D=debug overlay');
+  console.log('[DataLogger] v2.2 — local spool + Google My Drive sync started | local=5s | cloud=60s | Ctrl+D=debug overlay');
 })();

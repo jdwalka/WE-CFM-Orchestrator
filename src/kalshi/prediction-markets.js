@@ -308,6 +308,12 @@
     return Math.max(0, Math.min(1, n));
   }
 
+  function toPositiveFiniteNumber(value) {
+    if (value == null || value === '') return null;
+    const n = Number(value);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  }
+
   function deriveAskFromReciprocal(directAsk, opposingBid) {
     const ask = toFiniteProbability(directAsk);
     if (ask != null && ask > 0) return ask;
@@ -1348,11 +1354,11 @@
           priceToBeatSource = 'polymarket-rtds-chainlink-open';
         }
 
-        let currentPriceNum = Number(cryptoWindow?.closePrice);
-        const currentPriceTs = Number(rtds?.currentPriceTs);
-        if (!Number.isFinite(currentPriceNum)) currentPriceNum = Number(rtds?.currentPriceNum);
+        let currentPriceNum = toPositiveFiniteNumber(cryptoWindow?.closePrice);
+        const currentPriceTs = toPositiveFiniteNumber(rtds?.currentPriceTs);
+        if (currentPriceNum == null) currentPriceNum = toPositiveFiniteNumber(rtds?.currentPriceNum);
         const priceToBeat = _formatPolyPriceToBeat(priceToBeatNum);
-        const hasLiveComparison = Number.isFinite(currentPriceNum) && Number.isFinite(priceToBeatNum) && priceToBeatNum > 0;
+        const hasLiveComparison = currentPriceNum != null && Number.isFinite(priceToBeatNum) && priceToBeatNum > 0;
         const priceDeltaNum = hasLiveComparison ? currentPriceNum - priceToBeatNum : null;
         const priceDeltaPct = hasLiveComparison ? priceDeltaNum / priceToBeatNum : null;
         const liveDirection = hasLiveComparison
@@ -1378,8 +1384,8 @@
           priceToBeatNum,
           priceToBeatSource,
           currentPrice: _formatPolyPriceToBeat(currentPriceNum),
-          currentPriceNum: Number.isFinite(currentPriceNum) ? currentPriceNum : null,
-          currentPriceTs: Number.isFinite(currentPriceTs) ? currentPriceTs : null,
+          currentPriceNum,
+          currentPriceTs,
           priceDelta: priceDeltaNum != null ? _formatPolyPriceToBeat(Math.abs(priceDeltaNum)) : null,
           priceDeltaNum,
           priceDeltaPct,
@@ -1403,7 +1409,7 @@
             slug: marketSlug,
             targetPrice: priceToBeat,
             targetPriceNum: priceToBeatNum,
-            currentPriceNum: Number.isFinite(currentPriceNum) ? currentPriceNum : null,
+            currentPriceNum,
             priceDeltaNum,
             liveDirection,
             discoverySource: hit.source || 'gamma-markets-slug',
@@ -1566,6 +1572,11 @@
         if (!poly5m) continue;
         _k5mCache[sym] = { ...(_k5mCache[sym] || {}), _poly5m: poly5m };
       }
+      window.DataLogger?.logPolymarket5M({
+        fetchedAt: Date.now(),
+        source: 'deterministic-slug-clob',
+        contracts: poly5mResults,
+      });
     }
 
     // --- Network Health Reporting ---
