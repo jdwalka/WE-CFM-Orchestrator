@@ -76,17 +76,6 @@
     HYPE: 'hype',
   };
 
-  const POLY_CHAINLINK_SYMBOLS = {
-    BTC: 'btc/usd',
-    ETH: 'eth/usd',
-    SOL: 'sol/usd',
-    XRP: 'xrp/usd',
-    DOGE: 'doge/usd',
-    BNB: 'bnb/usd',
-    HYPE: 'hype/usd',
-  };
-
-
   let cache = {};
   let lastFetch = 0;
   let inFlight = null;
@@ -1148,14 +1137,21 @@
   let _poly5mCache = {};
   let _poly5mPriceToBeatCache = {};
   const _poly5mPriceToBeatLocks = new Map();
-  let _poly5mCryptoPriceCache = {};
-  let _poly5mRtdsOpenCache = {};
   let _poly5mEventScanCache = { fetchedAt: 0, events: [], source: '', error: '' };
   let _poly5mClobSnapshotCache = {};
+  const POLY5M_PTB_LOCK_VERSION = 2;
+  const POLY5M_PTB_TRUSTED_SOURCES = new Set([
+    'gamma-market-metadata',
+    'polymarket-event-page',
+    'polymarket-title',
+  ]);
 
-  function _formatPolyPriceToBeat(value) {
+  function _formatPolyPriceToBeat(value, symbol = '') {
     const n = Number(value);
     if (!Number.isFinite(n) || n <= 0) return null;
+    if (String(symbol).toUpperCase() === 'BTC') {
+      return `$${Math.round(n).toLocaleString()}`;
+    }
     if (n >= 1000) return `$${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
     if (n >= 1) return `$${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 })}`;
     return `$${n.toLocaleString(undefined, { minimumFractionDigits: 4, maximumFractionDigits: 8 })}`;
@@ -1163,7 +1159,7 @@
 
   function _lockPolymarketPriceToBeat(slug, value, source) {
     const price = toPositiveFiniteNumber(value);
-    if (!slug || price == null) return null;
+    if (!slug || price == null || !POLY5M_PTB_TRUSTED_SOURCES.has(source)) return null;
     const existing = _poly5mPriceToBeatLocks.get(slug);
     if (existing) {
       if (Math.abs(existing.price - price) > Math.max(0.000001, existing.price * 1e-8)) {
@@ -1171,9 +1167,16 @@
       }
       return existing;
     }
-    const locked = { price, source: source || 'unknown', lockedAt: Date.now() };
+    const locked = Object.freeze({
+      version: POLY5M_PTB_LOCK_VERSION,
+      price,
+      source,
+      lockedAt: Date.now(),
+    });
     _poly5mPriceToBeatLocks.set(slug, locked);
-    try { localStorage.setItem(`poly5m:ptb:${slug}`, JSON.stringify(locked)); } catch (_) { }
+    try { localStorage.setItem(`poly5m:ptb:v${POLY5M_PTB_LOCK_VERSION}:${slug}`, JSON.stringify(locked)); } catch (err) {
+      console.warn(`[Poly5M-PTB] Could not persist immutable lock for ${slug}:`, err?.message || err);
+    }
     return locked;
   }
 
@@ -1182,13 +1185,23 @@
     const memoryLock = _poly5mPriceToBeatLocks.get(slug);
     if (memoryLock) return memoryLock;
     try {
-      const stored = JSON.parse(localStorage.getItem(`poly5m:ptb:${slug}`) || 'null');
+      const storageKey = `poly5m:ptb:v${POLY5M_PTB_LOCK_VERSION}:${slug}`;
+      const stored = JSON.parse(localStorage.getItem(storageKey) || 'null');
       const price = toPositiveFiniteNumber(stored?.price);
-      if (price == null) return null;
-      const lock = { price, source: stored.source || 'persisted-contract-lock', lockedAt: Number(stored.lockedAt) || 0 };
+      if (stored?.version !== POLY5M_PTB_LOCK_VERSION || price == null || !POLY5M_PTB_TRUSTED_SOURCES.has(stored?.source)) {
+        localStorage.removeItem(storageKey);
+        return null;
+      }
+      const lock = Object.freeze({
+        version: POLY5M_PTB_LOCK_VERSION,
+        price,
+        source: stored.source,
+        lockedAt: Number(stored.lockedAt) || 0,
+      });
       _poly5mPriceToBeatLocks.set(slug, lock);
       return lock;
-    } catch (_) {
+    } catch (err) {
+      console.warn(`[Poly5M-PTB] Could not restore immutable lock for ${slug}:`, err?.message || err);
       return null;
     }
   }
@@ -1270,37 +1283,6 @@
     return null;
   }
 
-  async function fetchPolymarketCryptoWindowPrice(sym, startMs) {
-    const coin = POLY_5M_COIN_SLUGS[sym];
-    if (!coin || !Number.isFinite(startMs)) return null;
-    const startSec = Math.floor(startMs / 1000);
-    const cacheKey = `${sym}:${startSec}`;
-    const cached = _poly5mCryptoPriceCache[cacheKey];
-    if (cached && Date.now() - cached.fetchedAt < 5_000) return cached.value;
-
-    try {
-      const url = `https://polymarket.com/api/crypto/crypto-price?symbol=${encodeURIComponent(coin)}&eventStartTime=${startSec}`;
-      const data = await apiFetch(url);
-      const openPrice = Number(data?.openPrice);
-      const closePrice = Number(data?.closePrice);
-      const timestamp = Number(data?.timestamp);
-      const value = {
-        openPrice: Number.isFinite(openPrice) && openPrice > 0 ? openPrice : null,
-        closePrice: Number.isFinite(closePrice) && closePrice > 0 ? closePrice : null,
-        timestamp: Number.isFinite(timestamp) && timestamp > 0 ? timestamp : null,
-        completed: Boolean(data?.completed),
-        incomplete: Boolean(data?.incomplete),
-        cached: Boolean(data?.cached),
-      };
-      _poly5mCryptoPriceCache[cacheKey] = { value, fetchedAt: Date.now() };
-      return value;
-    } catch (err) {
-      console.warn(`[PredictionMarkets] Poly5M crypto-price fetch failed for ${sym}:`, err?.message || err);
-      _poly5mCryptoPriceCache[cacheKey] = { value: null, fetchedAt: Date.now() };
-      return null;
-    }
-  }
-
   async function fetchPolymarketPriceToBeat(slug) {
     if (!slug) return null;
     const cached = _poly5mPriceToBeatCache[slug];
@@ -1317,99 +1299,7 @@
     }
   }
 
-  function _selectOpeningChainlinkTick(rows, startMs) {
-    if (!Array.isArray(rows) || !Number.isFinite(startMs)) return null;
-    let inWindow = null;
-    for (const row of rows) {
-      const ts = Number(row?.timestamp);
-      const value = Number(row?.value);
-      if (!Number.isFinite(ts) || !Number.isFinite(value) || value <= 0) continue;
-      if (ts >= startMs && ts <= startMs + 10_000 && (!inWindow || ts < inWindow.ts)) {
-        inWindow = { ts, value };
-      }
-    }
-    return inWindow;
-  }
-
-  function _selectLatestChainlinkTick(rows) {
-    if (!Array.isArray(rows)) return null;
-    let best = null;
-    for (const row of rows) {
-      const ts = Number(row?.timestamp);
-      const value = Number(row?.value);
-      if (!Number.isFinite(ts) || !Number.isFinite(value) || value <= 0) continue;
-      if (!best || ts > best.ts) best = { ts, value };
-    }
-    return best;
-  }
-
-  async function fetchPolymarketRtdsSnapshot(sym, startMs, timeoutMs = 1800) {
-    const chainlinkSymbol = POLY_CHAINLINK_SYMBOLS[sym];
-    if (!chainlinkSymbol || typeof WebSocket === 'undefined') return null;
-
-    const cacheKey = `${sym}:${startMs}`;
-    const cached = _poly5mRtdsOpenCache[cacheKey];
-    if (cached && Date.now() - cached.fetchedAt < 5_000) return cached.value;
-
-    return new Promise(resolve => {
-      let settled = false;
-      let socket = null;
-      const finish = (value) => {
-        if (settled) return;
-        settled = true;
-        _poly5mRtdsOpenCache[cacheKey] = { value, fetchedAt: Date.now() };
-        try { if (socket) socket.close(); } catch (_) { }
-        resolve(value);
-      };
-
-      const timerId = setTimeout(() => finish(null), timeoutMs);
-      try {
-        socket = new WebSocket('wss://ws-live-data.polymarket.com');
-        socket.onopen = () => {
-          socket.send(JSON.stringify({
-            action: 'subscribe',
-            subscriptions: [{
-              topic: 'crypto_prices_chainlink',
-              type: '*',
-              filters: JSON.stringify({ symbol: chainlinkSymbol }),
-            }],
-          }));
-        };
-        socket.onmessage = (event) => {
-          let msg = null;
-          try { msg = JSON.parse(String(event.data || '')); } catch (_) { return; }
-          const payload = msg?.payload || {};
-          const rows = Array.isArray(payload.data)
-            ? payload.data
-            : [{ timestamp: payload.timestamp ?? msg.timestamp, value: payload.value }];
-          const latestTick = _selectLatestChainlinkTick(rows);
-          if (!latestTick) return;
-          const openingTick = _selectOpeningChainlinkTick(rows, startMs);
-          clearTimeout(timerId);
-          finish({
-            currentPriceNum: latestTick.value,
-            currentPriceTs: latestTick.ts,
-            openingPriceNum: openingTick?.value ?? null,
-            openingPriceTs: openingTick?.ts ?? null,
-          });
-        };
-        socket.onerror = () => {
-          clearTimeout(timerId);
-          finish(null);
-        };
-        socket.onclose = () => {
-          clearTimeout(timerId);
-          finish(null);
-        };
-      } catch (_) {
-        clearTimeout(timerId);
-        finish(null);
-      }
-    });
-  }
-
-
-      async function fetchPolymarket5MBySlug(sym) {
+  async function fetchPolymarket5MBySlug(sym) {
     const coinSlugPrefix = POLY_5M_COIN_SLUGS[sym];
     if (!coinSlugPrefix) return null;
 
@@ -1448,13 +1338,6 @@
         const startDate = new Date(ts * 1000).toISOString();
         const volume = parseFloat(m.volume24hr || m.volumeNum || m.volume || 0) || 0;
         const marketSlug = m.slug || slug;
-        const startMs = ts * 1000;
-        const [cryptoWindow, rtds] = isActiveWindow
-          ? await Promise.all([
-            fetchPolymarketCryptoWindowPrice(sym, startMs),
-            fetchPolymarketRtdsSnapshot(sym, startMs),
-          ])
-          : [null, null];
         let priceToBeatSource = null;
         let priceToBeatNum = null;
         const lockedPriceToBeat = _getPolymarketPriceToBeatLock(marketSlug);
@@ -1479,11 +1362,6 @@
             if (Number.isFinite(priceToBeatNum)) priceToBeatSource = 'polymarket-event-page';
           }
 
-          // Oracle opening ticks are legitimate only after this exact window starts.
-          // The crypto-price HTTP endpoint is intentionally excluded because it can
-          // return a cached opening from a different five-minute window.
-          if (startMs <= Date.now()) {
-          }
         }
 
         if (priceToBeatNum == null && title) {
@@ -1504,23 +1382,17 @@
           console.log(`[Poly5M-PTB] ${sym} ${marketSlug} → $${priceToBeatNum} (source: ${priceToBeatSource})`);
         }
 
-        let chainlinkCurrentPriceNum = toPositiveFiniteNumber(cryptoWindow?.closePrice);
-        let chainlinkCurrentPriceTs = toPositiveFiniteNumber(cryptoWindow?.timestamp);
-        if (chainlinkCurrentPriceNum == null) {
-          chainlinkCurrentPriceNum = toPositiveFiniteNumber(rtds?.currentPriceNum);
-          chainlinkCurrentPriceTs = toPositiveFiniteNumber(rtds?.currentPriceTs);
-        }
+        const chainlinkCurrentPriceNum = null;
+        const chainlinkCurrentPriceTs = null;
         const pythCurrent = await getFreshPythLazerPrice(sym);
-        const currentPriceNum = pythCurrent?.price ?? chainlinkCurrentPriceNum;
-        const currentPriceTs = pythCurrent?.timestamp ?? chainlinkCurrentPriceTs;
-        const currentPriceSource = pythCurrent?.source || 'polymarket-chainlink';
-        const oracleBasisNum = pythCurrent && chainlinkCurrentPriceNum != null
-          ? pythCurrent.price - chainlinkCurrentPriceNum
-          : null;
+        const currentPriceNum = pythCurrent?.price ?? null;
+        const currentPriceTs = pythCurrent?.timestamp ?? null;
+        const currentPriceSource = pythCurrent?.source || null;
+        const oracleBasisNum = null;
         const currentPriceJustification = pythCurrent
-          ? 'Pyth Lazer real-time price compared with Polymarket Chainlink opening PTB; settlement remains Chainlink.'
-          : 'Polymarket Chainlink current price fallback; Pyth Lazer was unavailable or stale.';
-        const priceToBeat = _formatPolyPriceToBeat(priceToBeatNum);
+          ? 'Pyth Lazer real-time price compared with the immutable Polymarket contract PTB; settlement remains Chainlink.'
+          : 'Pyth Lazer real-time price is unavailable or stale; the contract PTB remains locked.';
+        const priceToBeat = _formatPolyPriceToBeat(priceToBeatNum, sym);
         const hasLiveComparison = currentPriceNum != null && Number.isFinite(priceToBeatNum) && priceToBeatNum > 0;
         const priceDeltaNum = hasLiveComparison ? currentPriceNum - priceToBeatNum : null;
         const priceDeltaPct = hasLiveComparison ? priceDeltaNum / priceToBeatNum : null;
