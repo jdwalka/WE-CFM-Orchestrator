@@ -1226,12 +1226,28 @@
     const endIso = new Date((startSec + 300) * 1000).toISOString().replace('.000Z', 'Z');
     const queryKey = JSON.stringify(['crypto-prices', 'price', querySymbol, startIso, 'fiveminute', endIso]);
     const queryKeyIndex = html.indexOf(`"queryKey":${queryKey}`);
-    if (queryKeyIndex === -1) return null;
-    const queryStart = Math.max(0, html.lastIndexOf('{"dehydratedAt":', queryKeyIndex));
-    const queryChunk = html.slice(queryStart, queryKeyIndex);
-    const openMatch = queryChunk.match(/"openPrice":\s*([0-9]+(?:\.[0-9]+)?)/);
-    const op = openMatch ? Number(openMatch[1]) : NaN;
-    if (Number.isFinite(op) && op > 0) return op;
+    if (queryKeyIndex !== -1) {
+      const queryStart = Math.max(0, html.lastIndexOf('{"dehydratedAt":', queryKeyIndex));
+      const queryChunk = html.slice(queryStart, queryKeyIndex);
+      const openMatch = queryChunk.match(/"openPrice":\s*([0-9]+(?:\.[0-9]+)?)/);
+      const op = openMatch ? Number(openMatch[1]) : NaN;
+      if (Number.isFinite(op) && op > 0) return op;
+    }
+
+    // Before the current openPrice query is hydrated, the previous window's
+    // final close is the same continuous Chainlink boundary and is available
+    // in the contract-scoped past-results query.
+    const currentWindowSec = Math.floor(Date.now() / 300_000) * 300;
+    if (startSec !== currentWindowSec) return null;
+    const historyKey = JSON.stringify(['past-results', querySymbol, 'fiveminute', startIso]);
+    const historyKeyIndex = html.indexOf(`"queryKey":${historyKey}`);
+    if (historyKeyIndex !== -1) {
+      const historyStart = Math.max(0, html.lastIndexOf('{"dehydratedAt":', historyKeyIndex));
+      const historyChunk = html.slice(historyStart, historyKeyIndex);
+      const closeMatches = [...historyChunk.matchAll(/"closePrice":\s*([0-9]+(?:\.[0-9]+)?)/g)];
+      const priorClose = closeMatches.length ? Number(closeMatches[closeMatches.length - 1][1]) : NaN;
+      if (Number.isFinite(priorClose) && priorClose > 0) return priorClose;
+    }
     return null;
   }
 
@@ -1288,7 +1304,7 @@
   async function fetchPolymarketPriceToBeat(slug) {
     if (!slug) return null;
     const cached = _poly5mPriceToBeatCache[slug];
-    if (cached && (cached.value != null || Date.now() - cached.fetchedAt < 45_000)) return cached.value;
+    if (cached && (cached.value != null || Date.now() - cached.fetchedAt < 3_000)) return cached.value;
     try {
       const html = await textFetch(`https://polymarket.com/event/${encodeURIComponent(slug)}`);
       const value = _parsePolymarketPriceToBeat(html, slug);
