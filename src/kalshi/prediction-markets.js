@@ -1139,11 +1139,9 @@
   const _poly5mPriceToBeatLocks = new Map();
   let _poly5mEventScanCache = { fetchedAt: 0, events: [], source: '', error: '' };
   let _poly5mClobSnapshotCache = {};
-  const POLY5M_PTB_LOCK_VERSION = 2;
+  const POLY5M_PTB_LOCK_VERSION = 4;
   const POLY5M_PTB_TRUSTED_SOURCES = new Set([
-    'gamma-market-metadata',
     'polymarket-event-page',
-    'polymarket-title',
   ]);
 
   function _formatPolyPriceToBeat(value, symbol = '') {
@@ -1242,44 +1240,13 @@
     if (queryKeyIndex !== -1) {
       const queryStart = Math.max(0, html.lastIndexOf('{"dehydratedAt":', queryKeyIndex));
       const queryChunk = html.slice(queryStart, queryKeyIndex);
-      const openMatch = queryChunk.match(/"openPrice":\s*([0-9]+(?:\.[0-9]+)?)/);
-      const op = openMatch ? Number(openMatch[1]) : NaN;
+      // A dehydrated query block can contain preceding five-minute rows. The
+      // final openPrice immediately before this exact queryKey is its contract PTB.
+      const openMatches = [...queryChunk.matchAll(/"openPrice":\s*([0-9]+(?:\.[0-9]+)?)/g)];
+      const op = openMatches.length ? Number(openMatches[openMatches.length - 1][1]) : NaN;
       if (Number.isFinite(op) && op > 0) return op;
     }
 
-    // Before the current openPrice query is hydrated, the previous window's
-    // final close is the same continuous Chainlink boundary and is available
-    // in the contract-scoped past-results query.
-    const currentWindowSec = Math.floor(Date.now() / 300_000) * 300;
-    if (startSec !== currentWindowSec) return null;
-    const historyKey = JSON.stringify(['past-results', querySymbol, 'fiveminute', startIso]);
-    const historyKeyIndex = html.indexOf(`"queryKey":${historyKey}`);
-    if (historyKeyIndex !== -1) {
-      const historyStart = Math.max(0, html.lastIndexOf('{"dehydratedAt":', historyKeyIndex));
-      const historyChunk = html.slice(historyStart, historyKeyIndex);
-      const closeMatches = [...historyChunk.matchAll(/"closePrice":\s*([0-9]+(?:\.[0-9]+)?)/g)];
-      const priorClose = closeMatches.length ? Number(closeMatches[closeMatches.length - 1][1]) : NaN;
-      if (Number.isFinite(priorClose) && priorClose > 0) return priorClose;
-    }
-    return null;
-  }
-
-  function _parseGenericPriceToBeat(text, slug) {
-    if (!text) return null;
-    const scoped = slug && text.includes(slug)
-      ? text.slice(Math.max(0, text.indexOf(slug) - 8000), text.indexOf(slug) + 12000)
-      : text;
-    const patterns = [
-      /"priceToBeat"\s*:\s*"?([0-9][0-9,]*(?:\.[0-9]+)?)"?/i,
-      /"price_to_beat"\s*:\s*"?([0-9][0-9,]*(?:\.[0-9]+)?)"?/i,
-      /Price\s+to\s+Beat[^0-9$]*\$?\s*([0-9][0-9,]*(?:\.[0-9]+)?)/i,
-      /priceToBeat[^0-9]*([0-9][0-9,]*(?:\.[0-9]+)?)/i,
-    ];
-    for (const re of patterns) {
-      const match = scoped.match(re);
-      const n = match ? Number(String(match[1]).replace(/,/g, '')) : NaN;
-      if (Number.isFinite(n) && n > 0) return n;
-    }
     return null;
   }
 
@@ -1346,30 +1313,8 @@
           priceToBeatNum = lockedPriceToBeat.price;
           priceToBeatSource = lockedPriceToBeat.source;
         } else {
-          // Fixed contract metadata is valid for current and upcoming windows.
-          priceToBeatNum = _parseGenericPriceToBeat(JSON.stringify({
-            market: {
-              priceToBeat: m.priceToBeat,
-              price_to_beat: m.price_to_beat,
-              eventMetadata: m.eventMetadata,
-            },
-            event: m.events?.[0] || m._eventFallback || null,
-          }), marketSlug);
-          if (Number.isFinite(priceToBeatNum)) priceToBeatSource = 'gamma-market-metadata';
-
-          if (priceToBeatNum == null) {
-            priceToBeatNum = await fetchPolymarketPriceToBeat(marketSlug);
-            if (Number.isFinite(priceToBeatNum)) priceToBeatSource = 'polymarket-event-page';
-          }
-
-        }
-
-        if (priceToBeatNum == null && title) {
-          const match = title.match(/\$([0-9,.]+)/);
-          if (match) {
-            priceToBeatNum = parseFloat(match[1].replace(/,/g, ''));
-            if (Number.isFinite(priceToBeatNum)) priceToBeatSource = 'polymarket-title';
-          }
+          priceToBeatNum = await fetchPolymarketPriceToBeat(marketSlug);
+          if (Number.isFinite(priceToBeatNum)) priceToBeatSource = 'polymarket-event-page';
         }
 
         if (priceToBeatNum != null) {
@@ -1377,6 +1322,10 @@
           priceToBeatNum = locked?.price ?? null;
           priceToBeatSource = locked?.source ?? null;
         }
+
+        // A five-minute contract is unavailable until its exact Polymarket
+        // benchmark exists. Never expose a candidate with an inferred PTB.
+        if (priceToBeatNum == null) return null;
 
         if (ts === windowTs || priceToBeatNum != null) {
           console.log(`[Poly5M-PTB] ${sym} ${marketSlug} → $${priceToBeatNum} (source: ${priceToBeatSource})`);
