@@ -1340,7 +1340,7 @@ function startPythLazerStream() {
       if (!startPythLazerStream._debounce) {
         startPythLazerStream._debounce = setTimeout(() => {
           startPythLazerStream._debounce = null;
-          if (['cfm', 'predictions', 'universe'].includes(currentView)) refreshActiveView();
+          if (['cfm', 'predictions', 'universe', 'markets5m'].includes(currentView)) refreshActiveView();
           scheduleWebStatePublish('pyth-lazer-tick', 150);
         }, 500);
       }

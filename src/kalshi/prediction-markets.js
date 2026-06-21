@@ -314,6 +314,61 @@
     return Number.isFinite(n) && n > 0 ? n : null;
   }
 
+  const PYTH_LAZER_PRICE_FEED_IDS = { BTC: 1, ETH: 2, SOL: 6, DOGE: 10, XRP: 14, BNB: 15 };
+  let _pythRealtimeSnapshot = { fetchedAt: 0, prices: null, inFlight: null };
+
+  async function loadPythRealtimeSnapshot(maxAgeMs) {
+    const now = Date.now();
+    if (_pythRealtimeSnapshot.prices && now - _pythRealtimeSnapshot.fetchedAt <= 1_000) {
+      return _pythRealtimeSnapshot.prices;
+    }
+    if (_pythRealtimeSnapshot.inFlight) return _pythRealtimeSnapshot.inFlight;
+
+    _pythRealtimeSnapshot.inFlight = (async () => {
+      let prices = await window.pythLazer?.getLatestTickers?.();
+      const hasFreshCache = Object.values(prices || {}).some(ticker => {
+        const timestamp = toPositiveFiniteNumber(ticker?.timestamp);
+        return timestamp != null && now - timestamp >= 0 && now - timestamp <= maxAgeMs;
+      });
+
+      if (!hasFreshCache && window.pythLazer?.getProxyLatest) {
+        const feedIds = Object.values(PYTH_LAZER_PRICE_FEED_IDS);
+        const proxyResult = await withTimeout(
+          window.pythLazer.getProxyLatest(feedIds),
+          2_500,
+          'Pyth Lazer latest price'
+        ).catch(() => null);
+        if (proxyResult?.success && Array.isArray(proxyResult.prices)) {
+          prices = Object.fromEntries(proxyResult.prices.map(ticker => [
+            ticker.instrument_name,
+            {
+              last: ticker.last,
+              timestamp: Date.now(),
+              source: 'pyth-lazer-proxy',
+            },
+          ]));
+        }
+      }
+
+      _pythRealtimeSnapshot.prices = prices || {};
+      _pythRealtimeSnapshot.fetchedAt = Date.now();
+      return _pythRealtimeSnapshot.prices;
+    })().finally(() => { _pythRealtimeSnapshot.inFlight = null; });
+
+    return _pythRealtimeSnapshot.inFlight;
+  }
+
+  async function getFreshPythLazerPrice(sym, maxAgeMs = 5_000) {
+    const snapshot = await loadPythRealtimeSnapshot(maxAgeMs);
+    const ticker = snapshot?.[`${sym}USD`];
+    const price = toPositiveFiniteNumber(ticker?.last);
+    const timestamp = toPositiveFiniteNumber(ticker?.timestamp);
+    if (price == null || timestamp == null) return null;
+    const ageMs = Date.now() - timestamp;
+    if (ageMs < 0 || ageMs > maxAgeMs) return null;
+    return { price, timestamp, ageMs, source: ticker?.source || 'pyth-lazer' };
+  }
+
   function deriveAskFromReciprocal(directAsk, opposingBid) {
     const ask = toFiniteProbability(directAsk);
     if (ask != null && ask > 0) return ask;
@@ -1154,9 +1209,11 @@
       const data = await apiFetch(url);
       const openPrice = Number(data?.openPrice);
       const closePrice = Number(data?.closePrice);
+      const timestamp = Number(data?.timestamp);
       const value = {
         openPrice: Number.isFinite(openPrice) && openPrice > 0 ? openPrice : null,
         closePrice: Number.isFinite(closePrice) && closePrice > 0 ? closePrice : null,
+        timestamp: Number.isFinite(timestamp) && timestamp > 0 ? timestamp : null,
         completed: Boolean(data?.completed),
         incomplete: Boolean(data?.incomplete),
         cached: Boolean(data?.cached),
@@ -1354,15 +1411,33 @@
           priceToBeatSource = 'polymarket-rtds-chainlink-open';
         }
 
-        let currentPriceNum = toPositiveFiniteNumber(cryptoWindow?.closePrice);
-        const currentPriceTs = toPositiveFiniteNumber(rtds?.currentPriceTs);
-        if (currentPriceNum == null) currentPriceNum = toPositiveFiniteNumber(rtds?.currentPriceNum);
+        let chainlinkCurrentPriceNum = toPositiveFiniteNumber(cryptoWindow?.closePrice);
+        let chainlinkCurrentPriceTs = toPositiveFiniteNumber(cryptoWindow?.timestamp);
+        if (chainlinkCurrentPriceNum == null) {
+          chainlinkCurrentPriceNum = toPositiveFiniteNumber(rtds?.currentPriceNum);
+          chainlinkCurrentPriceTs = toPositiveFiniteNumber(rtds?.currentPriceTs);
+        }
+        const pythCurrent = await getFreshPythLazerPrice(sym);
+        const currentPriceNum = pythCurrent?.price ?? chainlinkCurrentPriceNum;
+        const currentPriceTs = pythCurrent?.timestamp ?? chainlinkCurrentPriceTs;
+        const currentPriceSource = pythCurrent?.source || 'polymarket-chainlink';
+        const oracleBasisNum = pythCurrent && chainlinkCurrentPriceNum != null
+          ? pythCurrent.price - chainlinkCurrentPriceNum
+          : null;
+        const currentPriceJustification = pythCurrent
+          ? 'Pyth Lazer real-time price compared with Polymarket Chainlink opening PTB; settlement remains Chainlink.'
+          : 'Polymarket Chainlink current price fallback; Pyth Lazer was unavailable or stale.';
         const priceToBeat = _formatPolyPriceToBeat(priceToBeatNum);
         const hasLiveComparison = currentPriceNum != null && Number.isFinite(priceToBeatNum) && priceToBeatNum > 0;
         const priceDeltaNum = hasLiveComparison ? currentPriceNum - priceToBeatNum : null;
         const priceDeltaPct = hasLiveComparison ? priceDeltaNum / priceToBeatNum : null;
         const liveDirection = hasLiveComparison
           ? (priceDeltaNum >= 0 ? 'UP' : 'DOWN')
+          : null;
+        const hasSettlementComparison = chainlinkCurrentPriceNum != null && Number.isFinite(priceToBeatNum) && priceToBeatNum > 0;
+        const settlementPriceDeltaNum = hasSettlementComparison ? chainlinkCurrentPriceNum - priceToBeatNum : null;
+        const settlementLiveDirection = hasSettlementComparison
+          ? (settlementPriceDeltaNum >= 0 ? 'UP' : 'DOWN')
           : null;
         const data = {
           probability: liveUpProb,
@@ -1386,6 +1461,14 @@
           currentPrice: _formatPolyPriceToBeat(currentPriceNum),
           currentPriceNum,
           currentPriceTs,
+          currentPriceSource,
+          currentPriceAgeMs: pythCurrent?.ageMs ?? null,
+          currentPriceJustification,
+          chainlinkCurrentPriceNum,
+          chainlinkCurrentPriceTs,
+          oracleBasisNum,
+          settlementPriceDeltaNum,
+          settlementLiveDirection,
           priceDelta: priceDeltaNum != null ? _formatPolyPriceToBeat(Math.abs(priceDeltaNum)) : null,
           priceDeltaNum,
           priceDeltaPct,
@@ -1410,8 +1493,12 @@
             targetPrice: priceToBeat,
             targetPriceNum: priceToBeatNum,
             currentPriceNum,
+            currentPriceSource,
+            chainlinkCurrentPriceNum,
+            oracleBasisNum,
             priceDeltaNum,
             liveDirection,
+            settlementLiveDirection,
             discoverySource: hit.source || 'gamma-markets-slug',
           }],
           _source: hit.source === 'gamma-markets-slug' ? 'poly5m-slug' : `poly5m-${hit.source || 'fallback'}`,

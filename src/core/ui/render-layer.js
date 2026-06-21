@@ -420,10 +420,9 @@ function renderMarkets5M() {
       return `<span class="badge-neutral" style="${sz}">◆ WAIT</span>`;
     }
     function _live5mSignal(p5, fallbackCurrentPx = null) {
-      let current = p5?.currentPriceNum == null ? NaN : Number(p5.currentPriceNum);
-      if ((!Number.isFinite(current) || current <= 0) && Number.isFinite(fallbackCurrentPx) && fallbackCurrentPx > 0) {
-        current = Number(fallbackCurrentPx);
-      }
+      let current = Number.isFinite(fallbackCurrentPx) && fallbackCurrentPx > 0
+        ? Number(fallbackCurrentPx)
+        : (p5?.currentPriceNum == null ? NaN : Number(p5.currentPriceNum));
       const target = Number(p5?.targetPriceNum ?? p5?.priceToBeatNum);
       if (!Number.isFinite(current) || current <= 0 || !Number.isFinite(target) || target <= 0) return null;
       const delta = current - target;
@@ -557,6 +556,13 @@ function renderMarkets5M() {
 
       const p5prob = p5?.probability ?? null;
       const live5m = _live5mSignal(p5, curPx);
+      const liveCurrentSource = tick?.source === 'pyth-lazer'
+        ? 'pyth-lazer'
+        : (p5?.currentPriceSource || 'polymarket-chainlink');
+      const liveCurrentLabel = live5m ? `$${fmtPrice(live5m.current)}` : p5?.currentPrice;
+      const liveOracleBasis = live5m && Number.isFinite(Number(p5?.chainlinkCurrentPriceNum))
+        ? live5m.current - Number(p5.chainlinkCurrentPriceNum)
+        : p5?.oracleBasisNum;
       const primaryMarketProb = p5prob;
       const primaryMarketLabel = 'Poly 5M';
 
@@ -623,10 +629,12 @@ function renderMarkets5M() {
                   <span style="font-size:12px;color:var(--color-text-muted)">UP odds</span>
                 </div>
                 <div style="font-size:11px;color:var(--color-text-faint);margin-top:3px;" id="p5cd-${sym}" data-close="${p5.closeTime || p5.endDate || ''}">⏱ ${_countdown(p5.closeTime || p5.endDate)}</div>
-                ${p5.currentPrice ? `<div style="font-size:11px;color:var(--color-text-muted);margin-top:4px;">Current <strong style="color:var(--color-text)">${p5.currentPrice}</strong></div>` : ''}
+                ${liveCurrentLabel ? `<div style="font-size:11px;color:var(--color-text-muted);margin-top:4px;">Current (${String(liveCurrentSource).startsWith('pyth-lazer') ? 'Pyth' : 'Chainlink'}) <strong style="color:var(--color-text)">${liveCurrentLabel}</strong></div>` : ''}
                 ${p5.targetPrice ? `<div style="font-size:11px;color:var(--color-text);margin-top:4px;">Price to beat <strong>${p5.targetPriceApprox ? '~' : ''}${p5.targetPrice}</strong></div>` : ''}
                 ${live5m ? `<div style="font-size:11px;color:${live5m.dir === 'UP' ? 'var(--color-green)' : 'var(--color-red)'};margin-top:4px;">${live5m.state} by <strong>${_fmtSignedPriceDelta(live5m.delta)}</strong></div>` : `<div style="font-size:11px;color:var(--color-orange);margin-top:4px;">Waiting for Polymarket price-to-beat baseline</div>`}
+                ${Number.isFinite(liveOracleBasis) ? `<div style="font-size:10px;color:var(--color-text-faint);margin-top:3px;">Pyth/Chainlink basis ${_fmtSignedPriceDelta(liveOracleBasis)} · settlement ${p5.settlementLiveDirection || 'pending'}</div>` : ''}
                 <div style="font-size:10px;color:var(--color-text-faint);margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="${p5.slug || ''}">${p5.slug || 'poly5m'}</div>
+                ${p5.currentPriceJustification ? `<div style="font-size:10px;color:var(--color-text-faint);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="${p5.currentPriceJustification}">${p5.currentPriceJustification}</div>` : ''}
                 ${(p5.priceToBeatSource || p5.discoverySource) ? `<div style="font-size:10px;color:var(--color-text-faint);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="${p5.fallbackJustification || ''}">PTB ${p5.priceToBeatSource || 'pending'} · ${p5.discoverySource || p5._source || 'poly5m'}</div>` : ''}
                 <div style="margin-top:5px">${_liveSide(live5m, false)}</div>
               ` : `<div style="color:var(--color-text-faint);font-size:11px">No Poly 5M market</div>`}

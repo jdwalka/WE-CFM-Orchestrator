@@ -616,6 +616,7 @@ try {
 let mainWin = null;
 let pythLazerClient = null;
 let pythLazerStatus = { connected: false, lastDataTs: 0, dataCount: 0, timeoutCount: 0 };
+let latestPythLazerTickers = {};
 let proxyHealthy = false;
 let webServiceHealth = { started: false, mode: 'stopped', protocol: 'http', port: 3443 };
 const LAZER_FEED_IDS = [1, 2, 6, 13, 14, 15]; // BTC,ETH,SOL,F13,XRP,BNB
@@ -794,6 +795,7 @@ async function startPythLazerService(win) {
           };
         }
         if (Object.keys(prices).length && !win.isDestroyed()) {
+          latestPythLazerTickers = prices;
           // ★ UPDATE STATUS: Track Pyth Lazer health
           pythLazerStatus.connected = true;
           pythLazerStatus.lastDataTs = now;
@@ -1122,6 +1124,7 @@ ipcMain.handle('proxy:port', () => proxyPort);
 
 // ── IPC: Pyth Lazer handlers ──────────────────────────────────────────────
 ipcMain.handle('pyth:getStatus', () => pythLazerStatus);
+ipcMain.handle('pyth:getLatestTickers', () => latestPythLazerTickers);
 
 ipcMain.handle('pyth:getCandles', async (_, { symbol, resolution, from, to }) => {
   try {
