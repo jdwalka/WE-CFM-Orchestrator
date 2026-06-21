@@ -379,6 +379,34 @@ function updateMarketSummary() {
     ].join('');
   }
 
+function updateMarkets5MLivePrices(prices) {
+    const markets = window.PredictionMarkets?.getAll?.() || {};
+    for (const sym of ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'BNB', 'HYPE']) {
+      const ticker = prices?.[`${sym}USD`];
+      const current = Number(ticker?.last);
+      const target = Number(markets[sym]?.poly5m?.targetPriceNum);
+      if (!Number.isFinite(current) || current <= 0) continue;
+
+      const currentEl = document.getElementById(`p5-current-${sym}`);
+      if (currentEl) currentEl.textContent = `$${fmtPrice(current)}`;
+      if (!Number.isFinite(target) || target <= 0) continue;
+
+      const delta = current - target;
+      const direction = delta >= 0 ? 'UP' : 'DOWN';
+      const state = delta >= 0 ? 'above' : 'below';
+      const deltaLabel = `$${fmtPrice(Math.abs(delta))}`;
+      const color = delta >= 0 ? 'var(--color-green)' : 'var(--color-red)';
+      const liveEl = document.getElementById(`p5-live-${sym}`);
+      if (liveEl) {
+        liveEl.style.color = color;
+        liveEl.innerHTML = `${state} by <strong>${deltaLabel}</strong>`;
+      }
+      const headerEl = document.getElementById(`p5-header-delta-${sym}`);
+      if (headerEl) headerEl.textContent = `${direction} ${deltaLabel} vs PTB`;
+    }
+  }
+  window.updateMarkets5MLivePrices = updateMarkets5MLivePrices;
+
 function renderMarkets5M() {
     if (_markets5mCountdown) { clearInterval(_markets5mCountdown); _markets5mCountdown = null; }
     const pm = window.PredictionMarkets?.getAll() || {};
@@ -585,7 +613,7 @@ function renderMarkets5M() {
             </div>
             <div style="display:flex;align-items:center;gap:8px;">
               ${p5 ? _liveSide(live5m, true) : ''}
-              ${live5m ? `<span style="font-size:12px;color:var(--color-text-muted)">${_fmtSignedPriceDelta(live5m.delta)} vs PTB</span>` : combined5m != null ? `<span style="font-size:12px;color:var(--color-text-muted)">${_pct(combined5m)} UP odds</span>` : ''}
+              ${live5m ? `<span id="p5-header-delta-${sym}" style="font-size:12px;color:var(--color-text-muted)">${_fmtSignedPriceDelta(live5m.delta)} vs PTB</span>` : combined5m != null ? `<span style="font-size:12px;color:var(--color-text-muted)">${_pct(combined5m)} UP odds</span>` : ''}
             </div>
           </div>
 
@@ -629,9 +657,9 @@ function renderMarkets5M() {
                   <span style="font-size:12px;color:var(--color-text-muted)">UP odds</span>
                 </div>
                 <div style="font-size:11px;color:var(--color-text-faint);margin-top:3px;" id="p5cd-${sym}" data-close="${p5.closeTime || p5.endDate || ''}">⏱ ${_countdown(p5.closeTime || p5.endDate)}</div>
-                ${liveCurrentLabel ? `<div style="font-size:11px;color:var(--color-text-muted);margin-top:4px;">Current (${String(liveCurrentSource).startsWith('pyth-lazer') ? 'Pyth' : 'Chainlink'}) <strong style="color:var(--color-text)">${liveCurrentLabel}</strong></div>` : ''}
+                ${liveCurrentLabel ? `<div style="font-size:11px;color:var(--color-text-muted);margin-top:4px;">Current (${String(liveCurrentSource).startsWith('pyth-lazer') ? 'Pyth' : 'Chainlink'}) <strong id="p5-current-${sym}" style="color:var(--color-text)">${liveCurrentLabel}</strong></div>` : ''}
                 ${p5.targetPrice ? `<div style="font-size:11px;color:var(--color-text);margin-top:4px;">Price to beat <strong>${p5.targetPriceApprox ? '~' : ''}${p5.targetPrice}</strong></div>` : ''}
-                ${live5m ? `<div style="font-size:11px;color:${live5m.dir === 'UP' ? 'var(--color-green)' : 'var(--color-red)'};margin-top:4px;">${live5m.state} by <strong>${_fmtSignedPriceDelta(live5m.delta)}</strong></div>` : `<div style="font-size:11px;color:var(--color-orange);margin-top:4px;">Waiting for Polymarket price-to-beat baseline</div>`}
+                ${live5m ? `<div id="p5-live-${sym}" style="font-size:11px;color:${live5m.dir === 'UP' ? 'var(--color-green)' : 'var(--color-red)'};margin-top:4px;">${live5m.state} by <strong>${_fmtSignedPriceDelta(live5m.delta)}</strong></div>` : `<div id="p5-live-${sym}" style="font-size:11px;color:var(--color-orange);margin-top:4px;">Waiting for Polymarket price-to-beat baseline</div>`}
                 ${Number.isFinite(liveOracleBasis) ? `<div style="font-size:10px;color:var(--color-text-faint);margin-top:3px;">Pyth/Chainlink basis ${_fmtSignedPriceDelta(liveOracleBasis)} · settlement ${p5.settlementLiveDirection || 'pending'}</div>` : ''}
                 <div style="font-size:10px;color:var(--color-text-faint);margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="${p5.slug || ''}">${p5.slug || 'poly5m'}</div>
                 ${p5.currentPriceJustification ? `<div style="font-size:10px;color:var(--color-text-faint);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="${p5.currentPriceJustification}">${p5.currentPriceJustification}</div>` : ''}

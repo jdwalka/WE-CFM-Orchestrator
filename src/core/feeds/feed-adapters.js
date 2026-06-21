@@ -1337,6 +1337,7 @@ function startPythLazerStream() {
       }
       if (!updated) return;
       window._appTickers = tickers;
+      if (currentView === 'markets5m') window.updateMarkets5MLivePrices?.(prices);
       if (!startPythLazerStream._debounce) {
         startPythLazerStream._debounce = setTimeout(() => {
           startPythLazerStream._debounce = null;
