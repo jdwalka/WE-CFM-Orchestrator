@@ -1168,9 +1168,37 @@
     const chunk = html.substring(idx, idx + 4000);
     const nextObjIdx = chunk.indexOf('{"id"');
     const validChunk = nextObjIdx !== -1 ? chunk.substring(0, nextObjIdx) : chunk;
-    const match = validChunk.match(/"priceToBeat":\s*([0-9.]+)/);
-    const n = match ? Number(match[1]) : NaN;
-    if (Number.isFinite(n) && n > 0) return n;
+    // Try priceToBeat first (populated post-close)
+    const ptbMatch = validChunk.match(/"priceToBeat":\s*([0-9.]+)/);
+    const ptb = ptbMatch ? Number(ptbMatch[1]) : NaN;
+    if (Number.isFinite(ptb) && ptb > 0) return ptb;
+
+    // React Query stores several crypto windows in the same page. Scope the
+    // opening price to this contract's exact symbol and five-minute interval.
+    const slugMatch = slug.match(/^([a-z0-9-]+)-updown-5m-(\d+)$/i);
+    if (!slugMatch) return null;
+    const querySymbols = {
+      btc: 'BTC', bitcoin: 'BTC',
+      eth: 'ETH', ethereum: 'ETH',
+      sol: 'SOL', solana: 'SOL',
+      doge: 'DOGE', dogecoin: 'DOGE',
+      xrp: 'XRP',
+      hype: 'HYPE', hyperliquid: 'HYPE',
+      bnb: 'BNB',
+    };
+    const querySymbol = querySymbols[slugMatch[1].toLowerCase()];
+    const startSec = Number(slugMatch[2]);
+    if (!querySymbol || !Number.isFinite(startSec)) return null;
+    const startIso = new Date(startSec * 1000).toISOString().replace('.000Z', 'Z');
+    const endIso = new Date((startSec + 300) * 1000).toISOString().replace('.000Z', 'Z');
+    const queryKey = JSON.stringify(['crypto-prices', 'price', querySymbol, startIso, 'fiveminute', endIso]);
+    const queryKeyIndex = html.indexOf(`"queryKey":${queryKey}`);
+    if (queryKeyIndex === -1) return null;
+    const queryStart = Math.max(0, html.lastIndexOf('{"dehydratedAt":', queryKeyIndex));
+    const queryChunk = html.slice(queryStart, queryKeyIndex);
+    const openMatch = queryChunk.match(/"openPrice":\s*([0-9]+(?:\.[0-9]+)?)/);
+    const op = openMatch ? Number(openMatch[1]) : NaN;
+    if (Number.isFinite(op) && op > 0) return op;
     return null;
   }
 
@@ -1193,8 +1221,115 @@
     return null;
   }
 
-  // Runtime PTB for active 5M windows comes from Polymarket's crypto-price API (Chainlink open).
-  // Gamma eventMetadata.priceToBeat is forensic/post-close only. RTDS is a late fallback.
+  // ═══════════════════════════════════════════════════════════════════════
+  // Persistent Chainlink RTDS Price Listener
+  // Captures a precise opening tick only as a post-start fallback.
+  // ═══════════════════════════════════════════════════════════════════════
+  const _chainlinkLiveCache = {};  // { 'BTC': { price, ts } } — latest tick per sym
+  const _chainlinkOpenCache = {};  // { 'BTC:1782031800': { price, ts, locked } } — opening price per window
+  let _chainlinkListenerActive = false;
+
+  function _getChainlinkWindowOpen(sym, windowTs) {
+    const key = `${sym}:${windowTs}`;
+    return _chainlinkOpenCache[key]?.price ?? null;
+  }
+
+  function _lockWindowOpen(sym, windowTs, price, ts) {
+    const key = `${sym}:${windowTs}`;
+    if (_chainlinkOpenCache[key]?.locked) return; // already locked
+    _chainlinkOpenCache[key] = { price, ts, locked: true };
+    console.log(`[ChainlinkRTDS] Locked ${sym} window ${windowTs} open: $${price}`);
+  }
+
+  function _handleChainlinkTick(sym, price, ts) {
+    if (!Number.isFinite(price) || price <= 0) return;
+    _chainlinkLiveCache[sym] = { price, ts };
+    // Check if this tick is at or near a 5-minute boundary
+    const nowSec = Math.floor(ts / 1000);
+    const windowTs = nowSec - (nowSec % 300);
+    const secIntoWindow = nowSec - windowTs;
+    // Lock if within first 15 seconds of window (captures the real opening tick)
+    if (secIntoWindow <= 15) {
+      _lockWindowOpen(sym, windowTs, price, ts);
+    }
+  }
+
+  function startChainlinkPriceListener() {
+    if (_chainlinkListenerActive || typeof WebSocket === 'undefined') return;
+    _chainlinkListenerActive = true;
+
+    const allSymbols = Object.entries(POLY_CHAINLINK_SYMBOLS);
+    let reconnectDelay = 1000;
+
+    function connect() {
+      try {
+        const ws = new WebSocket('wss://ws-live-data.polymarket.com');
+        ws.onopen = () => {
+          console.log('[ChainlinkRTDS] Connected to Polymarket live data');
+          reconnectDelay = 1000;
+          // Subscribe to all coin Chainlink feeds
+          for (const [sym, chainlinkSym] of allSymbols) {
+            ws.send(JSON.stringify({
+              action: 'subscribe',
+              subscriptions: [{
+                topic: 'crypto_prices_chainlink',
+                type: '*',
+                filters: JSON.stringify({ symbol: chainlinkSym }),
+              }],
+            }));
+          }
+        };
+        ws.onmessage = (event) => {
+          let msg;
+          try { msg = JSON.parse(String(event.data || '')); } catch (_) { return; }
+          const payload = msg?.payload || {};
+          // Identify which symbol this is for
+          const feedSymbol = payload.symbol || msg.symbol || '';
+          const sym = allSymbols.find(([, cs]) => cs === feedSymbol)?.[0];
+          if (!sym) return;
+          const rows = Array.isArray(payload.data)
+            ? payload.data
+            : [{ timestamp: payload.timestamp ?? msg.timestamp, value: payload.value }];
+          for (const row of rows) {
+            const ts = Number(row?.timestamp);
+            const value = Number(row?.value);
+            if (Number.isFinite(ts) && Number.isFinite(value) && value > 0) {
+              _handleChainlinkTick(sym, value, ts);
+            }
+          }
+        };
+        ws.onclose = () => {
+          console.log(`[ChainlinkRTDS] Disconnected, reconnecting in ${reconnectDelay}ms`);
+          setTimeout(connect, reconnectDelay);
+          reconnectDelay = Math.min(reconnectDelay * 1.5, 30000);
+        };
+        ws.onerror = () => {
+          try { ws.close(); } catch (_) { }
+        };
+      } catch (e) {
+        console.warn('[ChainlinkRTDS] Connect error:', e?.message);
+        setTimeout(connect, reconnectDelay);
+        reconnectDelay = Math.min(reconnectDelay * 1.5, 30000);
+      }
+    }
+
+    connect();
+    // Seed current window opens on startup by locking current tick
+    setTimeout(() => {
+      const nowSec = Math.floor(Date.now() / 1000);
+      const windowTs = nowSec - (nowSec % 300);
+      for (const [sym] of allSymbols) {
+        const live = _chainlinkLiveCache[sym];
+        if (live && !_chainlinkOpenCache[`${sym}:${windowTs}`]?.locked) {
+          // Don't lock if we're already deep into the window — only in first 30s
+          const secInto = nowSec - windowTs;
+          if (secInto <= 30) {
+            _lockWindowOpen(sym, windowTs, live.price, live.ts);
+          }
+        }
+      }
+    }, 3000);
+  }
 
   async function fetchPolymarketCryptoWindowPrice(sym, startMs) {
     const coin = POLY_5M_COIN_SLUGS[sym];
@@ -1246,7 +1381,6 @@
   function _selectOpeningChainlinkTick(rows, startMs) {
     if (!Array.isArray(rows) || !Number.isFinite(startMs)) return null;
     let inWindow = null;
-    let nearest = null;
     for (const row of rows) {
       const ts = Number(row?.timestamp);
       const value = Number(row?.value);
@@ -1254,12 +1388,8 @@
       if (ts >= startMs && ts <= startMs + 10_000 && (!inWindow || ts < inWindow.ts)) {
         inWindow = { ts, value };
       }
-      const delta = Math.abs(ts - startMs);
-      if (delta <= 120_000 && (!nearest || delta < nearest.delta)) {
-        nearest = { ts, value, delta };
-      }
     }
-    return inWindow || (nearest ? { ts: nearest.ts, value: nearest.value } : null);
+    return inWindow;
   }
 
   function _selectLatestChainlinkTick(rows) {
@@ -1339,44 +1469,92 @@
     });
   }
 
-  async function fetchPolymarket5MBySlug(sym) {
+
+      async function fetchPolymarket5MBySlug(sym) {
     const coinSlugPrefix = POLY_5M_COIN_SLUGS[sym];
     if (!coinSlugPrefix) return null;
 
     const nowSec = Math.floor(Date.now() / 1000);
     const windowTs = nowSec - (nowSec % 300);
     const cached = _poly5mCache[sym];
-    if (cached && cached.windowTs === windowTs && Date.now() - cached.fetchedAt < 7_500) {
+    if (cached && cached.windowTs === windowTs && Date.now() - cached.fetchedAt < 15_000) {
       return cached.data;
     }
+    const candidates = [
+      windowTs,
+      windowTs + 300,
+      windowTs + 600,
+      windowTs + 900,
+      windowTs + 1200,
+      windowTs + 1500,
+      windowTs - 300,
+    ];
 
-    // Current, next, and prior windows cover provider rollover skew without broad market scans.
-    const candidates = [windowTs, windowTs + 300, windowTs - 300];
-    for (const ts of candidates) {
+    const results = await Promise.all(candidates.map(async (ts) => {
       const slug = `${coinSlugPrefix}-updown-5m-${ts}`;
       try {
         const hit = await fetchPolymarket5MMarketCandidate(sym, slug);
         const m = hit?.market;
-        if (!m) continue;
+        if (!m) return null;
         const upProb = _parseUpProb(m);
-        if (upProb === null) continue;
-        const clobSnapshot = await fetchPolymarketClobMarketSnapshot(sym, m);
+        if (upProb === null) return null;
+        const isActiveWindow = ts <= windowTs;
+        const clobSnapshot = isActiveWindow
+          ? await fetchPolymarketClobMarketSnapshot(sym, m)
+          : null;
         const clobProb = Number(clobSnapshot?.upProbability);
         const liveUpProb = Number.isFinite(clobProb) && clobProb >= 0.01 && clobProb <= 0.99 ? clobProb : upProb;
         const title = m.question || m.title || `${sym} Up or Down 5M`;
         const endDate = m.endDate || m.end_date_iso || m.end_date || null;
-        const startDate = m.eventStartTime || m.events?.[0]?.startTime || null;
+        const startDate = new Date(ts * 1000).toISOString();
         const volume = parseFloat(m.volume24hr || m.volumeNum || m.volume || 0) || 0;
         const marketSlug = m.slug || slug;
-        const startMs = startDate ? new Date(startDate).getTime() : ts * 1000;
-        const [cryptoWindow, rtds] = await Promise.all([
-          fetchPolymarketCryptoWindowPrice(sym, startMs),
-          fetchPolymarketRtdsSnapshot(sym, startMs),
-        ]);
+        const startMs = ts * 1000;
+        const [cryptoWindow, rtds] = isActiveWindow
+          ? await Promise.all([
+            fetchPolymarketCryptoWindowPrice(sym, startMs),
+            fetchPolymarketRtdsSnapshot(sym, startMs),
+          ])
+          : [null, null];
         let priceToBeatSource = null;
         let priceToBeatNum = null;
+        const windowTsSec = Math.floor(startMs / 1000);
 
-        if (title) {
+        // Fixed contract metadata is valid for current and upcoming windows.
+        priceToBeatNum = _parseGenericPriceToBeat(JSON.stringify({
+          market: {
+            priceToBeat: m.priceToBeat,
+            price_to_beat: m.price_to_beat,
+            eventMetadata: m.eventMetadata,
+          },
+          event: m.events?.[0] || m._eventFallback || null,
+        }), marketSlug);
+        if (Number.isFinite(priceToBeatNum)) priceToBeatSource = 'gamma-market-metadata';
+
+        if (priceToBeatNum == null) {
+          priceToBeatNum = await fetchPolymarketPriceToBeat(marketSlug);
+          if (Number.isFinite(priceToBeatNum)) priceToBeatSource = 'polymarket-event-page';
+        }
+
+        // Oracle ticks are only legitimate after this exact window starts.
+        // Never substitute a live or previous-window tick for an upcoming PTB.
+        if (startMs <= Date.now()) {
+          if (priceToBeatNum == null && Number.isFinite(cryptoWindow?.openPrice)) {
+            priceToBeatNum = cryptoWindow.openPrice;
+            priceToBeatSource = 'polymarket-crypto-price';
+          }
+          const rtdsLive = _getChainlinkWindowOpen(sym, windowTsSec);
+          if (priceToBeatNum == null && Number.isFinite(rtdsLive)) {
+            priceToBeatNum = rtdsLive;
+            priceToBeatSource = 'chainlink-rtds-window-open';
+          }
+          if (priceToBeatNum == null && Number.isFinite(rtds?.openingPriceNum)) {
+            priceToBeatNum = rtds.openingPriceNum;
+            priceToBeatSource = 'polymarket-rtds-window-open';
+          }
+        }
+
+        if (priceToBeatNum == null && title) {
           const match = title.match(/\$([0-9,.]+)/);
           if (match) {
             priceToBeatNum = parseFloat(match[1].replace(/,/g, ''));
@@ -1384,32 +1562,7 @@
           }
         }
 
-        if (priceToBeatNum == null) {
-          priceToBeatNum = _parseGenericPriceToBeat(JSON.stringify({
-            market: {
-              priceToBeat: m.priceToBeat,
-              price_to_beat: m.price_to_beat,
-              eventMetadata: m.eventMetadata,
-            },
-            event: m.events?.[0] || m._eventFallback || null,
-          }), marketSlug);
-          if (Number.isFinite(priceToBeatNum)) priceToBeatSource = 'gamma-market-metadata';
-        }
-
-        if (priceToBeatNum == null && Number.isFinite(cryptoWindow?.openPrice)) {
-          priceToBeatNum = cryptoWindow.openPrice;
-          priceToBeatSource = 'polymarket-crypto-price';
-        }
-
-        if (priceToBeatNum == null) {
-          priceToBeatNum = await fetchPolymarketPriceToBeat(marketSlug);
-          if (Number.isFinite(priceToBeatNum)) priceToBeatSource = 'polymarket-eventMetadata';
-        }
-
-        if (priceToBeatNum == null && Number.isFinite(rtds?.openingPriceNum)) {
-          priceToBeatNum = rtds.openingPriceNum;
-          priceToBeatSource = 'polymarket-rtds-chainlink-open';
-        }
+        console.log(`[Poly5M-PTB] ${sym} → $${priceToBeatNum} (source: ${priceToBeatSource}) | gamma.priceToBeat=${m.priceToBeat} | cryptoWindow.open=${cryptoWindow?.openPrice}`);
 
         let chainlinkCurrentPriceNum = toPositiveFiniteNumber(cryptoWindow?.closePrice);
         let chainlinkCurrentPriceTs = toPositiveFiniteNumber(cryptoWindow?.timestamp);
@@ -1439,80 +1592,132 @@
         const settlementLiveDirection = hasSettlementComparison
           ? (settlementPriceDeltaNum >= 0 ? 'UP' : 'DOWN')
           : null;
-        const data = {
-          probability: liveUpProb,
-          gammaProbability: upProb,
-          clobProbability: Number.isFinite(clobProb) ? clobProb : null,
+
+        return {
+          ts,
+          m,
+          hit,
+          liveUpProb,
+          upProb,
+          clobProb,
           volume,
           title,
-          slug: marketSlug,
-          closeTime: endDate,
+          marketSlug,
           endDate,
           startDate,
-          bestBid: clobSnapshot?.bestBid ?? (parseFloat(m.bestBid || m.best_bid || 0) || null),
-          bestAsk: clobSnapshot?.bestAsk ?? (parseFloat(m.bestAsk || m.best_ask || 0) || null),
-          liquidity: parseFloat(m.liquidityNum || m.liquidity || 0) || 0,
-          targetPrice: priceToBeat,
-          targetPriceNum: priceToBeatNum,
-          targetPriceApprox: priceToBeatSource === 'polymarket-rtds-chainlink-open',
           priceToBeat,
           priceToBeatNum,
           priceToBeatSource,
-          currentPrice: _formatPolyPriceToBeat(currentPriceNum),
           currentPriceNum,
           currentPriceTs,
           currentPriceSource,
-          currentPriceAgeMs: pythCurrent?.ageMs ?? null,
           currentPriceJustification,
+          pythCurrent,
           chainlinkCurrentPriceNum,
           chainlinkCurrentPriceTs,
           oracleBasisNum,
-          settlementPriceDeltaNum,
-          settlementLiveDirection,
-          priceDelta: priceDeltaNum != null ? _formatPolyPriceToBeat(Math.abs(priceDeltaNum)) : null,
           priceDeltaNum,
           priceDeltaPct,
           liveDirection,
-          liveSignal: liveDirection,
-          liveState: hasLiveComparison ? (priceDeltaNum >= 0 ? 'above' : 'below') : 'unknown',
-          clobConditionId: clobSnapshot?.conditionId || m.conditionId || m.condition_id || null,
-          clobTokenIds: _polyClobTokenIds(m),
-          clobUpAssetId: clobSnapshot?.upAssetId || null,
-          clobDownAssetId: clobSnapshot?.downAssetId || null,
-          clobSnapshotTs: clobSnapshot?.ts || null,
-          discoverySource: hit.source || 'gamma-markets-slug',
-          fallbackJustification: hit.fallbackJustification || null,
-          markets: [{
-            question: title,
-            yes: liveUpProb,
-            gammaYes: upProb,
-            clobYes: Number.isFinite(clobProb) ? clobProb : null,
-            vol24h: volume,
-            endDate,
-            slug: marketSlug,
-            targetPrice: priceToBeat,
-            targetPriceNum: priceToBeatNum,
-            currentPriceNum,
-            currentPriceSource,
-            chainlinkCurrentPriceNum,
-            oracleBasisNum,
-            priceDeltaNum,
-            liveDirection,
-            settlementLiveDirection,
-            discoverySource: hit.source || 'gamma-markets-slug',
-          }],
-          _source: hit.source === 'gamma-markets-slug' ? 'poly5m-slug' : `poly5m-${hit.source || 'fallback'}`,
-          _windowTs: ts,
+          settlementPriceDeltaNum,
+          settlementLiveDirection,
+          hasLiveComparison,
+          clobSnapshot
         };
-        _poly5mCache[sym] = { data, windowTs, fetchedAt: Date.now() };
-        return data;
       } catch (err) {
         console.warn(`[PredictionMarkets] Poly5M slug fetch failed for ${sym} ${slug}:`, err?.message || err);
+        return null;
       }
+    }));
+
+    const validResults = results.filter(r => r !== null);
+    if (validResults.length === 0) {
+      _poly5mCache[sym] = { data: null, windowTs, fetchedAt: Date.now() };
+      return null;
     }
 
-    _poly5mCache[sym] = { data: null, windowTs, fetchedAt: Date.now() };
-    return null;
+    let primary = null;
+    for (const ts of candidates) {
+      primary = validResults.find(r => r.ts === ts);
+      if (primary) break;
+    }
+
+    if (!primary) {
+      _poly5mCache[sym] = { data: null, windowTs, fetchedAt: Date.now() };
+      return null;
+    }
+
+    const markets = validResults.sort((a, b) => a.ts - b.ts).map(r => ({
+      question: r.title,
+      yes: r.liveUpProb,
+      gammaYes: r.upProb,
+      clobYes: Number.isFinite(r.clobProb) ? r.clobProb : null,
+      vol24h: r.volume,
+      endDate: r.endDate,
+      slug: r.marketSlug,
+      targetPrice: r.priceToBeat,
+      targetPriceNum: r.priceToBeatNum,
+      priceToBeatSource: r.priceToBeatSource,
+      currentPriceNum: r.currentPriceNum,
+      currentPriceSource: r.currentPriceSource,
+      chainlinkCurrentPriceNum: r.chainlinkCurrentPriceNum,
+      oracleBasisNum: r.oracleBasisNum,
+      priceDeltaNum: r.priceDeltaNum,
+      liveDirection: r.liveDirection,
+      settlementLiveDirection: r.settlementLiveDirection,
+      discoverySource: r.hit.source || 'gamma-markets-slug',
+    }));
+
+    const data = {
+      probability: primary.liveUpProb,
+      gammaProbability: primary.upProb,
+      clobProbability: Number.isFinite(primary.clobProb) ? primary.clobProb : null,
+      volume: primary.volume,
+      title: primary.title,
+      slug: primary.marketSlug,
+      closeTime: primary.endDate,
+      endDate: primary.endDate,
+      startDate: primary.startDate,
+      bestBid: primary.clobSnapshot?.bestBid ?? (parseFloat(primary.m.bestBid || primary.m.best_bid || 0) || null),
+      bestAsk: primary.clobSnapshot?.bestAsk ?? (parseFloat(primary.m.bestAsk || primary.m.best_ask || 0) || null),
+      liquidity: parseFloat(primary.m.liquidityNum || primary.m.liquidity || 0) || 0,
+      targetPrice: primary.priceToBeat,
+      targetPriceNum: primary.priceToBeatNum,
+      targetPriceApprox: primary.priceToBeatSource === 'chainlink-rtds-window-open'
+        || primary.priceToBeatSource === 'polymarket-rtds-window-open',
+      priceToBeat: primary.priceToBeat,
+      priceToBeatNum: primary.priceToBeatNum,
+      priceToBeatSource: primary.priceToBeatSource,
+      currentPrice: _formatPolyPriceToBeat(primary.currentPriceNum),
+      currentPriceNum: primary.currentPriceNum,
+      currentPriceTs: primary.currentPriceTs,
+      currentPriceSource: primary.currentPriceSource,
+      currentPriceAgeMs: primary.pythCurrent?.ageMs ?? null,
+      currentPriceJustification: primary.currentPriceJustification,
+      chainlinkCurrentPriceNum: primary.chainlinkCurrentPriceNum,
+      chainlinkCurrentPriceTs: primary.chainlinkCurrentPriceTs,
+      oracleBasisNum: primary.oracleBasisNum,
+      settlementPriceDeltaNum: primary.settlementPriceDeltaNum,
+      settlementLiveDirection: primary.settlementLiveDirection,
+      priceDelta: primary.priceDeltaNum != null ? _formatPolyPriceToBeat(Math.abs(primary.priceDeltaNum)) : null,
+      priceDeltaNum: primary.priceDeltaNum,
+      priceDeltaPct: primary.priceDeltaPct,
+      liveDirection: primary.liveDirection,
+      liveSignal: primary.liveDirection,
+      liveState: primary.hasLiveComparison ? (primary.priceDeltaNum >= 0 ? 'above' : 'below') : 'unknown',
+      clobConditionId: primary.clobSnapshot?.conditionId || primary.m.conditionId || primary.m.condition_id || null,
+      clobTokenIds: _polyClobTokenIds(primary.m),
+      clobUpAssetId: primary.clobSnapshot?.upAssetId || null,
+      clobDownAssetId: primary.clobSnapshot?.downAssetId || null,
+      clobSnapshotTs: primary.clobSnapshot?.ts || null,
+      discoverySource: primary.hit.source || 'gamma-markets-slug',
+      fallbackJustification: primary.hit.fallbackJustification || null,
+      markets,
+      _source: primary.hit.source === 'gamma-markets-slug' ? 'poly5m-slug' : `poly5m-${primary.hit.source || 'fallback'}`,
+      _windowTs: primary.ts,
+    };
+    _poly5mCache[sym] = { data, windowTs, fetchedAt: Date.now() };
+    return data;
   }
 
   function matchesPolymarketCoin(m, sym) {
@@ -1523,7 +1728,7 @@
     return patterns.some(re => re.test(text));
   }
 
-  function polymarketSentiment(markets, sym) {
+function polymarketSentiment(markets, sym) {
     const hits = markets.filter(m => matchesPolymarketCoin(m, sym));
     if (!hits.length) return null;
 
@@ -1830,6 +2035,7 @@
     start() {
       if (PredictionMarkets._started) return;
       PredictionMarkets._started = true;
+      startChainlinkPriceListener(); // persistent Chainlink RTDS for accurate 5M price-to-beat
       window.EndpointTransport?.ensureKalshiWs?.();
       if (!PredictionMarkets._tickerBound) {
         PredictionMarkets._tickerBound = true;
@@ -1886,4 +2092,3 @@
   };
 
 })();
-

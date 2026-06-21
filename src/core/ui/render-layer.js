@@ -572,7 +572,7 @@ function renderMarkets5M() {
       const coinColor = sym === 'BTC' ? '#f7931a' : sym === 'ETH' ? '#627eea' : sym === 'SOL' ? '#9945ff' : sym === 'XRP' ? '#0085c0' : sym === 'BNB' ? '#f3ba2f' : sym === 'HYPE' ? '#34d399' : '#ba9f33';
 
       // Pick the best Poly markets to display (short-term first, then high-vol)
-      const displayPolyMkts = (poly5m.length ? poly5m : polyAll).slice(0, 4);
+      const displayPolyMkts = (poly5m.length ? poly5m : polyAll).slice(0, 7);
 
       return `
         <div class="opp-card" style="border-left:3px solid ${coinColor};padding:14px 16px;">
@@ -658,6 +658,27 @@ function renderMarkets5M() {
             </div>
 
           </div>
+
+          <!-- Upcoming 5M contract queue -->
+          ${displayPolyMkts.length > 1 ? `
+          <div style="background:var(--color-surface-2);border-radius:6px;padding:10px;margin-top:8px;">
+            <div style="font-size:10px;color:var(--color-text-faint);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:8px;">5M Contract Queue (25m)</div>
+            <div style="display:flex;gap:8px;overflow-x:auto;padding-bottom:4px;">
+              ${displayPolyMkts.map(m => {
+                const isCurrent = m.slug === p5?.slug;
+                const activeColor = isCurrent ? 'var(--color-primary)' : 'var(--color-border)';
+                const probColor = m.yes >= 0.5 ? 'var(--color-green)' : 'var(--color-red)';
+                const timeLabel = m.endDate ? new Date(m.endDate).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : 'Next';
+                return `
+                <div style="flex:0 0 108px;min-width:108px;padding:7px 6px;border-radius:4px;background:var(--color-surface);border:1px solid ${activeColor};text-align:center;">
+                  <div style="font-size:9px;color:var(--color-text-muted);margin-bottom:2px;">${timeLabel}</div>
+                  <div style="font-size:13px;font-weight:700;color:${probColor}">${Math.round(m.yes * 100)}%</div>
+                  <div style="font-size:10px;color:${m.targetPrice ? 'var(--color-text)' : 'var(--color-orange)'};margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="${m.priceToBeatSource || 'Awaiting fixed benchmark'}">${m.targetPrice || 'PTB pending'}</div>
+                </div>`;
+              }).join('')}
+            </div>
+          </div>
+          ` : ''}
 
           <!-- Scalp & Exit Timing -->
           ${(() => {
