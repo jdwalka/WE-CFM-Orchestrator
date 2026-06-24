@@ -394,6 +394,7 @@ contextBridge.exposeInMainWorld('electron', {
     status: () => ipcRenderer.invoke('telegram:status'),
     login: (apiId, apiHash) => ipcRenderer.invoke('telegram:login', { apiId, apiHash }),
     getChannelHistory: (channelName, limit) => ipcRenderer.invoke('telegram:get-channel-history', { channelName, limit }),
+    sendMessage: (chat, text, parseMode) => ipcRenderer.invoke('telegram:send-message', { chat, text, parseMode }),
     onAuthRequest: (cb) => {
       const handler = (_e, data) => cb(data);
       ipcRenderer.on('telegram:auth-request', handler);

@@ -36,5 +36,6 @@
         "**/.hg": false,
         "**/.svn": false,
         "**/Thumbs.db": false
-    }
+    },
+    "google.cloud.project": "wecrypto"
 }

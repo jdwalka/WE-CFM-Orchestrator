@@ -38,3 +38,13 @@
 - Days: 11  Train: 400  Test: 100  Step: 50
 - Coins: XRP
 - Log: G:\WECRYP\backtest-logs\wf-2026-06-18.log
+
+## Walk-Forward Backtest — 2026-06-22T07:38:06.044Z
+- Days: 14  Train: 400  Test: 100  Step: 50
+- Coins: BTC, ETH, SOL, XRP
+- Log: G:\WECRYP\backtest-logs\wf-2026-06-22.log
+
+## Advanced Backtest — 2026-06-22T07:52:21.729Z
+- Days: 7  Candles: 2016
+- Coins analyzed: BTC, ETH, SOL, XRP
+- Log: G:\WECRYP\backtest-logs\advanced-2026-06-22.log

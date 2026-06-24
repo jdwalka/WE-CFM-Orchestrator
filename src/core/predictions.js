@@ -590,12 +590,11 @@
   const BACKTEST_THRESHOLD_GRID = [0.08, 0.10, 0.12, 0.16, 0.20];
   const BACKTEST_AGREEMENT_GRID = [0.50, 0.54, 0.58];
   const BACKTEST_FILTER_OVERRIDES = {
-    // Retuned 2026-05-08 via 60-day walk-forward OOS calibration.
-    // These medians reduced overfitting drift and normalized trigger frequency at h15.
-    BTC: { h1: { entryThreshold: 0.34, minAgreement: 0.56 }, h5: { entryThreshold: 0.34, minAgreement: 0.56 }, h10: { entryThreshold: 0.35, minAgreement: 0.57 }, h15: { entryThreshold: 0.38, minAgreement: 0.58 } },
-    ETH: { h1: { entryThreshold: 0.36, minAgreement: 0.58 }, h5: { entryThreshold: 0.36, minAgreement: 0.58 }, h10: { entryThreshold: 0.35, minAgreement: 0.58 }, h15: { entryThreshold: 0.34, minAgreement: 0.58 } },
-    XRP: { h1: { entryThreshold: 0.30, minAgreement: 0.58 }, h5: { entryThreshold: 0.30, minAgreement: 0.58 }, h10: { entryThreshold: 0.30, minAgreement: 0.54 }, h15: { entryThreshold: 0.35, minAgreement: 0.54 } },
-    SOL: { h1: { entryThreshold: 0.35, minAgreement: 0.54 }, h5: { entryThreshold: 0.35, minAgreement: 0.54 }, h10: { entryThreshold: 0.35, minAgreement: 0.54 }, h15: { entryThreshold: 0.35, minAgreement: 0.54 } },
+    // Retuned 2026-06-22 via walk-forward OOS calibration.
+    BTC: { h1: { entryThreshold: 0.30, minAgreement: 0.54 }, h5: { entryThreshold: 0.30, minAgreement: 0.54 }, h10: { entryThreshold: 0.25, minAgreement: 0.58 }, h15: { entryThreshold: 0.25, minAgreement: 0.58 } },
+    ETH: { h1: { entryThreshold: 0.25, minAgreement: 0.50 }, h5: { entryThreshold: 0.25, minAgreement: 0.50 }, h10: { entryThreshold: 0.25, minAgreement: 0.50 }, h15: { entryThreshold: 0.25, minAgreement: 0.54 } },
+    XRP: { h1: { entryThreshold: 0.30, minAgreement: 0.58 }, h5: { entryThreshold: 0.30, minAgreement: 0.58 }, h10: { entryThreshold: 0.30, minAgreement: 0.58 }, h15: { entryThreshold: 0.30, minAgreement: 0.54 } },
+    SOL: { h1: { entryThreshold: 0.35, minAgreement: 0.50 }, h5: { entryThreshold: 0.35, minAgreement: 0.50 }, h10: { entryThreshold: 0.28, minAgreement: 0.54 }, h15: { entryThreshold: 0.30, minAgreement: 0.54 } },
     BNB: { h1: { entryThreshold: 0.50, minAgreement: 0.72 }, h5: { entryThreshold: 0.50, minAgreement: 0.72 }, h10: { entryThreshold: 0.50, minAgreement: 0.72 }, h15: { entryThreshold: 0.50, minAgreement: 0.72 } },
     DOGE: { h1: { entryThreshold: 0.28, minAgreement: 0.58 }, h5: { entryThreshold: 0.32, minAgreement: 0.60 }, h10: { entryThreshold: 0.35, minAgreement: 0.62 }, h15: { entryThreshold: 0.38, minAgreement: 0.66 } },
     HYPE: { h1: { entryThreshold: 0.20, minAgreement: 0.56 }, h5: { entryThreshold: 0.25, minAgreement: 0.60 }, h10: { entryThreshold: 0.30, minAgreement: 0.62 }, h15: { entryThreshold: 0.33, minAgreement: 0.64 } },
@@ -4421,6 +4420,45 @@
         const target = lastPrice * (1 + modelDrift * targetScale * projectionTargetDriftMult);
         const entry = projectionKey(horizonMin);
         acc[entry] = { horizonMin, target, high: target + atr * rangeScale, low: target - atr * rangeScale };
+        
+        // For the 5-min horizon, align target to the current 5-min Polymarket contract
+        if (horizonMin === 5) {
+          const coinKey = String(options.sym || '').toUpperCase();
+          const p5m = window.PredictionMarkets?.getCoin(coinKey)?.poly5m ?? null;
+          const polyRef = p5m?.targetPriceNum ?? null;
+          const polyYes = p5m?.probability ?? null;
+          if (polyRef !== null && polyRef > 0) {
+            const sigma = (atr * rangeScale) || (lastPrice * 0.0017 * projectionRangeExpansionMult);
+            const z = (target - polyRef) / sigma;
+            const pAbove = normalCDF(z);
+            const modelYesPct = Math.round(pAbove * 100);
+            const polyYesPct = polyYes !== null ? Math.round(polyYes * 100) : null;
+            const divergence = polyYesPct !== null ? Math.abs(modelYesPct - polyYesPct) : null;
+            const gapPct = ((polyRef - lastPrice) / lastPrice) * 100;
+            
+            const yesDir = 'UP';
+            const noDir = 'DOWN';
+            const cdfImpliedDir = modelYesPct >= 50 ? yesDir : noDir;
+            const dirConflict = dir !== 'FLAT' && cdfImpliedDir !== dir;
+            
+            acc[entry].polyAlign = {
+              ref: polyRef,
+              gapPct,
+              modelYesPct,
+              polyYesPct,
+              divergence,
+              strikeDir: 'above',
+              closeTimeMs: p5m?.closeTime ? new Date(p5m.closeTime).getTime() : null,
+              dirConflict,
+              cdfImpliedDir,
+              status: divergence === null ? 'no-market'
+                : divergence <= 12 ? 'aligned'
+                  : divergence <= 25 ? 'soft-split'
+                    : 'divergent',
+            };
+          }
+        }
+
         // For the 15-min horizon, align target to the NEXT 15-min candle session
         if (horizonMin === 15) {
           const ns = getNextCandleSession();
@@ -4665,9 +4703,17 @@
     // ── PER-HORIZON SCORES ─────────────────────────────────────────────────────
     // 5m contract: needs high quality AND last 5 candles net-aligned
     const last5Net = last5.reduce((s, c) => s + (c.c - c.o), 0);
-    const last5Aligned = Math.sign(last5Net) === driftDir;
+    const driftDir5 = last5Net > 0 ? 1 : last5Net < 0 ? -1 : 0;
+    let streak5 = 0;
+    for (let i = window.length - 1; i >= 0; i--) {
+      if (Math.sign(window[i].c - window[i].o) === driftDir5) streak5++;
+      else break;
+    }
+    const last5Aligned = driftDir5 === driftDir;
     const h1Score = hardGated && last5Aligned ? clamp(score * 1.12, -1, 1) : 0;
-    const h5Score = gated && last5Aligned ? clamp(score * (hardGated ? 1.06 : 0.88), -1, 1) : score * 0.16;
+    const h5Score = gated && last5Aligned 
+      ? clamp(score * (hardGated ? 1.06 : 0.88), -1, 1) 
+      : (driftDir5 !== 0 ? clamp(driftDir5 * momentumQuality * (streak5 >= 2 ? 0.64 : 0.22), -1, 1) : 0);
     const h10Score = gated ? clamp(score * 0.90, -1, 1) : score * 0.26;
     // 15m contract: most forgiving — even medium drift matters; missed quiet ETH drifts end here
     const h15Score = medQuality ? clamp(score * 0.88, -1, 1) : score * 0.38;
@@ -4711,6 +4757,10 @@
         driftDir,
         momentumQuality,
         qualityLabel,
+        // 5m specific indicators
+        driftDir5,
+        streak5,
+        last5Aligned,
       },
     };
   }
@@ -6872,10 +6922,74 @@
               reason: rlOut.reason,
               mispricing: rlOut.decision.mispricing || null,
               rlActionId: rlOut.decision.actionId,
+              sniperDecision: rlOut.decision.sniperDecision || null,
             },
           };
           if (rlOut.decision.mispricing?.huntScore > 0) {
             result.mispricing = rlOut.decision.mispricing;
+          }
+
+          // --- Live Telegram alerts for sniper actions ---
+          try {
+            window._lastSniperAlert = window._lastSniperAlert || {};
+            const lastAlert = window._lastSniperAlert[coin.sym] || {};
+            const now = Date.now();
+            const sniperDec = rlOut.decision.sniperDecision;
+            const currentAction = sniperDec?.action || 'SCOUT_WAIT';
+            const isHurdleGated = rlOut.reason && rlOut.reason.includes('ev_below_hurdle');
+
+            let shouldAlert = false;
+            let alertType = null;
+
+            if (currentAction === 'EXECUTE_STRIKE') {
+              if (lastAlert.action !== 'EXECUTE_STRIKE' || (now - (lastAlert.ts || 0)) > 180_000) {
+                shouldAlert = true;
+                alertType = 'STRIKE';
+              }
+            } else if (isHurdleGated) {
+              if (lastAlert.action !== 'GATE' || (now - (lastAlert.ts || 0)) > 300_000) {
+                shouldAlert = true;
+                alertType = 'GATE';
+              }
+            }
+
+            if (shouldAlert && window.electron?.telegram?.sendMessage) {
+              window._lastSniperAlert[coin.sym] = {
+                action: alertType === 'STRIKE' ? 'EXECUTE_STRIKE' : 'GATE',
+                ts: now
+              };
+
+              let alertText = '';
+              const tteMinutes = kalshiAlign?.closeTimeMs 
+                ? ((kalshiAlign.closeTimeMs - now) / 60000).toFixed(1)
+                : '15.0';
+
+              if (alertType === 'STRIKE') {
+                const evPct = ((sniperDec.ev || 0) * 100).toFixed(1);
+                const hurdlePct = ((sniperDec.hurdle || 0) * 100).toFixed(1);
+                alertText = `🎯 <b>[SNIPER EXECUTE STRIKE]</b> <b>${coin.sym}</b>\n` +
+                            `Action: 🟢 <b>EXECUTE STRIKE</b>\n` +
+                            `Direction: <b>${rlOut.decision.action}</b>\n` +
+                            `Market Price: <code>${(sniperDec.p_market || 0.5).toFixed(2)}</code>\n` +
+                            `Model probability: <code>${Math.round(kalshiAlign?.modelYesPct || 50)}%</code>\n` +
+                            `Expected Value: <code>+${evPct}%</code> (Hurdle: <code>+${hurdlePct}%</code>)\n` +
+                            `Time to Expiry: <code>${tteMinutes}m</code> remaining\n` +
+                            `Spot Volatility: <code>${(rlCtx.spotVolatility || 0.05).toFixed(2)}</code>`;
+              } else if (alertType === 'GATE') {
+                alertText = `🛡️ <b>[SNIPER GATE ACTIVE]</b> <b>${coin.sym}</b>\n` +
+                            `Action: 🛑 <b>SCOUT WAIT (Gated)</b>\n` +
+                            `Blended Intent: <b>${rlOut.decision.action === 'WAIT' ? (rlCtx.score >= 0 ? 'UP' : 'DOWN') : rlOut.decision.action}</b>\n` +
+                            `Reason: <code>Expected Value below Volatility Hurdle</code>\n` +
+                            `Details: <code>${rlOut.reason}</code>\n` +
+                            `Time to Expiry: <code>${tteMinutes}m</code> remaining`;
+              }
+
+              window.electron.telegram.sendMessage(null, alertText, 'html').catch(err => {
+                console.warn('[Telegram Alert] Send failed:', err.message);
+              });
+            }
+          } catch (tgAlertErr) {
+            console.warn('[Telegram Alert] Evaluation error:', tgAlertErr.message);
           }
         }
       } catch (rlErr) {

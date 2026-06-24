@@ -546,6 +546,7 @@ function predictionCard(p) {
               </div>
             </div>
           ` : ''}
+          ${lazerRow}
           ${model5mRow}
           ${kalshi15mRow}
           ${_k15mCoin ? renderFifteenMinuteMovePlan(_k15mCoin, true) : ''}
@@ -876,6 +877,34 @@ function predictionCard(p) {
               ${ki.illiquid ? `<div style="font-size:11px;color:var(--color-orange);margin-top:4px">⚠ Low liquidity ($${ki.liquidity?.toFixed(0)}) — size carefully</div>` : ''}
               ${!isTrade && isDivergent ? `<div style="font-size:11px;color:var(--color-orange);margin-top:4px">⚠ Kalshi vs model disagree — watch only, do not trade</div>` : ''}
               ${!isTrade && (ki.stageDiagnostics?.suppressionReasons?.length || ki.blockedBy?.length) ? `<div style="font-size:11px;color:var(--color-text-faint);margin-top:4px">Gate trace: ${((ki.stageDiagnostics?.suppressionReasons || []).concat(ki.blockedBy || []).filter(Boolean).slice(0, 4)).join(' · ')}</div>` : ''}
+              ${(() => {
+                const rl = p.diagnostics?.rlStack;
+                if (!rl) return '';
+                const sniperDec = rl.sniperDecision;
+                const isGated = rl.reason && rl.reason.includes('ev_below_hurdle');
+                const isExecute = sniperDec?.action === 'EXECUTE_STRIKE';
+                
+                const evText = sniperDec?.ev != null ? `${(sniperDec.ev * 100).toFixed(1)}%` : '—';
+                const hurdleText = sniperDec?.hurdle != null ? `${(sniperDec.hurdle * 100).toFixed(1)}%` : '—';
+                const priceText = sniperDec?.p_market != null ? `${sniperDec.p_market.toFixed(2)}` : '—';
+                
+                if (isGated) {
+                  return `<div style="font-size:11px;color:var(--color-red);background:rgba(255,80,80,0.06);border:1px solid rgba(255,80,80,0.18);border-radius:4px;padding:6px 10px;margin-top:6px;font-family:var(--font-mono)">
+                    🎯 <b>SNIPER GATED:</b> EV ${evText} &lt; Vol Hurdle ${hurdleText} (Mkt price: ${priceText})
+                  </div>`;
+                }
+                if (isExecute) {
+                  return `<div style="font-size:11px;color:var(--color-green);background:rgba(0,200,100,0.06);border:1px solid rgba(0,200,100,0.18);border-radius:4px;padding:6px 10px;margin-top:6px;font-family:var(--font-mono)">
+                    🎯 <b>SNIPER EXECUTING:</b> EV ${evText} &gt;= Vol Hurdle ${hurdleText} (Mkt price: ${priceText})
+                  </div>`;
+                }
+                if (rl.reason === 'invalid_price_or_illiquid') {
+                  return `<div style="font-size:11px;color:var(--color-orange);background:rgba(255,160,0,0.06);border:1px solid rgba(255,160,0,0.18);border-radius:4px;padding:6px 10px;margin-top:6px;font-family:var(--font-mono)">
+                    🎯 <b>SNIPER WAITING:</b> Order book illiquid or price invalid
+                  </div>`;
+                }
+                return '';
+              })()}
             </div>`;
       })()}
         </div>

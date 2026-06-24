@@ -81,10 +81,10 @@ const PER_COIN_INDICATOR_BIAS = {
 
 // Filter overrides (baseline reference — calibrated per fold in this script)
 const BACKTEST_FILTER_OVERRIDES = {
-  BTC:  { h1:{entryThreshold:0.36,minAgreement:0.56}, h5:{entryThreshold:0.36,minAgreement:0.56}, h10:{entryThreshold:0.37,minAgreement:0.58}, h15:{entryThreshold:0.38,minAgreement:0.58} },
-  ETH:  { h1:{entryThreshold:0.38,minAgreement:0.58}, h5:{entryThreshold:0.38,minAgreement:0.58}, h10:{entryThreshold:0.36,minAgreement:0.58}, h15:{entryThreshold:0.35,minAgreement:0.58} },
-  XRP:  { h1:{entryThreshold:0.40,minAgreement:0.54}, h5:{entryThreshold:0.40,minAgreement:0.54}, h10:{entryThreshold:0.36,minAgreement:0.56}, h15:{entryThreshold:0.32,minAgreement:0.58} },
-  SOL:  { h1:{entryThreshold:0.45,minAgreement:0.66}, h5:{entryThreshold:0.45,minAgreement:0.66}, h10:{entryThreshold:0.40,minAgreement:0.62}, h15:{entryThreshold:0.41,minAgreement:0.64,maxThreshold:0.55} },
+  BTC:  { h1:{entryThreshold:0.30,minAgreement:0.54}, h5:{entryThreshold:0.30,minAgreement:0.54}, h10:{entryThreshold:0.25,minAgreement:0.58}, h15:{entryThreshold:0.25,minAgreement:0.58} },
+  ETH:  { h1:{entryThreshold:0.25,minAgreement:0.50}, h5:{entryThreshold:0.25,minAgreement:0.50}, h10:{entryThreshold:0.25,minAgreement:0.50}, h15:{entryThreshold:0.25,minAgreement:0.54} },
+  XRP:  { h1:{entryThreshold:0.30,minAgreement:0.58}, h5:{entryThreshold:0.30,minAgreement:0.58}, h10:{entryThreshold:0.30,minAgreement:0.58}, h15:{entryThreshold:0.30,minAgreement:0.54} },
+  SOL:  { h1:{entryThreshold:0.35,minAgreement:0.50}, h5:{entryThreshold:0.35,minAgreement:0.50}, h10:{entryThreshold:0.28,minAgreement:0.54}, h15:{entryThreshold:0.30,minAgreement:0.54,maxThreshold:0.55} },
 };
 
 const SCORE_AMPLIFIER       = 1.6;

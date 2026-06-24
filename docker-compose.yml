@@ -182,6 +182,27 @@ services:
     networks:
       - wecrypto-net
 
+  # Freqtrade crypto trading bot - dry run mode
+  freqtrade:
+    image: freqtradeorg/freqtrade:stable
+    container_name: wecrypto-freqtrade
+    restart: unless-stopped
+    volumes:
+      - ./freqtrade/user_data:/freqtrade/user_data
+    ports:
+      - "8090:8080"  # API server (host:container) — avoids collision with cors-proxy on 8080
+    command: >
+      trade
+      --logfile /freqtrade/user_data/logs/freqtrade.log
+      --db-url sqlite:////freqtrade/user_data/tradesv3.sqlite
+      --config /freqtrade/user_data/config.json
+      --strategy SampleStrategy
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    networks:
+      - wecrypto-net
+
 volumes:
   redpanda_data:
     driver: local

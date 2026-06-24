@@ -488,6 +488,14 @@ function renderMarkets5M() {
       if (!p) return null;
       return p.projections?.p15 ?? null;
     }
+    function normalCDF(z) {
+      const t = 1 / (1 + 0.2316419 * Math.abs(z));
+      const poly = t * (0.319381530 + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429))));
+      const pdf = Math.exp(-0.5 * z * z) / Math.sqrt(2 * Math.PI);
+      const p = 1 - pdf * poly;
+      return z >= 0 ? p : 1 - p;
+    }
+
     function _modelOdds(sym) {
       const p = pred[sym];
       if (!p) return null;
@@ -504,9 +512,37 @@ function renderMarkets5M() {
       }
       return null;
     }
+
+    function _modelOdds5m(sym) {
+      const p = pred[sym];
+      if (!p) return null;
+      // 1. Check if we have exact polyAlign on the p5 projection
+      const polyYesPct = p.projections?.p5?.polyAlign?.modelYesPct;
+      if (Number.isFinite(polyYesPct)) {
+        return _clamp(polyYesPct / 100, 0.02, 0.98);
+      }
+      // 2. Check the h5 projection target vs priceToBeat
+      const p5 = pm[sym]?.poly5m;
+      const ptb = p5?.targetPriceNum ?? p5?.priceToBeatNum;
+      const proj = p.projections?.p5 ?? null;
+      if (proj && Number.isFinite(proj.target) && Number.isFinite(ptb) && ptb > 0) {
+        const expectedMovePct = p.volatility?.atrPct ? (p.volatility.atrPct / 100) : 0.0017;
+        const lastPrice = p.price || proj.target;
+        const sigma = lastPrice * expectedMovePct * Math.max(0.12, Math.sqrt(5 / 15) * 0.5);
+        const z = (proj.target - ptb) / (sigma || 1);
+        return _clamp(normalCDF(z), 0.02, 0.98);
+      }
+      // 3. Fallback to h5 horizonScore
+      const h5Score = p.horizonScores?.h5 ?? p.diagnostics?.fastTiming?.horizonScores?.h5;
+      if (Number.isFinite(h5Score)) {
+        return _clamp(0.5 + h5Score * 0.40, 0.02, 0.98);
+      }
+      return null;
+    }
+
     function _modelDivergence(sym, kalshiProb) {
       if (kalshiProb == null) return null;
-      const modelOdds = _modelOdds(sym);
+      const modelOdds = _modelOdds5m(sym);
       if (modelOdds == null) return null;
       const diff = Math.abs(modelOdds - kalshiProb);
       if (diff > 0.15) return 'DIVERGENCE';
@@ -532,7 +568,7 @@ function renderMarkets5M() {
     }
     function _marketNote(sym, marketProb, marketLabel = 'market') {
       if (marketProb == null) return '';
-      const modelOdds = _modelOdds(sym);
+      const modelOdds = _modelOdds5m(sym);
       if (modelOdds == null) return '';
       const marketYes = Math.round(marketProb * 100);
       const mYes = Math.round(modelOdds * 100);
@@ -546,6 +582,190 @@ function renderMarkets5M() {
         return `🟡 ${divergence}: ${dir}`;
       }
       return `✅ Odds/model aligned: ${marketYes > 50 ? 'UP priced' : 'DOWN priced'}`;
+    }
+    function _render5mIndicators(sym) {
+      const p = pred[sym];
+      if (!p) return '';
+      const ft = p.diagnostics?.fastTiming;
+      if (!ft) return '';
+      
+      const fd = ft.diagnostics || {};
+      const h5Score = p.horizonScores?.h5 ?? ft.horizonScores?.h5 ?? 0;
+      const driftDir5 = fd.driftDir5 ?? 0;
+      const streak5 = fd.streak5 ?? 0;
+      const last5Aligned = fd.last5Aligned ?? false;
+      
+      const dirText = driftDir5 > 0 ? 'UP' : driftDir5 < 0 ? 'DOWN' : 'FLAT';
+      const dirColor = driftDir5 > 0 ? 'var(--color-green)' : driftDir5 < 0 ? 'var(--color-red)' : 'var(--color-text-faint)';
+      const alignText = last5Aligned ? '⚡ CONTINUATION' : '🔄 PULLBACK/REVERSAL';
+      const alignColor = last5Aligned ? 'var(--color-primary)' : 'var(--color-orange)';
+      
+      const purity = fd.driftPurity != null ? `${(fd.driftPurity * 100).toFixed(0)}%` : '—';
+      const quality = fd.momentumQuality != null ? `${(fd.momentumQuality * 100).toFixed(0)}%` : '—';
+      const streakLabel = streak5 > 0 ? `${streak5} ${dirText} candles` : '0 candles';
+      const target5m = p.projections?.p5?.target;
+      const targetLabel = target5m != null ? `$${fmtPrice(target5m)}` : '—';
+      
+      return `
+        <div class="rationale-block" style="margin-top:8px;background:var(--color-surface-2);border-radius:6px;padding:10px;">
+          <div style="font-size:10px;color:var(--color-text-faint);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:6px;font-weight:700;">
+            5M Live Micro-indicators
+          </div>
+          <div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:4px;">
+            <span style="color:var(--color-text-muted)">5M Momentum Dir:</span>
+            <span style="color:${dirColor};font-weight:800">${dirText}</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:4px;">
+            <span style="color:var(--color-text-muted)">Micro-Streak:</span>
+            <span style="color:var(--color-text);font-weight:700">${streakLabel}</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:4px;">
+            <span style="color:var(--color-text-muted)">Regime Guard:</span>
+            <span style="color:${alignColor};font-weight:800">${alignText}</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:4px;">
+            <span style="color:var(--color-text-muted)">Drift Purity:</span>
+            <span>${purity}</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:4px;">
+            <span style="color:var(--color-text-muted)">5M Proj Target:</span>
+            <span style="font-weight:700;color:var(--color-text)">${targetLabel}</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;font-size:11px;border-top:1px dashed var(--color-border);padding-top:4px;margin-top:4px;">
+            <span style="color:var(--color-text-muted)">5M Horizon Score:</span>
+            <span style="font-weight:800;color:${h5Score > 0 ? 'var(--color-green)' : h5Score < 0 ? 'var(--color-red)' : 'var(--color-text)'}">${h5Score.toFixed(3)}</span>
+          </div>
+          ${(() => {
+             const proj5 = p.projections?.p5;
+             const proj10 = p.projections?.p10;
+             const currentOdds = _modelOdds5m(sym);
+             
+             const coin = pm[sym] || {};
+             const p5 = coin.poly5m;
+             const poly5mMkts = coin.poly5mMkts || [];
+             const nextPolyMkt = p5?._windowTs
+               ? poly5mMkts.find(m => m.isFuture && m.ts === p5._windowTs + 300)
+               : poly5mMkts.find(m => m.isFuture);
+
+             const hasModelOdds = proj5 && proj10 && currentOdds != null;
+             const hasPolyOdds = p5 && p5.probability != null;
+
+             if (!hasModelOdds && !hasPolyOdds) return '';
+
+             let modelColumnHtml = '';
+             if (hasModelOdds) {
+               const expectedMovePct = p.volatility?.atrPct ? (p.volatility.atrPct / 100) : 0.0017;
+               const lastPrice = p.price || proj5.target;
+               const sigma = lastPrice * expectedMovePct * Math.max(0.12, Math.sqrt(5 / 15) * 0.5);
+               const z = (proj10.target - proj5.target) / (sigma || 1);
+               const nextOdds = _clamp(normalCDF(z), 0.02, 0.98);
+               
+               const currentPct = Math.round(currentOdds * 100);
+               const nextPct = Math.round(nextOdds * 100);
+               const diff = nextPct - currentPct;
+               const diffLabel = diff >= 0 ? `+${diff}%` : `${diff}%`;
+               const diffColor = diff > 0 ? 'var(--color-green)' : diff < 0 ? 'var(--color-red)' : 'var(--color-text-muted)';
+               
+               const currentDirection = currentPct >= 55 ? 'BULLISH' : currentPct <= 45 ? 'BEARISH' : 'NEUTRAL';
+               const nextDirection = nextPct >= 55 ? 'BULLISH' : nextPct <= 45 ? 'BEARISH' : 'NEUTRAL';
+               
+               let shiftText = '';
+               if (currentDirection !== nextDirection) {
+                 shiftText = `⚠️ Shift: ${currentDirection} ➔ ${nextDirection}`;
+               } else {
+                 shiftText = diff >= 5 ? '📈 Accel momentum' : diff <= -5 ? '📉 Decel momentum' : '➡️ Stable trend';
+               }
+
+               modelColumnHtml = `
+                 <div>
+                   <div style="font-weight:700;color:var(--color-text-muted);font-size:9px;margin-bottom:3px;border-bottom:1px solid var(--color-border);padding-bottom:2px;text-transform:uppercase;">Model Proj</div>
+                   <div style="display:flex;justify-content:space-between;margin-bottom:1px;font-size:10px;">
+                     <span>Current:</span>
+                     <span style="font-weight:700;">${currentPct}%</span>
+                   </div>
+                   <div style="display:flex;justify-content:space-between;margin-bottom:1px;font-size:10px;">
+                     <span>Next:</span>
+                     <span style="font-weight:700;">${nextPct}%</span>
+                   </div>
+                   <div style="display:flex;justify-content:space-between;margin-bottom:2px;font-size:10px;">
+                     <span>Change:</span>
+                     <span style="font-weight:800;color:${diffColor}">${diffLabel}</span>
+                   </div>
+                   <div style="font-size:9px;font-weight:700;color:var(--color-orange);line-height:1.2;margin-top:3px;">${shiftText}</div>
+                 </div>
+               `;
+             }
+
+             let polyColumnHtml = '';
+             if (hasPolyOdds) {
+               const currentMktPct = Math.round(p5.probability * 100);
+               if (nextPolyMkt && nextPolyMkt.yes != null) {
+                 const nextMktPct = Math.round(nextPolyMkt.yes * 100);
+                 const mktDiff = nextMktPct - currentMktPct;
+                 const mktDiffLabel = mktDiff >= 0 ? `+${mktDiff}%` : `${mktDiff}%`;
+                 const mktDiffColor = mktDiff > 0 ? 'var(--color-green)' : mktDiff < 0 ? 'var(--color-red)' : 'var(--color-text-muted)';
+                 
+                 const currentMktDir = currentMktPct >= 55 ? 'BULLISH' : currentMktPct <= 45 ? 'BEARISH' : 'NEUTRAL';
+                 const nextMktDir = nextMktPct >= 55 ? 'BULLISH' : nextMktPct <= 45 ? 'BEARISH' : 'NEUTRAL';
+                 let mktShiftText = '';
+                 if (currentMktDir !== nextMktDir) {
+                   mktShiftText = `⚠️ Shift: ${currentMktDir} ➔ ${nextMktDir}`;
+                 } else {
+                   mktShiftText = mktDiff >= 5 ? '📈 Stronger demand' : mktDiff <= -5 ? '📉 Weaker demand' : '➡️ Flat market';
+                 }
+                 
+                 polyColumnHtml = `
+                   <div>
+                     <div style="font-weight:700;color:var(--color-text-muted);font-size:9px;margin-bottom:3px;border-bottom:1px solid var(--color-border);padding-bottom:2px;text-transform:uppercase;">Polymarket</div>
+                     <div style="display:flex;justify-content:space-between;margin-bottom:1px;font-size:10px;">
+                       <span>Current:</span>
+                       <span style="font-weight:700;">${currentMktPct}%</span>
+                     </div>
+                     <div style="display:flex;justify-content:space-between;margin-bottom:1px;font-size:10px;">
+                       <span>Next:</span>
+                       <span style="font-weight:700;">${nextMktPct}%</span>
+                     </div>
+                     <div style="display:flex;justify-content:space-between;margin-bottom:2px;font-size:10px;">
+                       <span>Change:</span>
+                       <span style="font-weight:800;color:${mktDiffColor}">${mktDiffLabel}</span>
+                     </div>
+                     <div style="font-size:9px;font-weight:700;color:var(--color-orange);line-height:1.2;margin-top:3px;">${mktShiftText}</div>
+                   </div>
+                 `;
+               } else {
+                 polyColumnHtml = `
+                   <div>
+                     <div style="font-weight:700;color:var(--color-text-muted);font-size:9px;margin-bottom:3px;border-bottom:1px solid var(--color-border);padding-bottom:2px;text-transform:uppercase;">Polymarket</div>
+                     <div style="display:flex;justify-content:space-between;margin-bottom:1px;font-size:10px;">
+                       <span>Current:</span>
+                       <span style="font-weight:700;">${currentMktPct}%</span>
+                     </div>
+                     <div style="display:flex;justify-content:space-between;margin-bottom:1px;font-size:10px;">
+                       <span>Next:</span>
+                       <span style="color:var(--color-text-faint)">—</span>
+                     </div>
+                     <div style="display:flex;justify-content:space-between;margin-bottom:2px;font-size:10px;">
+                       <span>Change:</span>
+                       <span style="color:var(--color-text-faint)">—</span>
+                     </div>
+                     <div style="font-size:9px;color:var(--color-text-faint);margin-top:3px;line-height:1.2;">Prefetching next…</div>
+                   </div>
+                 `;
+               }
+             }
+
+             return `
+               <div style="margin-top:6px;border-top:1px dashed var(--color-border);padding-top:6px;font-size:11px;">
+                 <div style="font-weight:700;color:var(--color-text-faint);margin-bottom:6px;font-size:9px;text-transform:uppercase;letter-spacing:0.04em;">Next Contract vs Current</div>
+                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+                   ${modelColumnHtml || '<div></div>'}
+                   ${polyColumnHtml || '<div></div>'}
+                 </div>
+               </div>
+             `;
+          })()}
+        </div>
+      `;
     }
     function _fmtVol(v) {
       if (!v || v < 1) return '';
@@ -634,6 +854,9 @@ function renderMarkets5M() {
           return `<div class="rationale-block">${locked}${regimeBadge}${conviction}${drivers}</div>`;
         })()}
 
+          <!-- 5M Micro-indicators -->
+          ${_render5mIndicators(sym)}
+
           <!-- Market Divergence Alert -->
           ${primaryMarketProb != null ? (() => {
           const note = _marketNote(sym, primaryMarketProb, primaryMarketLabel);
@@ -644,9 +867,33 @@ function renderMarkets5M() {
           return `<div style="background:${bgColor};border:1px solid ${borderColor};border-radius:5px;padding:7px 10px;margin-bottom:8px;font-size:11px;color:var(--color-text);">${note}</div>`;
         })() : ''}
 
-          <!-- Polymarket + Model row -->
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px;">
+          <!-- Kalshi 5M + Polymarket + Model row -->
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:8px;">
 
+            <!-- Kalshi 5M Column -->
+            <div style="background:var(--color-surface-2);border-radius:6px;padding:10px;">
+              <div style="font-size:10px;color:var(--color-text-faint);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:5px;">
+                Kalshi 5M
+              </div>
+              ${(() => {
+                const k5 = coin.kalshi5m;
+                if (!k5) return `<div style="color:var(--color-text-faint);font-size:11px">No Kalshi 5M market</div>`;
+                const k5prob = k5.probability ?? null;
+                return `
+                  <div style="display:flex;gap:8px;align-items:baseline;margin-bottom:4px;">
+                    <span style="color:var(--color-green);font-size:14px;font-weight:700">${_pct(k5prob)}</span>
+                    <span style="font-size:12px;color:var(--color-text-muted)">UP odds</span>
+                  </div>
+                  <div style="font-size:11px;color:var(--color-text-faint);margin-top:3px;" id="k5cd-${sym}" data-close="${k5.closeTime || ''}">⏱ ${_countdown(k5.closeTime)}</div>
+                  ${k5.targetPrice ? `<div style="font-size:11px;color:var(--color-text);margin-top:4px;">Strike <strong>${k5.targetPrice}</strong></div>` : ''}
+                  ${k5.volume != null ? `<div style="font-size:11px;color:var(--color-text-muted);margin-top:4px;">Vol <strong>${_fmtVol(k5.volume)}</strong></div>` : ''}
+                  <div style="font-size:10px;color:var(--color-text-faint);margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="${k5.ticker || ''}">${k5.ticker || 'kalshi5m'}</div>
+                  <div style="font-size:10px;color:var(--color-text-faint);margin-top:3px;">Source: ${k5._proxy15m ? '15M Proxy' : 'Direct 5M'}</div>
+                `;
+              })()}
+            </div>
+
+            <!-- Polymarket Column -->
             <div style="background:var(--color-surface-2);border-radius:6px;padding:10px;">
               <div style="font-size:10px;color:var(--color-text-faint);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:5px;">
                 Polymarket 5M
@@ -668,10 +915,11 @@ function renderMarkets5M() {
               ` : `<div style="color:var(--color-text-faint);font-size:11px">No Poly 5M market</div>`}
             </div>
 
+            <!-- Model Odds Column -->
             <div style="background:var(--color-surface-2);border-radius:6px;padding:10px;">
-              <div style="font-size:10px;color:var(--color-text-faint);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:5px;">Model Odds</div>
+              <div style="font-size:10px;color:var(--color-text-faint);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:5px;">Model Odds (5m)</div>
               ${(() => {
-          const modelOdds = _modelOdds(sym);
+          const modelOdds = _modelOdds5m(sym);
           if (modelOdds == null) return `<span style="color:var(--color-text-faint);font-size:11px">Run predictions</span>`;
           const action = modelOdds >= 0.55 ? '▲ BUY YES' : modelOdds <= 0.45 ? '▼ BUY NO' : '◆ WAIT';
           const actionColor = modelOdds >= 0.55 ? 'var(--color-green)' : modelOdds <= 0.45 ? 'var(--color-red)' : 'var(--color-text-faint)';
@@ -751,12 +999,20 @@ function renderMarkets5M() {
       let expiredPoly5m = false;
       COINS_5M.forEach(sym => {
         const el = document.getElementById(`p5cd-${sym}`);
-        if (!el) return;
-        const close = el.dataset.close;
-        if (close) {
-          el.textContent = `⏱ ${_countdown(close)}`;
-          const closeMs = new Date(close).getTime();
-          if (Number.isFinite(closeMs) && closeMs <= Date.now()) expiredPoly5m = true;
+        if (el) {
+          const close = el.dataset.close;
+          if (close) {
+            el.textContent = `⏱ ${_countdown(close)}`;
+            const closeMs = new Date(close).getTime();
+            if (Number.isFinite(closeMs) && closeMs <= Date.now()) expiredPoly5m = true;
+          }
+        }
+        const kEl = document.getElementById(`k5cd-${sym}`);
+        if (kEl) {
+          const close = kEl.dataset.close;
+          if (close) {
+            kEl.textContent = `⏱ ${_countdown(close)}`;
+          }
         }
       });
       if (expiredPoly5m && window.PredictionMarkets?.refreshPoly5M && Date.now() - _markets5mPolyRefreshKickTs > 8_000) {
@@ -1178,8 +1434,9 @@ function renderObservability() {
           <div class="card-title" style="margin:0;">Telegram &amp; Polycool</div>
           <span style="font-size:10px; font-weight:700; color:${tgStatusColor}; border:1px solid ${tgStatusColor}; padding:1px 6px; border-radius:999px;">${tgStatusText}</span>
         </div>
-        <div style="font-size:11px; color:var(--color-text-muted);">
-          Channel: <code>${_obsEsc(_telegramStatus.channelToListen || 'polycool_copytrade_channel')}</code>
+        <div style="font-size:11px; color:var(--color-text-muted); display:flex; justify-content:space-between; align-items:center;">
+          <span>Channel: <code>${_obsEsc(_telegramStatus.channelToListen || 'polycool_copytrade_channel')}</code></span>
+          <button id="btn-open-polycool" class="btn btn-sm" style="padding:2px 8px; font-size:10px; border-radius:4px; margin-left:8px;">Open Polycool WebApp</button>
         </div>
         
         <!-- Login fields -->
@@ -1406,6 +1663,17 @@ function renderObservability() {
         });
       }
       
+      const btnOpenPolycool = document.getElementById('btn-open-polycool');
+      if (btnOpenPolycool) {
+        btnOpenPolycool.addEventListener('click', async () => {
+          if (window.electron && window.electron.invoke) {
+            await window.electron.invoke('open-polycool');
+          } else {
+            window.open('https://polycool.app', '_blank');
+          }
+        });
+      }
+
       const btnTest = document.getElementById('tg-btn-test-polycool');
       if (btnTest) {
         btnTest.addEventListener('click', () => {

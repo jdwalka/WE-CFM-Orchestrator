@@ -621,9 +621,11 @@ function refreshCexFlow(sym, el) {
     const loading = !data;
 
     // Coin selector tabs
-    const coinTabs = COINS.map(c =>
-      `<button class="cex-coin-tab ${c === sym ? 'active' : ''}" data-cex-coin="${c}">${c}</button>`
-    ).join('');
+    const coinTabs = COINS.map(c => {
+      const isHf = window.CexFlow?.get(c)?.hf?.active;
+      const label = isHf ? `${c} <span style="color:var(--color-green);font-size:9px">⚡</span>` : c;
+      return `<button class="cex-coin-tab ${c === sym ? 'active' : ''}" data-cex-coin="${c}">${label}</button>`;
+    }).join('');
 
     // Aggregate bar
     const agg = data?.aggregate;
@@ -648,6 +650,41 @@ function refreshCexFlow(sym, el) {
           <span style="color:${velColor};font-weight:700">${velLabel}</span>
           <span style="color:var(--color-text-muted);font-size:11px">velocity ${vel > 0 ? '+' : ''}${(vel * 100).toFixed(0)}%</span>
           <span style="color:${aggColor};font-size:11px">${chain.congestion} congestion · Leading: ${(chain.leadingScore ?? chain.score ?? 0) > 0 ? '↑ bullish' : (chain.leadingScore ?? chain.score ?? 0) < 0 ? '↓ bearish' : '—'}</span>
+        </div>`;
+    }
+
+    // High-Frequency Agent row
+    let hfRow = '';
+    if (data?.hf?.active) {
+      const hf = data.hf;
+      const statusText = hf.connected ? 'ACTIVE' : 'CONNECTING';
+      const statusColor = hf.connected ? 'var(--color-green)' : 'var(--color-orange)';
+      const vpinColor = hf.vpin > 0.7 ? 'var(--color-red)' : hf.vpin > 0.4 ? 'var(--color-orange)' : 'var(--color-text-muted)';
+      const vpinLabel = hf.vpin > 0.7 ? 'CRITICAL TOXICITY' : hf.vpin > 0.4 ? 'ELEVATED TOXICITY' : 'NORMAL';
+      
+      hfRow = `
+        <div class="cex-hf-panel" style="background:rgba(0,230,115,0.03); border:1px solid rgba(0,230,115,0.15); border-radius:6px; padding:10px; margin:8px 0; font-size:11px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid rgba(255,255,255,0.05); padding-bottom:6px; margin-bottom:8px;">
+            <span style="font-weight:700; color:var(--color-green); display:flex; align-items:center; gap:5px;">
+              <span style="display:inline-block; width:6px; height:6px; border-radius:50%; background:${statusColor};"></span>
+              ⚡ HIGH-FREQUENCY MONITOR (${statusText})
+            </span>
+            <span style="color:var(--color-text-faint); font-size:10px;">1m WS delta: <strong style="color:${hf.buyPct > 50 ? 'var(--color-green)' : 'var(--color-red)'}">${hf.buyPct?.toFixed(0)}%B / ${hf.sellPct?.toFixed(0)}%S</strong></span>
+          </div>
+          <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap:10px;">
+            <div>
+              <div style="color:var(--color-text-faint); font-size:9px; text-transform:uppercase; margin-bottom:2px;">Trade Velocity</div>
+              <div style="font-weight:700; font-family:var(--font-mono); font-size:12px; color:var(--color-text);">${hf.tradesPerSec?.toFixed(1) ?? '0.0'} /s</div>
+            </div>
+            <div>
+              <div style="color:var(--color-text-faint); font-size:9px; text-transform:uppercase; margin-bottom:2px;">VPIN Toxicity</div>
+              <div style="font-weight:700; font-family:var(--font-mono); font-size:12px; color:${vpinColor};">${hf.vpin?.toFixed(2) ?? '0.00'} <span style="font-size:8px; font-weight:normal;">(${vpinLabel})</span></div>
+            </div>
+            <div>
+              <div style="color:var(--color-text-faint); font-size:9px; text-transform:uppercase; margin-bottom:2px;">Whales (1m)</div>
+              <div style="font-weight:700; font-family:var(--font-mono); font-size:12px; color:var(--color-orange);">${hf.whaleTrades10k ?? 0} &gt;$10k · ${hf.whaleTrades50k ?? 0} &gt;$50k</div>
+            </div>
+          </div>
         </div>`;
     }
 
@@ -705,6 +742,7 @@ function refreshCexFlow(sym, el) {
           </div>
         </div>
         ${chainRow}
+        ${hfRow}
         <div class="cex-table-wrap">
           <table class="cex-table">
             <thead>

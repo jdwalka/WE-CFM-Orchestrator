@@ -84,21 +84,78 @@
 
   function rewardForAction(action, actualDirection, rapidScore = 0, meta = {}) {
     const actual = actualDirection === 'UP' ? ACTION.UP : actualDirection === 'DOWN' ? ACTION.DOWN : ACTION.WAIT;
-    let reward = 0;
 
+    // 1. CAPITAL PRESERVATION (WAIT ACTION)
     if (action === ACTION.WAIT) {
-      if (actual === ACTION.WAIT) return 0.15;
-      return -0.05 - rapidScore * 0.1;
-    }
-    if (action === actual) {
-      reward = 1.0 + rapidScore * 0.35;
-    } else {
-      reward = -1.0 - rapidScore * 0.25;
+      return 0.0; // Preserved capital is always neutral (no "existence is pain" penalty)
     }
 
-    if (meta.contrarian && action === actual) reward += 0.45 + (meta.huntScore ?? 0) * 0.35;
-    if (meta.playType === 'mispricing_hunt' && action === actual) reward += 0.35;
-    if (meta.contrarian && action !== actual) reward -= 0.2;
+    // 2. INCORRECT PREDICTION (Diverges from actual trend direction)
+    if (action !== actual) {
+      return -1.0; // Capital wasted on a bad prediction
+    }
+
+    // 3. CORRECT DIRECTION PREDICTION - CALCULATE EV & HURDLE GATES
+    let p_market = meta.p_market;
+    if (p_market == null) {
+      if (typeof meta.orderBookAsks === 'number') {
+        p_market = meta.orderBookAsks;
+      } else if (Array.isArray(meta.orderBookAsks)) {
+        let filledSize = 0.0;
+        let totalCost = 0.0;
+        const requiredSize = meta.positionSize || 100;
+        for (let i = 0; i < meta.orderBookAsks.length; i++) {
+          const ask = meta.orderBookAsks[i];
+          if (Array.isArray(ask) && ask.length >= 2) {
+            const price = Number(ask[0]);
+            const volume = Number(ask[1]);
+            if (!isNaN(price) && !isNaN(volume) && price > 0 && volume > 0) {
+              if (filledSize + volume >= requiredSize) {
+                const remaining = requiredSize - filledSize;
+                totalCost += remaining * price;
+                p_market = totalCost / requiredSize;
+                break;
+              }
+              totalCost += volume * price;
+              filledSize += volume;
+            }
+          }
+        }
+        if (p_market == null && filledSize > 0) {
+          p_market = totalCost / filledSize;
+        }
+      }
+    }
+    if (p_market == null || p_market <= 0 || p_market > 0.99) {
+      p_market = 0.50; // default/fallback
+    }
+
+    const p_model = meta.p_model || (action === actual ? 0.75 : 0.25);
+    const ev = (p_model / p_market) - 1.0;
+
+    // Evaluate dynamic hurdle
+    const timeElapsedRatio = meta.tteSeconds != null ? Math.max(0, Math.min(1, (900 - meta.tteSeconds) / 900)) : 1.0;
+    const spotVol = meta.spotVolatility || 0.05;
+    const baseRequiredEv = 0.50;
+    const variancePremium = spotVol * Math.exp(-3.0 * timeElapsedRatio);
+    const hurdle = baseRequiredEv + variancePremium;
+
+    // 4. EV HURDLE VIOLATION
+    if (ev < hurdle) {
+      return -1.0; // Strong penalty for executing a low-EV or high-variance premature trade
+    }
+
+    // 5. CORRECT HIGH-EV EXECUTION
+    const mispricingRatio = p_model / p_market;
+    let reward = ev * mispricingRatio;
+
+    // Add extra contrarian/mispricing hunter rewards
+    if (meta.contrarian) {
+      reward += 0.45 + (meta.huntScore ?? 0) * 0.35;
+    }
+    if (meta.playType === 'mispricing_hunt') {
+      reward += 0.35;
+    }
 
     return reward;
   }

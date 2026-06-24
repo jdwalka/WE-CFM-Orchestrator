@@ -29,6 +29,7 @@
       root.CFRAgent = require('./cfr-agent').CFRAgent;
       root.DeepQAgent = require('./deep-q-agent').DeepQAgent;
       root.MispricingHunter = require('./mispricing-hunter');
+      root.HorizonSniper = require('./horizon-sniper');
     } catch (_) { /* browser bundle */ }
   }
 
@@ -41,6 +42,8 @@
   const DeepQAgent = root.DeepQAgent || null;
 
   const MispricingHunter = root.MispricingHunter || null;
+
+  const HorizonSniper = root.HorizonSniper || null;
 
 
 
@@ -73,6 +76,8 @@
   let cfr = null;
 
   let loaded = false;
+
+  let sniper = null;
 
 
 
@@ -147,6 +152,12 @@
     if (!cfr && CFRAgent) {
 
       cfr = new CFRAgent(3);
+
+    }
+
+    if (!sniper && HorizonSniper?.HorizonSniperLogic) {
+
+      sniper = new HorizonSniper.HorizonSniperLogic();
 
     }
 
@@ -386,13 +397,41 @@
 
     const confidence = clamp(fused[fusedAction] / (fused.reduce((s, v) => s + v, 0) || 1), 0, 1);
 
+    let sniperDecision = null;
+    if (sniper && (fusedAction === enc.ACTION.UP || fusedAction === enc.ACTION.DOWN)) {
+      const p_model = ctx.kalshiAlign?.modelYesPct != null
+        ? ctx.kalshiAlign.modelYesPct / 100
+        : (fusedAction === enc.ACTION.UP ? 0.75 : 0.25);
 
+      const asks = ctx.liveBook?.asks || ctx.asks || [];
+      const positionSize = ctx.positionSize || config.positionSize || 100;
+      const msToClose = ctx.kalshiAlign?.closeTimeMs
+        ? Math.max(0, ctx.kalshiAlign.closeTimeMs - Date.now())
+        : Number(ctx.msToClose ?? 900000);
+      const tteSeconds = msToClose / 1000;
+      const spotVolatility = ctx.spotVolatility ?? 0.05;
+
+      sniperDecision = sniper.evaluateHorizonStrike({
+        p_model,
+        orderBookAsks: asks,
+        positionSize,
+        tteSeconds,
+        spotVolatility,
+      });
+    }
+
+    let overrideAction = fusedAction;
+    let overrideReason = null;
+    if (sniperDecision && sniperDecision.action === 'SCOUT_WAIT') {
+      overrideAction = enc.ACTION.WAIT;
+      overrideReason = sniperDecision.reason || 'horizon_gated';
+    }
 
     return {
 
-      action: actionLabel(fusedAction),
+      action: actionLabel(overrideAction),
 
-      actionId: fusedAction,
+      actionId: overrideAction,
 
       confidence,
 
@@ -405,6 +444,10 @@
       infoKey,
 
       mispricing,
+
+      horizonGated: overrideAction === enc.ACTION.WAIT && fusedAction !== enc.ACTION.WAIT,
+      horizonGateReason: overrideReason,
+      sniperDecision,
 
       sources: {
 
@@ -476,7 +519,7 @@
 
       newScore = score * (rapidMove ? 0.25 : 0.42);
 
-      return { score: newScore, decision, gated: true, reason: 'rl_wait' };
+      return { score: newScore, decision, gated: true, reason: decision.horizonGateReason || 'rl_wait' };
 
     }
 
@@ -588,6 +631,18 @@
 
     const actionId = ctx.rlActionId ?? enc.directionToAction(ctx.predDirection) ?? enc.ACTION.WAIT;
 
+    const p_model = ctx.kalshiAlign?.modelYesPct != null
+      ? ctx.kalshiAlign.modelYesPct / 100
+      : (actionId === enc.ACTION.UP ? 0.75 : 0.25);
+
+    const asks = ctx.liveBook?.asks || ctx.asks || [];
+    const positionSize = ctx.positionSize || config.positionSize || 100;
+    const msToClose = ctx.kalshiAlign?.closeTimeMs
+      ? Math.max(0, ctx.kalshiAlign.closeTimeMs - Date.now())
+      : Number(ctx.msToClose ?? 900000);
+    const tteSeconds = msToClose / 1000;
+    const spotVolatility = ctx.spotVolatility ?? 0.05;
+
     const reward = enc.rewardForAction(actionId, actualDirection, rapid, {
 
       contrarian: mispricing?.contrarian,
@@ -595,6 +650,12 @@
       huntScore: mispricing?.huntScore,
 
       playType: mispricing?.playType,
+
+      p_model,
+      orderBookAsks: asks,
+      positionSize,
+      tteSeconds,
+      spotVolatility,
 
     });
 

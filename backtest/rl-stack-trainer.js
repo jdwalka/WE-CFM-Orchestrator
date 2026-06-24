@@ -162,6 +162,9 @@ function evaluateAgent(observations, label) {
       probVelocity: align.probVelocity,
       agreement: 0.55,
       conflict: 0.1,
+      asks: [[align.kalshiYesPct / 100, 1000]],
+      spotVolatility: 0.05 + Math.abs(align.probVelocity) * 0.1,
+      positionSize: 100,
     };
     const decision = TradingRLAgent.decide(ctx);
     const action = decision.action;
@@ -205,6 +208,9 @@ async function trainCoin(coin, observations) {
         mispricing,
         agreement: 0.55,
         conflict: 0.1,
+        asks: [[align.kalshiYesPct / 100, 1000]],
+        spotVolatility: 0.05 + Math.abs(align.probVelocity) * 0.1,
+        positionSize: 100,
       };
       const decision = TradingRLAgent.decide(ctx);
       TradingRLAgent.learnFromOutcome({

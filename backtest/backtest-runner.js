@@ -43,13 +43,11 @@ const SHORT_HORIZON_FILTERS = {
   h15: { entryThreshold: 0.20, minAgreement: 0.65 },
 };
 const BACKTEST_FILTER_OVERRIDES = {
-  // Retuned 2026-05-08 via 60-day walk-forward OOS calibration.
-  // Medians from rolling train/test splits to reduce overfit and normalize h15 trigger quality.
-  // DISABLED (per backtest): BNB 33.3%, HYPE 39.3%, DOGE (no feed)
-  BTC:  { h1: { entryThreshold: 0.50, minAgreement: 0.65 }, h5: { entryThreshold: 0.50, minAgreement: 0.65 }, h10: { entryThreshold: 0.55, minAgreement: 0.70 }, h15: { entryThreshold: 0.55, minAgreement: 0.70 } },
-  ETH:  { h1: { entryThreshold: 0.45, minAgreement: 0.62 }, h5: { entryThreshold: 0.45, minAgreement: 0.62 }, h10: { entryThreshold: 0.50, minAgreement: 0.68 }, h15: { entryThreshold: 0.50, minAgreement: 0.68 } },
-  XRP:  { h1: { entryThreshold: 0.45, minAgreement: 0.60 }, h5: { entryThreshold: 0.45, minAgreement: 0.60 }, h10: { entryThreshold: 0.50, minAgreement: 0.65 }, h15: { entryThreshold: 0.50, minAgreement: 0.65 } },
-  SOL:  { h1: { entryThreshold: 0.55, minAgreement: 0.70 }, h5: { entryThreshold: 0.55, minAgreement: 0.70 }, h10: { entryThreshold: 0.60, minAgreement: 0.75 }, h15: { entryThreshold: 0.60, minAgreement: 0.75 } },
+  // Retuned 2026-06-22 via walk-forward OOS calibration.
+  BTC:  { h1: { entryThreshold: 0.30, minAgreement: 0.54 }, h5: { entryThreshold: 0.30, minAgreement: 0.54 }, h10: { entryThreshold: 0.25, minAgreement: 0.58 }, h15: { entryThreshold: 0.25, minAgreement: 0.58 } },
+  ETH:  { h1: { entryThreshold: 0.25, minAgreement: 0.50 }, h5: { entryThreshold: 0.25, minAgreement: 0.50 }, h10: { entryThreshold: 0.25, minAgreement: 0.50 }, h15: { entryThreshold: 0.25, minAgreement: 0.54 } },
+  XRP:  { h1: { entryThreshold: 0.30, minAgreement: 0.58 }, h5: { entryThreshold: 0.30, minAgreement: 0.58 }, h10: { entryThreshold: 0.30, minAgreement: 0.58 }, h15: { entryThreshold: 0.30, minAgreement: 0.54 } },
+  SOL:  { h1: { entryThreshold: 0.35, minAgreement: 0.50 }, h5: { entryThreshold: 0.35, minAgreement: 0.50 }, h10: { entryThreshold: 0.28, minAgreement: 0.54 }, h15: { entryThreshold: 0.30, minAgreement: 0.54 } },
   BNB:  { h1: { entryThreshold: 0.50, minAgreement: 0.72 }, h5: { entryThreshold: 0.50, minAgreement: 0.72 }, h10: { entryThreshold: 0.50, minAgreement: 0.72 }, h15: { entryThreshold: 0.50, minAgreement: 0.72 } },
   DOGE: { h1: { entryThreshold: 0.28, minAgreement: 0.58 }, h5: { entryThreshold: 0.32, minAgreement: 0.60 }, h10: { entryThreshold: 0.35, minAgreement: 0.62 }, h15: { entryThreshold: 0.38, minAgreement: 0.66 } },
   HYPE: { h1: { entryThreshold: 0.20, minAgreement: 0.56 }, h5: { entryThreshold: 0.25, minAgreement: 0.60 }, h10: { entryThreshold: 0.30, minAgreement: 0.62 }, h15: { entryThreshold: 0.33, minAgreement: 0.64 } },

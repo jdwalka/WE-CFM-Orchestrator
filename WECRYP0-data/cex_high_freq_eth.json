@@ -1,0 +1,13 @@
+{
+  "symbol": "ETH",
+  "connected": true,
+  "ts": 1782131927.21724,
+  "price": 0.0,
+  "buy_pct_1m": 50.0,
+  "sell_pct_1m": 50.0,
+  "trades_per_sec": 0.0,
+  "whale_trades_1m_10k": 0,
+  "whale_trades_1m_50k": 0,
+  "vpin": 0.0,
+  "last_update": 1782131927.21724
+}

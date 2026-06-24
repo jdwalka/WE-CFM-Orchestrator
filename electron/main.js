@@ -1119,6 +1119,12 @@ function waitForProxy(maxMs = 5000, pollMs = 150) {
   });
 }
 
+// ── IPC: Polycool WebApp handler ──────────────────────────────────────────
+ipcMain.handle('open-polycool', async () => {
+  createPolycoolWindow();
+  return { success: true };
+});
+
 // ── IPC: proxy port discovery ─────────────────────────────────────────────
 ipcMain.handle('proxy:port', () => proxyPort);
 
@@ -2750,6 +2756,32 @@ ipcMain.on('web:broadcast-update', (event, { type, data }) => {
   broadcastUpdate(type, data);
 });
 
+function createPolycoolWindow(url = 'https://polycool.app') {
+  const win = new BrowserWindow({
+    width: 1280,
+    height: 800,
+    minWidth: 1024,
+    minHeight: 600,
+    backgroundColor: '#0b1020',
+    title: 'Polycool WebApp',
+    autoHideMenuBar: true,
+    show: true,
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: true
+    }
+  });
+
+  win.loadURL(url);
+
+  win.on('closed', () => {
+    if (process.argv.includes('--polycool')) {
+      app.quit();
+    }
+  });
+}
+
 function createWindow() {
   const win = mainWin = new BrowserWindow({
     width: 1440,
@@ -2844,6 +2876,10 @@ function createWindow() {
 }
 
 app.whenReady().then(async () => {
+  if (process.argv.includes('--polycool')) {
+    createPolycoolWindow();
+    return;
+  }
 
 
   // Proxy startup handled by orchestrator
@@ -2928,6 +2964,10 @@ app.whenReady().then(async () => {
 });
 
 app.on('window-all-closed', async () => {
+  if (process.argv.includes('--polycool')) {
+    app.quit();
+    return;
+  }
   // Proxy stop handled by orchestrator
   stopKalshiWorker();
   if (pythLazerClient) { try { await Promise.all(pythLazerClient.map(c => c.shutdown())); } catch (_) { } pythLazerClient = null; }

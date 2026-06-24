@@ -112,9 +112,9 @@ function updateVwap(asset, price, volume = 1) {
 }
 
 // --- f-orbital: simple HTTP GET helper ---
-function httpGet(url) {
+function httpGet(url, options = {}) {
     return new Promise((resolve, reject) => {
-        http.get(url, (res) => {
+        http.get(url, options, (res) => {
             let body = '';
             res.on('data', chunk => body += chunk);
             res.on('end', () => {
@@ -123,6 +123,50 @@ function httpGet(url) {
             });
         }).on('error', reject);
     });
+}
+
+class MicrostructureTracker {
+    constructor() {
+        this.flowDelta = 0;
+        this.lastPrice = null;
+        this.netPriceChange = 0;
+        this.msgCount = 0;
+        this.windowStartTime = Date.now();
+    }
+    
+    update(price) {
+        if (this.lastPrice === null) {
+            this.lastPrice = price;
+            return null;
+        }
+        const delta = price - this.lastPrice;
+        if (delta > 0) this.flowDelta += 1;
+        else if (delta < 0) this.flowDelta -= 1;
+        
+        this.netPriceChange += delta;
+        this.msgCount++;
+        this.lastPrice = price;
+        
+        const now = Date.now();
+        const elapsed = (now - this.windowStartTime) / 1000;
+        if (elapsed >= 1.0) {
+            const updateVelocity = this.msgCount / elapsed;
+            const absorptionRatio = this.netPriceChange === 0 ? updateVelocity : updateVelocity / Math.abs(this.netPriceChange);
+            
+            const stats = { flowDelta: this.flowDelta, absorptionRatio };
+            
+            this.msgCount = 0;
+            this.netPriceChange = 0;
+            this.windowStartTime = now;
+            return stats;
+        }
+        return null;
+    }
+}
+
+const pythTrackers = {};
+for (const asset of ASSETS) {
+    pythTrackers[asset] = new MicrostructureTracker();
 }
 
 // --- Main class ---
@@ -160,6 +204,7 @@ class OrbitalIngestor {
         this.connectCoinbase();
         this.connectHyperliquid();
         this.startKalshiPoll();
+        this.connectPythLazer();
     }
 
     stop() {
@@ -370,13 +415,22 @@ class OrbitalIngestor {
         this._kalshiPollTimer = setInterval(() => this._pollKalshi(), KALSHI_POLL_INTERVAL_MS);
     }
 
-        async _pollKalshi() {
+    async _pollKalshi() {
         if (this._stopped) return;
         try {
+            const options = {
+                headers: {
+                    Accept: 'application/json'
+                }
+            };
+            if (process.env.KALSHI_WORKER_TOKEN) {
+                options.headers['x-worker-token'] = process.env.KALSHI_WORKER_TOKEN;
+            }
+
             for (const asset of ASSETS) {
-                const seriesTicker = "KX" + asset + "D";
+                const seriesTicker = "KX" + asset + "15M";
                 const url = `${KALSHI_WORKER_URL}/markets?series_ticker=${seriesTicker}&limit=10`;
-                const response = await httpGet(url);
+                const response = await httpGet(url, options);
                 
                 if (!response || !response.success || !Array.isArray(response.data?.markets) || response.data.markets.length === 0) {
                     continue;
@@ -407,6 +461,71 @@ class OrbitalIngestor {
                 console.warn('[OrbitalIngestor] Kalshi f-orbital poll error:', err.message);
             }
         }
+    }
+
+    // ─── s + p orbital: Pyth Lazer WebSocket ───────────────────────────────────
+    connectPythLazer() {
+        if (this._stopped) return;
+        const token = process.env.PYTH_LAZER_TOKEN;
+        if (!token) {
+            console.warn('[OrbitalIngestor] Missing PYTH_LAZER_TOKEN. Skipping Pyth Lazer WS connection.');
+            return;
+        }
+        const wsUrl = `wss://pyth-lazer-1.dourolabs.app/v1/stream`;
+        const ws = new WebSocket(wsUrl, { headers: { Authorization: `Bearer ${token}` } });
+        this.connections.set('pyth_lazer', ws);
+
+        const pythIds = {
+            1: 'BTC', 2: 'ETH', 6: 'SOL', 10: 'DOGE', 14: 'XRP', 15: 'BNB', 13: 'F13', 110: 'HYPE'
+        };
+
+        ws.on('open', () => {
+            console.log('[OrbitalIngestor] Pyth Lazer connected.');
+            ws.send(JSON.stringify({
+                type: 'subscribe',
+                subscriptionId: 1,
+                feedIds: Object.keys(pythIds).map(Number)
+            }));
+        });
+
+        ws.on('message', (data) => {
+            try {
+                const msg = JSON.parse(data);
+                if (msg.type === 'stream_update' && msg.data) {
+                    const ts = Date.now();
+                    for (const feedId in msg.data) {
+                        const asset = pythIds[feedId];
+                        if (!asset || !ASSETS.includes(asset)) continue;
+                        
+                        const update = msg.data[feedId];
+                        const price = Number(update.price) * Math.pow(10, update.exponent);
+                        
+                        if (Number.isFinite(price) && price > 0) {
+                            publishOrbitalTick('s', asset, {
+                                source: 'pyth_lazer',
+                                price_usd: price,
+                                ts
+                            });
+
+                            const stats = pythTrackers[asset].update(price);
+                            if (stats) {
+                                publishOrbitalTick('p', asset, {
+                                    source: 'pyth_lazer_flow',
+                                    flow_delta: stats.flowDelta,
+                                    absorption_ratio: stats.absorptionRatio,
+                                    ts
+                                });
+                            }
+                        }
+                    }
+                }
+            } catch (err) {}
+        });
+
+        ws.on('close', () => {
+            if (!this._stopped) setTimeout(() => this.connectPythLazer(), 5000);
+        });
+        ws.on('error', () => {});
     }
 }
 
