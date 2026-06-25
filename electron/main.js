@@ -28,7 +28,7 @@ process.env.OMP_DYNAMIC = 'FALSE'; // Better thread binding for AOCL
 const { exec } = require('child_process');
 try {
   // Bind to cores 0-7 (Bitmask 255 = 11111111) as an example baseline for CCX0
-  const affinityMask = 255; 
+  const affinityMask = 255;
   console.log(`[Startup] Launching PowerShell to lock CPU Affinity to mask ${affinityMask}...`);
   exec(`powershell -Command "$Process = Get-Process -Id ${process.pid}; $Process.ProcessorAffinity = ${affinityMask}"`, (err, stdout, stderr) => {
     if (err) {
@@ -51,7 +51,7 @@ if (!process.env.WECRYP_ROOT) {
     'F:\\WECRYPTO',
     'E:\\WECRYPTO'
   ];
-  
+
   for (const candidate of candidates) {
     if (fs.existsSync(path.join(candidate, 'docker-compose.yml'))) {
       process.env.WECRYP_ROOT = candidate;
@@ -59,7 +59,7 @@ if (!process.env.WECRYP_ROOT) {
       break;
     }
   }
-  
+
   if (!process.env.WECRYP_ROOT) {
     process.env.WECRYP_ROOT = path.join(__dirname, '..');
     console.warn(`[Startup] WECRYP_ROOT not found; using fallback: ${process.env.WECRYP_ROOT}`);
@@ -421,14 +421,14 @@ function resolveCoinGeckoPublicConfig() {
   const out = {};
   if (key) out.COINGECKO_API_KEY = key;
   if (tier) out.COINGECKO_API_TIER = tier;
-  
+
   const cmcSecret = readCMCSecret();
   const cmcKey = readEnvValue(['CMC_PRO_API_KEY', 'COINMARKETCAP_API_KEY', 'CMC_API_KEY']) || cmcSecret.value;
   if (cmcKey) {
     out.CMC_PRO_API_KEY = cmcKey;
     out.COINMARKETCAP_API_KEY = cmcKey;
   }
-  
+
   return out;
 }
 
@@ -467,12 +467,12 @@ if (process.env.WECRYPTO_TOR_SOCKS) {
     const https = require('https');
     const proxyUrl = process.env.WECRYPTO_TOR_SOCKS; // e.g., 'socks5://127.0.0.1:9050'
     const socksAgent = new SocksProxyAgent(proxyUrl);
-    
+
     const bypassDomains = [
       'coingecko.com',
-      'kalshi.com', 
-      'polymarket.com', 
-      'etherscan.io', 
+      'kalshi.com',
+      'polymarket.com',
+      'etherscan.io',
       'crypto.com',
       'binance.com',
       'dexscreener.com',
@@ -481,17 +481,17 @@ if (process.env.WECRYPTO_TOR_SOCKS) {
       'hyperliquid.xyz',
       'bybit.com',
       'alternative.me',
-      'alchemy.com', 
+      'alchemy.com',
       'coinmarketcap.com',
       '127.0.0.1',
       'localhost'
     ];
-    
+
     const originalHttpRequest = http.request;
     const originalHttpsRequest = https.request;
-    
+
     function patchedRequest(original) {
-      return function(...args) {
+      return function (...args) {
         let urlStr = '';
         if (typeof args[0] === 'string') {
           urlStr = args[0];
@@ -500,9 +500,9 @@ if (process.env.WECRYPTO_TOR_SOCKS) {
         } else if (args[0] && (args[0].hostname || args[0].host)) {
           urlStr = args[0].hostname || args[0].host;
         }
-        
+
         const isBypass = bypassDomains.some(d => urlStr.includes(d));
-        
+
         if (!isBypass) {
           if (typeof args[0] === 'object' && args[0] !== null && !(args[0] instanceof URL)) {
             args[0].agent = socksAgent;
@@ -512,14 +512,14 @@ if (process.env.WECRYPTO_TOR_SOCKS) {
             args.splice(1, 0, { agent: socksAgent });
           }
         }
-        
+
         return original.apply(this, args);
       };
     }
-    
+
     http.request = patchedRequest(originalHttpRequest);
     https.request = patchedRequest(originalHttpsRequest);
-    
+
     console.warn(`[SECURITY] Global SOCKS5 Tor routing enabled with API bypasses across Node.js backend: ${proxyUrl}`);
   } catch (e) {
     console.error('[SECURITY] Failed to instantiate global SOCKS proxy:', e.message);
@@ -601,8 +601,8 @@ let pythLazerStatus = { connected: false, lastDataTs: 0, dataCount: 0, timeoutCo
 let latestPythLazerTickers = {};
 let proxyHealthy = false;
 let webServiceHealth = { started: false, mode: 'stopped', protocol: 'http', port: 3443 };
-const LAZER_FEED_IDS = [1, 2, 6, 13, 14, 15]; // BTC,ETH,SOL,F13,XRP,BNB
-const LAZER_ID_MAP = { 1: 'BTCUSD', 2: 'ETHUSD', 6: 'SOLUSD', 10: 'DOGEUSD', 14: 'XRPUSD', 15: 'BNBUSD' };
+const LAZER_FEED_IDS = [1, 2, 6, 13, 14, 15]; // BTC, ETH, SOL, DOGE, XRP, BNB
+const LAZER_ID_MAP = { 1: 'BTCUSD', 2: 'ETHUSD', 6: 'SOLUSD', 13: 'DOGEUSD', 14: 'XRPUSD', 15: 'BNBUSD' };
 const PYTH_FALLBACK_TIMEOUT_MS = Number(process.env.PYTH_FALLBACK_TIMEOUT_MS || 6000);
 const PYTH_FALLBACK_GRACE_MS = Number(process.env.PYTH_FALLBACK_GRACE_MS || 2000);
 const PYTH_TIMEOUT_CONSECUTIVE_LIMIT = Number(process.env.PYTH_TIMEOUT_CONSECUTIVE_LIMIT || 3);
@@ -626,7 +626,7 @@ function configureCachePaths() {
     app.setPath('sessionData', sessionPath);
     app.commandLine.appendSwitch('disk-cache-dir', diskCacheDir);
     app.commandLine.appendSwitch('disable-gpu-shader-disk-cache');
-    
+
     // V8 Optimizations for AMD Ryzen + Windows 11 Huge Pages (Fake Quant Box configuration) + WASM SIMD
     app.commandLine.appendSwitch('js-flags', '--use-largepages=on --max-old-space-size=8192 --no-lazy --turbo-fast-api-calls --experimental-wasm-simd');
     app.commandLine.appendSwitch('enable-features', 'SharedArrayBuffer');
@@ -635,7 +635,7 @@ function configureCachePaths() {
       const pacPath = require('path').join(__dirname, '..', 'proxy.pac').replace(/\\/g, '/');
       app.commandLine.appendSwitch('proxy-pac-url', `file:///${pacPath}`);
     }
-    
+
     console.log(`[Startup] Cache paths configured: userData=${userDataPath} session=${sessionPath} disk=${diskCacheDir}`);
   } catch (e) {
     console.warn('[Startup] Cache path configuration skipped:', e.message);
@@ -746,6 +746,28 @@ async function startPythLazerService(win) {
 
       pythLazerClient.addMessageListener((message) => {
         if (message.type !== 'json') return;
+        // Handle server-level subscription confirmations per OpenAPI spec
+        const serverType = message.value?.type;
+        if (serverType === 'subscribed') {
+          console.log(`[PythLazer] ✅ Subscription confirmed (id=${message.value?.subscriptionId})`);
+          pythLazerStatus.connected = true;
+          return;
+        }
+        if (serverType === 'subscribedWithInvalidFeedIdsIgnored') {
+          const ignored = message.value?.ignoredInvalidFeedIds;
+          console.warn('[PythLazer] Subscribed with some invalid feeds ignored:', JSON.stringify(ignored));
+          pythLazerStatus.connected = true;
+          return;
+        }
+        if (serverType === 'subscriptionError') {
+          console.error('[PythLazer] Subscription error from server:', message.value?.error);
+          return;
+        }
+        if (serverType === 'error') {
+          console.error('[PythLazer] Server error:', message.value?.error);
+          return;
+        }
+        if (serverType !== 'streamUpdated' && serverType !== undefined) return;
         const feeds = message.value?.parsed?.priceFeeds;
         if (!feeds?.length) return;
         const now = Date.now();
@@ -904,12 +926,57 @@ function logStartupHealth(tag = 'snapshot') {
 
 // ── Proxy server lifecycle ────────────────────────────────────────────────────
 let proxyProcess = null;
+let jsProxyServer = null;
 let proxyPort = 3010;
 let proxyRestartTimer = null;
 let proxyRestartAttempts = 0;
 let proxyManualStop = false;
 
 const PROXY_PORT_CASCADE = [3010, 3011, 3012, 3013, 3014, 3015, 3016, 3017, 3018, 3019, 3020];
+
+const PROXY_EXCHANGE_BASES = {
+  'binance': 'https://data-api.binance.vision',
+  'binance-f': 'https://fapi.binance.com',
+  'coingecko': 'https://api.coingecko.com',
+  'coinbase': 'https://api.coinbase.com',
+  'coinbase-ex': 'https://api.exchange.coinbase.com',
+  'kraken': 'https://api.kraken.com',
+  'bybit': 'https://api.bybit.com',
+  'okx': 'https://www.okx.com',
+  'kalshi': 'https://api.elections.kalshi.com',
+  'polymarket': 'https://gamma-api.polymarket.com',
+  'polymarket-clob': 'https://clob.polymarket.com',
+  'bitfinex': 'https://api-pub.bitfinex.com',
+  'kucoin': 'https://api.kucoin.com',
+  'mexc': 'https://api.mexc.com',
+  'hypurrscan': 'https://hypurrscan.io',
+  'dexscreener': 'https://api.dexscreener.com',
+  'mempool': 'https://mempool.space',
+  'blockchair': 'https://api.blockchair.com',
+  'etherscan': 'https://api.etherscan.io',
+  'bscscan': 'https://api.bscscan.com',
+  'blockscout-eth': 'https://eth.blockscout.com',
+  'blockscout-bsc': 'https://bsc.blockscout.com',
+  'hyperliquid': 'https://api.hyperliquid.xyz',
+  'blockcypher': 'https://api.blockcypher.com',
+  'ripple': 'https://s2.ripple.com',
+  'xrpl': 'https://xrplcluster.com',
+  'solana': 'https://api.mainnet-beta.solana.com',
+  'crypto-com': 'https://api.crypto.com',
+  'chainso': 'https://chain.so',
+  'upbit': 'https://api.upbit.com',
+  'bitget': 'https://api.bitget.com',
+  'bingx': 'https://open-api.bingx.com',
+  'gemini': 'https://api.gemini.com',
+  'whitebit': 'https://api.whitebit.com',
+  'coinw': 'https://www.coinw.com',
+  'ourbit': 'https://ourbit.com',
+  'lbank': 'https://www.lbank.com',
+  'bitstamp': 'https://www.bitstamp.net',
+  'bitso': 'https://api.bitso.com',
+  'bullish': 'https://www.bullish.com',
+  'weex': 'https://www.weex.com',
+};
 
 // Find the first port in the cascade that isn't already occupied
 function findFreePort(ports) {
@@ -929,40 +996,126 @@ function findFreePort(ports) {
 
 // Embed full exchange config so we can write a tailored config.toml at runtime
 function buildProxyConfig(port) {
+  const mapRows = Object.entries(PROXY_EXCHANGE_BASES)
+    .map(([k, v]) => `${k.padEnd(15)} = "${v}"`)
+    .join('\n');
   return `[server]
 host         = "127.0.0.1"
 port         = ${port}
 timeout_secs = 12
 [exchanges]
-binance         = "https://data-api.binance.vision"
-binance-f       = "https://fapi.binance.com"
-coingecko       = "https://api.coingecko.com"
-coinbase        = "https://api.coinbase.com"
-coinbase-ex     = "https://api.exchange.coinbase.com"
-kraken          = "https://api.kraken.com"
-bybit           = "https://api.bybit.com"
-okx             = "https://www.okx.com"
-kalshi          = "https://api.elections.kalshi.com"
-polymarket      = "https://gamma-api.polymarket.com"
-polymarket-clob = "https://clob.polymarket.com"
-bitfinex        = "https://api-pub.bitfinex.com"
-kucoin          = "https://api.kucoin.com"
-mexc            = "https://api.mexc.com"
-hypurrscan      = "https://hypurrscan.io"
-dexscreener     = "https://api.dexscreener.com"
-mempool         = "https://mempool.space"
-blockchair      = "https://api.blockchair.com"
-etherscan       = "https://api.etherscan.io"
-bscscan         = "https://api.bscscan.com"
-blockscout-eth  = "https://eth.blockscout.com"
-blockscout-bsc  = "https://bsc.blockscout.com"
-hyperliquid     = "https://api.hyperliquid.xyz"
-blockcypher     = "https://api.blockcypher.com"
-ripple          = "https://s2.ripple.com"
-xrpl            = "https://xrplcluster.com"
-solana          = "https://api.mainnet-beta.solana.com"
-crypto-com      = "https://api.crypto.com"
+${mapRows}
 `;
+}
+
+function moduleFileExists(crateRoot, name) {
+  const a = path.join(crateRoot, 'src', `${name}.rs`);
+  const b = path.join(crateRoot, 'src', name, 'mod.rs');
+  return fs.existsSync(a) || fs.existsSync(b);
+}
+
+async function startJsProxyFallback(port) {
+  const http = require('http');
+  if (jsProxyServer && jsProxyServer.listening) {
+    return;
+  }
+  const hopByHop = new Set(['connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'te', 'trailers', 'transfer-encoding', 'upgrade', 'host', 'content-length']);
+
+  const readBody = (req) => new Promise(resolve => {
+    const chunks = [];
+    req.on('data', chunk => chunks.push(chunk));
+    req.on('end', () => resolve(Buffer.concat(chunks)));
+    req.on('error', () => resolve(Buffer.alloc(0)));
+  });
+
+  const writeCors = (res) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS,HEAD');
+    res.setHeader('Access-Control-Allow-Headers', '*');
+  };
+
+  const forward = async (targetUrl, req, res) => {
+    const method = String(req.method || 'GET').toUpperCase();
+    const headers = {};
+    for (const [k, v] of Object.entries(req.headers || {})) {
+      if (!hopByHop.has(String(k).toLowerCase())) headers[k] = v;
+    }
+    const body = (method === 'GET' || method === 'HEAD') ? undefined : await readBody(req);
+
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 12000);
+    try {
+      const up = await fetch(targetUrl, { method, headers, body, signal: ctrl.signal, redirect: 'follow' });
+      clearTimeout(t);
+
+      res.statusCode = up.status;
+      for (const [k, v] of up.headers.entries()) {
+        if (!hopByHop.has(String(k).toLowerCase())) res.setHeader(k, v);
+      }
+      writeCors(res);
+      const buf = Buffer.from(await up.arrayBuffer());
+      res.end(buf);
+    } catch (e) {
+      clearTimeout(t);
+      writeCors(res);
+      res.statusCode = 502;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ error: 'proxy-forward-failed', message: e?.message || 'unknown error' }));
+    }
+  };
+
+  jsProxyServer = http.createServer(async (req, res) => {
+    writeCors(res);
+    if (req.method === 'OPTIONS') {
+      res.statusCode = 204;
+      return res.end();
+    }
+
+    const host = req.headers.host || `127.0.0.1:${port}`;
+    const u = new URL(req.url || '/', `http://${host}`);
+    const p = u.pathname;
+
+    if (p === '/health') {
+      res.statusCode = 200;
+      res.setHeader('Content-Type', 'text/plain');
+      return res.end('OK');
+    }
+    if (p === '/port') {
+      res.statusCode = 200;
+      res.setHeader('Content-Type', 'application/json');
+      return res.end(JSON.stringify({ port }));
+    }
+    if (p === '/proxy') {
+      const target = u.searchParams.get('url');
+      if (!target || !/^https?:\/\//i.test(target)) {
+        res.statusCode = 400;
+        res.setHeader('Content-Type', 'application/json');
+        return res.end(JSON.stringify({ error: 'missing-or-invalid-url' }));
+      }
+      return forward(target, req, res);
+    }
+
+    const parts = p.split('/').filter(Boolean);
+    const exchange = parts.shift();
+    if (!exchange || !PROXY_EXCHANGE_BASES[exchange]) {
+      res.statusCode = 404;
+      res.setHeader('Content-Type', 'application/json');
+      return res.end(JSON.stringify({ error: `unknown exchange '${exchange || ''}'` }));
+    }
+
+    const tail = parts.join('/');
+    const base = PROXY_EXCHANGE_BASES[exchange].replace(/\/$/, '');
+    const target = `${base}/${tail}${u.search}`;
+    return forward(target, req, res);
+  });
+
+  await new Promise((resolve, reject) => {
+    jsProxyServer.once('error', reject);
+    jsProxyServer.listen(port, '127.0.0.1', resolve);
+  });
+  proxyPort = port;
+  proxyHealthy = true;
+  console.log(`[proxy-js] fallback proxy listening on http://127.0.0.1:${port}`);
 }
 
 async function startProxy() {
@@ -986,23 +1139,30 @@ async function startProxy() {
   ];
 
   const exePath = candidates.find(p => fs.existsSync(p));
-  if (!exePath) {
-    console.error('[proxy] CRITICAL: we-crypto-proxy.exe not found. Searched:', candidates);
-    console.warn('[proxy] Falling back to direct API access (NO proxy routing)');
-    console.warn('[proxy] Remediation:');
-    console.warn('[proxy] 1) Dev mode: place we-crypto-proxy.exe at project root (same level as package.json)');
-    console.warn('[proxy] 2) Packaged mode: ensure build.files includes we-crypto-proxy.exe and it is unpacked to resources/app.asar.unpacked');
-    console.warn('[proxy] 3) Validate from terminal: Test-Path .\\we-crypto-proxy.exe');
+  const projectRoot = path.join(__dirname, '..');
+  const cargoProjectDir = path.join(projectRoot, 'proxy');
+  const cargoTomlPath = path.join(cargoProjectDir, 'Cargo.toml');
+  const canUseCargoFallback = !app.isPackaged
+    && fs.existsSync(cargoTomlPath)
+    && ['cache', 'codec', 'grades', 'proxy', 'utils'].every(name => moduleFileExists(cargoProjectDir, name));
+  const shouldUseJsFallback = !exePath && !canUseCargoFallback;
+  if (shouldUseJsFallback) {
+    console.warn('[proxy] native executable/source unavailable; starting JS fallback proxy.');
+    await startJsProxyFallback(proxyPort);
     return;
   }
-  console.log(`[proxy] found executable at: ${exePath}`);
+  if (exePath) {
+    console.log(`[proxy] found executable at: ${exePath}`);
+  } else {
+    console.warn('[proxy] executable missing in dev mode; falling back to `cargo run --bin we-crypto-proxy`.');
+  }
 
   // Pick a free port then write config.toml
   const chosenPort = await findFreePort(PROXY_PORT_CASCADE);
   proxyPort = chosenPort;
 
   // If exe is in asar (read-only), write config to temp dir; otherwise beside exe
-  let proxyDir = path.dirname(exePath);
+  let proxyDir = exePath ? path.dirname(exePath) : cargoProjectDir;
   if (proxyDir.includes('app.asar')) {
     proxyDir = path.join(process.env.TEMP || path.join(app.getPath('appData'), 'WECRYPTO'), 'proxy-config');
     fs.mkdirSync(proxyDir, { recursive: true });
@@ -1016,15 +1176,26 @@ async function startProxy() {
     console.warn('[proxy] could not write config.toml:', e.message);
   }
 
-  proxyProcess = spawn(exePath, [], {
-    detached: false,
-    stdio: ['ignore', 'pipe', 'pipe'],
-    cwd: proxyDir,
-    env: { 
-      ...process.env, 
-      ...(process.env.WECRYPTO_TOR_SOCKS ? { ALL_PROXY: process.env.WECRYPTO_TOR_SOCKS } : {}) 
-    }
-  });
+  const spawnEnv = {
+    ...process.env,
+    ...(process.env.WECRYPTO_TOR_SOCKS ? { ALL_PROXY: process.env.WECRYPTO_TOR_SOCKS } : {})
+  };
+
+  if (exePath) {
+    proxyProcess = spawn(exePath, [], {
+      detached: false,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      cwd: proxyDir,
+      env: spawnEnv,
+    });
+  } else {
+    proxyProcess = spawn('cargo', ['run', '--bin', 'we-crypto-proxy'], {
+      detached: false,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      cwd: cargoProjectDir,
+      env: spawnEnv,
+    });
+  }
   proxyProcess.stdout.on('data', chunk => console.log('[proxy]', chunk.toString().trim()));
   proxyProcess.stderr?.on('data', chunk => console.warn('[proxy:stderr]', chunk.toString().trim()));
   proxyProcess.on('error', e => console.error('[proxy] start error:', e.message));
@@ -1040,7 +1211,7 @@ async function startProxy() {
     proxyRestartTimer = setTimeout(async () => {
       try {
         console.warn(`[proxy] restarting after unexpected exit (attempt ${proxyRestartAttempts}, delay ${delayMs}ms)`);
-        // Proxy startup handled by orchestrator
+        await startProxy();
         await waitForProxy(5000, 150);
       } catch (e) {
         console.error('[proxy] restart failed:', e?.message || e);
@@ -1060,6 +1231,10 @@ function stopProxy() {
   if (proxyProcess && !proxyProcess.killed) {
     try { proxyProcess.kill(); } catch (_) { }
     proxyProcess = null;
+  }
+  if (jsProxyServer) {
+    try { jsProxyServer.close(); } catch (_) { }
+    jsProxyServer = null;
   }
 }
 
@@ -1294,31 +1469,31 @@ ipcMain.handle('coinbase:generate-jwt', async (_, options = {}) => {
       nonce: crypto.randomBytes(16).toString('hex'),
       typ: 'JWT'
     };
-    
+
     const payload = {
       iss: 'cdp',
       nbf: Math.floor(Date.now() / 1000) - 30, // subtract 30s to prevent 401s if system clock is fast
       exp: Math.floor(Date.now() / 1000) + 120,
       sub: keyData.name
     };
-    
+
     if (options.requestMethod && options.requestPath) {
       payload.uri = normalizeCoinbaseJwtUri(options.requestMethod, options.requestPath);
     }
-    
+
     const b64u = (str) => Buffer.from(str).toString('base64').replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
-    
+
     const encodedHeader = b64u(JSON.stringify(header));
     const encodedPayload = b64u(JSON.stringify(payload));
     const token = `${encodedHeader}.${encodedPayload}`;
-    
+
     const sign = crypto.createSign('SHA256');
     sign.update(token);
     sign.end();
-    
+
     const signatureRaw = sign.sign({ key: keyData.privateKey, dsaEncoding: 'ieee-p1363' });
     const encodedSignature = signatureRaw.toString('base64').replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
-    
+
     return { success: true, jwt: `${token}.${encodedSignature}`, source: keyData.source };
   } catch (e) {
     console.error('[Coinbase] JWT Generation failed:', e);
@@ -2181,18 +2356,18 @@ ipcMain.handle('storage:writeContractCache', async (_event, payload = [], option
   }
 });
 
-  // ── IPC: Enumerate all available storage roots (local, network, cloud) ──────
-  ipcMain.handle('storage:getGoogleDriveTargets', async () => {
-    return {
-      targets: [
-        { root: 'H:\\My Drive', type: 'cloud', name: 'Google Drive Main' },
-        { root: 'I:\\My Drive', type: 'cloud', name: 'Google Drive Fallback' },
-        { root: 'G:\\My Drive', type: 'cloud', name: 'Google Drive Legacy' }
-      ]
-    };
-  });
+// ── IPC: Enumerate all available storage roots (local, network, cloud) ──────
+ipcMain.handle('storage:getGoogleDriveTargets', async () => {
+  return {
+    targets: [
+      { root: 'H:\\My Drive', type: 'cloud', name: 'Google Drive Main' },
+      { root: 'I:\\My Drive', type: 'cloud', name: 'Google Drive Fallback' },
+      { root: 'G:\\My Drive', type: 'cloud', name: 'Google Drive Legacy' }
+    ]
+  };
+});
 
-  let storageDrivesCache = { ts: 0, value: null };
+let storageDrivesCache = { ts: 0, value: null };
 ipcMain.handle('storage:getDrives', async (_event, options = {}) => {
   const now = Date.now();
   if (!options?.force && storageDrivesCache.value && (now - storageDrivesCache.ts) < 60000) {
@@ -2542,7 +2717,7 @@ ipcMain.handle('firebase:status', async () => {
 // Orbital broadcaster: renderer fires-and-forgets after each processInterval().
 ipcMain.on('orbital:push', (_event, orbitalResult) => {
   if (!OrbitalBroadcaster || !orbitalResult) return;
-  try { OrbitalBroadcaster.push(orbitalResult); } catch (_) {}
+  try { OrbitalBroadcaster.push(orbitalResult); } catch (_) { }
 });
 
 ipcMain.on('orbital:pushTick', (_event, tick) => {
@@ -2804,7 +2979,7 @@ function createWindow() {
     try {
       const rendererPid = win.webContents.getOSProcessId();
       if (rendererPid) {
-        const affinityMask = 255; 
+        const affinityMask = 255;
         console.log(`[Startup] Launching PowerShell to lock Renderer (Floating Orchestrator) Affinity (PID ${rendererPid}) to mask ${affinityMask}...`);
         const { exec } = require('child_process');
         exec(`powershell -Command "$Process = Get-Process -Id ${rendererPid}; $Process.ProcessorAffinity = ${affinityMask}"`, (err) => {
@@ -2812,7 +2987,7 @@ function createWindow() {
           else console.log(`[Startup] Renderer Affinity successfully locked for PID ${rendererPid}.`);
         });
       }
-    } catch(err) {
+    } catch (err) {
       console.warn('[Startup] Could not determine Renderer PID for affinity binding:', err);
     }
   });
@@ -2863,10 +3038,9 @@ app.whenReady().then(async () => {
     return;
   }
 
-
-  // Proxy startup handled by orchestrator
+  await startProxy();
   await startKalshiWorker({ bootTimeoutMs: 12000, pollMs: 150 });
-  
+
   // --- Orbital Matrix (Redpanda Orchestration + Ingestion & Sync) ---
   (async () => {
     const workspacePath = process.env.WECRYP_ROOT || path.join(__dirname, '..');
@@ -2883,7 +3057,7 @@ app.whenReady().then(async () => {
     }
     console.error('[Main] Orbital Matrix unavailable after automatic retries. Use the dashboard restart control.');
   })();
-  
+
   Menu.setApplicationMenu(null);
   await waitForProxy();   // give proxy ~3s to bind before renderer fires fetchAll
 
@@ -2952,15 +3126,15 @@ app.on('window-all-closed', async () => {
   }
   // Proxy stop handled by orchestrator
   stopKalshiWorker();
-  if (pythLazerClient) { try { await Promise.all(pythLazerClient.map(c => c.shutdown())); } catch (_) { } pythLazerClient = null; }
-  
+  if (pythLazerClient) { try { await pythLazerClient.shutdown(); } catch (_) { } pythLazerClient = null; }
+
   // Stop app-owned workers but preserve the persistent Redpanda cluster.
   try {
     await shutdownOrbitalSystem(true, { stopDocker: false });
   } catch (err) {
     console.warn('[Main] Error during orbital shutdown:', err.message);
   }
-  
+
   if (process.platform !== 'darwin') {
     app.quit();
   }

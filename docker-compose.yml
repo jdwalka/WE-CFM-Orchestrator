@@ -3,15 +3,26 @@ services:
   redis:
     image: redis:7-alpine
     container_name: wecrypto-redis
-    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "512mb", "--maxmemory-policy", "allkeys-lru"]
+    command:
+      [
+        "redis-server",
+        "--save",
+        "",
+        "--appendonly",
+        "no",
+        "--maxmemory",
+        "512mb",
+        "--maxmemory-policy",
+        "allkeys-lru",
+      ]
     ports:
       - "6379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-      start_period: 5s
+      interval: 2s
+      timeout: 2s
+      retries: 3
+      start_period: 2s
     networks:
       - wecrypto-net
 
@@ -33,16 +44,17 @@ services:
       - "9092:9092"
       - "29092:29092"
       - "9644:9644"
+    user: "0:0"
     volumes:
-      - ${WECRYPTO_CLOUD_DATA_PATH:-./data}/redpanda:/var/lib/redpanda/data
+      - redpanda_data:/var/lib/redpanda/data
     environment:
       - REDPANDA_ADVERTISE_KAFKA_ADDR=redpanda:29092
     healthcheck:
       test: ["CMD-SHELL", "rpk cluster info"]
-      interval: 5s
-      timeout: 10s
+      interval: 3s
+      timeout: 5s
       retries: 5
-      start_period: 10s
+      start_period: 5s
     networks:
       - wecrypto-net
 
@@ -57,7 +69,7 @@ services:
       - "8081:8080"
     depends_on:
       redpanda:
-        condition: service_healthy
+        condition: service_started
     networks:
       - wecrypto-net
 
@@ -68,15 +80,15 @@ services:
       dockerfile: Dockerfile.firebase
     container_name: firebase-emulator
     ports:
-      - "4000:4000"  # UI
-      - "5000:5000"  # Hosting
-      - "5001:5001"  # Functions
-      - "8080:8080"  # Firestore
-      - "8085:8085"  # Pub/Sub
-      - "9000:9000"  # Realtime Database
-      - "9099:9099"  # Auth
-      - "9199:9199"  # Storage
-      - "9299:9299"  # Eventarc
+      - "4000:4000" # UI
+      - "5000:5000" # Hosting
+      - "5001:5001" # Functions
+      - "8082:8080" # Firestore (host 8082 avoids conflict with cors-proxy on 8080)
+      - "8085:8085" # Pub/Sub
+      - "9000:9000" # Realtime Database
+      - "9099:9099" # Auth
+      - "9199:9199" # Storage
+      - "9299:9299" # Eventarc
     volumes:
       - ${WECRYPTO_CLOUD_DATA_PATH:-./data}/firebase:/app/data
       - ./firebase.json:/app/firebase.json:ro
@@ -84,14 +96,11 @@ services:
     networks:
       - wecrypto-net
 
-
   # WE-CFM-Orchestrator backend service
   wecrypto-backend:
     build:
       context: .
       dockerfile: Dockerfile
-      cache_from:
-        - wecrypto:latest
     container_name: wecrypto-backend
     environment:
       # Core configuration
@@ -99,11 +108,11 @@ services:
       WECRYP_ROOT: /app
       WECRYPTO_FIREBASE_ENABLED: "0"
       WECRYPTO_REQUIRE_CLOUD_READY: "0"
-      
+
       # Kafka/Redpanda
       KAFKA_BROKER: "redpanda:29092"
       KAFKA_BROKERS: "redpanda:29092"
-      
+
       # API Keys and secrets (use .env file or secrets)
       LLM_API_URL: ${LLM_API_URL:-https://api.openai.com/v1/chat/completions}
       LLM_API_KEY: ${LLM_API_KEY}
@@ -111,24 +120,26 @@ services:
       GEMINI_API_KEY: ${GEMINI_API_KEY}
       GOOGLE_API_KEY: ${GOOGLE_API_KEY}
       PYTH_LAZER_TOKEN: ${PYTH_LAZER_TOKEN}
-      
+
       # Firebase Emulators
       FIRESTORE_EMULATOR_HOST: "firebase-emulator:8080"
       FIREBASE_AUTH_EMULATOR_HOST: "firebase-emulator:9099"
       FIREBASE_DATABASE_EMULATOR_HOST: "firebase-emulator:9000"
       FIREBASE_STORAGE_EMULATOR_HOST: "firebase-emulator:9199"
       PUBSUB_EMULATOR_HOST: "firebase-emulator:8085"
-      
+
       # Port configuration
       WEB_SERVICE_PORT: "3443"
+      WECRYPTO_WEB_PORT: "3443"
+      WECRYPTO_WEB_HOST: "0.0.0.0"
       PROXY_PORT: "3010"
-      
+
       # Logging
       LOG_LEVEL: "info"
     ports:
-      - "3443:3443"  # HTTPS web service
-      - "3010:3010"  # Proxy server
-      - "3000:3000"  # Fallback HTTP
+      - "3443:3443" # HTTPS web service
+      - "3010:3010" # Proxy server
+      - "3000:3000" # Fallback HTTP
     volumes:
       - ./src:/app/src:ro
       - ./electron:/app/electron:ro
@@ -142,7 +153,8 @@ services:
       redpanda:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3443/health", "||", "exit", "1"]
+      test:
+        ["CMD", "curl", "-f", "http://localhost:3443/health", "||", "exit", "1"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -190,7 +202,7 @@ services:
     volumes:
       - ./freqtrade/user_data:/freqtrade/user_data
     ports:
-      - "8090:8080"  # API server (host:container) — avoids collision with cors-proxy on 8080
+      - "8090:8080" # API server (host:container) — avoids collision with cors-proxy on 8080
     command: >
       trade
       --logfile /freqtrade/user_data/logs/freqtrade.log

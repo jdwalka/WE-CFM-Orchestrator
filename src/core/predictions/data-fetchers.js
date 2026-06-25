@@ -1,5 +1,5 @@
 // Data Fetchers & API Cache Module
-(function() {
+(function () {
   const candleCache = window.PredictionState.candleCache;
   const CDC_BASE = 'https://api.crypto.com/v2/public';
   const GECKO_BASE = 'https://api.coingecko.com/api/v3';
@@ -66,7 +66,7 @@
     }).then(res => (res && typeof res.clone === 'function') ? res.clone() : res);
   }
 
-    function randomBetween(min, max) {
+  function randomBetween(min, max) {
     return Math.floor(min + Math.random() * Math.max(1, max - min + 1));
   }
 
@@ -198,6 +198,17 @@
       buckets.set(bucketStart, bucket);
     });
     return Array.from(buckets.values()).sort((a, b) => a.t - b.t);
+  }
+
+  function median(values) {
+    if (!values || !values.length) return 0;
+    const sorted = [...values].sort((a, b) => a - b);
+    const mid = Math.floor(sorted.length / 2);
+    return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+  }
+
+  function average(values) {
+    return values && values.length ? values.reduce((s, v) => s + v, 0) / values.length : 0;
   }
 
   function poolMinuteCandles(...seriesList) {
@@ -802,19 +813,19 @@
     return _fngCache.value;
   }
 
-window.PREDICTIONS_DATA_FETCHERS = {
-  CDC_BASE, GECKO_BASE, BIN_BASE, MEXC_BASE, CB_EXCH_BASE, BYBIT_BASE, KUCOIN_BASE, BFNX_BASE,
-  CB_EXCH_SYMS, BIN_SYMS, MEXC_SYMS, BYBIT_SYMS, KUCOIN_SYMS, BFNX_SYMS,
-  fetchWithTimeout, fetchAnalyticsWithRoute, fetchFearGreed,
-  fetchCDCCandles, fetchCDCBook, fetchCDCTrades,
-  fetchGeckoJSON, fetchGeckoCandles, fetchGeckoTicker, fetchGeckoMaxHistory,
-  fetchBINCandles, fetchBINBook, fetchBINTrades,
-  fetchMEXCCandles, fetchMEXCBook, fetchMEXCTrades,
-  fetchCBExchCandles, fetchCBExchBook, fetchCBExchTrades,
-  fetchBybitCandles, fetchBybitBook, fetchBybitTrades,
-  fetchKucoinCandles, fetchKucoinBook, fetchKucoinTrades,
-  fetchBitfinexCandles, fetchBitfinexBook, fetchBitfinexTrades,
-  fetchKrakenCandles, fetchKrakenBook, fetchKrakenTrades,
-  anchoredPoolCandles, bucketCandles
-};
+  window.PREDICTIONS_DATA_FETCHERS = {
+    CDC_BASE, GECKO_BASE, BIN_BASE, MEXC_BASE, CB_EXCH_BASE, BYBIT_BASE, KUCOIN_BASE, BFNX_BASE,
+    CB_EXCH_SYMS, BIN_SYMS, MEXC_SYMS, BYBIT_SYMS, KUCOIN_SYMS, BFNX_SYMS,
+    fetchWithTimeout, fetchAnalyticsWithRoute, fetchFearGreed,
+    fetchCDCCandles, fetchCDCBook, fetchCDCTrades,
+    fetchGeckoJSON, fetchGeckoCandles, fetchGeckoTicker, fetchGeckoMaxHistory,
+    fetchBINCandles, fetchBINBook, fetchBINTrades,
+    fetchMEXCCandles, fetchMEXCBook, fetchMEXCTrades,
+    fetchCBExchCandles, fetchCBExchBook, fetchCBExchTrades,
+    fetchBybitCandles, fetchBybitBook, fetchBybitTrades,
+    fetchKucoinCandles, fetchKucoinBook, fetchKucoinTrades,
+    fetchBitfinexCandles, fetchBitfinexBook, fetchBitfinexTrades,
+    fetchKrakenCandles, fetchKrakenBook, fetchKrakenTrades,
+    anchoredPoolCandles, bucketCandles
+  };
 })();
