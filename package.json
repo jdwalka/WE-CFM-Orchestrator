@@ -192,7 +192,16 @@
     "telegram": "^2.26.22",
     "vaul": "^1.1.2",
     "wouter": "^3.10.0",
-    "ws": "^8.20.1"
+    "ws": "^8.21.0"
+  },
+  "overrides": {
+    "ws": "$ws",
+    "form-data@2": "2.5.6",
+    "form-data@4": "4.0.6",
+    "undici": "6.27.0",
+    "tar": "7.5.16",
+    "js-yaml": "4.2.0",
+    "protobufjs": "7.6.3"
   },
   "bin": {
     "wecryp": "./wecryp-cli.js"
