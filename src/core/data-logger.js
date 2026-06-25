@@ -848,6 +848,11 @@
     logPolymarketOutcome: (sym, record) => push('polymarket_outcomes', { sym, ...record, ts: Date.now() }),
     logPolymarket: logPolymarketRaw,
     logPolymarket5M: (data) => push('polymarket_5m', { markets: data }),
+    // Forward-collected derivatives/options/edge history → enables future backtesting
+    // of these real-time-only signals (no historical store exists for them yet).
+    logDerivatives: (sym, record) => push('derivatives', { sym, ...record }),
+    logOptions: (sym, record) => push('options', { sym, ...record }),
+    logPredictionEdge: (sym, record) => push('prediction_edge', { sym, ...record }),
     flush:         async () => {
       await flushAll();
       await syncCloudPending();

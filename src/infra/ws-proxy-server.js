@@ -12,6 +12,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
+const { normalizeCoinbaseJwtUri } = require('./coinbase-jwt-utils');
 let PythLazerWebSocketHandler;
 try {
   PythLazerWebSocketHandler = require('../feeds/pyth-lazer-websocket');
@@ -170,32 +171,6 @@ function loadCoinbaseStaticJwt(requiredUri = '') {
   return null;
 }
 
-function normalizeCoinbaseJwtUri(method, requestPath) {
-  if (!method || !requestPath) return '';
-  const verb = String(method).trim().toUpperCase();
-  let target = String(requestPath).trim();
-  try {
-    if (/^https?:\/\//i.test(target)) {
-      const u = new URL(target);
-      target = `${u.hostname}${u.pathname}${u.search}`;
-    }
-  } catch (_) { }
-  
-  // Strip off local proxy routing prefixes
-  target = target.replace(/^(https?:\/\/)?(127\.0\.0\.1|localhost)(:\d+)?\//i, '');
-  target = target.replace(/^\/+/, '');
-  target = target.replace(/^coinbase\//i, '');
-  target = target.replace(/^\/+/, '');
-  
-  // Enforce correct Coinbase API domain structure
-  if (/^api\/v3\//i.test(target)) {
-    target = `api.coinbase.com/${target}`;
-  } else if (!/^api\.coinbase\.com\//i.test(target)) {
-    target = `api.coinbase.com/${target}`;
-  }
-  return `${verb} ${target}`;
-}
-
 function loadCoinbaseCredential() {
   const jsonEnv = readEnvValue([
     'CDP_API_KEY_JSON',
@@ -213,6 +188,7 @@ function loadCoinbaseCredential() {
     'CDP_API_KEY_NAME',
     'COINBASE_CDP_API_KEY_NAME',
     'COINBASE_API_KEY_NAME',
+    'COINBASE_API_KEY',
     'COINBASE_KEY_NAME',
   ]);
   const privateKey = readEnvValue([
@@ -614,53 +590,59 @@ server.on('error', (e) => {
   }
 });
 
-startServer(currentPort);
+if (require.main === module) {
+  startServer(currentPort);
 
-// Pre-connect only to healthy default upstreams. Stale/credentialed optional
-// services stay available for explicit client requests or env opt-in.
-Object.keys(UPSTREAM).filter(shouldPreconnect).forEach(service => {
-  setTimeout(() => {
-    proxy.connectUpstream(service).catch(err => {
-      log(`Initial connection to ${service} failed: ${err.message}`, 'WARN');
+  // Pre-connect only to healthy default upstreams. Stale/credentialed optional
+  // services stay available for explicit client requests or env opt-in.
+  Object.keys(UPSTREAM).filter(shouldPreconnect).forEach(service => {
+    setTimeout(() => {
+      proxy.connectUpstream(service).catch(err => {
+        log(`Initial connection to ${service} failed: ${err.message}`, 'WARN');
+      });
+    }, 1000);
+  });
+
+  // Graceful shutdown
+  process.on('SIGINT', () => {
+    log('Shutting down...', 'INFO');
+    
+    // Close all connections
+    upstreamConnections.forEach((ws, service) => {
+      log(`Closing upstream: ${service}`, 'INFO');
+      ws.close(1000, 'Server shutdown');
     });
-  }, 1000);
-});
-
-// Graceful shutdown
-process.on('SIGINT', () => {
-  log('Shutting down...', 'INFO');
-  
-  // Close all connections
-  upstreamConnections.forEach((ws, service) => {
-    log(`Closing upstream: ${service}`, 'INFO');
-    ws.close(1000, 'Server shutdown');
-  });
-  
-  clientConnections.forEach((clients, service) => {
-    clients.forEach(ws => {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.close(1000, 'Server shutdown');
-      }
+    
+    clientConnections.forEach((clients, service) => {
+      clients.forEach(ws => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.close(1000, 'Server shutdown');
+        }
+      });
     });
+
+    server.close(() => {
+      log('Server closed', 'INFO');
+      process.exit(0);
+    });
+
+    setTimeout(() => {
+      log('Force exit', 'WARN');
+      process.exit(1);
+    }, 5000);
   });
 
-  server.close(() => {
-    log('Server closed', 'INFO');
-    process.exit(0);
+  // Error handling
+  process.on('uncaughtException', (err) => {
+    log(`Uncaught exception: ${err.message}`, 'ERROR');
+    console.error(err.stack);
   });
 
-  setTimeout(() => {
-    log('Force exit', 'WARN');
-    process.exit(1);
-  }, 5000);
-});
+  process.on('unhandledRejection', (reason, promise) => {
+    log(`Unhandled rejection: ${reason}`, 'ERROR');
+  });
+}
 
-// Error handling
-process.on('uncaughtException', (err) => {
-  log(`Uncaught exception: ${err.message}`, 'ERROR');
-  console.error(err.stack);
-});
-
-process.on('unhandledRejection', (reason, promise) => {
-  log(`Unhandled rejection: ${reason}`, 'ERROR');
-});
+module.exports = {
+  normalizeCoinbaseJwtUri,
+};

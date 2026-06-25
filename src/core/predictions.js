@@ -6245,18 +6245,75 @@
 
     if (derivCache[context.coin.sym]) {
       const deriv = derivCache[context.coin.sym];
+      const hasLive = deriv.source === 'derivatives-feed';
+      // Direction: prefer the live composite pressure (liq imbalance + funding + OI) when meaningful,
+      // else fall back to the funding-sign rule (crowded shorts = bullish, crowded longs = bearish).
+      const liveDir = hasLive && Math.abs(deriv.pressure || 0) > 0.15 ? Math.sign(deriv.pressure) : 0;
+      const fundDir = deriv.funding < -0.08 ? 1 : deriv.funding > 0.08 ? -1 : 0;
+      const direction = liveDir || fundDir;
+      const fundStrength = clamp(Math.abs(deriv.funding || 0) / 0.35, 0, 1);
+      const liqStrength = hasLive
+        ? clamp(Math.abs(deriv.liqImbalance || 0) * (Math.min(deriv.liqTotalUsd || 0, 5e6) / 5e6), 0, 1)
+        : 0;
+      const strength = Math.max(fundStrength, liqStrength, hasLive ? clamp(Math.abs(deriv.pressure || 0), 0, 1) : 0);
+      const detailBits = [`funding ${deriv.funding?.toFixed?.(3) ?? deriv.funding}%`];
+      if (hasLive && deriv.oiDeltaPct != null) detailBits.push(`OIΔ ${deriv.oiDeltaPct >= 0 ? '+' : ''}${deriv.oiDeltaPct.toFixed(1)}%`);
+      if (hasLive && (deriv.liqTotalUsd || 0) > 100_000) detailBits.push(`liq $${(deriv.liqTotalUsd / 1e6).toFixed(2)}M ${deriv.liqImbalance >= 0 ? 'short' : 'long'}`);
       packets.push(applyRouterProfile({
         family: 'derivatives',
         category: 'derivatives',
         role: 'driver',
         label: 'Perp positioning',
-        detail: `${deriv.market || deriv.exchange || 'perps'} funding ${deriv.funding?.toFixed?.(3) || deriv.funding}%`,
-        direction: deriv.funding < -0.08 ? 1 : deriv.funding > 0.08 ? -1 : 0,
-        strength: clamp(Math.abs(deriv.funding || 0) / 0.35, 0, 1),
+        detail: `${deriv.market || deriv.exchange || 'perps'} ${detailBits.join(' · ')}`,
+        direction,
+        strength,
         freshness: sourceFreshness,
-        trust: derivativeTrust,
+        trust: hasLive ? Math.min(0.82, derivativeTrust + 0.12) : derivativeTrust,
         relevance: 0.68,
       }, routerProfile));
+    }
+
+    // ★ Options skew (Deribit, BTC/ETH only): 25Δ risk reversal = directional vol demand.
+    // Positive RR = calls bid (bullish skew); negative = puts bid (bearish). Gated at ≥1.5 vol pts.
+    if (typeof window !== 'undefined' && window.OptionsGammaFeed?.get) {
+      const opt = window.OptionsGammaFeed.get(context.coin.sym);
+      if (opt && opt.available && Number.isFinite(opt.riskReversal25) && Math.abs(opt.riskReversal25) >= 1.5) {
+        const rr = opt.riskReversal25;
+        const pinTxt = (opt.pinDistPct != null) ? `, pin ${opt.pinDistPct >= 0 ? '+' : ''}${opt.pinDistPct.toFixed(2)}%` : '';
+        packets.push(applyRouterProfile({
+          family: 'options-skew',
+          category: 'derivatives',
+          role: 'driver',
+          label: 'Options skew',
+          detail: `${opt.skewLabel} (25Δ RR ${rr >= 0 ? '+' : ''}${rr.toFixed(1)}v${pinTxt})`,
+          direction: rr > 0 ? 1 : -1,
+          strength: clamp(Math.abs(rr) / 8, 0, 1),
+          freshness: 0.7,
+          trust: 0.6,
+          relevance: 0.5,
+        }, routerProfile));
+      }
+    }
+
+    // ★ Prediction-market cross-venue divergence (Kalshi YES vs Polymarket YES).
+    // Relative-value edge: fade the venue that is richer on YES. gapPp>0 → Kalshi richer → fade up.
+    if (typeof window !== 'undefined' && window.PredictionMarketEdge?.get) {
+      const edge = window.PredictionMarketEdge.get(context.coin.sym);
+      const dv = edge?.divergence;
+      if (dv && dv.actionable && Number.isFinite(dv.gapPp)) {
+        packets.push(applyRouterProfile({
+          family: 'pm-divergence',
+          category: 'prediction-market',
+          role: 'driver',
+          label: 'Cross-venue divergence',
+          detail: `Kalshi ${(dv.kalshiYes * 100).toFixed(0)}% vs Poly ${(dv.polyYes * 100).toFixed(0)}% (${dv.gapPp >= 0 ? '+' : ''}${dv.gapPp.toFixed(1)}pp)`,
+          direction: dv.gapPp > 0 ? -1 : 1,
+          strength: clamp(Math.abs(dv.gapPp) / 15, 0, 1),
+          freshness: 0.85,
+          trust: 0.55,
+          relevance: 0.5,
+        }, routerProfile));
+      }
     }
 
     if (backtest?.summary) {
@@ -7009,24 +7066,65 @@
 
   async function fetchDerivatives() {
     if (Date.now() - derivAge < 120000) return; // cache 2 min (CoinGecko rate limit)
+
+    // ★ Primary: live DerivativesFeed — real OI delta, liquidation stream, and
+    // OI-weighted cross-venue funding. Richer + fresher than CoinGecko /derivatives.
     try {
-      const data = await fetchGeckoJSON('/derivatives').catch(() => null);
-      if (!Array.isArray(data)) return;
-      const symMap = { BTCUSDT: 'BTC', ETHUSDT: 'ETH', SOLUSDT: 'SOL', XRPUSDT: 'XRP', DOGEUSDT: 'DOGE', BNBUSDT: 'BNB' };
-      data.forEach(d => {
-        const sym = symMap[d.symbol];
-        if (!sym) return;
-        if (d.last) {
+      const live = (typeof window !== 'undefined' && window.DerivativesFeed?.getAll)
+        ? window.DerivativesFeed.getAll() : null;
+      if (live) {
+        Object.entries(live).forEach(([sym, s]) => {
+          if (!s || !s.available) return;
+          const liq = s.liquidations || {};
           derivCache[sym] = {
-            funding: parseFloat(d.funding_rate || 0),
-            oi: parseFloat(d.open_interest || 0),
-            basis: parseFloat(d.basis || 0) * 100,
-            spread: parseFloat(d.bid_ask_spread || 0),
-            exchange: d.market || '',
-            ts: Date.now(),
+            funding: Number.isFinite(s.funding) ? s.funding : 0,
+            fundingVelocity: s.fundingVelocity ?? null,
+            oi: s.oiUsd ?? 0,
+            oiDeltaPct: s.oiDeltaPct ?? null,
+            oiTrend: s.oiTrend || 'flat',
+            basis: s.basisPct ?? 0,
+            liqImbalance: liq.imbalance ?? 0,
+            liqTotalUsd: liq.totalUsd ?? 0,
+            liqLongUsd: liq.longLiqUsd ?? 0,
+            liqShortUsd: liq.shortLiqUsd ?? 0,
+            pressure: s.pressure ?? 0,
+            label: s.label || '',
+            exchange: (s.venues || []).join('+') || 'perps',
+            source: 'derivatives-feed',
+            ts: s.ts || Date.now(),
           };
+        });
+      }
+    } catch (e) {
+      console.warn('[Derivatives] live feed merge failed:', e.message);
+    }
+
+    // Fallback/supplement: CoinGecko /derivatives only for coins the live feed lacks.
+    try {
+      const COVER = ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'BNB'];
+      const needGecko = COVER.some(s => derivCache[s]?.source !== 'derivatives-feed');
+      if (needGecko) {
+        const data = await fetchGeckoJSON('/derivatives').catch(() => null);
+        if (Array.isArray(data)) {
+          const symMap = { BTCUSDT: 'BTC', ETHUSDT: 'ETH', SOLUSDT: 'SOL', XRPUSDT: 'XRP', DOGEUSDT: 'DOGE', BNBUSDT: 'BNB' };
+          data.forEach(d => {
+            const sym = symMap[d.symbol];
+            if (!sym) return;
+            if (derivCache[sym]?.source === 'derivatives-feed') return; // don't clobber richer data
+            if (d.last) {
+              derivCache[sym] = {
+                funding: parseFloat(d.funding_rate || 0),
+                oi: parseFloat(d.open_interest || 0),
+                basis: parseFloat(d.basis || 0) * 100,
+                spread: parseFloat(d.bid_ask_spread || 0),
+                exchange: d.market || '',
+                source: 'coingecko',
+                ts: Date.now(),
+              };
+            }
+          });
         }
-      });
+      }
       derivAge = Date.now();
     } catch (err) {
       console.warn('Derivatives fetch failed:', err.message);
@@ -7054,20 +7152,47 @@
     const deriv = derivCache[sym];
     if (!deriv) return null;
     const funding = deriv.funding;
-    const oi = deriv.oi;
 
+    // ★ Primary: real liquidation cascade from the live stream (imbalance + notional).
+    // imbalance ∈ [-1,+1]: +1 = pure short-liquidation (squeeze up), -1 = long-liquidation (cascade down).
+    const liqImb = deriv.liqImbalance;
+    const liqTotal = deriv.liqTotalUsd || 0;
+    if (Number.isFinite(liqImb) && liqTotal > 250_000 && Math.abs(liqImb) > 0.6) {
+      const up = liqImb > 0;
+      return {
+        type: up ? 'short_squeeze' : 'long_squeeze',
+        severity: liqTotal > 2_000_000 ? 'high' : 'medium',
+        desc: `${up ? 'Shorts' : 'Longs'} liquidating ($${(liqTotal / 1e6).toFixed(2)}M, ${(Math.abs(liqImb) * 100).toFixed(0)}% one-sided) — ${up ? 'upward' : 'downward'} cascade live.`,
+        direction: up ? 'up' : 'down',
+        source: 'liquidation-stream',
+      };
+    }
+
+    // ★ Secondary: leverage building (OI ↑) into a crowded funding extreme.
+    if (Number.isFinite(deriv.oiDeltaPct) && deriv.oiDeltaPct > 1.5 && Math.abs(funding) > 0.05) {
+      const up = funding < 0; // crowded shorts + OI build → short-squeeze risk
+      return {
+        type: up ? 'short_squeeze' : 'long_squeeze',
+        severity: 'medium',
+        desc: `OI +${deriv.oiDeltaPct.toFixed(1)}% with funding ${funding.toFixed(3)}% — leverage building, ${up ? 'short' : 'long'}-squeeze risk.`,
+        direction: up ? 'up' : 'down',
+        source: 'oi-funding',
+      };
+    }
+
+    // Fallback: original funding-threshold heuristic (used when live deriv data absent).
     if (funding < -0.5) {
       return {
         type: 'short_squeeze', severity: Math.abs(funding) > 1 ? 'high' : 'medium',
         desc: `Funding ${funding.toFixed(3)}% — shorts paying heavy. Squeeze risk if price bounces.`,
-        direction: 'up'
+        direction: 'up', source: 'funding-heuristic',
       };
     }
     if (funding > 0.3) {
       return {
         type: 'long_squeeze', severity: funding > 0.5 ? 'high' : 'medium',
         desc: `Funding +${funding.toFixed(3)}% — longs overcrowded. Liquidation cascade risk on dip.`,
-        direction: 'down'
+        direction: 'down', source: 'funding-heuristic',
       };
     }
     return null;

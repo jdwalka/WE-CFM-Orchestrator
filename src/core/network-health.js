@@ -868,6 +868,7 @@
         const status = window.ExchangeWS?.getStatus?.();
         if (!status?.connections) return;
         const optionalWsNames = new Set([
+            'BINANCE', 'COINBASE', 'KRAKEN', 'BYBIT', 'HYPERLIQUID', 'OKX', 'KUCOIN', 'GATE',
             'BULLISH', 'UPBIT', 'BITGET', 'BINGX', 'BITVAVO', 'GEMINI',
             'COINW', 'LBANK', 'BITSTAMP', 'BITSO', 'WHITEBIT', 'OURBIT', 'WEEX',
         ]);

@@ -1187,6 +1187,9 @@ fetchAll().then(() => {
     if (window.PredictionMarkets) window.PredictionMarkets.start();
     setTimeout(() => { if (window.BlockchainScan) window.BlockchainScan.start(); }, 1500);
     setTimeout(() => { if (window.CexFlow) window.CexFlow.start(); }, 3000);
+    setTimeout(() => { if (window.DerivativesFeed) window.DerivativesFeed.start(); }, 3500);
+    setTimeout(() => { if (window.OptionsGammaFeed) window.OptionsGammaFeed.start(); }, 4000);
+    setTimeout(() => { if (window.PredictionMarketEdge) window.PredictionMarketEdge.start(); }, 6000);
   }).catch(err => {
     console.warn('[boot] initial fetchAll failed:', err.message);
     clearTimeout(_bootGuard);

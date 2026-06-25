@@ -5,6 +5,7 @@ const fs = require('fs');
 const fsp = fs.promises;
 const { spawn } = require('child_process');
 const { loadKalshiCredentials, buildKalshiWsAuthHeaders } = require('./kalshi-credentials.js');
+const { normalizeCoinbaseJwtUri } = require('../src/infra/coinbase-jwt-utils');
 
 // --- AMD AOCL & BLAS Optimizations for Downstream C++/Python Binaries ---
 // Force NumPy, PyTorch, and Custom C++ to prioritize AMD AOCL (BLIS/libflame) and avoid Intel MKL throttling on Ryzen.
@@ -344,6 +345,7 @@ function loadCoinbaseCredential() {
     'CDP_API_KEY_NAME',
     'COINBASE_CDP_API_KEY_NAME',
     'COINBASE_API_KEY_NAME',
+    'COINBASE_API_KEY',
     'COINBASE_KEY_NAME',
   ]);
   const privateKey = readEnvValue([
@@ -400,26 +402,6 @@ function loadCoinbaseCredential() {
     }
   }
   return null;
-}
-
-function normalizeCoinbaseJwtUri(method, requestPath) {
-  if (!method || !requestPath) return '';
-  const verb = String(method).trim().toUpperCase();
-  let target = String(requestPath).trim();
-  try {
-    if (/^https?:\/\//i.test(target)) {
-      const u = new URL(target);
-      target = `${u.hostname}${u.pathname}`;
-    } else {
-      target = target.split('?')[0];
-    }
-  } catch (_) {
-    target = target.split('?')[0];
-  }
-  target = target.replace(/^\/+/, '');
-  if (/^api\/v3\//i.test(target)) target = `api.coinbase.com/${target}`;
-  if (!/^[a-z0-9.-]+\/api\/v3\//i.test(target)) target = `api.coinbase.com/${target}`;
-  return `${verb} ${target}`;
 }
 
 function resolveCoinGeckoPublicConfig() {
