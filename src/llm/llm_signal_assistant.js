@@ -52,6 +52,39 @@ function resolveGoogleApiKey() {
   return process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY || '';
 }
 
+// The app keeps API keys as files under secrets/ (not auto-loaded into env).
+// Read the Anthropic key from there as a fallback so dropping it into
+// secrets/ANTHROPIC_API_KEY.txt (or CLAUDE_API.txt) just works — matching how
+// other keys are stored. Accepts a bare key, a "# header" + key, or KEY=value.
+function readAnthropicKeyFromSecrets() {
+  const fileNames = ["ANTHROPIC_API_KEY.txt", "CLAUDE_API.txt"];
+  const dirs = [
+    path.resolve(process.cwd(), "secrets"),
+    path.resolve(__dirname, "../../secrets"),
+  ];
+  for (const dir of dirs) {
+    for (const name of fileNames) {
+      try {
+        const file = path.join(dir, name);
+        if (!fs.existsSync(file)) continue;
+        const raw = fs.readFileSync(file, "utf8");
+        const match = raw.match(/sk-ant-[A-Za-z0-9_-]+/);
+        if (match) return match[0];
+        const line = raw.split(/\r?\n/).map((l) => l.trim()).find((l) => l && !l.startsWith("#"));
+        if (line) return line.replace(/^[A-Za-z0-9_]+\s*=\s*/, "").trim();
+      } catch (_) { }
+    }
+  }
+  return "";
+}
+
+function resolveAnthropicApiKey() {
+  return process.env.ANTHROPIC_API_KEY
+    || process.env.CLAUDE_API_KEY
+    || readAnthropicKeyFromSecrets()
+    || '';
+}
+
 // Configuration from environment
 const LLM_API_URL = process.env.LLM_API_URL || process.env.OPENAI_BASE_URL || "https://api.openai.com/v1/chat/completions";
 const LLM_API_KEY = resolveCompatibleApiKey();
@@ -60,6 +93,13 @@ const GOOGLE_API_KEY = resolveGoogleApiKey();
 const GOOGLE_MODEL = process.env.GOOGLE_MODEL || process.env.GEMINI_MODEL || "gemini-2.0-flash";
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || '';
 const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || "~openai/gpt-latest";
+// Anthropic (claude.ai) — 2nd in the cascade: when ASI:One fails, Claude remediates.
+const ANTHROPIC_API_KEY = resolveAnthropicApiKey();
+const ANTHROPIC_MODEL = process.env.ANTHROPIC_MODEL || "claude-opus-4-8";
+const ANTHROPIC_MAX_TOKENS = Number(process.env.ANTHROPIC_MAX_TOKENS || 1500);
+// Effort tunes thinking depth / token spend (low|medium|high|max). Default "low"
+// keeps the 30s real-time loop responsive; raise it to trade latency for rigor.
+const ANTHROPIC_EFFORT = (process.env.ANTHROPIC_EFFORT || "low").toLowerCase();
 const LLM_PROVIDER = (process.env.LLM_PROVIDER || "auto").toLowerCase();
 const CONTEXT_CACHE_TTL_MS = Number(process.env.LLM_CONTEXT_CACHE_TTL_MS || 15000);
 const MARKET_MEMORY_LIMIT = Number(process.env.LLM_MARKET_MEMORY_LIMIT || 12);
@@ -75,19 +115,24 @@ class LLMSignalAssistant {
       this.enabled = !!OPENROUTER_API_KEY;
     } else if (this.provider === "google") {
       this.enabled = !!GOOGLE_API_KEY;
+    } else if (this.provider === "anthropic") {
+      this.enabled = !!ANTHROPIC_API_KEY;
     } else {
-      this.enabled = !!(LLM_API_URL && LLM_API_KEY);
+      // A standalone Anthropic key is enough to run the cascade (asi1 → anthropic → …).
+      this.enabled = !!(LLM_API_URL && LLM_API_KEY) || !!ANTHROPIC_API_KEY;
     }
 
     this.contextCache = new Map();      // short-lived prompt/result cache
     this.marketMemory = new Map();      // per-coin rolling recall memory
     this._googleClient = null;
     this._googleClientKind = null;
+    this._anthropicClient = null;
     this.envDiagnostics = {
       dotenvLoaded: LLM_ENV_SOURCES.length > 0,
       dotenvSources: LLM_ENV_SOURCES,
       hasCompatibleKey: !!LLM_API_KEY,
       hasGoogleKey: !!GOOGLE_API_KEY,
+      hasAnthropicKey: !!ANTHROPIC_API_KEY,
       hasAsi1Key: Asi1Client.hasAsi1Credentials(),
       asi1KeysConfigured: Asi1Client.getDiagnostics().keysConfigured,
       providerOverride: process.env.LLM_PROVIDER || null,
@@ -112,7 +157,7 @@ class LLMSignalAssistant {
 
     console.log(
       `[LLMSignalAssistant] Initialized ${this.enabled ? "✓ ENABLED" : "⚠ DISABLED"} ` +
-      `(provider=${this.provider}, model=${this.provider === "google" ? GOOGLE_MODEL : LLM_MODEL})`
+      `(provider=${this.provider}, model=${this.provider === "google" ? GOOGLE_MODEL : this.provider === "anthropic" ? ANTHROPIC_MODEL : LLM_MODEL})`
     );
     if (this.envDiagnostics.dotenvLoaded) {
       console.log(`[LLMSignalAssistant] Loaded env from: ${this.envDiagnostics.dotenvSources.join(" | ")}`);
@@ -122,9 +167,15 @@ class LLMSignalAssistant {
   resolveProvider() {
     if (LLM_PROVIDER === "openrouter") return "openrouter";
     if (LLM_PROVIDER === "google") return "google";
+    if (LLM_PROVIDER === "anthropic" || LLM_PROVIDER === "claude") return "anthropic";
     if (LLM_PROVIDER === "openai" || LLM_PROVIDER === "compatible") return "compatible";
     if (GOOGLE_API_KEY) return "google";
     if (OPENROUTER_API_KEY) return "openrouter";
+    // asi1/compatible key (resolved into LLM_API_KEY) keeps the lead so the
+    // cascade stays asi1-first; Claude only becomes the labeled provider when
+    // it's the sole configured key.
+    if (LLM_API_KEY) return "compatible";
+    if (ANTHROPIC_API_KEY) return "anthropic";
     return "compatible";
   }
 
@@ -240,7 +291,10 @@ Use this recall only as context, and prioritize current market snapshot data if 
    * Call the LLM API with specialized prompts
    */
   async callAPI(systemPrompt, userPrompt) {
-    const cascade = ['asi1', 'google', 'openai', 'openrouter'];
+    // Provider cascade (each falls through to the next on failure). Claude sits
+    // 2nd: when ASI:One fails or is unconfigured, Claude remediates before the
+    // remaining providers are tried.
+    const cascade = ['asi1', 'anthropic', 'google', 'openai', 'openrouter'];
     let lastErr = null;
 
     for (const p of cascade) {
@@ -263,6 +317,9 @@ Use this recall only as context, and prioritize current market snapshot data if 
           const jsonMatch = content.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
           if (jsonMatch) content = jsonMatch[1];
           return JSON.parse(content);
+        }
+        if (p === 'anthropic' && ANTHROPIC_API_KEY) {
+          return await this.callAnthropicAPI(systemPrompt, userPrompt);
         }
         if (p === 'openrouter' && OPENROUTER_API_KEY) {
           return await this.callCompatibleAPI(systemPrompt, userPrompt, {
@@ -464,6 +521,54 @@ Use this recall only as context, and prioritize current market snapshot data if 
 
     const json = this.extractJsonContent(content);
     return JSON.parse(json);
+  }
+
+  getAnthropicClient() {
+    if (this._anthropicClient) return this._anthropicClient;
+
+    let AnthropicModule;
+    try {
+      AnthropicModule = require("@anthropic-ai/sdk");
+    } catch (_) {
+      throw new Error("Anthropic provider selected but @anthropic-ai/sdk is not installed");
+    }
+    const Anthropic = AnthropicModule.Anthropic || AnthropicModule.default || AnthropicModule;
+    this._anthropicClient = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
+    return this._anthropicClient;
+  }
+
+  async callAnthropicAPI(systemPrompt, userPrompt) {
+    if (!ANTHROPIC_API_KEY) {
+      throw new Error("ANTHROPIC_API_KEY (or CLAUDE_API_KEY) is required for Anthropic provider");
+    }
+
+    const client = this.getAnthropicClient();
+
+    // claude-opus-4-8 rejects temperature/top_p/top_k — steer with the prompt and
+    // `effort` instead. Thinking is omitted for the fast real-time path; the
+    // JSON-only instruction keeps any stray reasoning out of the response body.
+    const message = await client.messages.create({
+      model: ANTHROPIC_MODEL,
+      max_tokens: ANTHROPIC_MAX_TOKENS,
+      system: systemPrompt,
+      output_config: { effort: ANTHROPIC_EFFORT },
+      messages: [
+        {
+          role: "user",
+          content: `${userPrompt}\n\nRespond with only a single valid JSON object — no preamble, no explanation, no markdown fences.`,
+        },
+      ],
+    });
+
+    const text = (message?.content || [])
+      .filter((block) => block && block.type === "text")
+      .map((block) => block.text)
+      .join("")
+      .trim();
+
+    if (!text) throw new Error("Anthropic returned an empty response");
+
+    return JSON.parse(this.extractJsonContent(text));
   }
 
   getCooldownFallback() {
@@ -708,10 +813,14 @@ Use this recall only as context, and prioritize current market snapshot data if 
       enabled: this.enabled,
       provider: this.provider,
       api_url: this.enabled
-        ? (this.provider === "google" ? "google-sdk" : LLM_API_URL)
+        ? (this.provider === "google" ? "google-sdk"
+          : this.provider === "anthropic" ? "anthropic-sdk"
+          : LLM_API_URL)
         : "disabled",
       model: this.enabled
-        ? (this.provider === "google" ? GOOGLE_MODEL : LLM_MODEL)
+        ? (this.provider === "google" ? GOOGLE_MODEL
+          : this.provider === "anthropic" ? ANTHROPIC_MODEL
+          : LLM_MODEL)
         : "disabled",
       stats: {
         total_calls: this.stats.calls,
