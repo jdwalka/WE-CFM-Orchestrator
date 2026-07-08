@@ -333,10 +333,25 @@ async function performShutdownOrbitalSystem(stopProxiesFlag = true, options = {}
             await stopProxies();
             console.log('[OrbitalOrchestrator] Proxies stopped');
         }
-        if (processorIntervalHandle) {
-            clearInterval(processorIntervalHandle);
+        // Fully stop the Matrix Processor. This must disconnect the KafkaJS
+        // consumer (via stopProcessor), not merely clear the barrier interval.
+        // The consumer is a module-level singleton; if it is left connected and
+        // running, the next startProcessor() re-subscribes on a running consumer
+        // and KafkaJS throws "Cannot subscribe to topic while consumer is
+        // running", trapping the orchestrator in a failed-restart loop.
+        try {
+            const { stopProcessor } = require('../orbital/orbital-matrix-processor');
+            if (typeof stopProcessor === 'function') {
+                await stopProcessor();
+            }
             processorIntervalHandle = null;
             console.log('[OrbitalOrchestrator] Matrix Processor stopped');
+        } catch (e) {
+            console.warn('[OrbitalOrchestrator] Matrix Processor stop warning:', e.message);
+            if (processorIntervalHandle) {
+                clearInterval(processorIntervalHandle);
+                processorIntervalHandle = null;
+            }
         }
 
         // Close Ingestor WebSocket connections
