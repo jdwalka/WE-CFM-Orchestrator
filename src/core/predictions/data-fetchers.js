@@ -17,6 +17,10 @@
   let geckoRequestQueue = Promise.resolve();
   let lastGeckoRequestAt = 0;
   let lastExchangeRequestAt = 0;
+  // Fear & Greed cache. Was previously read/written as a bare `_fngCache` from
+  // predictions.js's separate IIFE without ever being declared anywhere,
+  // throwing "_fngCache is not defined" on every OrderBookImbalance cycle.
+  let _fngCache = { ts: 0, value: null };
   const BIN_SYMS = { BTC: 'BTCUSDT', ETH: 'ETHUSDT', SOL: 'SOLUSDT', XRP: 'XRPUSDT', DOGE: 'DOGEUSDT', BNB: 'BNBUSDT' };
   const MEXC_SYMS = { BTC: 'BTCUSDT', ETH: 'ETHUSDT', SOL: 'SOLUSDT', XRP: 'XRPUSDT', HYPE: 'HYPEUSDT', DOGE: 'DOGEUSDT', BNB: 'BNBUSDT' };
   const BYBIT_BASE = 'https://api.bybit.com/v5';
@@ -837,10 +841,16 @@
     return _fngCache.value;
   }
 
+  // Exposed so predictions.js (a separate IIFE) can read the cached value
+  // synchronously without needing its own copy of the pacing state.
+  function getFngCacheValue() {
+    return _fngCache.value;
+  }
+
   window.PREDICTIONS_DATA_FETCHERS = {
     CDC_BASE, GECKO_BASE, BIN_BASE, MEXC_BASE, CB_EXCH_BASE, BYBIT_BASE, KUCOIN_BASE, BFNX_BASE,
     CB_EXCH_SYMS, BIN_SYMS, MEXC_SYMS, BYBIT_SYMS, KUCOIN_SYMS, BFNX_SYMS,
-    fetchWithTimeout, fetchAnalyticsWithRoute, fetchFearGreed, resetGeckoRequestQueue,
+    fetchWithTimeout, fetchAnalyticsWithRoute, fetchFearGreed, resetGeckoRequestQueue, getFngCacheValue,
     fetchCDCCandles, fetchCDCBook, fetchCDCTrades,
     fetchGeckoJSON, fetchGeckoCandles, fetchGeckoTicker, fetchGeckoMaxHistory,
     fetchBINCandles, fetchBINBook, fetchBINTrades,

@@ -30,6 +30,21 @@
     return (typeof window !== 'undefined' && window.GrokAnalyticsMemory) || null;
   }
 
+  const GUIDANCE_CACHE_STORAGE_KEY = 'wecrypto:grokRangeGuidanceCache';
+
+  // Persists _guidance so the panel isn't blank immediately after a reload.
+  // Was previously called but never defined, throwing "saveGuidanceCache is
+  // not defined" on every tick.
+  function saveGuidanceCache() {
+    try {
+      if (typeof window !== 'undefined' && window.localStorage) {
+        window.localStorage.setItem(GUIDANCE_CACHE_STORAGE_KEY, JSON.stringify(_guidance));
+      }
+    } catch (_) {
+      // Storage unavailable/full — guidance simply won't survive a reload.
+    }
+  }
+
   function resolvePrice(coin) {
     try {
       if (window._pythPrices && window._pythPrices[coin] > 0) return Number(window._pythPrices[coin]);

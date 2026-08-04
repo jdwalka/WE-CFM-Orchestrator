@@ -381,7 +381,7 @@
 
   // ── Exchange data fetchers — provided by data-fetchers.js scaffold ─────────
   const {
-    fetchWithTimeout, fetchAnalyticsWithRoute, fetchFearGreed, resetGeckoRequestQueue,
+    fetchWithTimeout, fetchAnalyticsWithRoute, fetchFearGreed, resetGeckoRequestQueue, getFngCacheValue,
     fetchCDCCandles, fetchCDCBook, fetchCDCTrades,
     fetchGeckoJSON, fetchGeckoCandles, fetchGeckoTicker, fetchGeckoMaxHistory,
     fetchBINCandles, fetchBINBook, fetchBINTrades,
@@ -2961,7 +2961,7 @@
     else keltSig = clamp(-(kelt.position - 0.5) * 0.45, -0.22, 0.22);
 
     // Use cached Fear & Greed (non-blocking, updates in background)
-    const fng = _fngCache.value;
+    const fng = getFngCacheValue();
     let fngSig = 0;
     if (fng !== null) {
       if (fng < 30) fngSig = clamp((30 - fng) / 30 * 0.4, 0, 0.4);      // Extreme Fear → bullish
