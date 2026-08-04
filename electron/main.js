@@ -676,8 +676,33 @@ let latestPythLazerTickers = {};
 let pythRestPoller = null;
 let proxyHealthy = false;
 let webServiceHealth = { started: false, mode: 'stopped', protocol: 'http', port: 3443 };
-const LAZER_FEED_IDS = [1, 2, 6, 10, 13, 14, 15]; // BTC(1), ETH(2), SOL(6), DOGE(10), XRP(14), BNB(15) + possible 13
+// NOTE: feed 10 (DOGE spot) is deliberately excluded. The configured PYTH_LAZER_TOKEN's grants
+// do not include it — the server rejects it with "Not entitled: feed 10 (no grant accepts this
+// feed (asset type 'crypto', instrument type 'spot'))". Because both the REST /v1/latest_price
+// endpoint and the WS subscribe request are batched, a single not-entitled feed ID poisons the
+// ENTIRE request: REST returns 403 for all bundled feeds, and the WS subscription throws a
+// subscriptionError that the pool re-sends on every reconnect, causing a permanent
+// disconnect/reconnect storm ("All WebSocket connections down") with zero ticks for every feed.
+// Do not re-add 10 unless the token is upgraded with a DOGE spot grant. Feed 13 remains — it does
+// not trigger an entitlement error for this token.
+const LAZER_FEED_IDS = [1, 2, 6, 13, 14, 15]; // BTC(1), ETH(2), SOL(6), XRP(14), BNB(15) + possible DOGE(13)
 const LAZER_ID_MAP = { 1: 'BTCUSD', 2: 'ETHUSD', 6: 'SOLUSD', 10: 'DOGEUSD', 13: 'DOGE13', 14: 'XRPUSD', 15: 'BNBUSD' };
+
+// The pyth-lazer-proxy-{1,2,3}.dourolabs.app fallbacks are a *different* public, unauthenticated
+// service from the direct pyth-lazer(-0).dourolabs.app REST API. They only accept GET requests
+// with repeated snake_case `price_feed_ids` query params (POST returns 405 Method Not Allowed,
+// and GET with no params / camelCase params returns 400 Bad Request: "missing field
+// `price_feed_ids`"). Their JSON response also has `priceFeeds` at the top level, not nested
+// under `.parsed` like the authenticated direct endpoint's response.
+function buildProxyLatestPriceUrl(proxyBase, feedIds) {
+  const params = new URLSearchParams();
+  for (const id of feedIds || []) params.append('price_feed_ids', String(id));
+  return `${proxyBase}/v1/latest_price?${params.toString()}`;
+}
+
+function extractLazerPriceFeeds(data) {
+  return (data && (data.parsed?.priceFeeds || data.priceFeeds)) || [];
+}
 const PYTH_FALLBACK_TIMEOUT_MS = Number(process.env.PYTH_FALLBACK_TIMEOUT_MS || 6000);
 const PYTH_FALLBACK_GRACE_MS = Number(process.env.PYTH_FALLBACK_GRACE_MS || 2000);
 const PYTH_TIMEOUT_CONSECUTIVE_LIMIT = Number(process.env.PYTH_TIMEOUT_CONSECUTIVE_LIMIT || 3);
@@ -849,15 +874,11 @@ async function startPythLazerService(win) {
       let payload = JSON.stringify({ ...basePayload, priceFeedIds: LAZER_FEED_IDS });
       for (const b of bases) {
         try {
-          const r = await fetch(`${b}/v1/latest_price`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: payload,
-          });
+          const r = await fetch(buildProxyLatestPriceUrl(b, LAZER_FEED_IDS));
           console.log('[PythLazer] proxy numeric try', b, 'status', r.status);
           if (r.ok) {
             const j = await r.json();
-            pfeeds = j?.parsed?.priceFeeds || [];
+            pfeeds = extractLazerPriceFeeds(j);
             if (pfeeds.length) { console.log('[PythLazer] got feeds via proxy numeric'); break; }
           }
         } catch (e) { console.log('[PythLazer] proxy numeric err', e.message); }
@@ -871,7 +892,7 @@ async function startPythLazerService(win) {
           });
           console.log('[PythLazer] direct numeric status', r.status);
           if (r.ok) {
-            pfeeds = (await r.json())?.parsed?.priceFeeds || [];
+            pfeeds = extractLazerPriceFeeds(await r.json());
             if (pfeeds.length) console.log('[PythLazer] got feeds via direct numeric');
           }
         } catch (e) { console.log('[PythLazer] direct numeric err', e.message); }
@@ -879,28 +900,17 @@ async function startPythLazerService(win) {
       // Fallback to symbols if no feeds
       if (!pfeeds.length) {
         payload = JSON.stringify({ ...basePayload, symbols });
-        for (const b of bases) {
-          try {
-            const r = await fetch(`${b}/v1/latest_price`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: payload,
-            });
-            if (r.ok) {
-              const j = await r.json();
-              pfeeds = j?.parsed?.priceFeeds || [];
-              if (pfeeds.length) { console.log('[PythLazer] got feeds via proxy symbols'); break; }
-            }
-          } catch (_) {}
-        }
-        if (!pfeeds.length && token) {
+        // NOTE: the proxy fallbacks only support the numeric `price_feed_ids` GET contract, not
+        // symbol lookups, so this loop over `bases` is intentionally omitted here — it always
+        // returned 400/405 previously. Go straight to the authenticated direct endpoint instead.
+        if (token) {
           try {
             const r = await fetch('https://pyth-lazer.dourolabs.app/v1/latest_price', {
               method: 'POST',
               headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
               body: payload,
             });
-            if (r.ok) pfeeds = (await r.json())?.parsed?.priceFeeds || [];
+            if (r.ok) pfeeds = extractLazerPriceFeeds(await r.json());
           } catch (_) {}
         }
       }
@@ -991,7 +1001,14 @@ async function startPythLazerService(win) {
         deliveryFormat: "json",
         jsonBinaryEncoding: "hex",
         parsed: true,
-        // ignoreInvalidFeeds: true,
+        // Without this flag, if ANY requested feed ID is not entitled for this token (e.g. feed 10
+        // / DOGE spot), the server throws a hard subscriptionError for the WHOLE subscription. The
+        // SDK's WebSocketPool re-sends the same (still-invalid) subscription on every reconnect,
+        // which is exactly what caused the observed "All WebSocket connections down" reconnect
+        // storm with dataCount stuck at 0 for every feed, not just the unentitled one. Setting this
+        // makes the server instead reply with `subscribedWithInvalidFeedIdsIgnored` and stream the
+        // entitled feeds normally, degrading gracefully instead of taking the whole feed down.
+        ignoreInvalidFeeds: true,
       });
 
       // Simple REST poller using the robust refresh (tries proxies then direct)
@@ -1015,14 +1032,10 @@ async function startPythLazerService(win) {
           let payload = JSON.stringify({ ...basePayload, priceFeedIds: LAZER_FEED_IDS });
           for (const base of proxyBases) {
             try {
-              const r = await fetch(`${base}/v1/latest_price`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: payload,
-              });
+              const r = await fetch(buildProxyLatestPriceUrl(base, LAZER_FEED_IDS));
               if (r.ok) {
                 const j = await r.json();
-                pfeeds = j?.parsed?.priceFeeds || [];
+                pfeeds = extractLazerPriceFeeds(j);
                 if (pfeeds.length) break;
               }
             } catch (_) {}
@@ -1039,27 +1052,14 @@ async function startPythLazerService(win) {
               });
               if (r.ok) {
                 const j = await r.json();
-                pfeeds = j?.parsed?.priceFeeds || [];
+                pfeeds = extractLazerPriceFeeds(j);
               }
             } catch (_) {}
           }
-          if (!pfeeds.length) {
-            payload = JSON.stringify({ ...basePayload, symbols });
-            for (const base of proxyBases) {
-              try {
-                const r = await fetch(`${base}/v1/latest_price`, {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: payload,
-                });
-                if (r.ok) {
-                  const j = await r.json();
-                  pfeeds = j?.parsed?.priceFeeds || [];
-                  if (pfeeds.length) break;
-                }
-              } catch (_) {}
-            }
-          }
+          // NOTE: the proxy fallbacks only support the numeric `price_feed_ids` GET contract, not
+          // symbol lookups (confirmed: they always return 400 "missing field `price_feed_ids`" for
+          // symbol-keyed requests), so there is no further symbols-based fallback here — the
+          // numeric + direct-authenticated attempts above are the only viable paths.
           if (pfeeds.length) {
             const nowP = Date.now();
             const pmap = {};
@@ -1928,15 +1928,11 @@ function refreshPythFromProxy() {
       // try unauth proxies first (like getProxyLatest)
       for (const proxyBase of proxies) {
         try {
-          const url = `${proxyBase}/v1/latest_price`;
-          const response = await fetch(url, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: payload,
-          });
+          const url = buildProxyLatestPriceUrl(proxyBase, LAZER_FEED_IDS);
+          const response = await fetch(url);
           if (response.ok) {
             const data = await response.json();
-            prices = (data.parsed?.priceFeeds || []).map(f => ({
+            prices = extractLazerPriceFeeds(data).map(f => ({
               instrument_name: LAZER_ID_MAP ? LAZER_ID_MAP[f.priceFeedId] : f.priceFeedId,
               last: Number(f.price) * Math.pow(10, f.exponent ?? -8),
             }));
@@ -1958,7 +1954,7 @@ function refreshPythFromProxy() {
           });
           if (response.ok) {
             const data = await response.json();
-            prices = (data.parsed?.priceFeeds || []).map(f => ({
+            prices = extractLazerPriceFeeds(data).map(f => ({
               instrument_name: LAZER_ID_MAP ? LAZER_ID_MAP[f.priceFeedId] : f.priceFeedId,
               last: Number(f.price) * Math.pow(10, f.exponent ?? -8),
             }));
@@ -1995,7 +1991,7 @@ ipcMain.handle('pyth:getProxyLatest', async (_, feedIds) => {
     // Common parser for the JsonUpdate response
     const parseResponse = async (response) => {
       const data = await response.json();
-      const feeds = data.parsed?.priceFeeds || [];
+      const feeds = extractLazerPriceFeeds(data);
       return feeds.map(f => ({
         instrument_name: LAZER_ID_MAP ? LAZER_ID_MAP[f.priceFeedId] : f.priceFeedId,
         last: Number(f.price) * Math.pow(10, f.exponent ?? -8),
@@ -2005,13 +2001,8 @@ ipcMain.handle('pyth:getProxyLatest', async (_, feedIds) => {
     // First try the proxies (no authentication required)
     for (const proxyBase of proxies) {
       try {
-        const url = `${proxyBase}/v1/latest_price`;
-        const response = await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: payload,
-          timeout: 3000
-        });
+        const url = buildProxyLatestPriceUrl(proxyBase, feedIds);
+        const response = await fetch(url);
         if (response.ok) {
           prices = await parseResponse(response);
           updatePythStatusFromProxyPrices(prices);
