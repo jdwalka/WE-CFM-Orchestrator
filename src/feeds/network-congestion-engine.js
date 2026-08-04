@@ -205,9 +205,10 @@
 
   // ── Fetch SOL TPS (with RPC fallback) ──
   async function fetchSOLMetrics() {
+    // projectserum public RPC is dead / hangs — do not probe it.
     const SOL_RPCS = [
       'https://api.mainnet-beta.solana.com',
-      'https://solana-api.projectserum.com',
+      'https://solana-rpc.publicnode.com',
     ];
     const heliusKey = _readEnvLike('HELIUS_API_KEY');
     if (heliusKey) {

@@ -231,11 +231,16 @@
     const buckets = new Map();
     seriesList.filter(Array.isArray).forEach(series => {
       series.forEach(candle => {
-        const ts = Number(candle?.t);
+        let ts = Number(candle?.t);
         const close = Number(candle?.c);
         // Skip candles with non-finite timestamp or zero/near-zero price
-        // (protects against exchanges returning bad candles that pass individual filters)
         if (!Number.isFinite(ts) || !Number.isFinite(close) || close <= 0) return;
+
+        // Normalize timestamp to nearest minute boundary.
+        // This fixes misalignment between sources (WS vs REST, different exchanges)
+        // so that 15m (and 5m) bars from Coinbase, Binance, Gecko, WS etc actually pool together.
+        ts = Math.floor(ts / 60000) * 60000;
+
         const bucket = buckets.get(ts) || { t: ts, o: [], h: [], l: [], c: [], v: [] };
         bucket.o.push(Number(candle.o || close));
         bucket.h.push(Number(candle.h || close));
@@ -788,6 +793,9 @@
 
   // Equal-weight pool across all exchanges — no single exchange is anchored
   function anchoredPoolCandles(cbSeries, ...fallbackSeries) {
+    // For 15m markets we rely heavily on this to combine Coinbase WS 15m buckets +
+    // CB/BIN/CDC/etc 15m REST candles. Timestamp normalization inside poolMinuteCandles
+    // ensures bars actually merge instead of staying siloed.
     return poolMinuteCandles(...[cbSeries, ...fallbackSeries].filter(s => s?.length));
   }
 

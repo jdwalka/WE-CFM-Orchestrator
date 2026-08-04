@@ -20,6 +20,7 @@
 | BSCScan                   | HTTP      | <https://api.bscscan.com>             | No               |                                   |
 | CoinCap                   | HTTP      | <https://api.coincap.io/v2>           | No               |                                   |
 | Alternative.me (F&G)      | HTTP      | <https://api.alternative.me/fng/>     | No               |                                   |
+| xAI Grok (5m PTB analysis) | HTTP     | https://api.x.ai/v1                 | Yes (for 5m)     | XAI_API_KEY or GROK_API_KEY       |
 
 ---
 

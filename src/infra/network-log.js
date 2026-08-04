@@ -48,6 +48,13 @@
     blockchair: 'Blockchair',
     solana: 'Solana RPC',
     alchemy: 'Alchemy RPC',
+    gate: 'Gate',
+    'gate.io': 'Gate',
+    timeapi: 'TimeAPI',
+    'timeapi.io': 'TimeAPI',
+    whalealert: 'Whale Alert',
+    'whale-alert': 'Whale Alert',
+    'whale alert': 'Whale Alert',
   };
   const HOST_TO_PROVIDER = {
     'api.bitget.com': 'Bitget',
@@ -72,8 +79,15 @@
     'api.blockcypher.com': 'Blockcypher',
     'api.blockchair.com': 'Blockchair',
     'api.mainnet-beta.solana.com': 'Solana RPC',
+    'solana-rpc.publicnode.com': 'Solana RPC',
+    'solana-api.projectserum.com': 'Solana RPC',
     'eth-mainnet.g.alchemy.com': 'Alchemy RPC',
     'polygon-mainnet.g.alchemy.com': 'Alchemy RPC',
+    'api.gateio.ws': 'Gate',
+    'fx-api.gateio.ws': 'Gate',
+    'timeapi.io': 'TimeAPI',
+    'time.akamai.com': 'TimeAPI',
+    'api.whale-alert.io': 'Whale Alert',
   };
   function canonicalProviderName(input) {
     const raw = String(input || '').trim();
@@ -180,7 +194,9 @@
     if (host.includes('blockcypher')) return 'Blockcypher';
     if (host.includes('blockchair')) return 'Blockchair';
     if (host.includes('alchemy.com')) return 'Alchemy RPC';
-    if (host.includes('solana.com')) return 'Solana RPC';
+    if (host.includes('solana.com') || host.includes('projectserum') || host.includes('helius-rpc') || (host.includes('publicnode.com') && host.includes('solana'))) return 'Solana RPC';
+    if (host.includes('gateio') || host.includes('gate.io')) return 'Gate';
+    if (host.includes('timeapi') || host.includes('time.akamai')) return 'TimeAPI';
     if (HOST_TO_PROVIDER[host]) return HOST_TO_PROVIDER[host];
     return host || 'Network';
   }
@@ -272,6 +288,7 @@
       'Bitget', 'BingX', 'Kraken', 'Gemini', 'Hyperliquid', 'CoinW', 'Ourbit', 'LBank',
       'Bitstamp', 'Bitso', 'WhiteBIT', 'Weex', 'Upbit', 'Bitvavo', 'Etherscan',
       'Mempool.space', 'Blockchair', 'Solana RPC', 'Alchemy RPC', 'Bybit', 'OKX', 'KuCoin',
+      'Gate', 'TimeAPI', 'Whale Alert',
     ]).has(provider);
   }
 

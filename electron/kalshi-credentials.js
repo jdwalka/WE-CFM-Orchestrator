@@ -3,6 +3,9 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { calibrateKalshiClock, getKalshiClockOffsetMs, isKalshiClockCalibrated } = require('../src/kalshi/kalshi-clock');
+
+const KALSHI_REST_BASE_URL = 'https://api.elections.kalshi.com/trade-api/v2';
 
 const CREDENTIAL_FILE_NAME = 'KALSHI-API-KEY.txt';
 const CREDENTIAL_FILE_NAMES = [
@@ -194,14 +197,21 @@ function loadKalshiCredentials(options = {}) {
   }
 }
 
-function buildKalshiWsAuthHeaders(options = {}) {
+async function buildKalshiWsAuthHeaders(options = {}) {
   const credentials = loadKalshiCredentials(options);
   if (!credentials.success) return credentials;
+
+  // Kalshi rejects handshakes whose timestamp drifts too far from its own
+  // clock; this machine's clock can drift by tens of seconds, so calibrate
+  // (once per process — cheap no-op on subsequent calls) before signing.
+  if (!isKalshiClockCalibrated()) {
+    await calibrateKalshiClock(KALSHI_REST_BASE_URL);
+  }
 
   try {
     const method = options.method || 'GET';
     const requestPath = options.path || '/trade-api/ws/v2';
-    const timestamp = String(Date.now());
+    const timestamp = String(Date.now() + getKalshiClockOffsetMs());
     const signature = crypto
       .createSign('RSA-SHA256')
       .update(`${timestamp}${method}${requestPath}`)

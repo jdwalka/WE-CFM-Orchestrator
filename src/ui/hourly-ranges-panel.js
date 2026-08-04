@@ -56,6 +56,25 @@
   let _timer   = null;
   let _mounted = false;
 
+  // Zero Cold-Start LocalStorage Persistence
+  try {
+    if (typeof localStorage !== 'undefined') {
+      const pCache = localStorage.getItem('__we_hr_prices_cache');
+      const rCache = localStorage.getItem('__we_hr_ranges_cache');
+      if (pCache) _prices = Object.assign(_prices, JSON.parse(pCache));
+      if (rCache) _ranges = Object.assign(_ranges, JSON.parse(rCache));
+    }
+  } catch (_) {}
+
+  function saveHRCache() {
+    try {
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem('__we_hr_prices_cache', JSON.stringify(_prices));
+        localStorage.setItem('__we_hr_ranges_cache', JSON.stringify(_ranges));
+      }
+    } catch (_) {}
+  }
+
   // ── View detection ─────────────────────────────────────────────
   function isActive() {
     return (window.__weCurrentView || '') === 'hourly-ranges'
@@ -82,6 +101,50 @@
     const res = await race(fetch(url));
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.json();
+  }
+
+  // ── Spot-Centered Range Synthesizer (for misaligned Kalshi API strikes) ──
+  function getStepSize(sym, refPrice) {
+    if (sym === 'BTC' || refPrice >= 20000) return 100;
+    if (sym === 'ETH' || (refPrice >= 1000 && refPrice < 20000)) return 10;
+    if (sym === 'SOL' || (refPrice >= 50 && refPrice < 1000)) return 0.5;
+    if (sym === 'BNB') return 2;
+    if (sym === 'XRP' || (refPrice >= 0.5 && refPrice < 50)) return 0.01;
+    if (sym === 'DOGE' || refPrice < 0.5) return 0.005;
+    return refPrice * 0.002;
+  }
+
+  function buildSpotCenteredRanges(sym, refPrice, closeTimeIso) {
+    if (!Number.isFinite(refPrice) || refPrice <= 0) return [];
+    const step = getStepSize(sym, refPrice);
+    const pivotLow = Math.floor(refPrice / step) * step;
+    const numBelow = 5;
+    const numAbove = 5;
+    const result = [];
+    const closeIso = closeTimeIso || new Date(Math.ceil(Date.now() / 3600000) * 3600000).toISOString();
+
+    for (let i = -numBelow; i <= numAbove; i++) {
+      const low = Number((pivotLow + i * step).toFixed(4));
+      const high = Number((pivotLow + (i + 1) * step).toFixed(4));
+      const distFromSpot = Math.abs((low + high) / 2 - refPrice) / step;
+      let prob = Math.exp(-distFromSpot * distFromSpot * 0.35) * 0.48;
+      prob = Number(Math.max(0.01, Math.min(0.85, prob)).toFixed(2));
+      const tickerStr = `KX${sym}-SPOT-${low}`;
+
+      result.push({
+        low,
+        high,
+        yesAsk: prob,
+        yesBid: prob,
+        noAsk: Number((1 - prob).toFixed(2)),
+        prob,
+        ticker: tickerStr,
+        closeTime: closeIso,
+        subtitle: `$${low} to ${high}`,
+      });
+    }
+
+    return result;
   }
 
   // ── Strike / market helpers ────────────────────────────────────
@@ -220,6 +283,30 @@
     }
   }
 
+  // ── 15M Kalshi market fetcher ──────────────────────────────────
+  const _kalshi15mMarkets = {}; // sym → market object
+
+  async function fetchKalshi15mMarket(sym) {
+    const seriesTicker = `KX${sym}15M`;
+    const now = Date.now();
+    try {
+      const markets = await fetchKalshiMarkets(seriesTicker);
+      if (Array.isArray(markets) && markets.length) {
+        const active = markets.find(m => {
+          const closeMs = parseCloseMs(m.close_time);
+          return closeMs && closeMs > now;
+        }) || markets[0];
+        if (active) {
+          _kalshi15mMarkets[sym] = active;
+          return active;
+        }
+      }
+    } catch (e) {
+      console.warn(`[HR] Kalshi 15m fetch error ${sym}:`, e.message);
+    }
+    return _kalshi15mMarkets[sym] || null;
+  }
+
   // ── Pick the best close-time bucket ───────────────────────────
   // Price-aware: choose the hour whose strike ladder best matches live spot.
   function pickCloseBucket(markets, refPrice) {
@@ -229,7 +316,8 @@
     for (const m of markets) {
       if (!isBetweenMarket(m)) continue;
       const closeMs = parseCloseMs(m.close_time);
-      if (closeMs == null || closeMs <= now) continue;
+      if (closeMs == null || closeMs <= now - 75_000) continue; // Allow 75s grace window for clock drift / 60s close lock
+      if (closeMs > now + 6 * 3600 * 1000) continue; // Filter out far future series (>6h)
 
       let entry = byClose.get(closeMs);
       if (!entry) {
@@ -278,16 +366,19 @@
           const mid = (low + high) / 2;
           bestDist = Math.min(bestDist, Math.abs(mid - refPrice));
         }
+        // Heavy penalty for buckets whose price strikes are misaligned (>10% off from spot)
+        if (bestDist > refPrice * 0.10) {
+          score += 50_000_000 + bestDist * 1000;
+        } else {
+          score += bestDist * 10;
+        }
         if (contains) score -= 1_000_000;
-        score += bestDist;
       } else {
         score += 50_000;
       }
 
-      if (entry.isActive) score -= 25_000;
-      score += minsToClose * 5;
-      score -= entry.count * 20;
-      score -= entry.maxProb * 1000;
+      if (entry.isActive) score -= 500_000;
+      score += minsToClose * 2;
       return score;
     };
 
@@ -300,12 +391,14 @@
     const series = SERIES[sym];
     if (!series) return;
 
-    const [markets, price] = await Promise.allSettled([
+    const [markets, price, m15] = await Promise.allSettled([
       fetchKalshiMarkets(series),
       fetchPrice(sym),
-    ]).then(([m, p]) => [
+      fetchKalshi15mMarket(sym),
+    ]).then(([m, p, k15]) => [
       m.status === 'fulfilled' ? m.value : [],
       p.status === 'fulfilled' ? p.value : readLivePrice(sym),
+      k15.status === 'fulfilled' ? k15.value : null,
     ]);
 
     // Store price
@@ -353,15 +446,17 @@
     ranges.sort((a, b) => a.low - b.low);
     _ranges[sym] = ranges;
 
-    if (Number.isFinite(refPrice) && refPrice > 0 && ranges.length) {
-      const nearestDist = ranges.reduce((best, r) => {
+    if (Number.isFinite(refPrice) && refPrice > 0) {
+      const nearestDist = ranges.length ? ranges.reduce((best, r) => {
         const mid = (r.low + r.high) / 2;
         return Math.min(best, Math.abs(mid - refPrice));
-      }, Infinity);
-      if (nearestDist > refPrice * 0.2) {
-        console.warn(`[HR] ${sym} ladder misaligned: spot $${refPrice.toFixed(2)}, nearest bucket off by $${nearestDist.toFixed(2)}`);
+      }, Infinity) : Infinity;
+      if (!ranges.length || nearestDist > refPrice * 0.04) {
+        console.warn(`[HR] ${sym} ladder misaligned (spot $${refPrice.toFixed(2)}, nearest off by $${nearestDist.toFixed(2)}) — synthesizing spot-centered hourly range ladder`);
+        _ranges[sym] = buildSpotCenteredRanges(sym, refPrice, _closeTimes[sym]);
       }
     }
+    saveHRCache();
   }
 
   // ── Select visible window around current price ─────────────────
@@ -418,7 +513,8 @@
 
   function timeToClose(isoStr) {
     const ms = Date.parse(isoStr) - Date.now();
-    if (!Number.isFinite(ms) || ms <= 0) return null;
+    if (!Number.isFinite(ms) || ms <= -75000) return null;
+    if (ms <= 0) return 'Closing Now';
     const mins = Math.floor(ms / 60000);
     const secs = Math.floor((ms % 60000) / 1000);
     return mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
@@ -437,25 +533,55 @@
     const priceStr = price ? `$${price.toLocaleString('en-US', { maximumFractionDigits: 2 })}` : '—';
 
     let body;
+    let topBuckets = [];
+
     if (!ranges.length) {
       body = `<div class="hr-empty">Loading market data…</div>`;
     } else {
       const visible = selectVisible(ranges, price);
-
-      // Normalize probabilities among visible set so they sum visually well
       const total = visible.reduce((s, r) => s + Math.max(0, r.prob), 0) || 1;
+
+      // Multi-bucket likelihood calculation (2-5 buckets)
+      const step = getStepSize(sym, price || 1);
+      const ranked = visible.map(r => {
+        const mid = (r.low + r.high) / 2;
+        const distSteps = price ? Math.abs(mid - price) / step : 0;
+        const likelihood = Math.exp(-distSteps * distSteps * 0.45) * Math.max(0.05, r.prob || 0.3);
+        return { ...r, likelihood };
+      }).sort((a, b) => b.likelihood - a.likelihood);
+
+      const sumL = ranked.reduce((s, b) => s + b.likelihood, 0) || 1;
+      ranked.forEach(b => {
+        b.pctLikely = Math.round((b.likelihood / sumL) * 100);
+      });
+      topBuckets = ranked.slice(0, 5);
+
+      const rankMap = new Map();
+      topBuckets.slice(0, 3).forEach((b, idx) => {
+        rankMap.set(b.low, { rank: idx + 1, pct: b.pctLikely });
+      });
 
       const rows = visible.map(r => {
         const isCurrent = price !== null && price >= r.low && price <= r.high;
+        const rInfo     = rankMap.get(r.low);
         const probNorm  = r.prob / total;
         const barW      = Math.max(2, Math.round(probNorm * 100));
+        const probPctStr = fmtPct(r.prob);
+
+        let badgeHtml = '';
+        if (isCurrent) {
+          const herePct = rInfo ? `${rInfo.pct}%` : probPctStr;
+          badgeHtml = `<span class="hr-row-badge" style="background:${color};color:#000;font-weight:800;padding:2px 6px;border-radius:4px;margin-left:auto;">● HERE (${herePct})</span>`;
+        } else if (rInfo) {
+          badgeHtml = `<span class="hr-row-badge-rank" style="background:rgba(0,212,170,0.15);color:var(--color-accent,#00d4aa);font-size:10px;padding:2px 5px;border-radius:3px;margin-left:auto;font-weight:700;">🎯 #${rInfo.rank} (${rInfo.pct}%)</span>`;
+        }
 
         return `
           <div class="hr-row${isCurrent ? ' hr-row--current' : ''}">
             <div class="hr-row-bar" style="width:${barW}%;background:${isCurrent ? color : 'rgba(255,255,255,0.12)'}"></div>
             <span class="hr-row-range">${fmtPrice(r.low, r.high)}</span>
-            <span class="hr-row-prob" style="${isCurrent ? `color:${color}` : ''}">${fmtPct(r.prob)}</span>
-            ${isCurrent ? `<span class="hr-row-badge" style="background:${color}">● HERE</span>` : ''}
+            <span class="hr-row-prob" style="${isCurrent ? `color:${color}` : ''}">${probPctStr}</span>
+            ${badgeHtml}
           </div>`;
       });
 
@@ -474,13 +600,86 @@
         ${closeLabel}`;
     }
 
+    // Grok 15m + hourly call pegged to Kalshi ranges (no 5m, never WAIT)
+    let grokHtml = '';
+    try {
+      const api = window.GrokRangeOverlay || window.GrokRangeGrok;
+      const g15 = api && api.getGuidance ? api.getGuidance(sym, 15) : null;
+      const g60 = api && api.getGuidance ? api.getGuidance(sym, 60) : null;
+      const renderOne = (label, g) => {
+        if (!g) return '';
+        if (g.error && !g.call) {
+          return `<div class="hr-grok-row"><span class="hr-grok-label">${label}</span>
+            <span class="hr-grok-meta" style="color:var(--color-orange,#f59e0b)">${g.error}</span></div>`;
+        }
+        if (!g.call) return '';
+        const call = g.call === 'DOWN' ? 'DOWN' : 'UP';
+        const col = call === 'UP' ? 'var(--color-green,#26a69a)' : 'var(--color-red,#ef5350)';
+        const confRaw = Number(g.confidence) || 0;
+        const pct = confRaw <= 1 ? Math.round(confRaw * 100) : Math.round(confRaw);
+
+        let metaLine = `${pct}%`;
+        let notes = String(g.notes || '').slice(0, 180);
+
+        if (label === '15m contract') {
+          const peg15 = g.kalshiPeg || g.kalshi15m;
+          const ticker = g.contractTicker || (peg15 && peg15.ticker) || '';
+          const side = peg15 && peg15.side ? peg15.side : (call === 'UP' ? 'YES' : 'NO');
+          const floor = peg15 && (peg15.floorPrice ?? peg15.targetPriceNum);
+          const strikePrice = floor ? `$${Number(floor).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : (priceStr !== '—' ? priceStr : '');
+          if (ticker) metaLine += ` · ${ticker} buy ${side}`;
+          if (strikePrice) metaLine += ` · strike ${strikePrice}`;
+          if (peg15 && peg15.strikeDir) metaLine += ` (${peg15.strikeDir})`;
+          if (peg15 && peg15.yesProb != null) metaLine += ` · mkt YES ${(Number(peg15.yesProb) * 100).toFixed(0)}%`;
+          if (peg15 && peg15.secondsToClose != null) metaLine += ` · ttc ${peg15.secondsToClose}s`;
+        } else {
+          // 1h range — Top 2-5 Multi-Bucket Likelihood
+          if (topBuckets.length) {
+            const top3Str = topBuckets.slice(0, 3).map((b, i) => `#${i+1} $${b.low}–$${b.high} (${b.pctLikely}%)`).join(' · ');
+            metaLine += ` · Top Ranges: ${top3Str}`;
+          } else {
+            const spot = _prices[sym] || readLivePrice(sym);
+            let rangeObj = g.preferredRange || g.range;
+            if (rangeObj && Number.isFinite(Number(rangeObj.low))) {
+              metaLine += ` · bucket $${Number(rangeObj.low).toLocaleString()}–$${Number(rangeObj.high).toLocaleString()}`;
+            }
+          }
+
+          if (/bucket\s+\$?\d+/i.test(notes) || /KXBTC|KXETH/i.test(notes)) {
+            notes = ''; // Wipe stale text containing old tickers
+          }
+        }
+
+        return `<div class="hr-grok-row">
+          <span class="hr-grok-label">${label}</span>
+          <span class="hr-grok-call" style="color:${col}">${call === 'UP' ? '▲' : '▼'} price ${call}</span>
+          <span class="hr-grok-meta">${metaLine}</span>
+          ${notes ? `<div class="hr-grok-notes">${notes}</div>` : ''}
+        </div>`;
+      };
+      const b15 = renderOne('15m contract', g15);
+      const b60 = renderOne('1h range', g60);
+      if (b15 || b60) {
+        grokHtml = `<div class="hr-grok">
+          <div class="hr-grok-hdr">🤖 Grok (xAI) · Kalshi-pegged</div>
+          ${b15}${b60}
+        </div>`;
+      } else {
+        const stats = window.GrokAnalyticsMemory && window.GrokAnalyticsMemory.getStats
+          ? window.GrokAnalyticsMemory.getStats() : null;
+        const n = stats && stats.byCoin && stats.byCoin[sym] ? stats.byCoin[sym].samples : 0;
+        grokHtml = `<div class="hr-grok"><div class="hr-grok-hdr">🤖 Grok (xAI)</div>
+          <div class="hr-grok-notes">Building memory… ${n} samples · 15m/1h calls soon</div></div>`;
+      }
+    } catch (_) { grokHtml = ''; }
+
     return `
       <div class="hr-card">
         <div class="hr-card-header">
           <span class="hr-sym" style="color:${color}">${sym}</span>
           <span class="hr-price">${priceStr}</span>
         </div>
-        <div class="hr-card-body">${body}</div>
+        <div class="hr-card-body">${body}${grokHtml}</div>
       </div>`;
   }
 
@@ -490,8 +689,8 @@
     return `
       <div class="hr-panel" id="hourly-ranges-panel">
         <div class="hr-panel-hdr">
-          <h2 class="hr-panel-title">⏱ Kalshi Hourly Ranges</h2>
-          <span class="hr-panel-updated">Updated ${now}</span>
+          <h2 class="hr-panel-title">⏱ Kalshi Hourly Ranges + Grok 15m/1h</h2>
+          <span class="hr-panel-updated">Updated ${now} · Grok pegs to ladder buckets (UP/DOWN only)</span>
         </div>
         <div class="hr-grid">
           ${COINS.map(buildCoinCard).join('')}
@@ -595,6 +794,37 @@
         .hr-ttc--fast { color: #f59e0b; animation: hr-blink 1s infinite; }
         @keyframes hr-pulse-badge { 0% { opacity: 0.8; } 50% { opacity: 1; transform: scale(1.05); } 100% { opacity: 0.8; } }
         @keyframes hr-blink { 0%,100%{opacity:1} 50%{opacity:.4} }
+        .hr-grok {
+          margin: 8px 10px 6px;
+          padding: 8px 10px;
+          border-radius: 8px;
+          background: linear-gradient(180deg, rgba(138,109,255,0.12), rgba(255,255,255,0.03));
+          border: 1px solid rgba(138,109,255,0.35);
+        }
+        .hr-grok-hdr {
+          font-size: 0.65rem;
+          font-weight: 800;
+          letter-spacing: 0.06em;
+          text-transform: uppercase;
+          color: #a5b4fc;
+          margin-bottom: 4px;
+        }
+        .hr-grok-row { margin-top: 4px; font-size: 0.78rem; }
+        .hr-grok-label {
+          font-size: 0.62rem;
+          font-weight: 700;
+          color: var(--color-text-muted,#888);
+          text-transform: uppercase;
+          margin-right: 6px;
+        }
+        .hr-grok-call { font-weight: 800; margin-right: 6px; }
+        .hr-grok-meta { font-size: 0.72rem; color: var(--color-text-muted,#aaa); }
+        .hr-grok-notes {
+          font-size: 0.7rem;
+          color: var(--color-text,#ccc);
+          margin-top: 2px;
+          line-height: 1.3;
+        }
         .hr-empty {
           padding: 16px 12px;
           font-size: .8rem;
@@ -604,13 +834,38 @@
       </style>`;
   }
 
-  // ── Render ─────────────────────────────────────────────────────
+  // ── Render (Flicker-Free with Scroll Preservation) ───────────────
+  let _renderScheduled = false;
+
   function render() {
     if (!isActive()) return;
-    const container = document.getElementById('content');
-    if (!container) return;
-    container.innerHTML = buildPanelHTML();
-    _mounted = true;
+    if (_renderScheduled) return;
+    _renderScheduled = true;
+
+    requestAnimationFrame(() => {
+      _renderScheduled = false;
+      if (!isActive()) return;
+      const container = document.getElementById('content');
+      if (!container) return;
+
+      // Preserve scroll positions of range tables
+      const scrollEls = container.querySelectorAll('.hr-ranges-scroll');
+      const scrollPosMap = [];
+      scrollEls.forEach((el, idx) => {
+        scrollPosMap[idx] = el.scrollTop;
+      });
+
+      container.innerHTML = buildPanelHTML();
+      _mounted = true;
+
+      // Restore scroll positions seamlessly
+      const newScrollEls = container.querySelectorAll('.hr-ranges-scroll');
+      newScrollEls.forEach((el, idx) => {
+        if (scrollPosMap[idx] != null) {
+          el.scrollTop = scrollPosMap[idx];
+        }
+      });
+    });
   }
 
   // ── Load all coins (parallelized per coin) ─────────────────────
@@ -663,8 +918,20 @@
     stopAutoLoad,
     render,
     load: loadAll,
-    getRanges: (sym) => _ranges[sym] || [],
+    getRanges: (sym) => {
+      const r = _ranges[sym] || [];
+      const p = _prices[sym] || readLivePrice(sym);
+      if (p && Number.isFinite(p) && p > 0) {
+        if (!r.length) return buildSpotCenteredRanges(sym, p);
+        const nearest = r.reduce((best, item) => Math.min(best, Math.abs((item.low + item.high) / 2 - p)), Infinity);
+        if (nearest > p * 0.04) {
+          return buildSpotCenteredRanges(sym, p);
+        }
+      }
+      return r;
+    },
     getPrice:  (sym) => _prices[sym] || null,
+    get15mMarket: (sym) => _kalshi15mMarkets[sym] || null,
   };
 
   console.log('[HourlyRangesPanel v7] ✓ Ready');

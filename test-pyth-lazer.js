@@ -1,8 +1,8 @@
 const WebSocket = require('ws');
 const dotenv = require('dotenv');
 
-// Load environment variables from .env
-dotenv.config({ path: 'g:/WECRYP/.env' });
+const path = require('path');
+dotenv.config({ path: path.resolve(__dirname, '.env') });
 
 // Read your API key from the environment (never hard-code it)
 const TOKEN = process.env.PYTH_LAZER_TOKEN || process.env.LAZER_TOKEN;

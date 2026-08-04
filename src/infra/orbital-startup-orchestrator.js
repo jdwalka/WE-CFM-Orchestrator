@@ -205,6 +205,9 @@ async function initBridge() {
     try {
         const { initRedpanda } = require('./orbital-redpanda-bridge');
         await initRedpanda();
+        if (!getBridgeStatsSafe().connected) {
+            throw new Error('Kafka producer bridge did not connect to Redpanda');
+        }
         console.log('[OrbitalOrchestrator] ✓ Redpanda bridge initialized');
     } catch (err) {
         console.error('[OrbitalOrchestrator] Failed to initialize bridge:', err.message);
@@ -363,6 +366,7 @@ async function performShutdownOrbitalSystem(stopProxiesFlag = true, options = {}
                 if (conn && typeof conn.close === 'function') conn.close();
             }
         }
+        ingestorProcess = null;
 
         // Disconnect KafkaJS producer gracefully
         try {

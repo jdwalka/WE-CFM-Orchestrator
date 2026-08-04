@@ -33,6 +33,15 @@ class LLMIntegration {
       recentAccuracy,
       orderbook,
       conflicts,
+      horizonMinutes,
+      horizon,
+      venue,
+      marketType,
+      onChainSideScan,
+      onChainRecent,
+      market,
+      direction,
+      confidence,
     } = engineState;
 
     return {
@@ -43,6 +52,15 @@ class LLMIntegration {
       weights: weights || {},
       recentAccuracy: recentAccuracy || { winRate: 0.5, trend: 0 },
       conflicts: conflicts || [],
+      horizonMinutes: horizonMinutes || 15,
+      horizon: horizon || 'h15',
+      venue: venue || null,
+      marketType: marketType || null,
+      onChainSideScan: onChainSideScan || null,
+      onChainRecent: onChainRecent || onChainSideScan || null,
+      market: market || null,
+      direction: direction || null,
+      confidence: confidence || null,
     };
   }
 

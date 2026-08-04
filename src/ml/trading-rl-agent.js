@@ -61,6 +61,14 @@
 
     contrarianBoost: 0.22,
 
+    pathwayBiasScale: 0.62,
+
+    pathwayLearnBlend: 0.34,
+
+    pathwayLearningRate: 0.18,
+
+    pathwayActivationFloor: 0.18,
+
     blend: { dqn: 0.30, mcts: 0.30, cfr: 0.25, mispricing: 0.15 },
 
     rapidBlend: { dqn: 0.35, mcts: 0.38, cfr: 0.12, mispricing: 0.15 },
@@ -79,6 +87,16 @@
 
   let sniper = null;
 
+  const PATHWAY_META = {
+    trend_follow: { label: 'Trend Follow' },
+    rapid_breakout: { label: 'Rapid Breakout' },
+    contrarian_mispricing: { label: 'Contrarian Mispricing' },
+    liquidity_reversion: { label: 'Liquidity Reversion' },
+    late_window_scalp: { label: 'Late Window Scalp' },
+  };
+
+  let pathwayTable = buildPathwayTable();
+
 
 
   function actionLabel(id) {
@@ -87,13 +105,281 @@
 
   }
 
+  function pathwayLabel(id) {
 
+    return PATHWAY_META[id]?.label ?? id;
+
+  }
+
+  function createPathwayState(seed = {}) {
+
+    const actionValues = Array.isArray(seed.actionValues)
+      ? seed.actionValues.slice(0, 3).map((v) => Number(v) || 0)
+      : [0, 0, 0];
+
+    while (actionValues.length < 3) actionValues.push(0);
+
+    const seen = Math.max(0, Math.round(Number(seed.seen ?? seed.count ?? 0) || 0));
+
+    const totalReward = Number(seed.totalReward ?? 0) || 0;
+
+    const avgReward = seen
+      ? totalReward / seen
+      : (Number(seed.avgReward ?? 0) || 0);
+
+    const lastAction = Number(seed.lastAction);
+
+    return {
+      seen,
+      totalReward,
+      avgReward,
+      actionValues,
+      lastReward: Number(seed.lastReward ?? 0) || 0,
+      lastAction: Number.isFinite(lastAction) ? lastAction : 0,
+      lastSeenAt: Number(seed.lastSeenAt ?? 0) || 0,
+    };
+
+  }
+
+  function buildPathwayTable(seed = {}) {
+
+    return Object.keys(PATHWAY_META).reduce((acc, id) => {
+
+      acc[id] = createPathwayState(seed?.[id]);
+
+      return acc;
+
+    }, {});
+
+  }
+
+  function normalizePolicy(values, fallback = [0.34, 0.33, 0.33]) {
+
+    const arr = Array.isArray(values)
+      ? values.slice(0, 3).map((v) => Math.max(0, Number(v) || 0))
+      : fallback.slice();
+
+    while (arr.length < 3) arr.push(0);
+
+    const sum = arr.reduce((s, v) => s + v, 0);
+
+    if (!sum) return fallback.slice();
+
+    return arr.map((v) => v / sum);
+
+  }
+
+  function directionalPolicy(signal = 0, conviction = 0.5, waitFloor = 0.12) {
+
+    const signed = clamp(Number(signal) || 0, -1, 1);
+
+    const magnitude = clamp(Math.abs(signed), 0, 1);
+
+    const conf = clamp(Number(conviction) || 0, 0, 1);
+
+    const wait = clamp(waitFloor + (1 - conf) * 0.35 + (1 - magnitude) * 0.2, 0.06, 0.82);
+
+    const directional = Math.max(0.05, 1 - wait);
+
+    const tilt = 0.5 + signed * 0.5;
+
+    return normalizePolicy([wait, directional * tilt, directional * (1 - tilt)]);
+
+  }
+
+  function actionPolicy(actionId, conviction = 0.7, waitFloor = 0.08) {
+
+    const conf = clamp(Number(conviction) || 0, 0, 1);
+
+    if (actionId === enc?.ACTION?.WAIT || actionId === 0) {
+
+      return normalizePolicy([0.62 + (1 - conf) * 0.18, 0.19, 0.19]);
+
+    }
+
+    const policy = [waitFloor + (1 - conf) * 0.25, 0.12, 0.12];
+
+    policy[actionId === enc?.ACTION?.DOWN || actionId === 2 ? 2 : 1] += 0.72 + conf * 0.55;
+
+    return normalizePolicy(policy);
+
+  }
+
+  function blendPolicies(primary, learned, mix = 0.34) {
+
+    const m = clamp(Number(mix) || 0, 0, 1);
+
+    return normalizePolicy(primary.map((v, i) => v * (1 - m) + (learned?.[i] ?? 0) * m));
+
+  }
+
+  function pathwaySnapshot(pathway) {
+
+    if (!pathway) return null;
+
+    return {
+      id: pathway.id,
+      label: pathway.label,
+      action: actionLabel(pathway.preferredAction),
+      activation: pathway.activation,
+      rationale: pathway.rationale,
+      policy: pathway.policy.slice(),
+      learnedPolicy: pathway.learnedPolicy.slice(),
+      stats: pathway.stats ? {
+        seen: pathway.stats.seen,
+        avgReward: pathway.stats.avgReward,
+        lastReward: pathway.stats.lastReward,
+      } : null,
+    };
+
+  }
+
+  function buildDecisionPathways(ctx = {}, extras = {}, mispricing = null, bookCtx = {}) {
+
+    const score = clamp(Number(extras.compositeScore ?? ctx.score ?? 0), -1, 1);
+
+    const agreement = clamp(Number(extras.agreement ?? ctx.agreement ?? 0.5), 0, 1);
+
+    const conflict = clamp(Number(extras.conflict ?? ctx.conflict ?? 0), 0, 1);
+
+    const tapeVelocity = clamp(Number(extras.tapeVelocity ?? 0), -1, 1);
+
+    const probVelocity = clamp(Number(extras.probVelocity ?? 0) / 3, -1, 1);
+
+    const rapid = enc?.rapidMoveScore?.(extras) ?? 0;
+
+    const huntScore = clamp(Number(mispricing?.huntScore ?? 0), 0, 1);
+
+    const lateWindow = clamp(1 - Number(extras.ttcNorm ?? 1), 0, 1);
+
+    const spreadNorm = clamp(Number(bookCtx.spreadPct ?? 0) * 20, 0, 1);
+
+    const toxicity = clamp(Number(bookCtx.toxicity ?? 0), 0, 1);
+
+    const imbalance = clamp(Number(bookCtx.imbalance ?? 0), -1, 1);
+
+    const wallPressure = clamp(Number(bookCtx.wallPressure ?? 0), -1, 1);
+
+    const mispricingSignal = mispricing?.recommendedAction === 'UP'
+      ? 1
+      : mispricing?.recommendedAction === 'DOWN'
+        ? -1
+        : clamp(Number(mispricing?.projectedMispricingPp ?? mispricing?.mispricingPp ?? 0) / 18, -1, 1);
+
+    const lateSignal = mispricing?.recommendedAction === 'UP'
+      ? 0.85
+      : mispricing?.recommendedAction === 'DOWN'
+        ? -0.85
+        : clamp(probVelocity * 0.45 + score * 0.35 + mispricingSignal * 0.2, -1, 1);
+
+    return [
+      {
+        id: 'trend_follow',
+        label: pathwayLabel('trend_follow'),
+        activation: clamp(Math.abs(score) * 0.38 + agreement * 0.34 + Math.abs(tapeVelocity) * 0.18 - conflict * 0.22, 0, 1),
+        policy: directionalPolicy(score * 0.55 + tapeVelocity * 0.25 + probVelocity * 0.2, agreement * 0.65 + Math.abs(score) * 0.35, 0.1),
+        rationale: `trend alignment score=${score.toFixed(2)} tape=${tapeVelocity.toFixed(2)} agreement=${agreement.toFixed(2)}`,
+      },
+      {
+        id: 'rapid_breakout',
+        label: pathwayLabel('rapid_breakout'),
+        activation: clamp(rapid * 0.62 + Number(extras.rangeExpansion ?? 0) * 0.14 + Number(extras.bodyExpansion ?? 0) * 0.14 + Number(extras.volumeBurst ?? 0) * 0.1, 0, 1),
+        policy: directionalPolicy(score * 0.3 + tapeVelocity * 0.4 + probVelocity * 0.3, rapid * 0.75 + Math.abs(probVelocity) * 0.25, 0.08),
+        rationale: `rapid breakout rapid=${rapid.toFixed(2)} range=${Number(extras.rangeExpansion ?? 0).toFixed(2)} volume=${Number(extras.volumeBurst ?? 0).toFixed(2)}`,
+      },
+      {
+        id: 'contrarian_mispricing',
+        label: pathwayLabel('contrarian_mispricing'),
+        activation: clamp(huntScore * 0.62 + (mispricing?.contrarian ? 0.22 : 0) + (mispricing?.crowdExtreme ? 0.12 : 0), 0, 1),
+        policy: mispricing?.recommendedAction && mispricing.recommendedAction !== 'WAIT'
+          ? actionPolicy(enc?.directionToAction?.(mispricing.recommendedAction) ?? 0, 0.55 + huntScore * 0.45, 0.06)
+          : directionalPolicy(mispricingSignal || -score, 0.45 + huntScore * 0.4, 0.16),
+        rationale: mispricing?.rationale || 'contrarian / crowd-dislocation edge',
+      },
+      {
+        id: 'liquidity_reversion',
+        label: pathwayLabel('liquidity_reversion'),
+        activation: clamp(Math.abs(imbalance) * 0.34 + Math.abs(wallPressure) * 0.28 + spreadNorm * 0.18 + toxicity * 0.2, 0, 1),
+        policy: directionalPolicy(-(imbalance * 0.55 + wallPressure * 0.3 + tapeVelocity * 0.15), 0.42 + toxicity * 0.28 + spreadNorm * 0.3, 0.18),
+        rationale: `reversion imbalance=${imbalance.toFixed(2)} walls=${wallPressure.toFixed(2)} toxicity=${toxicity.toFixed(2)}`,
+      },
+      {
+        id: 'late_window_scalp',
+        label: pathwayLabel('late_window_scalp'),
+        activation: clamp(lateWindow * 0.46 + huntScore * 0.24 + Math.abs(probVelocity) * 0.18 + rapid * 0.12, 0, 1),
+        policy: directionalPolicy(lateSignal, 0.44 + lateWindow * 0.32 + huntScore * 0.24, 0.12),
+        rationale: `late window ttc=${lateWindow.toFixed(2)} probVel=${probVelocity.toFixed(2)} hunt=${huntScore.toFixed(2)}`,
+      },
+    ];
+
+  }
+
+  function enrichPathways(pathways = []) {
+
+    return pathways.map((pathway) => {
+
+      const state = pathwayTable[pathway.id] || createPathwayState();
+
+      const learnedPolicy = softmax(state.actionValues);
+
+      const policy = blendPolicies(pathway.policy, learnedPolicy, config.pathwayLearnBlend ?? DEFAULT_CONFIG.pathwayLearnBlend);
+
+      return {
+        ...pathway,
+        preferredAction: argmax(policy),
+        policy,
+        learnedPolicy,
+        stats: {
+          seen: state.seen,
+          avgReward: state.avgReward,
+          lastReward: state.lastReward,
+          actionValues: state.actionValues.slice(),
+        },
+      };
+
+    });
+
+  }
+
+  function updatePathwayState(id, actionId, reward, activation = 1) {
+
+    if (!id) return;
+
+    const state = pathwayTable[id] || createPathwayState();
+
+    const alpha = clamp((config.pathwayLearningRate ?? DEFAULT_CONFIG.pathwayLearningRate) * clamp(activation, 0, 1), 0.02, 0.6);
+
+    state.seen += 1;
+
+    state.totalReward += reward;
+
+    state.avgReward = state.totalReward / state.seen;
+
+    state.lastReward = reward;
+
+    state.lastAction = actionId;
+
+    state.lastSeenAt = Date.now();
+
+    for (let a = 0; a < 3; a++) {
+
+      const target = a === actionId ? reward : (-reward * 0.3);
+
+      state.actionValues[a] += alpha * (target - state.actionValues[a]);
+
+    }
+
+    pathwayTable[id] = state;
+
+  }
 
   function initFromBundle(bundle) {
 
     if (!bundle) return false;
 
     config = { ...DEFAULT_CONFIG, ...(bundle.config || {}) };
+
+    pathwayTable = buildPathwayTable(bundle.pathwayTable || {});
 
     if (bundle.dqn && DeepQAgent) {
 
@@ -309,11 +595,43 @@
 
     const isRapid = rapid >= config.rapidThreshold;
 
+    const activePathways = enrichPathways(buildDecisionPathways(ctx, extras, mispricing, bookCtx))
+      .filter((pathway) => pathway.activation >= (config.pathwayActivationFloor ?? DEFAULT_CONFIG.pathwayActivationFloor))
+      .sort((a, b) => b.activation - a.activation)
+      .slice(0, 3);
 
+    const pathwayBias = [0, 0, 0];
 
-    const q = dqn ? dqn.qValues(state) : [0, 0, 0];
+    const pathwayPolicy = [0, 0, 0];
 
-    const dqnAction = dqn ? argmax(q) : 0;
+    let pathwayActivation = 0;
+
+    for (const pathway of activePathways) {
+
+      pathwayActivation += pathway.activation;
+
+      for (let a = 0; a < 3; a++) {
+
+        pathwayPolicy[a] += pathway.policy[a] * pathway.activation;
+
+        pathwayBias[a] += (
+          ((pathway.policy[a] ?? 0) - (1 / 3)) * 1.35 +
+          ((pathway.learnedPolicy[a] ?? 0) - (1 / 3)) * 0.65
+        ) * pathway.activation * (config.pathwayBiasScale ?? DEFAULT_CONFIG.pathwayBiasScale);
+
+      }
+
+    }
+
+    const normalizedPathwayPolicy = pathwayActivation
+      ? normalizePolicy(pathwayPolicy.map((v) => v / pathwayActivation))
+      : [0.34, 0.33, 0.33];
+
+    const baseQ = dqn ? dqn.qValues(state) : [0, 0, 0];
+
+    const q = baseQ.map((v, i) => v + (pathwayBias[i] ?? 0));
+
+    const dqnAction = argmax(q);
 
 
 
@@ -433,6 +751,10 @@
 
       actionId: overrideAction,
 
+      pathway: pathwaySnapshot(activePathways[0]),
+
+      pathways: activePathways.map(pathwaySnapshot),
+
       confidence,
 
       rapidMove: isRapid,
@@ -451,7 +773,13 @@
 
       sources: {
 
-        dqn: { action: actionLabel(dqnAction), q: q.slice() },
+        dqn: {
+          action: actionLabel(dqnAction),
+          q: q.slice(),
+          baseQ: baseQ.slice(),
+          pathwayBias: pathwayBias.slice(),
+          pathwayPolicy: normalizedPathwayPolicy.slice(),
+        },
 
         mcts: mctsResult ? { action: actionLabel(mctsResult.action), policy: mctsResult.policy, iters: mctsResult.iterations } : null,
 
@@ -601,7 +929,7 @@
 
         ? mispricing.playType
 
-        : (rapidMove ? 'rl_rapid_align' : 'rl_align'),
+        : (decision.pathway?.id ? `rl_${decision.pathway.id}` : (rapidMove ? 'rl_rapid_align' : 'rl_align')),
 
     };
 
@@ -685,7 +1013,25 @@
 
 
 
-    return { reward, rapid, actionId, mispricing };
+    const learnedPathways = enrichPathways(buildDecisionPathways(ctx, extras, mispricing, bookCtx))
+      .filter((pathway) => pathway.activation >= (config.pathwayActivationFloor ?? DEFAULT_CONFIG.pathwayActivationFloor))
+      .sort((a, b) => b.activation - a.activation)
+      .slice(0, 3);
+
+    for (const pathway of learnedPathways) {
+
+      updatePathwayState(pathway.id, actionId, reward, pathway.activation);
+
+    }
+
+    return {
+      reward,
+      rapid,
+      actionId,
+      mispricing,
+      pathway: pathwaySnapshot(learnedPathways[0]),
+      pathways: learnedPathways.map(pathwaySnapshot),
+    };
 
   }
 
@@ -695,13 +1041,15 @@
 
     return {
 
-      version: 2,
+      version: 3,
 
       config,
 
       dqn: dqn?.toJSON?.() ?? null,
 
       cfr: cfr?.toJSON?.() ?? null,
+
+      pathwayTable,
 
       savedAt: new Date().toISOString(),
 
@@ -768,5 +1116,3 @@
   };
 
 }));
-
-

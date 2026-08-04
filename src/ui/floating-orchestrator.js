@@ -69,19 +69,19 @@
     COIN_ALLOCATION[coin] = weight / _weightSum;
   }
 
-  const MODEL_THRESHOLD = 0.06;
+  const MODEL_THRESHOLD = 0.02; // ALWAYS_TRADE: fire on tiny score lean
   const BINARY_CDF_YES_THRESHOLD = 0.62;
   const BINARY_CDF_NO_THRESHOLD = 0.38;
   const FINAL_MODEL_CONF_MIN_TRADE = 58;
   const FINAL_MODEL_CONF_MIN_NONALIGNED_TRADE = 68;
-  const MIN_SECONDS_LEFT = 35;
-  const OPEN_WINDOW_GUARD_SECS = 15;
+  const MIN_SECONDS_LEFT = 12;           // was 35 — allow late fills
+  const OPEN_WINDOW_GUARD_SECS = 0;      // was 15 — take trades from open
   const PREDICTION_STALE_WARN_MS = 45000;
   const MARKET_STALE_WARN_MS = 15000;
   const MAX_SECONDS_LEFT = 15 * 60 + 30;
-  const EDGE_MIN_CENTS = 10;
-  const PRIME_PAYOUT_MAX_ENTRY_PRICE = 0.62;
-  const PRIME_PAYOUT_MIN_MISPRICING = 0.12;
+  const EDGE_MIN_CENTS = 2;              // was 10 — always-trade coverage
+  const PRIME_PAYOUT_MAX_ENTRY_PRICE = 0.92; // was 0.62 — allow expensive yes/no
+  const PRIME_PAYOUT_MIN_MISPRICING = 0.02;  // was 0.12
   const EXCEPTIONAL_RECOVERY_TIMING_SCORE = 68;
   const EXCEPTIONAL_RECOVERY_EDGE_CENTS = 12;
   const EXCEPTIONAL_RECOVERY_MISPRICING = 0.10;
@@ -124,15 +124,15 @@
     if (txt === '0' || txt === 'false' || txt === 'no' || txt === 'off') return false;
     return !!fallback;
   }
-  const WAIT_GUARD_TIMING_SCORE_BASE = readNumberKnob('WECRYP_WAIT_GUARD_TIMING_SCORE_BASE', 62, 45, 95);
-  const WAIT_GUARD_BTC_ETH_RELAX = readNumberKnob('WECRYP_WAIT_GUARD_BTC_ETH_RELAX', 4, 0, 12);
-  const WAIT_GUARD_REGIME_TREND_RELAX = readNumberKnob('WECRYP_WAIT_GUARD_REGIME_TREND_RELAX', 3, 0, 10);
-  const WAIT_GUARD_REGIME_VOLATILE_PENALTY = readNumberKnob('WECRYP_WAIT_GUARD_REGIME_VOLATILE_PENALTY', 4, 0, 12);
-  const WAIT_GUARD_MCTS_RELAX_MAX = readNumberKnob('WECRYP_WAIT_GUARD_MCTS_RELAX_MAX', 4, 0, 12);
-  const WAIT_GUARD_OPEN_BYPASS_ENABLED = readBoolKnob('WECRYP_WAIT_GUARD_OPEN_BYPASS_ENABLED', false);
-  const WAIT_GUARD_OPEN_BYPASS_MIN_CONF = readNumberKnob('WECRYP_WAIT_GUARD_OPEN_BYPASS_MIN_CONF', 12, 0, 99);
-  const WAIT_GUARD_OPEN_BYPASS_MIN_EDGE = readNumberKnob('WECRYP_WAIT_GUARD_OPEN_BYPASS_MIN_EDGE', 11, 0, 50);
-  const WAIT_GUARD_OPEN_BYPASS_MIN_MISPRICING = readNumberKnob('WECRYP_WAIT_GUARD_OPEN_BYPASS_MIN_MISPRICING', 0.11, 0.02, 0.5);
+  const WAIT_GUARD_TIMING_SCORE_BASE = readNumberKnob('WECRYP_WAIT_GUARD_TIMING_SCORE_BASE', 40, 20, 95);
+  const WAIT_GUARD_BTC_ETH_RELAX = readNumberKnob('WECRYP_WAIT_GUARD_BTC_ETH_RELAX', 8, 0, 12);
+  const WAIT_GUARD_REGIME_TREND_RELAX = readNumberKnob('WECRYP_WAIT_GUARD_REGIME_TREND_RELAX', 6, 0, 10);
+  const WAIT_GUARD_REGIME_VOLATILE_PENALTY = readNumberKnob('WECRYP_WAIT_GUARD_REGIME_VOLATILE_PENALTY', 0, 0, 12);
+  const WAIT_GUARD_MCTS_RELAX_MAX = readNumberKnob('WECRYP_WAIT_GUARD_MCTS_RELAX_MAX', 8, 0, 12);
+  const WAIT_GUARD_OPEN_BYPASS_ENABLED = readBoolKnob('WECRYP_WAIT_GUARD_OPEN_BYPASS_ENABLED', true);
+  const WAIT_GUARD_OPEN_BYPASS_MIN_CONF = readNumberKnob('WECRYP_WAIT_GUARD_OPEN_BYPASS_MIN_CONF', 5, 0, 99);
+  const WAIT_GUARD_OPEN_BYPASS_MIN_EDGE = readNumberKnob('WECRYP_WAIT_GUARD_OPEN_BYPASS_MIN_EDGE', 2, 0, 50);
+  const WAIT_GUARD_OPEN_BYPASS_MIN_MISPRICING = readNumberKnob('WECRYP_WAIT_GUARD_OPEN_BYPASS_MIN_MISPRICING', 0.02, 0.0, 0.5);
   const MCTS_ENABLED = readBoolKnob('WECRYP_MCTS_ENABLED', true);
   const MCTS_SIMULATIONS = Math.round(readNumberKnob('WECRYP_MCTS_SIMULATIONS', 96, 16, 400));
   const MCTS_DEPTH = Math.round(readNumberKnob('WECRYP_MCTS_DEPTH', 6, 2, 16));
@@ -1368,16 +1368,68 @@
     }
     var mctsConfidenceModifier = Math.round(clamp(mctsDirectionalBias * MCTS_CONFIDENCE_MOD_MAX, -MCTS_CONFIDENCE_MOD_MAX, MCTS_CONFIDENCE_MOD_MAX));
     var baseConfidence = Math.round(clamp((mStr + eBoost) * 75, 0, 99));
-    var confidence = Math.round(clamp(baseConfidence + mctsConfidenceModifier, 0, 99));
+    // Meta-label from live xAI Grok (window._grokLive, refreshed by quant-layer ~60s)
+    // ALWAYS_TRADE still fires; Grok conf only scales confidence for sizing / ranking.
+    var grokMod = 0;
+    var grokLive = null;
+    try {
+      grokLive = (typeof window !== 'undefined' && window._grokLive && window._grokLive[sym]) || null;
+      if (grokLive && (Date.now() - Number(grokLive.ts || 0)) < 5 * 60_000) {
+        var gc = Number(grokLive.confidence);
+        if (Number.isFinite(gc)) {
+          if (gc <= 1) gc = gc * 100;
+          // Map Grok 0–100 → −8…+12 confidence points
+          grokMod = Math.round(clamp((gc - 50) * 0.24, -8, 12));
+        }
+      }
+    } catch (_) { grokLive = null; }
+    // On-chain side-scan size mult (BTC/ETH/SOL): agree with lean → boost conf, disagree → cut
+    var chainSizeMult = 1.0;
+    var chainLean = null;
+    try {
+      if (typeof window !== 'undefined' && window.OnChainFlow
+          && ['BTC', 'ETH', 'SOL'].indexOf(String(sym || '').toUpperCase()) >= 0) {
+        var modelDirForChain = direction || (Number.isFinite(modelScore) && modelScore !== 0
+          ? (modelScore >= 0 ? 'UP' : 'DOWN') : null);
+        if (typeof window.OnChainFlow.sizeMultiplier === 'function') {
+          chainSizeMult = Number(window.OnChainFlow.sizeMultiplier(sym, modelDirForChain)) || 1.0;
+        }
+        if (typeof window.OnChainFlow.lean === 'function') {
+          chainLean = window.OnChainFlow.lean(sym);
+        }
+      }
+    } catch (_) { chainSizeMult = 1.0; }
+    // Map size mult 0.5–1.5 → confidence delta about −12…+10 (ALWAYS_TRADE still fires)
+    var chainConfMod = Math.round(clamp((chainSizeMult - 1) * 20, -12, 10));
+    var confidence = Math.round(clamp(baseConfidence + mctsConfidenceModifier + grokMod + chainConfMod, 0, 99));
+    var alwaysTrade = !!(typeof window !== 'undefined' && window.ALWAYS_TRADE_MODE);
+    // ALWAYS_TRADE: if no model dir, still pick Kalshi lean or score sign
+    if (!direction || direction === 'FLAT') {
+      if (kalshiYesPrice != null) {
+        direction = kalshiYesPrice >= 0.5 ? dirs.yesDir : dirs.noDir;
+        alignment = alignment || 'KALSHI_FORCE';
+      } else if (Number.isFinite(modelScore) && modelScore !== 0) {
+        direction = modelScore >= 0 ? 'UP' : 'DOWN';
+        alignment = alignment || 'MODEL_FORCE';
+      } else {
+        direction = 'UP';
+        alignment = alignment || 'DEFAULT_UP';
+      }
+      side = direction === dirs.yesDir ? 'YES' : 'NO';
+      entry = side === 'YES' ? entryYes : entryNo;
+    }
     var action;
-    if (alignment === 'KALSHI_ONLY') action = 'watch';
+    if (alwaysTrade && direction) {
+      action = 'trade';
+    } else if (alignment === 'KALSHI_ONLY') action = 'watch';
     else if (!entry || entry.edgeCents < EDGE_MIN_CENTS) action = (entry && entry.edgeCents < 0) ? 'skip' : 'watch';
     else action = modelActive ? 'trade' : 'watch';
     var payoutNotPrime = !!(entry && (
       entry.entryPrice > PRIME_PAYOUT_MAX_ENTRY_PRICE
       || currentMispricing < PRIME_PAYOUT_MIN_MISPRICING
     ));
-    if (action === 'trade' && payoutNotPrime) action = 'watch';
+    // ALWAYS_TRADE: do not demote trade→watch for "non-prime" payout
+    if (action === 'trade' && payoutNotPrime && !alwaysTrade) action = 'watch';
     var waitGuardThreshold = computeWaitGuardThreshold({
       sym: sym,
       regimeTag: regimeTag,
@@ -1396,10 +1448,10 @@
       finalConfidenceFloor = Math.max(8, finalConfidenceFloor - 2);
     }
     var finalConfidenceWeak = calibratedConfidence != null && calibratedConfidence < finalConfidenceFloor;
-    if (action === 'trade' && finalConfidenceWeak) action = 'watch';
+    if (action === 'trade' && finalConfidenceWeak && !alwaysTrade) action = 'watch';
     var openWindowBypassed = false;
     var openWindowBlocked = false;
-    if (tooEarly && action === 'trade') {
+    if (tooEarly && action === 'trade' && !alwaysTrade) {
       openWindowBypassed = shouldBypassOpenWindowGuard({
         sym: sym,
         regimeTag: regimeTag,
@@ -1412,6 +1464,12 @@
         action = 'watch';
         openWindowBlocked = true;
       }
+    } else if (tooEarly && alwaysTrade) {
+      openWindowBypassed = true;
+    }
+    // Final always-trade force: never leave a live contract as pure watch/skip if we have a side
+    if (alwaysTrade && direction && action !== 'trade' && !tooLate) {
+      action = 'trade';
     }
     var symNorm = String(sym || '').toUpperCase();
     var logTunedDowngradeReason = null;

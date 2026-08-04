@@ -94,14 +94,26 @@ process.on('unhandledRejection', (reason) => {
   console.log(`[runtime] WECRYP_ROOT=${process.env.WECRYP_ROOT}`);
 
   // ── Step 1: Orbital pipeline (Redpanda bridge + ingestor) ──────────────
+  // Set WECRYPTO_SKIP_ORBITAL=1 (or SKIP_ORBITAL=1) for headless Linux without Docker/Redpanda.
+  const skipOrbital = ['1', 'true', 'yes', 'on'].includes(
+    String(process.env.WECRYPTO_SKIP_ORBITAL || process.env.SKIP_ORBITAL || '').trim().toLowerCase()
+  );
   let initRedpanda, disconnectRedpanda, OrbitalIngestor, startProcessor, stopProcessor;
-  try {
+  if (skipOrbital) {
+    console.warn('[runtime] Orbital pipeline skipped (WECRYPTO_SKIP_ORBITAL/SKIP_ORBITAL)');
+    writeStatus({ event: 'orbital_skipped', reason: 'env_skip' });
+  } else try {
     ({ initRedpanda, disconnectRedpanda } = require('../src/infra/orbital-redpanda-bridge'));
     OrbitalIngestor = require('../src/orbital/orbital-ingestor-daemon');
     ({ startProcessor, stopProcessor } = require('../src/orbital/orbital-matrix-processor'));
 
     console.log('[runtime] Connecting to Redpanda...');
-    await initRedpanda();
+    // Don't hang forever if broker is down — KafkaJS retries can take a long time.
+    const connectMs = Number(process.env.WECRYPTO_REDPANDA_CONNECT_MS || 8000);
+    await Promise.race([
+      initRedpanda(),
+      new Promise((_, reject) => setTimeout(() => reject(new Error(`Redpanda connect timeout after ${connectMs}ms`)), connectMs)),
+    ]);
     OrbitalIngestor.start();
     await startProcessor();
     orbitalReady = true;

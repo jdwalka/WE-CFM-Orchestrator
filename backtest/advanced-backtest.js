@@ -563,11 +563,17 @@ async function fetch1mCandles(coin) {
 }
 
 // ── Core backtest runner (per-coin, per-horizon) ──────────────────
-function runBacktest(sym, candles) {
-  const BARMIN = 5, LIVE_WINDOW = 300, startIdx = Math.max(52, BACKTEST_MIN_TRAIN_OBS);
+// candles5m: primary series; candles1m optional for h1/h5 (fixes h1≡h5 bug when only 5m bars used).
+function runBacktest(sym, candles5m, candles1m = null) {
   const results = {};
 
   for (const horizonMin of SHORT_HORIZON_MINUTES) {
+    // Use 1m series for h1/h5 when available so horizons are not byte-identical.
+    const use1m = horizonMin <= 5 && Array.isArray(candles1m) && candles1m.length >= 120;
+    const candles = use1m ? candles1m : candles5m;
+    const BARMIN = use1m ? 1 : 5;
+    const LIVE_WINDOW = use1m ? 180 : 300;
+    const startIdx = Math.max(52, BACKTEST_MIN_TRAIN_OBS);
     const horizonBars = Math.max(1, Math.round(horizonMin / BARMIN));
     const filter = BACKTEST_FILTER_OVERRIDES[sym]?.[`h${horizonMin}`] || { entryThreshold: 0.30, minAgreement: 0.58 };
     const observations = [], indAccum = {};
@@ -963,7 +969,7 @@ async function main() {
     console.log(candles1m ? `${candles1m.length} candles ✓` : 'skipped');
 
     process.stdout.write(`  Running advanced backtest for ${coin.sym}... `);
-    const results = runBacktest(coin.sym, candles);
+    const results = runBacktest(coin.sym, candles, candles1m);
     console.log('done');
 
     allResults[coin.sym] = results;

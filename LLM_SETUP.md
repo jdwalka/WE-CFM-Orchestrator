@@ -23,6 +23,8 @@ Expected output:
 
 ### 3. Wire Into Engine Loop (Optional)
 
+**Special case**: 5-minute binary contracts (polycool.app / Polymarket PTB, settled via Chainlink price-to-beat) automatically use Grok/xAI when `XAI_API_KEY` is set. The specialized 5m prompts + routing live in `llm_signal_assistant.js`.
+
 In your 30-second polling cycle in `src/core/app.js`:
 
 ```javascript
@@ -157,6 +159,14 @@ console.log(diag);
 | `LLM_API_URL` | `https://api.openai.com/v1/chat/completions` | Your compatible LLM provider endpoint |
 | `LLM_API_KEY` | *(required if compatible)* | Compatible API key (never commit!) |
 | `LLM_MODEL` | `gpt-4-mini` | Model to use (gpt-4, claude-3, etc.) |
+| `XAI_API_KEY` / `GROK_API_KEY` | *(required for Grok)* | **console.x.ai** API key (`xai-…`) — separate from SuperGrok sub. Put in `secrets/XAI_API_KEY.txt` or env. **Must fund API team credits.** |
+| `XAI_MODEL` | `grok-4.5` | Flagship live model (5m PTB + all horizons when `XAI_PRIMARY_ALL=true`) |
+| `XAI_MODEL_FAST` | `grok-4.3` | Cheaper high-volume / batch |
+| `XAI_PRIMARY_ALL` | `true` | Grok first for ALL horizons, not only 5m PTB |
+| `XAI_BASE_URL` | `https://api.x.ai/v1/chat/completions` | xAI OpenAI-compatible endpoint |
+| `LLM_PROVIDER` | `xai` (recommended) | Prefer `xai` when using console key; cascade still falls back to asi1→openai→claude→gemini |
+
+See also: `docs/SUPERGROK_XAI_PLAYBOOK.md`
 
 ## 🚀 Next Steps
 

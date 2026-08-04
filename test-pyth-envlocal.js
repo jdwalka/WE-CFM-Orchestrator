@@ -1,5 +1,6 @@
 const WebSocket = require('ws');
-require('dotenv').config({path: 'g:/WECRYP/.env.local'});
+const path = require('path');
+require('dotenv').config({ path: path.resolve(__dirname, '.env.local') });
 
 const token = process.env.PYTH_LAZER_TOKEN;
 const ws = new WebSocket('wss://pyth-lazer-0.dourolabs.app/v1/stream', {

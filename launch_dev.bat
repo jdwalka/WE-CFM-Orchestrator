@@ -2,8 +2,10 @@
 setlocal enabledelayedexpansion
 echo Starting WE-CFM-Orchestrator with DevTools enabled...
 
-REM ── Load all secrets from C:\WECRYP\.env ────────────────────────────────────
-set "ENV_FILE=C:\WECRYP\.env"
+REM ── Resolve paths from this launcher so the app can run from any drive ─────
+set "SCRIPT_DIR=%~dp0"
+if "%SCRIPT_DIR:~-1%"=="\" set "SCRIPT_DIR=%SCRIPT_DIR:~0,-1%"
+set "ENV_FILE=%SCRIPT_DIR%\.env"
 
 if not exist "%ENV_FILE%" (
     echo [ERROR] Master .env not found at %ENV_FILE%
@@ -17,7 +19,7 @@ for /f "usebackq tokens=1,* delims==" %%A in ("%ENV_FILE%") do (
 )
 
 REM ── Change to project directory ──────────────────────────────────────────────
-cd /d C:\WECRYP\WE-CFM-Orchestrator
+cd /d "%SCRIPT_DIR%"
 
 REM ── Start Redpanda + Redis infrastructure ────────────────────────────────────
 echo Starting Redpanda + Redis infrastructure...

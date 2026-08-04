@@ -8,7 +8,14 @@
 
 const fs = require("fs");
 const path = require("path");
-const { generateSystemPrompt, generateUserPrompt } = require("./specialized_prompt");
+const {
+  generateSystemPrompt,
+  generateUserPrompt,
+  generateFiveMinSystemPrompt,
+  generateFiveMinUserPrompt,
+  generateRangeSystemPrompt,
+  generateRangeUserPrompt,
+} = require("./specialized_prompt");
 const Asi1Client = require("../infra/asi1-client");
 
 function loadLLMEnv() {
@@ -85,6 +92,134 @@ function resolveAnthropicApiKey() {
     || '';
 }
 
+// ── Robust secret dir candidates (Electron-aware, multi-drive) ──────────────
+// Mirrors the logic in electron/main.js so keys placed in secrets/ are found
+// whether running from source, packaged asar, different drive letters, etc.
+function getLlmSecretDirCandidates() {
+  const fsMod = fs;
+  const pathMod = path;
+
+  if (!fsMod || !pathMod) return [];
+
+  const exeDir = pathMod.dirname(process.execPath || __filename || '');
+  let userDataDir = '';
+  try {
+    // app may not be available at require time in some contexts, safe try
+    const { app } = require('electron');
+    if (app && typeof app.getPath === 'function') userDataDir = app.getPath('userData');
+  } catch (_) {}
+
+  const candidates = [
+    userDataDir && pathMod.join(userDataDir, 'secrets'),
+    pathMod.join(exeDir, 'secrets'),
+    process.resourcesPath && pathMod.join(process.resourcesPath, '..', 'secrets'),
+    pathMod.join(__dirname, '..', 'secrets'),
+    pathMod.join(__dirname, '..', '..', 'secrets'),
+    pathMod.resolve(process.cwd(), 'secrets'),
+    // Hardcoded common dev locations (project supports launching from any drive)
+    'G:\\WECRYPTO\\secrets',
+    'F:\\WECRYPTO\\secrets',
+    'E:\\WECRYPTO\\secrets',
+    'G:\\WECRYP\\secrets',
+    'G:\\wecryp\\secrets',
+    pathMod.join(process.cwd(), '..', 'secrets'),
+  ].filter(Boolean);
+
+  const seen = new Set();
+  const existing = [];
+  for (const c of candidates) {
+    try {
+      const resolved = pathMod.resolve(c);
+      const key = resolved.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      if (fsMod.existsSync(resolved)) existing.push(resolved);
+    } catch (_) {}
+  }
+  return existing;
+}
+
+function extractKeyFromRaw(raw, patterns) {
+  if (!raw) return '';
+  const text = String(raw);
+
+  // Prefer the *last* regex match so multi-key secret files (old + new)
+  // keep the newest key at the bottom without the loader latching on a revoked first key.
+  for (const p of patterns) {
+    const flags = p.flags.includes('g') ? p.flags : `${p.flags}g`;
+    let re;
+    try {
+      re = new RegExp(p.source, flags);
+    } catch (_) {
+      re = p;
+    }
+    const matches = [];
+    if (re.global) {
+      for (const m of text.matchAll(re)) {
+        if (m && m[0]) matches.push(m[0]);
+      }
+    } else {
+      const m = text.match(re);
+      if (m && m[0]) matches.push(m[0]);
+    }
+    if (matches.length) return matches[matches.length - 1];
+  }
+
+  // Fallback: last non-comment non-empty line, strip KEY= prefix
+  const lines = text.split(/\r?\n/).map(l => l.trim()).filter(l => l && !l.startsWith('#'));
+  const line = lines.length ? lines[lines.length - 1] : '';
+  if (line) return line.replace(/^[A-Za-z0-9_.-]+\s*=\s*/, '').trim();
+
+  return '';
+}
+
+// Read the Anthropic key ... (now uses full Electron + drive candidates)
+function readAnthropicKeyFromSecrets() {
+  const fileNames = ["ANTHROPIC_API_KEY.txt", "CLAUDE_API.txt"];
+  const patterns = [/sk-ant-[A-Za-z0-9_-]+/i];
+
+  for (const dir of getLlmSecretDirCandidates()) {
+    for (const name of fileNames) {
+      try {
+        const file = path.join(dir, name);
+        if (!fs.existsSync(file)) continue;
+        const raw = fs.readFileSync(file, "utf8");
+        const val = extractKeyFromRaw(raw, patterns);
+        if (val) return val;
+      } catch (_) { }
+    }
+  }
+  return "";
+}
+
+// Read xAI / Grok key from secrets/ for the 5-minute binary PTB markets (polycool.app contracts, Chainlink price-to-beat).
+function readXaiKeyFromSecrets() {
+  const fileNames = ["XAI_API_KEY.txt", "GROK_API_KEY.txt", "xai_api_key.txt", "grok_api_key.txt"];
+  // xAI keys are usually xai-... or sometimes sk- style
+  const patterns = [/xai-[A-Za-z0-9_-]+/i, /sk-[A-Za-z0-9_-]+/i];
+
+  for (const dir of getLlmSecretDirCandidates()) {
+    for (const name of fileNames) {
+      try {
+        const file = path.join(dir, name);
+        if (!fs.existsSync(file)) continue;
+        const raw = fs.readFileSync(file, "utf8");
+        const val = extractKeyFromRaw(raw, patterns);
+        if (val) return val;
+      } catch (_) { }
+    }
+  }
+  return "";
+}
+
+function resolveXaiApiKey() {
+  return process.env.XAI_API_KEY
+    || process.env.GROK_API_KEY
+    || process.env.XAI_KEY
+    || readXaiKeyFromSecrets()
+    || '';
+}
+
 // Configuration from environment
 const LLM_API_URL = process.env.LLM_API_URL || process.env.OPENAI_BASE_URL || "https://api.openai.com/v1/chat/completions";
 const LLM_API_KEY = resolveCompatibleApiKey();
@@ -93,19 +228,100 @@ const GOOGLE_API_KEY = resolveGoogleApiKey();
 const GOOGLE_MODEL = process.env.GOOGLE_MODEL || process.env.GEMINI_MODEL || "gemini-2.0-flash";
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || '';
 const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || "~openai/gpt-latest";
-// Anthropic (claude.ai) — 2nd in the cascade: when ASI:One fails, Claude remediates.
+// Anthropic (Claude) kept for backward/fallback only.
+// xAI (rex) is primary for 5m PTB. Fallback on failure: asi1 → openai → claude → gemini.
 const ANTHROPIC_API_KEY = resolveAnthropicApiKey();
 const ANTHROPIC_MODEL = process.env.ANTHROPIC_MODEL || "claude-opus-4-8";
 const ANTHROPIC_MAX_TOKENS = Number(process.env.ANTHROPIC_MAX_TOKENS || 1500);
-// Effort tunes thinking depth / token spend (low|medium|high|max). Default "low"
-// keeps the 30s real-time loop responsive; raise it to trade latency for rigor.
-const ANTHROPIC_EFFORT = (process.env.ANTHROPIC_EFFORT || "low").toLowerCase();
+// claude-opus-4-8 has no temperature/top_p; effort tunes thinking depth and
+// token spend (low|medium|high|max). Default "low" keeps the real-time 5m loop
+// responsive; raise it to trade latency for rigor.
+const ANTHROPIC_VALID_EFFORTS = ["low", "medium", "high", "max"];
+const ANTHROPIC_EFFORT = (() => {
+  const e = String(process.env.ANTHROPIC_EFFORT || "low").toLowerCase();
+  return ANTHROPIC_VALID_EFFORTS.includes(e) ? e : "low";
+})();
+
+// xAI Grok via console.x.ai API key (separate from SuperGrok consumer sub).
+// Flagship default: grok-4.5. Override with XAI_MODEL=grok-4.3 for cheaper high volume.
+// Use XAI_MODEL_FAST=grok-4.3 for batch/backtest if desired.
+// Transport: official OpenAI-compatible SDK (openai npm) with baseURL api.x.ai — not raw fetch stream.
+const XAI_API_KEY = resolveXaiApiKey();
+const XAI_MODEL = process.env.XAI_MODEL || process.env.GROK_MODEL || "grok-4.5";
+const XAI_MODEL_FAST = process.env.XAI_MODEL_FAST || process.env.XAI_BATCH_MODEL || "grok-4.3";
+const XAI_BASE_URL = process.env.XAI_BASE_URL || "https://api.x.ai/v1/chat/completions";
+const XAI_API_ROOT = (() => {
+  const raw = String(process.env.XAI_API_ROOT || process.env.XAI_BASE_URL || "https://api.x.ai/v1").trim();
+  return raw.replace(/\/chat\/completions\/?$/i, "").replace(/\/$/, "") || "https://api.x.ai/v1";
+})();
+const XAI_MAX_TOKENS = Number(process.env.XAI_MAX_TOKENS || 1600);
+const XAI_TIMEOUT_MS = Number(process.env.XAI_TIMEOUT_MS || 45_000);
+const XAI_MAX_RETRIES = Number(process.env.XAI_MAX_RETRIES || 1);
+// Prefer xAI for ALL LLM analysis when key present (not only 5m PTB).
+const XAI_PRIMARY_ALL = String(process.env.XAI_PRIMARY_ALL || "true").toLowerCase() !== "false";
+
+let _xaiSdkClient = null;
+function getXaiSdkClient() {
+  if (_xaiSdkClient) return _xaiSdkClient;
+  if (!XAI_API_KEY) throw new Error("XAI_API_KEY required for xAI SDK client");
+  // xAI documents OpenAI SDK compatibility: baseURL https://api.x.ai/v1 + Bearer key
+  const OpenAI = require("openai");
+  _xaiSdkClient = new OpenAI({
+    apiKey: XAI_API_KEY,
+    baseURL: XAI_API_ROOT,
+    timeout: XAI_TIMEOUT_MS,
+    maxRetries: XAI_MAX_RETRIES,
+  });
+  return _xaiSdkClient;
+}
+
 const LLM_PROVIDER = (process.env.LLM_PROVIDER || "auto").toLowerCase();
 const CONTEXT_CACHE_TTL_MS = Number(process.env.LLM_CONTEXT_CACHE_TTL_MS || 15000);
 const MARKET_MEMORY_LIMIT = Number(process.env.LLM_MARKET_MEMORY_LIMIT || 12);
 const LLM_RATE_LIMIT_BASE_COOLDOWN_MS = Number(process.env.LLM_RATE_LIMIT_BASE_COOLDOWN_MS || 15000);
 const LLM_RATE_LIMIT_MAX_COOLDOWN_MS = Number(process.env.LLM_RATE_LIMIT_MAX_COOLDOWN_MS || 5 * 60 * 1000);
 const LLM_RATE_LIMIT_LOG_DEBOUNCE_MS = Number(process.env.LLM_RATE_LIMIT_LOG_DEBOUNCE_MS || 20000);
+
+// ── 5-minute Polymarket / polycool.app price-to-beat detection ─────────────────
+// xAI Grok is the primary for 5-minute binary PTB contracts. The "price to beat"
+// (immutable, resolved via Chainlink oracle feeds for settlement) is injected
+// into the specialized prompt. 15m Kalshi never carry PTB and never route here.
+
+function resolveFiveMinTarget(snapshot) {
+  if (!snapshot || typeof snapshot !== "object") return null;
+  const m = (snapshot.market && typeof snapshot.market === "object") ? snapshot.market : {};
+  const candidates = [
+    snapshot.priceToBeat, snapshot.price_to_beat, snapshot.targetPrice, snapshot.target,
+    m.priceToBeat, m.price_to_beat, m.targetPrice, m.target,
+  ];
+  for (const c of candidates) {
+    const n = Number(c);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return null;
+}
+
+function getHorizonMinutes(snapshot) {
+  const h = Number(snapshot?.horizonMinutes ?? snapshot?.horizon);
+  return Number.isFinite(h) ? h : null;
+}
+
+function isFiveMinPtbMarket(snapshot) {
+  if (!snapshot || typeof snapshot !== "object") return false;
+  // Must carry a price-to-beat target (Polymarket/polycool 5m binaries via Chainlink) — the discriminator.
+  if (resolveFiveMinTarget(snapshot) == null) return false;
+  // …and be a 5-minute market.
+  const horizon = getHorizonMinutes(snapshot);
+  const venue = String(
+    snapshot.venue || snapshot.marketType || snapshot.market?.venue || ""
+  ).toLowerCase();
+  return snapshot.fiveMinute === true
+    || snapshot.isFiveMin === true
+    || horizon === 5
+    || venue.includes("polymarket")
+    || venue.includes("five")
+    || venue.includes("5m");
+}
 
 class LLMSignalAssistant {
   constructor() {
@@ -118,8 +334,9 @@ class LLMSignalAssistant {
     } else if (this.provider === "anthropic") {
       this.enabled = !!ANTHROPIC_API_KEY;
     } else {
-      // A standalone Anthropic key is enough to run the cascade (asi1 → anthropic → …).
-      this.enabled = !!(LLM_API_URL && LLM_API_KEY) || !!ANTHROPIC_API_KEY;
+      // Standalone XAI key (or legacy Anthropic) enables assistant so 5m PTB markets can run
+      // on Grok for the binary contracts even if main provider is not configured.
+      this.enabled = !!(LLM_API_URL && LLM_API_KEY) || !!XAI_API_KEY || !!ANTHROPIC_API_KEY;
     }
 
     this.contextCache = new Map();      // short-lived prompt/result cache
@@ -133,6 +350,8 @@ class LLMSignalAssistant {
       hasCompatibleKey: !!LLM_API_KEY,
       hasGoogleKey: !!GOOGLE_API_KEY,
       hasAnthropicKey: !!ANTHROPIC_API_KEY,
+      hasXaiKey: !!XAI_API_KEY,
+      xaiKeySource: XAI_API_KEY ? 'env-or-secrets' : null,
       hasAsi1Key: Asi1Client.hasAsi1Credentials(),
       asi1KeysConfigured: Asi1Client.getDiagnostics().keysConfigured,
       providerOverride: process.env.LLM_PROVIDER || null,
@@ -155,10 +374,22 @@ class LLMSignalAssistant {
       lastRateLimitLogTs: 0,
     };
 
+    const activeModel = this.provider === "xai" ? XAI_MODEL
+      : this.provider === "google" ? GOOGLE_MODEL
+        : this.provider === "anthropic" ? ANTHROPIC_MODEL
+          : LLM_MODEL;
     console.log(
       `[LLMSignalAssistant] Initialized ${this.enabled ? "✓ ENABLED" : "⚠ DISABLED"} ` +
-      `(provider=${this.provider}, model=${this.provider === "google" ? GOOGLE_MODEL : this.provider === "anthropic" ? ANTHROPIC_MODEL : LLM_MODEL})`
+      `(provider=${this.provider}, model=${activeModel})`
     );
+    if (XAI_API_KEY) {
+      console.log(
+        `[LLMSignalAssistant] xAI Grok PRIMARY (model=${XAI_MODEL}, fast=${XAI_MODEL_FAST}, ` +
+        `allHorizons=${XAI_PRIMARY_ALL}) — fallback: asi1→openai→claude→gemini`
+      );
+    } else if (ANTHROPIC_API_KEY) {
+      console.log(`[LLMSignalAssistant] (fallback) Claude for 5m PTB (model=${ANTHROPIC_MODEL})`);
+    }
     if (this.envDiagnostics.dotenvLoaded) {
       console.log(`[LLMSignalAssistant] Loaded env from: ${this.envDiagnostics.dotenvSources.join(" | ")}`);
     }
@@ -168,14 +399,13 @@ class LLMSignalAssistant {
     if (LLM_PROVIDER === "openrouter") return "openrouter";
     if (LLM_PROVIDER === "google") return "google";
     if (LLM_PROVIDER === "anthropic" || LLM_PROVIDER === "claude") return "anthropic";
+    if (LLM_PROVIDER === "xai" || LLM_PROVIDER === "grok" || LLM_PROVIDER === "x.ai") return "xai";
     if (LLM_PROVIDER === "openai" || LLM_PROVIDER === "compatible") return "compatible";
+    // Prefer xAI console key over other providers when present
+    if (XAI_API_KEY && XAI_PRIMARY_ALL) return "xai";
     if (GOOGLE_API_KEY) return "google";
     if (OPENROUTER_API_KEY) return "openrouter";
-    // asi1/compatible key (resolved into LLM_API_KEY) keeps the lead so the
-    // cascade stays asi1-first; Claude only becomes the labeled provider when
-    // it's the sole configured key.
-    if (LLM_API_KEY) return "compatible";
-    if (ANTHROPIC_API_KEY) return "anthropic";
+    if (XAI_API_KEY) return "xai";
     return "compatible";
   }
 
@@ -210,12 +440,29 @@ class LLMSignalAssistant {
         return cached.value;
       }
 
-      // Use specialized prompt
-      const systemPrompt = generateSystemPrompt();
-      const rawUserPrompt = generateUserPrompt(snapshot);
+      // 5m PTB → five-min prompts; 15m/60m range → range prompts; else generic.
+      // Served by xAI (Grok) first when configured; fallback cascade elsewhere.
+      const fiveMin = isFiveMinPtbMarket(snapshot);
+      const rangeHorizon = Number(snapshot.rangeHorizonMinutes || snapshot.horizonMinutes);
+      const isRange = !fiveMin && (
+        snapshot.rangePrediction === true
+        || snapshot.rangeHorizon === true
+        || rangeHorizon === 15
+        || rangeHorizon === 60
+      );
+      const systemPrompt = fiveMin
+        ? generateFiveMinSystemPrompt()
+        : isRange
+          ? generateRangeSystemPrompt(rangeHorizon === 60 ? 60 : 15)
+          : generateSystemPrompt(getHorizonMinutes(snapshot) || 15);
+      const rawUserPrompt = fiveMin
+        ? generateFiveMinUserPrompt(snapshot)
+        : isRange
+          ? generateRangeUserPrompt(snapshot)
+          : generateUserPrompt(snapshot);
       const userPrompt = this.enrichPromptWithRecall(snapshot, rawUserPrompt);
 
-      const rawResponse = await this.callAPI(systemPrompt, userPrompt);
+      const rawResponse = await this.callAPI(systemPrompt, userPrompt, snapshot);
       const normalized = this.normalizeResponse(rawResponse);
       this.recordMarketMemory(snapshot, normalized);
       this.contextCache.set(cacheKey, { ts: now, value: normalized });
@@ -242,10 +489,14 @@ class LLMSignalAssistant {
    */
   getCacheKey(snapshot) {
     const coin = String(snapshot?.coin || "ALL");
-    const horizon = String(snapshot?.horizon || "h15");
+    const horizon = String(snapshot?.horizon || snapshot?.rangeHorizonMinutes || snapshot?.horizonMinutes || "h15");
     const volatility = Number(snapshot?.volatility || 0).toFixed(4);
+    const ticker = String(snapshot?.kalshi15m?.ticker || snapshot?.activeContract?.ticker || snapshot?.contractTicker || "");
+    const spotBucket = JSON.stringify(snapshot?.kalshiSpotBucket || "");
+    const spot = Number(snapshot?.currentPrice || snapshot?.price || 0).toFixed(2);
+    const dir = String(snapshot?.direction || snapshot?.modelDirection || "");
     const indicatorsHash = JSON.stringify(snapshot?.indicators || {});
-    return `${coin}|${horizon}|${volatility}|${indicatorsHash}`;
+    return `${coin}|${horizon}|${ticker}|${spotBucket}|${spot}|${dir}|${volatility}|${indicatorsHash}`;
   }
 
   getRecentMemory(coin, limit = 4) {
@@ -288,18 +539,36 @@ Use this recall only as context, and prioritize current market snapshot data if 
   }
 
   /**
-   * Call the LLM API with specialized prompts
+   * Call the LLM API with specialized prompts.
+   * With XAI_API_KEY + XAI_PRIMARY_ALL (default true): Grok is first for ALL horizons.
+   * 5m PTB binaries always prefer xAI when keyed. Fallbacks: asi1 → openai → claude → gemini → openrouter.
    */
-  async callAPI(systemPrompt, userPrompt) {
-    // Provider cascade (each falls through to the next on failure). Claude sits
-    // 2nd: when ASI:One fails or is unconfigured, Claude remediates before the
-    // remaining providers are tried.
-    const cascade = ['asi1', 'anthropic', 'google', 'openai', 'openrouter'];
+  async callAPI(systemPrompt, userPrompt, snapshot = {}) {
+    const is5mPtb = isFiveMinPtbMarket(snapshot);
+    const useXai = !!XAI_API_KEY && (XAI_PRIMARY_ALL || is5mPtb);
+    const useLegacyClaude = is5mPtb && !XAI_API_KEY && !!ANTHROPIC_API_KEY;
+    const cascade = useXai
+      ? ['xai', 'asi1', 'openai', 'anthropic', 'google', 'openrouter']
+      : useLegacyClaude
+        ? ['anthropic', 'asi1', 'openai', 'google', 'openrouter']
+        : ['asi1', 'google', 'openai', 'openrouter'];
+    console.log(`[LLM] is5mPtb=${is5mPtb} useXai=${useXai} model=${useXai ? XAI_MODEL : 'cascade'} path=${cascade.join('→')}`);
     let lastErr = null;
 
     for (const p of cascade) {
       try {
+        if (p === 'xai' && XAI_API_KEY) {
+          const model = is5mPtb ? XAI_MODEL : (XAI_MODEL || XAI_MODEL_FAST);
+          const maxTokens = Number(
+            snapshot?.xaiMaxTokens
+            || snapshot?.maxTokens
+            || (is5mPtb ? (process.env.XAI_5M_MAX_TOKENS || 1600) : XAI_MAX_TOKENS)
+          );
+          console.log(`[LLM] trying xai SDK (${model}) max_tokens=${maxTokens}`);
+          return await this.callXaiAPI(systemPrompt, userPrompt, { model, maxTokens });
+        }
         if (p === 'asi1' && Asi1Client.hasAsi1Credentials()) {
+          console.log('[LLM 5m] trying asi1');
           const result = await Asi1Client.chatCompletion(
             [
               { role: 'system', content: systemPrompt },
@@ -318,8 +587,21 @@ Use this recall only as context, and prioritize current market snapshot data if 
           if (jsonMatch) content = jsonMatch[1];
           return JSON.parse(content);
         }
+        if (p === 'openai' && process.env.OPENAI_API_KEY) {
+          console.log('[LLM 5m] trying openai');
+          return await this.callCompatibleAPI(systemPrompt, userPrompt, {
+            url: "https://api.openai.com/v1/chat/completions",
+            model: "gpt-4o",
+            key: process.env.OPENAI_API_KEY
+          });
+        }
         if (p === 'anthropic' && ANTHROPIC_API_KEY) {
+          console.log('[LLM 5m] trying claude');
           return await this.callAnthropicAPI(systemPrompt, userPrompt);
+        }
+        if (p === 'google' && GOOGLE_API_KEY) {
+          console.log('[LLM 5m] trying gemini');
+          return await this.callGoogleAPI(systemPrompt, userPrompt);
         }
         if (p === 'openrouter' && OPENROUTER_API_KEY) {
           return await this.callCompatibleAPI(systemPrompt, userPrompt, {
@@ -334,16 +616,6 @@ Use this recall only as context, and prioritize current market snapshot data if 
               { type: "openrouter:web_search" },
               { type: "openrouter:datetime" }
             ]
-          });
-        }
-        if (p === 'google' && GOOGLE_API_KEY) {
-          return await this.callGoogleAPI(systemPrompt, userPrompt);
-        }
-        if (p === 'openai' && process.env.OPENAI_API_KEY) {
-          return await this.callCompatibleAPI(systemPrompt, userPrompt, {
-            url: "https://api.openai.com/v1/chat/completions",
-            model: "gpt-4o",
-            key: process.env.OPENAI_API_KEY
           });
         }
       } catch (err) {
@@ -363,6 +635,9 @@ Use this recall only as context, and prioritize current market snapshot data if 
     const model = config.model || LLM_MODEL;
     const key = config.key || LLM_API_KEY;
     const extraHeaders = config.extraHeaders || {};
+    const maxTokens = Number(config.maxTokens || config.max_tokens || 1500);
+    // Default non-stream for reliability (esp. xAI / Electron). Opt-in stream with config.stream=true.
+    const useStream = config.stream === true;
 
     if (!key) throw new Error("API key missing for compatible provider");
 
@@ -379,8 +654,8 @@ Use this recall only as context, and prioritize current market snapshot data if 
         },
       ],
       temperature: 0.1, // low temp for consistency
-      max_tokens: 1500,
-      stream: true,
+      max_tokens: maxTokens,
+      stream: useStream,
       response_format: { type: "json_object" },
     };
 
@@ -388,24 +663,41 @@ Use this recall only as context, and prioritize current market snapshot data if 
       payload.tools = config.tools;
     }
 
-    const response = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${key}`,
-        "Content-Type": "application/json",
-        ...extraHeaders
-      },
-      body: JSON.stringify(payload),
-    });
+    const controller = new AbortController();
+    const timeoutMs = Number(config.timeoutMs || XAI_TIMEOUT_MS || 45_000);
+    const timer = setTimeout(() => {
+      try {
+        controller.abort(new Error(`compatible LLM timeout after ${timeoutMs}ms`));
+      } catch (_) {
+        try { controller.abort(); } catch (_) {}
+      }
+    }, timeoutMs);
+
+    let response;
+    try {
+      response = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${key}`,
+          "Content-Type": "application/json",
+          ...extraHeaders
+        },
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
 
     if (!response.ok) {
+      const errBody = await response.text().catch(() => "");
       throw new Error(
-        `LLM API error ${response.status}: ${response.statusText}`
+        `LLM API error ${response.status}: ${response.statusText}${errBody ? ` — ${errBody.slice(0, 180)}` : ""}`
       );
     }
 
     let content = "";
-    if (payload.stream && response.body) {
+    if (useStream && response.body) {
       const decoder = new TextDecoder("utf-8");
       for await (const chunk of response.body) {
         const text = decoder.decode(chunk, { stream: true });
@@ -544,9 +836,10 @@ Use this recall only as context, and prioritize current market snapshot data if 
 
     const client = this.getAnthropicClient();
 
-    // claude-opus-4-8 rejects temperature/top_p/top_k — steer with the prompt and
-    // `effort` instead. Thinking is omitted for the fast real-time path; the
-    // JSON-only instruction keeps any stray reasoning out of the response body.
+    // claude-opus-4-8 rejects temperature/top_p/top_k — steer with the prompt
+    // and `effort` instead. Thinking is omitted for the fast real-time 5m path;
+    // the JSON-only instruction + extractJsonContent keep any stray reasoning
+    // out of the parsed result.
     const message = await client.messages.create({
       model: ANTHROPIC_MODEL,
       max_tokens: ANTHROPIC_MAX_TOKENS,
@@ -569,6 +862,101 @@ Use this recall only as context, and prioritize current market snapshot data if 
     if (!text) throw new Error("Anthropic returned an empty response");
 
     return JSON.parse(this.extractJsonContent(text));
+  }
+
+  _parseXaiJsonContent(content) {
+    let text = String(content || "").trim();
+    if (!text) throw new Error("xAI returned empty content");
+    const fenced = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+    if (fenced) text = fenced[1].trim();
+    try {
+      return JSON.parse(text);
+    } catch (e1) {
+      // Truncation recovery: close open braces/brackets if max_tokens cut mid-object
+      if (typeof this.extractJsonContent === "function") {
+        try {
+          return JSON.parse(this.extractJsonContent(text));
+        } catch (_) { /* fall through */ }
+      }
+      const start = text.indexOf("{");
+      if (start >= 0) {
+        let slice = text.slice(start);
+        // strip trailing incomplete string
+        slice = slice.replace(/,\s*"[^"]*$/, "");
+        slice = slice.replace(/:\s*"[^"]*$/, ':""');
+        const opens = (slice.match(/\{/g) || []).length - (slice.match(/\}/g) || []).length;
+        const openArr = (slice.match(/\[/g) || []).length - (slice.match(/\]/g) || []).length;
+        slice += "]".repeat(Math.max(0, openArr)) + "}".repeat(Math.max(0, opens));
+        try {
+          return JSON.parse(slice);
+        } catch (_) { /* fall through */ }
+      }
+      throw e1;
+    }
+  }
+
+  async callXaiAPI(systemPrompt, userPrompt, opts = {}) {
+    if (!XAI_API_KEY) {
+      throw new Error("XAI_API_KEY (or GROK_API_KEY) is required for xAI Grok inference — get one at https://console.x.ai");
+    }
+
+    const model = opts.model || XAI_MODEL;
+    // 5m schema is large — under-budget max_tokens truncates JSON ("Unterminated string")
+    let maxTokens = Number(opts.maxTokens || XAI_MAX_TOKENS || 1600);
+    if (maxTokens < 800) maxTokens = 800;
+    const temperature = opts.temperature != null ? Number(opts.temperature) : 0.1;
+    const t0 = Date.now();
+    const client = getXaiSdkClient();
+
+    const runOnce = async (tokens) => {
+      const completion = await client.chat.completions.create({
+        model,
+        messages: [
+          { role: "system", content: systemPrompt },
+          {
+            role: "user",
+            content: `${userPrompt}\n\nRespond with a single compact JSON object only. Keep notes under 280 chars. No markdown fences.`,
+          },
+        ],
+        temperature,
+        max_tokens: tokens,
+        response_format: { type: "json_object" },
+        stream: false,
+      });
+      const content = String(completion?.choices?.[0]?.message?.content || "").trim();
+      const finish = completion?.choices?.[0]?.finish_reason || "";
+      const parsed = this._parseXaiJsonContent(content);
+      return { parsed, completion, finish, tokens };
+    };
+
+    try {
+      let result;
+      try {
+        result = await runOnce(maxTokens);
+      } catch (parseErr) {
+        // Retry once with larger budget if truncated / bad JSON
+        const bump = Math.min(2800, Math.max(maxTokens * 2, 1800));
+        console.warn(`[LLM] xai SDK JSON issue (${String(parseErr.message || parseErr).slice(0, 80)}) — retry max_tokens=${bump}`);
+        result = await runOnce(bump);
+      }
+      console.log(
+        `[LLM] xai SDK ok model=${model} ms=${Date.now() - t0} ` +
+        `max_tokens=${result.tokens} finish=${result.finish || "?"} ` +
+        `usage=${result.completion?.usage?.total_tokens ?? "?"}`
+      );
+      return result.parsed;
+    } catch (sdkErr) {
+      const msg = String(sdkErr?.message || sdkErr || "");
+      console.warn(`[LLM] xai SDK path failed (${msg.slice(0, 140)}) — raw non-stream fallback`);
+      return this.callCompatibleAPI(systemPrompt, userPrompt, {
+        url: `${XAI_API_ROOT}/chat/completions`,
+        model,
+        key: XAI_API_KEY,
+        maxTokens: Math.max(maxTokens, 1600),
+        stream: false,
+        timeoutMs: XAI_TIMEOUT_MS,
+      });
+    }
   }
 
   getCooldownFallback() {
@@ -712,6 +1100,18 @@ Use this recall only as context, and prioritize current market snapshot data if 
       analysis: raw.analysis || {},
       ai_wording,
       display_terms,
+      // ── 5m PTB binary contract fields ─────────────────────────────────────
+      // These keys are emitted by the 5m system prompt and consumed by
+      // FiveMinGrok / GrokRangeOverlay. Passed through verbatim so overlays
+      // don't have to re-parse notes text for the directional call.
+      ...(typeof raw.call === 'string' && raw.call
+        ? { call: raw.call.trim().toUpperCase() } : {}),
+      ...(typeof raw.direction === 'string' && raw.direction
+        ? { direction: raw.direction.trim().toUpperCase() } : {}),
+      ...(raw.snipe_plan && typeof raw.snipe_plan === 'object'
+        ? { snipe_plan: raw.snipe_plan } : {}),
+      ...(typeof raw.broader_observations === 'string'
+        ? { broader_observations: raw.broader_observations.trim() } : {}),
     };
   }
 
@@ -815,13 +1215,18 @@ Use this recall only as context, and prioritize current market snapshot data if 
       api_url: this.enabled
         ? (this.provider === "google" ? "google-sdk"
           : this.provider === "anthropic" ? "anthropic-sdk"
+          : this.provider === "xai" ? XAI_BASE_URL
           : LLM_API_URL)
         : "disabled",
       model: this.enabled
         ? (this.provider === "google" ? GOOGLE_MODEL
           : this.provider === "anthropic" ? ANTHROPIC_MODEL
+          : this.provider === "xai" ? XAI_MODEL
           : LLM_MODEL)
         : "disabled",
+      // For 5m PTB: primary xai (rex). Fallback order on failure: asi1 → openai → anthropic → google.
+      fiveMinuteProvider: XAI_API_KEY ? "xai" : (ANTHROPIC_API_KEY ? "anthropic" : null),
+      fiveMinuteModel: XAI_API_KEY ? XAI_MODEL : (ANTHROPIC_API_KEY ? ANTHROPIC_MODEL : null),
       stats: {
         total_calls: this.stats.calls,
         successes: this.stats.successes,

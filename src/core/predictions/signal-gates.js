@@ -6,34 +6,36 @@
 (function () {
   'use strict';
 
-  const CLOSE_WINDOW_GUARD_SECS = 10;
+  // ALWAYS_TRADE: only block final few seconds before settle — not "quality" filters.
+  const CLOSE_WINDOW_GUARD_SECS = 4;
 
   const REGIME_CONFIDENCE_MAP = {
-    trend: 0.58,
-    mean_reversion: 0.62,
-    chop: 0.72,
+    trend: 0.45,
+    mean_reversion: 0.48,
+    chop: 0.50,
   };
 
   const SIGNAL_GATE = {
-    minConfidence: 42,
-    minAgreement: 0.56,
-    maxConflict: 0.38,
-    minAbsScore: 0.22,
-    minReliability: 0.42,
-    medConfidence: 58,
-    medAgreement: 0.64,
-    medAbsScore: 0.38,
-    medReliability: 0.52,
+    minConfidence: 18,
+    minAgreement: 0.42,
+    maxConflict: 0.72,
+    minAbsScore: 0.04,
+    minReliability: 0.20,
+    medConfidence: 35,
+    medAgreement: 0.50,
+    medAbsScore: 0.12,
+    medReliability: 0.30,
   };
 
+  // Low floors on every coin — always take a side when score has any lean.
   const SIGNAL_GATE_OVERRIDES = {
-    BTC: { minAbsScore: 0.55, minAgreement: 0.70, minConfidence: 75, medAbsScore: 0.65, medAgreement: 0.75 },
-    ETH: { minAbsScore: 0.50, minAgreement: 0.68, minConfidence: 75, medAbsScore: 0.60, medAgreement: 0.72 },
-    XRP: { minAbsScore: 0.50, minAgreement: 0.65, minConfidence: 75, medAbsScore: 0.60, medAgreement: 0.70 },
-    SOL: { minAbsScore: 0.60, minAgreement: 0.75, minConfidence: 80, medAbsScore: 0.70, medAgreement: 0.80 },
-    BNB: { minAbsScore: 0.65, minAgreement: 0.80, minConfidence: 85, medAbsScore: 0.75, medAgreement: 0.85 },
-    DOGE: { minAbsScore: 0.50, minAgreement: 0.70, minConfidence: 75, medAbsScore: 0.60, medAgreement: 0.75 },
-    HYPE: { minAbsScore: 0.40, minAgreement: 0.65, minConfidence: 75, medAbsScore: 0.50, medAgreement: 0.70 },
+    BTC: { minAbsScore: 0.05, minAgreement: 0.45, minConfidence: 20, medAbsScore: 0.14, medAgreement: 0.52 },
+    ETH: { minAbsScore: 0.05, minAgreement: 0.45, minConfidence: 20, medAbsScore: 0.14, medAgreement: 0.52 },
+    XRP: { minAbsScore: 0.05, minAgreement: 0.45, minConfidence: 20, medAbsScore: 0.14, medAgreement: 0.52 },
+    SOL: { minAbsScore: 0.05, minAgreement: 0.45, minConfidence: 20, medAbsScore: 0.14, medAgreement: 0.52 },
+    BNB: { minAbsScore: 0.06, minAgreement: 0.45, minConfidence: 22, medAbsScore: 0.15, medAgreement: 0.52 },
+    DOGE: { minAbsScore: 0.04, minAgreement: 0.42, minConfidence: 18, medAbsScore: 0.12, medAgreement: 0.50 },
+    HYPE: { minAbsScore: 0.04, minAgreement: 0.42, minConfidence: 18, medAbsScore: 0.12, medAgreement: 0.50 },
   };
 
   /**
@@ -46,10 +48,32 @@
       return { passed: true, gated: false, quality: 'medium', label: 'NEUTRAL', reasons: [] };
     }
 
+    // ALWAYS_TRADE: policy never hard-blocks; paperOnly is advisory only.
+    const alwaysTrade = typeof window !== 'undefined' && window.ALWAYS_TRADE_MODE;
+    const policy = (typeof window !== 'undefined' && window.TRADING_POLICY)
+      ? window.TRADING_POLICY[coin]
+      : null;
+    if (!alwaysTrade && policy && policy.trade === false && policy.paper !== true) {
+      return {
+        passed: false,
+        gated: true,
+        quality: 'blocked',
+        label: '🚫 POLICY_BLOCK',
+        reasons: [policy.reason || `${coin} disabled by trading policy`],
+        policy,
+      };
+    }
+    if (policy && policy.paper === true) {
+      pred.diagnostics = pred.diagnostics || {};
+      pred.diagnostics.paperOnly = true;
+      pred.diagnostics.policyReason = policy.reason || 'paper-only';
+    }
+
     const now = Date.now();
     const secsSinceEpoch = (now % 900_000);
     const secsIntoWindow = (secsSinceEpoch / 1000);
     const secsUntilClose = (900 - secsIntoWindow);
+    // Only hard-block right at settlement (always-trade still respects this)
     if (pred.horizon === 15 && secsUntilClose < CLOSE_WINDOW_GUARD_SECS) {
       return {
         passed: false,
@@ -173,5 +197,6 @@
     SIGNAL_GATE,
     SIGNAL_GATE_OVERRIDES,
     evaluateSignalGate,
+    getTradingPolicy: (coin) => (window.TRADING_POLICY && window.TRADING_POLICY[coin]) || null,
   };
 })();

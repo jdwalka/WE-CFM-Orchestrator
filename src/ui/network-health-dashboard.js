@@ -45,6 +45,8 @@
             <div id="network-transport-stats" style="margin-top:4px;padding-top:6px;border-top:1px solid #333;font-size:12px;"></div>
             <div style="font-size:12px;color:#8ab4f8;margin-top:10px;font-weight:600;">Orbital Matrix (Redpanda)</div>
             <div id="orbital-matrix-stats" style="margin-top:4px;padding-top:6px;border-top:1px solid #333;font-size:12px;"></div>
+            <div style="font-size:12px;color:#8ab4f8;margin-top:10px;font-weight:600;">AI Inference (5m PTB)</div>
+            <div id="ai-inference-status" style="margin-top:4px;padding-top:6px;border-top:1px solid #333;font-size:12px;"></div>
             <div id="network-health-lastupdate" style="font-size:12px;color:#aaa;margin-top:6px;"></div>
         </div>
     `;
@@ -475,6 +477,37 @@
         }
     }
 
+    async function renderAIInference() {
+        const el = document.getElementById('ai-inference-status');
+        if (!el) return;
+        try {
+            let diag = null;
+            if (window.electron?.invoke) {
+                diag = await window.electron.invoke('llm:getDiagnostics');
+            } else if (window.LLMSignalAssistant && typeof window.LLMSignalAssistant.getDiagnostics === 'function') {
+                diag = window.LLMSignalAssistant.getDiagnostics();
+            } else if (window._llmDiagnostics) {
+                diag = window._llmDiagnostics;
+            }
+            if (!diag) {
+                el.innerHTML = '<span style="color:#888;">AI status unavailable</span>';
+                return;
+            }
+            const fiveProv = (diag.fiveMinuteProvider || diag.provider || 'unknown').toUpperCase();
+            const fiveModel = diag.fiveMinuteModel || diag.model || '';
+            const is5m = !!diag.fiveMinuteProvider;
+            const color = fiveProv.includes('XAI') ? '#a78bfa' : (fiveProv.includes('ASI') ? '#34d399' : (fiveProv.includes('OPENAI') ? '#f59e0b' : '#60a5fa'));
+            const enabled = diag.enabled !== false ? 'active' : 'disabled';
+            const cooldown = diag.cooldown?.active ? ` (cooldown ${Math.ceil((diag.cooldown.remaining_ms||0)/1000)}s)` : '';
+            el.innerHTML = `
+                <div><span style="color:#e0e6f0;">5m PTB:</span> <span style="color:${color};font-weight:600;">${fiveProv}</span> <span style="color:#666;font-size:10px;">${fiveModel}</span></div>
+                <div style="font-size:10px;color:#9aa6b2;">${enabled}${cooldown} · ${is5m ? 'specialized 5m path' : 'main path'}</div>
+            `;
+        } catch (err) {
+            el.innerHTML = `<span style="color:#ff5e5e;">AI diag error: ${escapeHtml((err && err.message) || err)}</span>`;
+        }
+    }
+
     let renderQueued = false;
     function scheduleRender(forceOrbital = false) {
         if (renderQueued) return;
@@ -488,6 +521,7 @@
             }
             const orbitalDue = forceOrbital || (Date.now() - lastOrbitalRenderAt >= ORBITAL_RENDER_MS);
             if (orbitalDue) void renderOrbitalSafe();
+            void renderAIInference();
         });
     }
 
@@ -512,6 +546,8 @@
     setInterval(() => scheduleRender(false), DASHBOARD_RENDER_MS);
     setInterval(() => scheduleRender(true), ORBITAL_RENDER_MS);
     setTimeout(() => scheduleRender(true), 250);
+    // initial AI status
+    setTimeout(() => renderAIInference(), 1200);
 
         async function renderOrbital() {
         const el = document.getElementById('orbital-matrix-stats');

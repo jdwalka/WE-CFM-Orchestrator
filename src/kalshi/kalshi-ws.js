@@ -60,6 +60,29 @@
   let credentialPromise = null;
   let credentialCache = null;
 
+  // Clock-skew compensation for the fallback signing path below (the primary
+  // path signs via IPC in electron/kalshi-credentials.js, which calibrates
+  // separately). This machine's clock can drift by tens of seconds, which
+  // Kalshi rejects as an expired timestamp — measure and correct for it.
+  let _fallbackClockOffsetMs = 0;
+  let _fallbackClockCalibration = null;
+  function _calibrateFallbackClock() {
+    if (_fallbackClockCalibration) return _fallbackClockCalibration;
+    _fallbackClockCalibration = (async () => {
+      try {
+        const sentAt = Date.now();
+        const res = await fetch('https://api.elections.kalshi.com/trade-api/v2/exchange/status');
+        const dateHeader = res.headers.get('date');
+        if (dateHeader) {
+          const rttMs = Date.now() - sentAt;
+          _fallbackClockOffsetMs = Date.parse(dateHeader) + Math.round(rttMs / 2) - Date.now();
+        }
+      } catch (_) {}
+      return _fallbackClockOffsetMs;
+    })();
+    return _fallbackClockCalibration;
+  }
+
   /**
    * Generate RSA signature for Kalshi auth header
    * Message format: timestamp + "GET" + "/trade-api/ws/v2"
@@ -135,7 +158,8 @@
     }
 
     const credentials = await loadKalshiCredentials();
-    const timestamp = String(Date.now());
+    await _calibrateFallbackClock();
+    const timestamp = String(Date.now() + _fallbackClockOffsetMs);
     const signature = generateSignature(timestamp, credentials.privateKeyPem);
     if (!signature) {
       return Promise.reject(new Error('Kalshi WSS signature generation failed'));
@@ -1374,7 +1398,16 @@
     const list = (Array.isArray(marketTickers) ? marketTickers : []).filter(Boolean);
     const msg = {
       id: messageId++,
-      cmd: 'subscribe',
+      cmd: 'subscribe',  // Kalshi uses cmd for some, but fallback action for compatibility
+      params: {
+        channels: ['ticker'],
+        ...(list.length ? { market_tickers: list } : {}),
+      },
+    };
+    // Some Kalshi WS versions reject certain cmds; try action form as fallback
+    const altMsg = {
+      id: messageId++,
+      action: 'subscribe',
       params: {
         channels: ['ticker'],
         ...(list.length ? { market_tickers: list } : {}),
@@ -1385,7 +1418,12 @@
       marketTickers: list,
       ts: Date.now(),
     });
-    sendMessage(msg);
+    try {
+      sendMessage(msg);
+    } catch (e) {
+      console.warn('[KalshiWS] cmd subscribe failed, trying action form');
+      sendMessage(altMsg);
+    }
     console.log(`[KalshiWS] Subscribing to ticker channel (${list.length || 'global'} markets)`);
   }
 

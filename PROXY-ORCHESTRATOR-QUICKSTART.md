@@ -77,7 +77,7 @@ const data = await window._proxyOrchestrator.fetch(url, {
   endpoint: 'kalshi',              // API source
   cacheType: 'market-data',       // Cache duration category
   retries: 2,                     // Retry attempts
-  fallbackChain: ['kalshi', 'polymarket', 'cache'],  // Custom chain
+  fallbackChain: ['polymarket', 'kalshi', 'cache'],  // Custom chain
 });
 ```
 

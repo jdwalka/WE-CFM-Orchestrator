@@ -172,6 +172,7 @@ async function stopProcessor() {
         consumer = null; // discard — a disconnected consumer cannot be reused
         consumerRunning = false;
         buffer.clear();
+        bufferedTicks = 0;
     }
 }
 

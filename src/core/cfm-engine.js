@@ -233,6 +233,10 @@
       const headers = { 'Accept': 'application/json' };
       if (jwtStr) {
         headers['Authorization'] = `Bearer ${jwtStr}`;
+      } else {
+        // No JWT - skip authenticated brokerage endpoint to avoid 401s; use WS or other sources
+        console.warn('[CFM] Skipping Coinbase brokerage REST (no JWT) for', sym);
+        return null;
       }
 
       const r = await fetchWithTimeout(`https://api.coinbase.com/api/v3/brokerage/best_bid_ask?product_ids=${sym}-USD`, 20000, { headers });

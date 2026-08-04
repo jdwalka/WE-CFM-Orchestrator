@@ -634,7 +634,7 @@
           return window._proxyOrchestrator.fetch(url, {
             endpoint: opts.endpoint || 'kalshi-markets-legacy',
             cacheType: opts.cacheType || 'market-data',
-            fallbackChain: opts.fallbackChain || ['kalshi', 'cache'],
+            fallbackChain: opts.fallbackChain || ['polymarket', 'kalshi', 'cache'],
           });
         },
       });
@@ -645,6 +645,12 @@
     const ordered = attempts
       .map((entry) => ({ ...entry, score: getCandidatePenalty(provider, entry.transport, domain || `${provider}-http`) }))
       .sort((a, b) => a.score - b.score);
+
+    // Global provider cool-down (set after 429) — fail fast without hammering more routes
+    const coolLeft = _providerRateLimitRemaining(provider);
+    if (coolLeft > 0) {
+      throw new Error(`HTTP 429 (cooling ${coolLeft}ms)`);
+    }
 
     for (let attempt = 0; attempt <= retries; attempt++) {
       try {
@@ -661,11 +667,17 @@
             markTransportOutcome(provider, route.transport, false, err);
             record(provider, route.transport, false, err, domain || `${provider}-http`);
             console.warn(`[EndpointTransport] ${route.transport} failed:`, err?.message || err);
+            // 429: trip provider cool-down and STOP trying more routes/retries
+            if (_isRateLimitError(err)) {
+              _markProviderRateLimited(provider, err);
+              throw err;
+            }
           }
         }
         throw lastErr || new Error('all transport attempts failed');
       } catch (err) {
         lastErr = err;
+        if (_isRateLimitError(err)) throw err;
         if (attempt < retries && _isTransientError(err)) {
           await _sleep(_jitter(250 * (2 ** attempt)));
           continue;
@@ -692,6 +704,19 @@
     return null;
   }
 
+  function _unwrapKalshiMarketsPayload(root) {
+    if (!root || typeof root !== 'object') return null;
+    // Walk: ipc {data:{success,data:{markets}}} or worker {success,data:{markets}} or {markets}
+    let cur = root;
+    for (let i = 0; i < 5 && cur && typeof cur === 'object'; i++) {
+      if (Array.isArray(cur.markets)) return { markets: cur.markets, cursor: cur.cursor };
+      if (Array.isArray(cur)) return { markets: cur };
+      if (cur.data != null) { cur = cur.data; continue; }
+      break;
+    }
+    return null;
+  }
+
   async function rpcKalshiMarkets(ctx) {
     const q = new URLSearchParams();
     if (ctx.series_ticker) q.set('series_ticker', ctx.series_ticker);
@@ -704,16 +729,18 @@
         status: ctx.status,
         limit: ctx.limit || 25,
       });
-      if (ipc?.success && ipc.data) {
-        const envelope = ipc.data;
-        const payload = envelope?.data ?? envelope;
-        if (payload?.markets) return payload;
-        if (Array.isArray(payload)) return { markets: payload };
-      }
-      if (ipc && ipc.status === 429) {
+      if (ipc && (ipc.status === 429 || /429|rate.?limit/i.test(String(ipc.error || ipc.data?.error || '')))) {
         throw new Error('IPC HTTP 429');
       }
+      const unwrapped = _unwrapKalshiMarketsPayload(ipc);
+      if (unwrapped) return unwrapped; // may be empty markets — caller handles
+      if (ipc?.success === false) {
+        throw new Error(ipc.error || ipc.data?.error || `IPC markets failed (${ipc.status || 0})`);
+      }
     }
+
+    const coolLeft = _providerRateLimitRemaining('kalshi');
+    if (coolLeft > 0) throw new Error(`HTTP 429 (cooling ${coolLeft}ms)`);
 
     const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
     const timeoutId = controller ? setTimeout(() => {
@@ -728,9 +755,15 @@
         signal: controller ? controller.signal : undefined,
         headers: { Accept: 'application/json' },
       });
+      if (res.status === 429) throw new Error('Worker HTTP 429');
       if (!res.ok) throw new Error(`Worker HTTP ${res.status}`);
       const envelope = await res.json();
-      if (envelope?.success === false) throw new Error(envelope.error || 'worker markets failed');
+      if (envelope?.success === false) {
+        if (/429|rate/i.test(String(envelope.error || ''))) throw new Error('HTTP 429');
+        throw new Error(envelope.error || 'worker markets failed');
+      }
+      const unwrapped = _unwrapKalshiMarketsPayload(envelope);
+      if (unwrapped) return unwrapped;
       const payload = envelope?.data ?? envelope;
       if (payload?.markets) return payload;
       return payload;
@@ -791,6 +824,10 @@
   async function fetchWithPriority(provider, ctx = {}) {
     const chain = providers[provider] || providers.generic;
     const domain = ctx.domain || `${provider}-default`;
+    const coolLeft = _providerRateLimitRemaining(provider);
+    if (coolLeft > 0) {
+      return null; // fail soft while rate-limited
+    }
     const orderedTransports = chooseTransportOrder(provider, chain, domain);
     for (const transport of orderedTransports) {
       const fn = chain[transport];
@@ -822,6 +859,11 @@
           ok: false,
           error: String(err?.message || err || ''),
         });
+        // Don't cascade 429 across rpc→http→orchestrator — one reject is enough
+        if (_isRateLimitError(err)) {
+          _markProviderRateLimited(provider, err);
+          return null;
+        }
       }
     }
     return null;
@@ -837,7 +879,7 @@
       opts: {
         endpoint: 'kalshi-settlement',
         cacheType: 'settlement',
-        fallbackChain: ['kalshi', 'cache'],
+        fallbackChain: ['polymarket', 'kalshi', 'cache'],
         ...opts,
       },
     });
@@ -1345,6 +1387,8 @@
     summarizeStats,
     summarizeBus,
     summarizeCoordinator,
+    markProviderRateLimited: _markProviderRateLimited,
+    isProviderRateLimited: (provider) => _providerRateLimitRemaining(provider) > 0,
     getStats: () => ({ ...stats }),
     getSourceState: () => {
       const out = {};
