@@ -554,10 +554,20 @@ Use this recall only as context, and prioritize current market snapshot data if 
         : ['asi1', 'google', 'openai', 'openrouter'];
     console.log(`[LLM] is5mPtb=${is5mPtb} useXai=${useXai} model=${useXai ? XAI_MODEL : 'cascade'} path=${cascade.join('→')}`);
     let lastErr = null;
+    // Track which cascade entries were actually attempted vs silently skipped
+    // (no credentials configured) so a final failure log clearly distinguishes
+    // "every provider was tried and failed" from "only N of the listed
+    // providers actually had keys configured". Without this, a run where only
+    // one provider (e.g. google) has a key looks identical in the logs to a
+    // genuine cascade-exhaustion bug.
+    const attempted = [];
+    const skipped = [];
 
     for (const p of cascade) {
       try {
-        if (p === 'xai' && XAI_API_KEY) {
+        if (p === 'xai') {
+          if (!XAI_API_KEY) { skipped.push(p); continue; }
+          attempted.push(p);
           const model = is5mPtb ? XAI_MODEL : (XAI_MODEL || XAI_MODEL_FAST);
           const maxTokens = Number(
             snapshot?.xaiMaxTokens
@@ -567,7 +577,9 @@ Use this recall only as context, and prioritize current market snapshot data if 
           console.log(`[LLM] trying xai SDK (${model}) max_tokens=${maxTokens}`);
           return await this.callXaiAPI(systemPrompt, userPrompt, { model, maxTokens });
         }
-        if (p === 'asi1' && Asi1Client.hasAsi1Credentials()) {
+        if (p === 'asi1') {
+          if (!Asi1Client.hasAsi1Credentials()) { skipped.push(p); continue; }
+          attempted.push(p);
           console.log('[LLM 5m] trying asi1');
           const result = await Asi1Client.chatCompletion(
             [
@@ -587,7 +599,9 @@ Use this recall only as context, and prioritize current market snapshot data if 
           if (jsonMatch) content = jsonMatch[1];
           return JSON.parse(content);
         }
-        if (p === 'openai' && process.env.OPENAI_API_KEY) {
+        if (p === 'openai') {
+          if (!process.env.OPENAI_API_KEY) { skipped.push(p); continue; }
+          attempted.push(p);
           console.log('[LLM 5m] trying openai');
           return await this.callCompatibleAPI(systemPrompt, userPrompt, {
             url: "https://api.openai.com/v1/chat/completions",
@@ -595,15 +609,21 @@ Use this recall only as context, and prioritize current market snapshot data if 
             key: process.env.OPENAI_API_KEY
           });
         }
-        if (p === 'anthropic' && ANTHROPIC_API_KEY) {
+        if (p === 'anthropic') {
+          if (!ANTHROPIC_API_KEY) { skipped.push(p); continue; }
+          attempted.push(p);
           console.log('[LLM 5m] trying claude');
           return await this.callAnthropicAPI(systemPrompt, userPrompt);
         }
-        if (p === 'google' && GOOGLE_API_KEY) {
+        if (p === 'google') {
+          if (!GOOGLE_API_KEY) { skipped.push(p); continue; }
+          attempted.push(p);
           console.log('[LLM 5m] trying gemini');
           return await this.callGoogleAPI(systemPrompt, userPrompt);
         }
-        if (p === 'openrouter' && OPENROUTER_API_KEY) {
+        if (p === 'openrouter') {
+          if (!OPENROUTER_API_KEY) { skipped.push(p); continue; }
+          attempted.push(p);
           return await this.callCompatibleAPI(systemPrompt, userPrompt, {
             url: "https://openrouter.ai/api/v1/chat/completions",
             model: OPENROUTER_MODEL,
@@ -624,7 +644,16 @@ Use this recall only as context, and prioritize current market snapshot data if 
       }
     }
 
-    if (lastErr) throw lastErr;
+    if (lastErr) {
+      if (skipped.length) {
+        console.warn(
+          `[LLMSignalAssistant] Cascade exhausted — attempted=[${attempted.join(', ')}] `
+          + `skipped (no credentials configured)=[${skipped.join(', ')}]. `
+          + `Last error is from "${attempted[attempted.length - 1]}": ${lastErr.message}`
+        );
+      }
+      throw lastErr;
+    }
     
     // Fallback to default compatible if no keys matched the cascade
     return this.callCompatibleAPI(systemPrompt, userPrompt);
