@@ -740,14 +740,22 @@ async function fetchPythTickers() {
     if (window.pythLazer?.onTickers) {
       try {
         let received = false;
+        let unsubscribe = null;
         return await new Promise((resolve, reject) => {
           const timeout = setTimeout(() => {
-            if (!received) reject(new Error(`Pyth Lazer WS timeout (${pythWsTimeoutMs}ms)`));
+            if (!received) {
+              if (typeof unsubscribe === 'function') unsubscribe();
+              reject(new Error(`Pyth Lazer WS timeout (${pythWsTimeoutMs}ms)`));
+            }
           }, pythWsTimeoutMs);
 
-          window.pythLazer.onTickers((prices) => {
+          // onTickers() returns an unsubscribe fn (see electron/preload.js) — capture and
+          // call it once we're done so each fetchAll() cycle doesn't leak another permanent
+          // ipcRenderer 'pyth:tickers' listener (previously unbounded, one per call, never removed).
+          unsubscribe = window.pythLazer.onTickers((prices) => {
             clearTimeout(timeout);
             received = true;
+            if (typeof unsubscribe === 'function') unsubscribe();
             window._signalScheduler?.markSourceFresh('pyth-lazer', prices, Date.now());
             if (window.NetworkHealth) {
               window.NetworkHealth.update('Pyth', {

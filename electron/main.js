@@ -459,7 +459,7 @@ function resolveCoinGeckoPublicConfig() {
 
   // ONLY use the newest Pyth key (PYTH_NEW / PYTH_API) for all realtime feeds
   const pythSecret = readPythLazerSecret();
-  const pythKey = pythSecret.value || readEnvValue(['PYTH_NEW', 'PYTH_API', 'PYTH_NEW_API', 'LAZER_TOKEN']);
+  const pythKey = pythSecret.value || readEnvValue(['PYTH_NEW', 'PYTH_API', 'PYTH_NEW_API', 'PYTH_LAZER_TOKEN', 'PYTH_API_KEY', 'LAZER_TOKEN']);
   if (pythKey) {
     out.PYTH_NEW = pythKey;
     out.PYTH_API = pythKey;
@@ -754,7 +754,7 @@ async function startPythLazerService(win) {
     }
   }
   if (!token) {
-    token = readEnvValue(['PYTH_NEW', 'PYTH_API', 'PYTH_NEW_API', 'LAZER_TOKEN']);
+    token = readEnvValue(['PYTH_NEW', 'PYTH_API', 'PYTH_NEW_API', 'PYTH_LAZER_TOKEN', 'PYTH_API_KEY', 'LAZER_TOKEN']);
   }
   if (!token) {
     console.warn('[PythLazer] No Pyth key found in secrets/PYTH_NEW.txt or PYTH_API.txt — Lazer WS disabled');
@@ -2050,7 +2050,7 @@ ipcMain.handle('pyth:getProxyLatest', async (_, feedIds) => {
       } catch (_) {}
     }
     if (!token) {
-      token = readEnvValue(['PYTH_API', 'PYTH_NEW', 'PYTH_NEW_API', 'LAZER_TOKEN']);
+      token = readEnvValue(['PYTH_API', 'PYTH_NEW', 'PYTH_NEW_API', 'PYTH_LAZER_TOKEN', 'PYTH_API_KEY', 'LAZER_TOKEN']);
     }
     if (token) {
       try {

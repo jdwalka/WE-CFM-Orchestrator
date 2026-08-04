@@ -56,7 +56,7 @@ function readPythSecretFromFile() {
 
 const { PythLazerClient } = require("@pythnetwork/pyth-lazer-sdk");
 
-let LAZER_TOKEN = process.env.PYTH_API || process.env.PYTH_NEW || process.env.PYTH_NEW_API || '';
+let LAZER_TOKEN = process.env.PYTH_API || process.env.PYTH_NEW || process.env.PYTH_NEW_API || process.env.PYTH_LAZER_TOKEN || process.env.PYTH_API_KEY || process.env.LAZER_TOKEN || '';
 const fromSecret = readPythSecretFromFile();
 if (fromSecret) {
   LAZER_TOKEN = fromSecret;
