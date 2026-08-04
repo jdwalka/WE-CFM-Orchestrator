@@ -460,7 +460,7 @@
 
   // ── Exchange data fetchers — provided by data-fetchers.js scaffold ─────────
   const {
-    fetchWithTimeout, fetchAnalyticsWithRoute, fetchFearGreed,
+    fetchWithTimeout, fetchAnalyticsWithRoute, fetchFearGreed, resetGeckoRequestQueue,
     fetchCDCCandles, fetchCDCBook, fetchCDCTrades,
     fetchGeckoJSON, fetchGeckoCandles, fetchGeckoTicker, fetchGeckoMaxHistory,
     fetchBINCandles, fetchBINBook, fetchBINTrades,
@@ -569,9 +569,6 @@
   const BACKTEST_LOOKBACK_OBS = 160;
   const BACKTEST_MIN_REGIME_OBS = 18;
   const LIVE_DATA_TTL_MS = 870000;        // 14.5 min — candle cache stays valid across the full 15-min window
-  let geckoRequestQueue = Promise.resolve();
-  let lastGeckoRequestAt = 0;
-  let lastExchangeRequestAt = 0;
 
   // ================================================================
   // SESSION TIMING (real-world market dynamics)
@@ -6293,7 +6290,7 @@
     forceReset() {
       // Unstick a hung predictionRunPromise so the next runAll() starts fresh.
       predictionRunPromise = null;
-      geckoRequestQueue = Promise.resolve();  // abandon backed-up serial gecko chain
+      resetGeckoRequestQueue();  // abandon backed-up serial gecko chain
       // Preserve lastGeckoRequestAt so manual refreshes cannot bypass CoinGecko pacing.
       window.throttledFetchReset?.();          // drain stale throttle waitQueue
     },
@@ -6414,7 +6411,7 @@
 
       // Reset gecko serial queue and throttle waiters so stale calls from prior
       // runs (e.g. after Refresh clicks) don't block this fresh run.
-      geckoRequestQueue = Promise.resolve();
+      resetGeckoRequestQueue();
       // Preserve lastGeckoRequestAt so rapid refreshes keep the provider gap.
       window.throttledFetchReset?.();
       predictionRunPromise = (async () => {

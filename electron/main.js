@@ -1020,6 +1020,10 @@ async function startJsProxyFallback(port) {
     return;
   }
   const hopByHop = new Set(['connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'te', 'trailers', 'transfer-encoding', 'upgrade', 'host', 'content-length']);
+  // fetch() may transparently decompress the upstream body. Never forward its
+  // original encoding header with the decoded bytes or Chromium will decode it
+  // again and reject an otherwise successful response.
+  const responseHeadersToStrip = new Set([...hopByHop, 'content-encoding']);
 
   const readBody = (req) => new Promise(resolve => {
     const chunks = [];
@@ -1050,7 +1054,7 @@ async function startJsProxyFallback(port) {
 
       res.statusCode = up.status;
       for (const [k, v] of up.headers.entries()) {
-        if (!hopByHop.has(String(k).toLowerCase())) res.setHeader(k, v);
+        if (!responseHeadersToStrip.has(String(k).toLowerCase())) res.setHeader(k, v);
       }
       writeCors(res);
       const buf = Buffer.from(await up.arrayBuffer());
@@ -3148,5 +3152,4 @@ app.on('before-quit', async (event) => {
     console.warn('[Main] Error during orbital shutdown in before-quit:', err.message);
   }
 });
-
 

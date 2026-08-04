@@ -11,6 +11,12 @@
   const GECKO_MIN_GAP_MS = 60_000;
   const GECKO_RATE_LIMIT_PAUSE_MS = 5 * 60_000;
   const GECKO_AUTH_PAUSE_MS = 5 * 60_000;
+  // This module has its own IIFE, so these request-pacing variables cannot be
+  // declared in predictions.js. Keeping them here makes every fetcher usable
+  // as soon as this script loads.
+  let geckoRequestQueue = Promise.resolve();
+  let lastGeckoRequestAt = 0;
+  let lastExchangeRequestAt = 0;
   const BIN_SYMS = { BTC: 'BTCUSDT', ETH: 'ETHUSDT', SOL: 'SOLUSDT', XRP: 'XRPUSDT', DOGE: 'DOGEUSDT', BNB: 'BNBUSDT' };
   const MEXC_SYMS = { BTC: 'BTCUSDT', ETH: 'ETHUSDT', SOL: 'SOLUSDT', XRP: 'XRPUSDT', HYPE: 'HYPEUSDT', DOGE: 'DOGEUSDT', BNB: 'BNBUSDT' };
   const BYBIT_BASE = 'https://api.bybit.com/v5';
@@ -68,6 +74,16 @@
 
   function randomBetween(min, max) {
     return Math.floor(min + Math.random() * Math.max(1, max - min + 1));
+  }
+
+  function wait(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  function resetGeckoRequestQueue() {
+    // Do not reset lastGeckoRequestAt: manual refreshes must keep the provider
+    // pacing gap even when their stale queued work is discarded.
+    geckoRequestQueue = Promise.resolve();
   }
 
   async function waitExchangeJitter(minGapMs = 90) {
@@ -816,7 +832,7 @@
   window.PREDICTIONS_DATA_FETCHERS = {
     CDC_BASE, GECKO_BASE, BIN_BASE, MEXC_BASE, CB_EXCH_BASE, BYBIT_BASE, KUCOIN_BASE, BFNX_BASE,
     CB_EXCH_SYMS, BIN_SYMS, MEXC_SYMS, BYBIT_SYMS, KUCOIN_SYMS, BFNX_SYMS,
-    fetchWithTimeout, fetchAnalyticsWithRoute, fetchFearGreed,
+    fetchWithTimeout, fetchAnalyticsWithRoute, fetchFearGreed, resetGeckoRequestQueue,
     fetchCDCCandles, fetchCDCBook, fetchCDCTrades,
     fetchGeckoJSON, fetchGeckoCandles, fetchGeckoTicker, fetchGeckoMaxHistory,
     fetchBINCandles, fetchBINBook, fetchBINTrades,
