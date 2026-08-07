@@ -34,15 +34,22 @@ const PTB_WRITE_RATE_MS = 30_000;
 const DEFAULT_LOOKBACK_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 const DEFAULT_TOLERANCE_BPS = 15; // 0.15%
 const DEFAULT_QUERY_LIMIT = 500;
+// Rate-limit tracking is keyed by symbol; today's only caller (grok-analytics-memory.js)
+// only ever passes BTC/ETH/SOL/XRP, but bound it anyway so this stays safe if that
+// changes — evicts the oldest-tracked symbol rather than growing forever.
+const MAX_TRACKED_SYMBOLS = 64;
 
-const _lastSessionWrite = {}; // { sym: ts }
-const _lastPtbWrite = {};     // { sym: ts }
+const _lastSessionWrite = new Map(); // sym -> ts
+const _lastPtbWrite = new Map();     // sym -> ts
 
 function _isRateLimited(map, key, windowMs) {
   const now = Date.now();
-  const last = map[key] || 0;
+  const last = map.get(key) || 0;
   if (now - last < windowMs) return true;
-  map[key] = now;
+  if (!map.has(key) && map.size >= MAX_TRACKED_SYMBOLS) {
+    map.delete(map.keys().next().value);
+  }
+  map.set(key, now);
   return false;
 }
 
@@ -264,8 +271,8 @@ function getDiagnostics() {
     firestoreReady: !!_firestore,
     initError: _initError,
     firestoreStatus: status,
-    lastSessionWrite: Object.assign({}, _lastSessionWrite),
-    lastPtbWrite: Object.assign({}, _lastPtbWrite),
+    lastSessionWrite: Object.fromEntries(_lastSessionWrite),
+    lastPtbWrite: Object.fromEntries(_lastPtbWrite),
     sessionCollection: SESSION_COLLECTION,
     ptbCollection: PTB_COLLECTION,
     sessionSnapshotRateMs: SESSION_SNAPSHOT_RATE_MS,

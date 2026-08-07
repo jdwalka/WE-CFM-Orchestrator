@@ -668,6 +668,14 @@ try {
   console.warn('[OrbitalBroadcaster] Module unavailable:', e.message);
 }
 
+// ── Orbital Redpanda Bridge (Kafka producer — also carries Grok ticks) ──────
+let OrbitalRedpandaBridge = null;
+try {
+  OrbitalRedpandaBridge = require('../src/infra/orbital-redpanda-bridge');
+} catch (e) {
+  console.warn('[OrbitalRedpandaBridge] Module unavailable:', e.message);
+}
+
 // ── Grok Firestore Bridge (session memory + PTB defense history) ────────────
 let GrokFirestoreBridge = null;
 try {
@@ -3574,10 +3582,9 @@ ipcMain.handle('orbital:broadcaster:diagnostics', () => {
 // Grok session memory: renderer fires-and-forgets on its existing sample/
 // window-close/persist cadences (see src/llm/grok-analytics-memory.js).
 ipcMain.on('grok:pushTick', (_event, { coin, payload } = {}) => {
-  if (!coin || !payload) return;
+  if (!coin || !payload || !OrbitalRedpandaBridge) return;
   try {
-    const bridge = require('../src/infra/orbital-redpanda-bridge');
-    if (typeof bridge.produceGrokTick === 'function') bridge.produceGrokTick(coin, payload);
+    if (typeof OrbitalRedpandaBridge.produceGrokTick === 'function') OrbitalRedpandaBridge.produceGrokTick(coin, payload);
   } catch (_) { }
 });
 
