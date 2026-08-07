@@ -1848,6 +1848,37 @@
     if (!slug) return null;
     const cached = _poly5mPriceToBeatCache[slug];
     if (cached && (cached.value != null || Date.now() - cached.fetchedAt < 500)) return cached.value;
+
+    const slugMatch = slug.match(/^([a-z0-9-]+)-updown-5m-(\d+)$/i);
+    if (slugMatch) {
+      const symMap = { btc: 'BTC', eth: 'ETH', sol: 'SOL', xrp: 'XRP', doge: 'DOGE', hype: 'HYPE', bnb: 'BNB' };
+      const sym = symMap[slugMatch[1].toLowerCase()];
+      const startSec = Number(slugMatch[2]);
+      if (sym && Number.isFinite(startSec)) {
+        const startIso = new Date(startSec * 1000).toISOString().split('.')[0] + 'Z';
+        const prevIso = new Date((startSec - 300) * 1000).toISOString().split('.')[0] + 'Z';
+
+        try {
+          // Direct official microservice query for active window
+          const resCurrent = await jsonFetch(`https://polymarket.com/api/crypto/crypto-price?symbol=${sym}&eventStartTime=${encodeURIComponent(startIso)}`).catch(() => null);
+          let apiPtb = toPositiveFiniteNumber(resCurrent?.openPrice);
+
+          // If current window openPrice not populated yet, query previous window closePrice (identical boundary)
+          if (apiPtb == null) {
+            const resPrev = await jsonFetch(`https://polymarket.com/api/crypto/crypto-price?symbol=${sym}&eventStartTime=${encodeURIComponent(prevIso)}`).catch(() => null);
+            apiPtb = toPositiveFiniteNumber(resPrev?.closePrice);
+          }
+
+          if (apiPtb != null && apiPtb > 0) {
+            _poly5mPriceToBeatCache[slug] = { value: apiPtb, fetchedAt: Date.now() };
+            return apiPtb;
+          }
+        } catch (e) {
+          console.warn(`[Poly5M-PTB] Official microservice query failed for ${slug}:`, e?.message || e);
+        }
+      }
+    }
+
     try {
       const html = await textFetch(`https://polymarket.com/event/${encodeURIComponent(slug)}`, {
         headers: {
