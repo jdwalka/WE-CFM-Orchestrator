@@ -186,9 +186,9 @@ async function initTopics(workspacePath) {
     try {
         const topicScript = path.join(workspacePath, 'scripts', 'redpanda-init-topics.js');
         if (fs.existsSync(topicScript)) {
-            const { createOrbitalTopics } = require(topicScript);
-            await createOrbitalTopics();
-            console.log('[OrbitalOrchestrator] ✓ Orbital topics created/verified');
+            const { createAllTopics } = require(topicScript);
+            await createAllTopics();
+            console.log('[OrbitalOrchestrator] ✓ Orbital + Grok topics created/verified');
         } else {
             console.warn('[OrbitalOrchestrator] Topic init script not found — skipping (topics must already exist)');
         }

@@ -207,19 +207,17 @@ function flushQueuedTicks() {
 }
 
 /**
- * Pushes a single tick to an orbital topic.
- * @param {string} orbital - 's', 'p', 'd', or 'f'
- * @param {string} asset   - Ticker symbol (e.g. 'BTC', 'HYPE')
- * @param {object} payload - Raw data object to serialize as JSON
+ * Shared queue/throttle/flush enqueue logic for any topic this bridge produces
+ * to. Callers own their own bookkeeping (message counts, last-tick timestamps,
+ * milestone logging) since those are shaped differently per producer.
+ * @param {string} topic       - Destination Kafka topic
+ * @param {string} key         - Kafka message key (partition affinity)
+ * @param {object} valueObj    - Payload to serialize as JSON
+ * @param {string} throttleKey - Per-key throttle bucket (e.g. "s:BTC", "grok:ETH")
  */
-function produceOrbitalTick(orbital, asset, payload) {
+function _enqueue(topic, key, valueObj, throttleKey) {
     if (!producer) return false;
-
-    const topic = TOPICS[orbital];
-    if (!topic) return false;
     const now = Date.now();
-    const enrichedPayload = enrichOrbitalPayload(orbital, asset, payload, now);
-    const throttleKey = `${orbital}:${asset}`;
     const lastForKey = lastProducedKeyAt.get(throttleKey) || 0;
 
     if (PRODUCE_MIN_INTERVAL_MS > 0 && now - lastForKey < PRODUCE_MIN_INTERVAL_MS) {
@@ -244,11 +242,32 @@ function produceOrbitalTick(orbital, asset, payload) {
 
     lastProducedKeyAt.set(throttleKey, now);
     getTopicQueue(topic).push({
-        key: asset,
-        value: JSON.stringify(enrichedPayload),
+        key,
+        value: JSON.stringify(valueObj),
         timestamp: now.toString()
     });
     queuedTicks += 1;
+
+    scheduleFlush(queuedTicks >= PRODUCE_BATCH_MAX_MESSAGES ? 1 : PRODUCE_FLUSH_INTERVAL_MS);
+    return true;
+}
+
+/**
+ * Pushes a single tick to an orbital topic.
+ * @param {string} orbital - 's', 'p', 'd', or 'f'
+ * @param {string} asset   - Ticker symbol (e.g. 'BTC', 'HYPE')
+ * @param {object} payload - Raw data object to serialize as JSON
+ */
+function produceOrbitalTick(orbital, asset, payload) {
+    if (!producer) return false;
+
+    const topic = TOPICS[orbital];
+    if (!topic) return false;
+    const now = Date.now();
+    const enrichedPayload = enrichOrbitalPayload(orbital, asset, payload, now);
+    const throttleKey = `${orbital}:${asset}`;
+
+    if (!_enqueue(topic, asset, enrichedPayload, throttleKey)) return false;
 
     messageCounts[orbital] = (messageCounts[orbital] || 0) + 1;
     const isoNow = new Date(now).toISOString();
@@ -264,58 +283,37 @@ function produceOrbitalTick(orbital, asset, payload) {
         });
     }
 
-    scheduleFlush(queuedTicks >= PRODUCE_BATCH_MAX_MESSAGES ? 1 : PRODUCE_FLUSH_INTERVAL_MS);
     return true;
+}
 
-    if (inFlightSends >= PRODUCE_MAX_IN_FLIGHT) {
-        droppedTicks += 1;
-        if (droppedTicks === 1 || droppedTicks % 500 === 0) {
-            recordBridgeEvent('warn', 'Orbital producer backpressure dropping ticks', {
-                inFlightSends,
-                droppedTicks,
-                limit: PRODUCE_MAX_IN_FLIGHT,
-            });
-        }
-        return false;
-    }
+// Grok session-memory tick stream — separate topic from the orbital s/p/d/f
+// feed (different signal type, see scripts/redpanda-init-topics.js).
+const GROK_TOPIC = 'wecrypto.grok.ticks';
+let grokMessageCount = 0;
+let grokLastTickAt = null;
 
-    lastProducedKeyAt.set(throttleKey, now);
-    inFlightSends += 1;
+/**
+ * Pushes a single Grok session-memory sample tick to wecrypto.grok.ticks.
+ * @param {string} coin    - Ticker symbol (e.g. 'BTC')
+ * @param {object} payload - Raw sample object to serialize as JSON
+ */
+function produceGrokTick(coin, payload) {
+    if (!producer) return false;
+    const now = Date.now();
+    const throttleKey = `grok:${coin}`;
 
-    producer.send({
-        topic,
-        messages: [
-            {
-                key: asset,
-                value: JSON.stringify(payload),
-                timestamp: now.toString()
-            }
-        ],
-    }).then(() => {
+    if (!_enqueue(GROK_TOPIC, coin, payload, throttleKey)) return false;
 
-        // Track counts and timestamps for the status widget
-        messageCounts[orbital] = (messageCounts[orbital] || 0) + 1;
-        lastTickAt[orbital] = new Date().toISOString();
-        lastProducedAt = new Date().toISOString();
-        if (messageCounts[orbital] === 1 || (messageCounts[orbital] % 25) === 0) {
-            recordBridgeEvent('info', `Orbital ${orbital} active`, {
-                orbital,
-                asset,
-                count: messageCounts[orbital],
-                topic
-            });
-        }
-    }).catch((err) => {
-        // Silent fail — never block the WebSocket ingestion stream
-        console.warn(`[OrbitalBridge] Failed to produce to ${topic}:`, err.message);
-        recordBridgeEvent('warn', `Produce failed for ${topic}`, {
-            orbital,
-            asset,
-            error: err.message
+    grokMessageCount += 1;
+    grokLastTickAt = new Date(now).toISOString();
+    if (grokMessageCount === 1 || grokMessageCount % 1000 === 0) {
+        recordBridgeEvent('info', 'Grok tick stream active', {
+            coin,
+            count: grokMessageCount,
+            queuedTicks,
+            topic: GROK_TOPIC,
         });
-    }).finally(() => {
-        inFlightSends = Math.max(0, inFlightSends - 1);
-    });
+    }
 
     return true;
 }
@@ -347,7 +345,12 @@ function getBridgeStats() {
         produceBatchMaxMessages: PRODUCE_BATCH_MAX_MESSAGES,
         produceFlushIntervalMs: PRODUCE_FLUSH_INTERVAL_MS,
         produceQueueMaxMessages: PRODUCE_QUEUE_MAX_MESSAGES,
-        recentEvents: recentEvents.map((event) => ({ ...event }))
+        recentEvents: recentEvents.map((event) => ({ ...event })),
+        grok: {
+            topic: GROK_TOPIC,
+            messageCount: grokMessageCount,
+            lastTickAt: grokLastTickAt,
+        },
     };
 }
 
@@ -356,5 +359,6 @@ module.exports = {
     disconnectRedpanda,
     enrichOrbitalPayload,
     produceOrbitalTick,
+    produceGrokTick,
     getBridgeStats
 };

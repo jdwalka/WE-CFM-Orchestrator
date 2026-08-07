@@ -668,6 +668,15 @@ try {
   console.warn('[OrbitalBroadcaster] Module unavailable:', e.message);
 }
 
+// ── Grok Firestore Bridge (session memory + PTB defense history) ────────────
+let GrokFirestoreBridge = null;
+try {
+  GrokFirestoreBridge = require('../src/cloud/grok-firestore-bridge');
+  console.log('[GrokFirestoreBridge] Loaded — persists Grok session memory + PTB defense history');
+} catch (e) {
+  console.warn('[GrokFirestoreBridge] Module unavailable:', e.message);
+}
+
 // ── Pyth Lazer real-time WebSocket service ────────────────────────────────────
 let mainWin = null;
 let pythLazerClient = null;
@@ -3560,6 +3569,50 @@ ipcMain.handle('orbital:broadcaster:diagnostics', () => {
   return OrbitalBroadcaster && typeof OrbitalBroadcaster.getDiagnostics === 'function'
     ? OrbitalBroadcaster.getDiagnostics()
     : { firestoreReady: false, error: 'broadcaster not loaded' };
+});
+
+// Grok session memory: renderer fires-and-forgets on its existing sample/
+// window-close/persist cadences (see src/llm/grok-analytics-memory.js).
+ipcMain.on('grok:pushTick', (_event, { coin, payload } = {}) => {
+  if (!coin || !payload) return;
+  try {
+    const bridge = require('../src/infra/orbital-redpanda-bridge');
+    if (typeof bridge.produceGrokTick === 'function') bridge.produceGrokTick(coin, payload);
+  } catch (_) { }
+});
+
+ipcMain.on('grok:pushPtbWindowClose', (_event, record) => {
+  if (!GrokFirestoreBridge || !record) return;
+  try { GrokFirestoreBridge.recordPtbWindowClose(record); } catch (_) { }
+});
+
+ipcMain.on('grok:writeSessionSnapshot', (_event, { coin, snapshot } = {}) => {
+  if (!GrokFirestoreBridge || !coin || !snapshot) return;
+  try { GrokFirestoreBridge.writeSessionSnapshot(coin, snapshot); } catch (_) { }
+});
+
+ipcMain.handle('grok:getPtbDefenseStats', async (_event, { coin, ptb, opts } = {}) => {
+  if (!GrokFirestoreBridge) return { success: false, stats: null, error: 'bridge not loaded' };
+  try {
+    return await GrokFirestoreBridge.getPtbDefenseStats(coin, ptb, opts || {});
+  } catch (error) {
+    return { success: false, stats: null, error: error.message || 'getPtbDefenseStats failed' };
+  }
+});
+
+ipcMain.handle('grok:getSessionSnapshot', async (_event, { coin } = {}) => {
+  if (!GrokFirestoreBridge) return { success: false, snapshot: null, error: 'bridge not loaded' };
+  try {
+    return await GrokFirestoreBridge.getSessionSnapshot(coin);
+  } catch (error) {
+    return { success: false, snapshot: null, error: error.message || 'getSessionSnapshot failed' };
+  }
+});
+
+ipcMain.handle('grok:bridgeStatus', async () => {
+  return GrokFirestoreBridge && typeof GrokFirestoreBridge.getDiagnostics === 'function'
+    ? GrokFirestoreBridge.getDiagnostics()
+    : { firestoreReady: false, error: 'bridge not loaded' };
 });
 
 ipcMain.handle('orbital:status', async () => {

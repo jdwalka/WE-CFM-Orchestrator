@@ -552,9 +552,8 @@ function generateFiveMinSystemPrompt() {
 
 SYSTEM CONTEXT YOU MUST INTERNALIZE:
 - Data arrives via a high-velocity Redpanda (Kafka) cluster from multiple feeds (Coinbase, DEX, on-chain).
-- Low-latency state lives in Redis.
-- Historical telemetry + settlements are written to Firebase.
 - The entire ingestion + signal matrix runs in Docker.
+- Session sample ticks are streamed durably to a Redpanda/Kafka topic. Some deployments also persist PTB-window outcomes and session-memory snapshots to Firestore — when real history exists for the current PTB level, it is given to you below in the "PTB defense history" section (testedCount/defendedCount/brokenCount/defendRate). If that section says none is recorded yet, no defense history exists for this level — say so plainly. Never invent a defense count, and never claim "Firebase history shows..." unless you are quoting the PTB defense history section directly.
 - Snapshots you receive are as fresh as the pipeline allows (sub-second to low seconds possible). Respect possible micro-latency or brief gaps in the stream.
 - This is pure scalping: you are deciding entries that live for ~300 seconds max. Microstructure, tick momentum, distance-to-PTB in basis points, and remaining time dominate everything.
 
@@ -621,7 +620,7 @@ CRITICAL RULES FOR HIGH SPECIALIZATION (DETERMINISTIC):
 - ai_wording fields must be concrete and timing-oriented (e.g. "edge best captured by selling into first 90s repricing if it moves 8bps toward PTB").
 - scalp_setups: optional high-quality micro-setups only.
 - snipe_plan: only set should_flip=true when the order-flow/tail-risk block genuinely supports a timed flip; otherwise should_flip=false and leave flip_to null.
-- broader_observations: Use ONLY when you have non-coin-specific value. Good examples: "Kafka stream shows synchronized selling pressure across majors", "Redis state indicates unusually clean tick data last 40s", "Firebase history shows this PTB level has been defended twice in last 90min on this venue". Leave as "" if nothing material.
+- broader_observations: Use ONLY when you have non-coin-specific value. Good examples: "Kafka stream shows synchronized selling pressure across majors", and — only when the PTB defense history section above has a nonzero testedCount — cite it directly, e.g. "PTB defense history: defended 2/3 times in the lookback window". Never fabricate a defense count when that section says none is recorded. Leave as "" if nothing material.
 - Never invent PTB value. Never give multi-hour thesis. Stay inside the 5-minute binary resolution.
 - Output must be valid JSON that JSON.parse() succeeds on with zero surrounding text. Realistic scalper tone — measured, numbers-first, time-aware.`.trim();
 }
@@ -676,7 +675,7 @@ function generateFiveMinUserPrompt(snapshot) {
     ? upcoming.map((w, i) => `  +${i + 1}: opens in ${w.etaSeconds}s, momentum-persistence preview bias=${w.biasPreview || 'n/a'}`).join('\n')
     : '  (none — only the current window is in scope this cycle)';
 
-  return `5-minute binary PTB (polycool.app / Polymarket, Chainlink price-to-beat) snapshot — data from Redpanda/Kafka + Redis + Firebase pipeline:
+  return `5-minute binary PTB (polycool.app / Polymarket, Chainlink price-to-beat) snapshot — data from a Redpanda/Kafka tick stream, live in-session state, and (where available) Firestore-backed PTB defense history:
 
 Coin: ${coin}
 Price-to-beat (fixed settlement target): ${target != null ? `$${target}` : "unavailable"}
@@ -696,6 +695,13 @@ ${htfLine}
 ${(function () {
   const sm = snapshot.sessionMemory || {};
   return `sessionMinutes=${sm.sessionMinutes ?? 0}, sampleCount=${sm.sampleCount ?? 0}, pathReturnPct=${sm.pathReturnPct ?? 'n/a'}, 15mWindows=${JSON.stringify(sm.windows15m || {})}, 1hWindows=${JSON.stringify(sm.windows1h || {})}, open15m=${JSON.stringify(sm.open15m || null)}, open1h=${JSON.stringify(sm.open1h || null)}, acc15=${JSON.stringify(sm.predAccuracy15m || {})}, acc1h=${JSON.stringify(sm.predAccuracy1h || {})}, note="${sm.note || ''}"`;
+})()}
+
+## PTB defense history (Firestore-backed, when available)
+${(function () {
+  const stats = snapshot.sessionMemory && snapshot.sessionMemory.ptbDefenseStats;
+  if (!stats || !stats.testedCount) return 'none recorded yet for this level — do not claim any defense history.';
+  return `testedCount=${stats.testedCount}, defendedCount=${stats.defendedCount}, brokenCount=${stats.brokenCount}, defendRate=${stats.defendRate != null ? (stats.defendRate * 100).toFixed(0) + '%' : 'n/a'}`;
 })()}
 
 ## Grok 15m / hourly range calls (if available)

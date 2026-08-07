@@ -922,7 +922,7 @@ function renderMarkets5M() {
           <span style="margin-left:auto;font-size:9px;font-weight:400;opacity:0.7;">(non per-coin content)</span>
         </div>
         ${items}
-        <div style="font-size:9px;color:var(--color-text-faint);margin-top:2px;">Derived from Grok 5m PTB analysis over Redpanda/Kafka + Redis + Firebase pipeline data.</div>
+        <div style="font-size:9px;color:var(--color-text-faint);margin-top:2px;">Derived from Grok 5m PTB analysis over a live Redpanda/Kafka tick stream (+ Firestore-backed defense history where available).</div>
       </div>`;
     }
 

@@ -16,6 +16,10 @@
   const MAX_WINDOWS_PER_COIN = 120;
   const MAX_PREDS_PER_HORIZON = 80;
   const STORAGE_KEY = 'wecrypto_grok_analytics_v1';
+  const PTB_WINDOW_MS = 5 * 60_000;
+  const MAX_PTB_WINDOWS_PER_COIN = 288; // ~24h of 5-minute windows, local cache only
+  const PTB_DEFENSE_TOLERANCE_FRAC = 0.0015; // 15bps — "same level" for defense-history lookups
+  const PTB_DEFENSE_REFRESH_MS = 4 * 60_000;
 
   const _state = {
     sessionStartedAt: Date.now(),
@@ -24,10 +28,16 @@
     windows1h: Object.fromEntries(COINS.map((c) => [c, []])),
     open15m: Object.fromEntries(COINS.map((c) => [c, null])),
     open1h: Object.fromEntries(COINS.map((c) => [c, null])),
+    windowsPTB5m: Object.fromEntries(COINS.map((c) => [c, []])),
+    openPtb5m: Object.fromEntries(COINS.map((c) => [c, null])),
     predictions: Object.fromEntries(COINS.map((c) => [c, { '15m': [], '60m': [] }])),
     lastSampleTs: 0,
     sampleTicks: 0,
   };
+
+  // Most recent PTB-defense stats fetched from Firestore (via the bridge),
+  // keyed by coin. Populated opportunistically after each closed PTB window.
+  const _ptbDefenseCache = {};
 
   let _timer = null;
 
@@ -184,6 +194,107 @@
     }
   }
 
+  function _sideOfPtb(price, ptb) {
+    return price >= ptb ? 'UP' : 'DOWN';
+  }
+
+  function _bpsFromPtb(price, ptb) {
+    return ptb > 0 ? ((price - ptb) / ptb) * 10_000 : null;
+  }
+
+  function _grokBridge() {
+    try {
+      return (typeof window !== 'undefined' && window._grokMemoryBridge) ? window._grokMemoryBridge : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  // Fetches (and caches) real PTB-defense history for a coin/level from
+  // Firestore via the bridge. Best-effort, fire-and-forget — memoryPackForPrompt()
+  // reads whatever is currently cached, never blocks on this.
+  function refreshPtbDefenseStats(coin, ptb) {
+    if (!(ptb > 0)) return;
+    const bridge = _grokBridge();
+    if (!bridge || typeof bridge.getPtbDefenseStats !== 'function') return;
+    const cached = _ptbDefenseCache[coin];
+    if (cached && cached.ptb === ptb && Date.now() - cached.fetchedAt < PTB_DEFENSE_REFRESH_MS) return;
+    try {
+      bridge.getPtbDefenseStats(coin, ptb).then((res) => {
+        if (res && res.success && res.stats) {
+          _ptbDefenseCache[coin] = { ...res.stats, ptb, fetchedAt: Date.now() };
+        }
+      }).catch(() => {});
+    } catch (_) {}
+  }
+
+  // Tracks the fixed 5-minute Polymarket PTB window per coin: open/high/low/close
+  // relative to the PTB (captured once at window open — it's immutable for the
+  // window's lifetime), and whether the side it opened on survived to close
+  // ("DEFENDED") or flipped ("BROKEN"). On close, records the outcome via the
+  // bridge and refreshes the defense-stats cache for that level.
+  function updatePtbWindow(coin, now, price, ptb) {
+    if (!(price > 0)) return;
+    const start = floorWindow(now, PTB_WINDOW_MS);
+    const open = _state.openPtb5m[coin];
+
+    if (!open || open.start !== start) {
+      if (open && open.ptb > 0) {
+        const sideOpen = _sideOfPtb(open.open, open.ptb);
+        const sideClose = _sideOfPtb(open.close, open.ptb);
+        const closed = {
+          sym: coin,
+          windowStart: open.start,
+          windowEnd: open.start + PTB_WINDOW_MS,
+          ptb: open.ptb,
+          open: open.open,
+          high: open.high,
+          low: open.low,
+          close: open.close,
+          sideOpen,
+          sideClose,
+          outcome: sideOpen === sideClose ? 'DEFENDED' : 'BROKEN',
+          distanceOpenBps: _bpsFromPtb(open.open, open.ptb),
+          distanceCloseBps: _bpsFromPtb(open.close, open.ptb),
+          crossCount: open.crossCount || 0,
+          sampleCount: open.sampleCount || 0,
+        };
+        pushCapped(_state.windowsPTB5m[coin], closed, MAX_PTB_WINDOWS_PER_COIN);
+        const bridge = _grokBridge();
+        if (bridge && typeof bridge.pushPtbWindowClose === 'function') {
+          try { bridge.pushPtbWindowClose(closed); } catch (_) {}
+        }
+        refreshPtbDefenseStats(coin, closed.ptb);
+      }
+      if (ptb > 0) {
+        _state.openPtb5m[coin] = {
+          start,
+          ptb,
+          open: price,
+          high: price,
+          low: price,
+          close: price,
+          sampleCount: 1,
+          crossCount: 0,
+          lastSide: _sideOfPtb(price, ptb),
+        };
+      } else {
+        _state.openPtb5m[coin] = null;
+      }
+      return;
+    }
+
+    // Same window still open — use the PTB captured at window open (immutable
+    // for the window's lifetime), not whatever value was just sampled.
+    const side = _sideOfPtb(price, open.ptb);
+    if (open.lastSide && side !== open.lastSide) open.crossCount = (open.crossCount || 0) + 1;
+    open.lastSide = side;
+    open.high = Math.max(open.high, price);
+    open.low = Math.min(open.low, price);
+    open.close = price;
+    open.sampleCount = (open.sampleCount || 0) + 1;
+  }
+
   function tick() {
     const now = Date.now();
     _state.sampleTicks += 1;
@@ -194,6 +305,11 @@
       pushCapped(_state.samples[coin], s, MAX_SAMPLES_PER_COIN);
       updateOpenWindow(_state.windows15m, _state.open15m, coin, now, s.price, 15 * 60_000);
       updateOpenWindow(_state.windows1h, _state.open1h, coin, now, s.price, 60 * 60_000);
+      updatePtbWindow(coin, now, s.price, s.ptb5);
+      const bridge = _grokBridge();
+      if (bridge && typeof bridge.pushTick === 'function') {
+        try { bridge.pushTick(coin, s); } catch (_) {}
+      }
     }
     if (_state.sampleTicks % 15 === 0) _persistLight();
   }
@@ -217,30 +333,72 @@
       }
       localStorage.setItem(STORAGE_KEY, JSON.stringify(slim));
     } catch (_) {}
+
+    // Fan out a durable per-coin snapshot to Firestore (via the bridge) so
+    // sampleTicks/windows/prediction accuracy survive restarts, not just this
+    // browser profile's localStorage. Best-effort, never blocks.
+    try {
+      const bridge = _grokBridge();
+      if (bridge && typeof bridge.writeSessionSnapshot === 'function') {
+        for (const c of COINS) {
+          bridge.writeSessionSnapshot(c, {
+            sessionStartedAt: _state.sessionStartedAt,
+            lastSampleTs: _state.lastSampleTs,
+            sampleTicks: _state.sampleTicks,
+            sampleCount: (_state.samples[c] || []).length,
+            windows15m: (_state.windows15m[c] || []).slice(-48),
+            windows1h: (_state.windows1h[c] || []).slice(-24),
+            predictions: _state.predictions[c] || { '15m': [], '60m': [] },
+          });
+        }
+      }
+    } catch (_) {}
   }
 
   function _hydrate() {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
-      if (!raw) return;
-      const slim = JSON.parse(raw);
-      if (!slim || typeof slim !== 'object') return;
-      // Keep a new session clock but seed history from prior runs
-      for (const c of COINS) {
-        if (Array.isArray(slim.samples && slim.samples[c])) {
-          _state.samples[c] = slim.samples[c].slice(-MAX_SAMPLES_PER_COIN);
-        }
-        if (Array.isArray(slim.windows15m && slim.windows15m[c])) {
-          _state.windows15m[c] = slim.windows15m[c].slice(-MAX_WINDOWS_PER_COIN);
-        }
-        if (Array.isArray(slim.windows1h && slim.windows1h[c])) {
-          _state.windows1h[c] = slim.windows1h[c].slice(-MAX_WINDOWS_PER_COIN);
-        }
-        if (slim.predictions && slim.predictions[c]) {
-          _state.predictions[c] = slim.predictions[c];
+      if (raw) {
+        const slim = JSON.parse(raw);
+        if (slim && typeof slim === 'object') {
+          // Keep a new session clock but seed history from prior runs
+          for (const c of COINS) {
+            if (Array.isArray(slim.samples && slim.samples[c])) {
+              _state.samples[c] = slim.samples[c].slice(-MAX_SAMPLES_PER_COIN);
+            }
+            if (Array.isArray(slim.windows15m && slim.windows15m[c])) {
+              _state.windows15m[c] = slim.windows15m[c].slice(-MAX_WINDOWS_PER_COIN);
+            }
+            if (Array.isArray(slim.windows1h && slim.windows1h[c])) {
+              _state.windows1h[c] = slim.windows1h[c].slice(-MAX_WINDOWS_PER_COIN);
+            }
+            if (slim.predictions && slim.predictions[c]) {
+              _state.predictions[c] = slim.predictions[c];
+            }
+          }
+          _state.sampleTicks = Number(slim.sampleTicks) || _state.sampleTicks;
         }
       }
-      _state.sampleTicks = Number(slim.sampleTicks) || _state.sampleTicks;
+    } catch (_) {}
+
+    // Best-effort cross-machine restore: only for coins that still came up
+    // empty above (a genuinely fresh machine/profile with no localStorage
+    // history). Fire-and-forget async — never blocks start()'s boot.
+    try {
+      const bridge = _grokBridge();
+      if (bridge && typeof bridge.getSessionSnapshot === 'function') {
+        for (const c of COINS) {
+          if ((_state.windows15m[c] || []).length > 0) continue;
+          bridge.getSessionSnapshot(c).then((res) => {
+            const snap = res && res.success ? res.snapshot : null;
+            if (!snap) return;
+            if ((_state.windows15m[c] || []).length > 0) return; // populated since (localStorage/tick)
+            if (Array.isArray(snap.windows15m)) _state.windows15m[c] = snap.windows15m.slice(-MAX_WINDOWS_PER_COIN);
+            if (Array.isArray(snap.windows1h)) _state.windows1h[c] = snap.windows1h.slice(-MAX_WINDOWS_PER_COIN);
+            if (snap.predictions) _state.predictions[c] = snap.predictions;
+          }).catch(() => {});
+        }
+      }
     } catch (_) {}
   }
 
@@ -280,7 +438,7 @@
     return { n: scored.length, correct, accuracy: correct / scored.length };
   }
 
-  function memoryPackForPrompt(coin) {
+  function memoryPackForPrompt(coin, opts = {}) {
     const samples = _state.samples[coin] || [];
     const recent = samples.slice(-24);
     const w15 = _state.windows15m[coin] || [];
@@ -327,6 +485,19 @@
       } : null,
       predAccuracy15m: predictionAccuracy(coin, '15m'),
       predAccuracy1h: predictionAccuracy(coin, '60m'),
+      ptbDefenseStats: (() => {
+        const cached = _ptbDefenseCache[coin];
+        const wantPtb = Number(opts.ptb);
+        if (!cached || !Number.isFinite(wantPtb) || wantPtb <= 0 || !(cached.ptb > 0)) return null;
+        if (Math.abs(cached.ptb - wantPtb) / wantPtb > PTB_DEFENSE_TOLERANCE_FRAC) return null;
+        return {
+          testedCount: cached.testedCount,
+          defendedCount: cached.defendedCount,
+          brokenCount: cached.brokenCount,
+          defendRate: cached.defendRate,
+          asOf: cached.fetchedAt,
+        };
+      })(),
       note: samples.length < 6
         ? 'Thin session memory — treat HTF bias cautiously until more samples accumulate.'
         : `Session memory is rich (${samples.length} samples over ${sessionMinutes().toFixed(0)}m). Prefer patterns that held across closed windows.`,

@@ -356,7 +356,7 @@
       sessionMemory: (function () {
         try {
           if (window.GrokAnalyticsMemory && typeof window.GrokAnalyticsMemory.memoryPackForPrompt === 'function') {
-            return window.GrokAnalyticsMemory.memoryPackForPrompt(coin);
+            return window.GrokAnalyticsMemory.memoryPackForPrompt(coin, { ptb: target });
           }
         } catch (_) {}
         return { sampleCount: 0, sessionMinutes: 0, note: 'memory not started' };

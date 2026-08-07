@@ -69,11 +69,27 @@ const ORBITAL_TOPICS = [
     }
 ];
 
+// Grok session-memory tick stream — separate from the orbital s/p/d/f feed
+// (different signal type: Grok sample ticks, not quantum-orbital metrics).
+// Low volume (4 coins every 20s), single topic keyed by coin symbol is enough.
+const GROK_TOPICS = [
+    {
+        topic:             'wecrypto.grok.ticks',
+        numPartitions:     3,
+        replicationFactor: 1,
+        configEntries: [
+            { name: 'retention.ms',         value: String(6 * 60 * 60 * 1000) }, // 6 hours — audit trail, not hot-consumed
+            { name: 'cleanup.policy',        value: 'delete' },
+            { name: 'compression.type',      value: 'snappy' }
+        ]
+    }
+];
+
 /**
- * Create (or verify) all orbital Kafka topics.
- * Skips topics that already exist without throwing.
+ * Create (or verify) a list of Kafka topics. Skips topics that already exist
+ * without throwing. Shared by createOrbitalTopics()/createGrokTopics().
  */
-async function createOrbitalTopics() {
+async function _createTopics(topicList, label) {
     const kafka = new Kafka({
         clientId: 'wecrypto-admin',
         brokers: KAFKA_BROKERS,
@@ -84,16 +100,16 @@ async function createOrbitalTopics() {
 
     try {
         await admin.connect();
-        console.log('[TopicInit] Connected to Redpanda admin API.');
+        console.log(`[TopicInit] Connected to Redpanda admin API (${label}).`);
 
         // Fetch existing topics so we can report skips accurately
         const existing = await admin.listTopics();
         console.log(`[TopicInit] Existing topics: ${existing.length > 0 ? existing.join(', ') : '(none)'}`);
 
-        const toCreate = ORBITAL_TOPICS.filter(t => !existing.includes(t.topic));
+        const toCreate = topicList.filter(t => !existing.includes(t.topic));
 
         if (toCreate.length === 0) {
-            console.log('[TopicInit] All orbital topics already exist. Nothing to create.');
+            console.log(`[TopicInit] All ${label} topics already exist. Nothing to create.`);
             return;
         }
 
@@ -108,23 +124,45 @@ async function createOrbitalTopics() {
             console.warn('[TopicInit] createTopics returned false — topics may already exist.');
         }
 
-        ORBITAL_TOPICS.filter(t => existing.includes(t.topic)).forEach(t =>
+        topicList.filter(t => existing.includes(t.topic)).forEach(t =>
             console.log(`[TopicInit] ✓ Topic already exists (skipped): ${t.topic}`)
         );
 
     } catch (err) {
-        console.error('[TopicInit] Failed to create topics:', err.message);
+        console.error(`[TopicInit] Failed to create ${label} topics:`, err.message);
         throw err;
     } finally {
         await admin.disconnect().catch(() => {});
     }
 }
 
-module.exports = { createOrbitalTopics };
+/**
+ * Create (or verify) all orbital Kafka topics.
+ */
+async function createOrbitalTopics() {
+    return _createTopics(ORBITAL_TOPICS, 'orbital');
+}
+
+/**
+ * Create (or verify) the Grok session-memory tick topic.
+ */
+async function createGrokTopics() {
+    return _createTopics(GROK_TOPICS, 'grok');
+}
+
+/**
+ * Create (or verify) every topic this app produces to.
+ */
+async function createAllTopics() {
+    await createOrbitalTopics();
+    await createGrokTopics();
+}
+
+module.exports = { createOrbitalTopics, createGrokTopics, createAllTopics };
 
 // Allow standalone execution
 if (require.main === module) {
-    createOrbitalTopics()
+    createAllTopics()
         .then(() => { console.log('[TopicInit] Done.'); process.exit(0); })
         .catch((err) => { console.error('[TopicInit] Fatal:', err); process.exit(1); });
 }

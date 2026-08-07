@@ -514,6 +514,26 @@ contextBridge.exposeInMainWorld('_orbitalBroadcaster', {
   restartOrbitalSystem: () => ipcRenderer.invoke('orbital:restart'),
 });
 
+// Grok memory bridge — session-memory ticks to Kafka, session snapshots +
+// PTB-defense history to Firestore. Renderer side: src/llm/grok-analytics-memory.js.
+contextBridge.exposeInMainWorld('_grokMemoryBridge', {
+  pushTick: (coin, payload) => {
+    if (!coin || !payload) return;
+    ipcRenderer.send('grok:pushTick', { coin, payload });
+  },
+  pushPtbWindowClose: (record) => {
+    if (!record) return;
+    ipcRenderer.send('grok:pushPtbWindowClose', record);
+  },
+  writeSessionSnapshot: (coin, snapshot) => {
+    if (!coin || !snapshot) return;
+    ipcRenderer.send('grok:writeSessionSnapshot', { coin, snapshot });
+  },
+  getPtbDefenseStats: (coin, ptb, opts) => ipcRenderer.invoke('grok:getPtbDefenseStats', { coin, ptb, opts }),
+  getSessionSnapshot: (coin) => ipcRenderer.invoke('grok:getSessionSnapshot', { coin }),
+  getStatus: () => ipcRenderer.invoke('grok:bridgeStatus'),
+});
+
 contextBridge.exposeInMainWorld('dataStore', {
   appendLine: (filePath, line) => ipcRenderer.invoke('data:appendLine', filePath, line),
   appendLineDetailed: (filePath, line) => ipcRenderer.invoke('data:appendLineDetailed', filePath, line),
