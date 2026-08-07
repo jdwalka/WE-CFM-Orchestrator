@@ -2008,14 +2008,8 @@
         const currentPriceTs = pythCurrent?.timestamp ?? chainlinkCurrentPriceTs;
         const currentPriceSource = pythCurrent?.source || 'polymarket-chainlink';
 
-        // Fast-path: Expedite PTB using Pyth/Chainlink spot at boundary if event page scrape is still pending
-        if (priceToBeatNum == null && (ts === windowTs || isImmediateNext)) {
-          const spotBoundary = pythCurrent?.price ?? chainlinkCurrentPriceNum ?? toPositiveFiniteNumber(cryptoWindow?.openPrice);
-          if (spotBoundary != null) {
-            priceToBeatNum = spotBoundary;
-            priceToBeatSource = isImmediateNext ? 'pyth-boundary-preview' : 'pyth-boundary-open';
-          }
-        }
+        // PTB comes exclusively from Polymarket's canonical Chainlink contract benchmark (polymarket-event-page).
+        // Never inject Pyth spot proxies for PTB to guarantee zero mid-contract changes.
 
         // A five-minute contract is unavailable until its benchmark exists.
         if (priceToBeatNum == null && !isFuture && ts !== windowTs) return null;
@@ -2642,23 +2636,18 @@ function polymarketSentiment(markets, sym) {
             window.dispatchEvent(new CustomEvent('predictionmarketsready', { detail: cache }));
           }
 
-          // At exact rollover, capture real-time Pyth Lazer spot IMMEDIATELY as pyth-boundary-open
-          // This matches polcool.app's exact second-0 boundary price snapshot (e.g. BTC 65,142, ETH 1,922.55).
+          // At exact rollover, fetch canonical Polymarket Chainlink contract benchmark
+          // PTB comes strictly from Polymarket's event page stream (the single source of truth for settlement).
+          // Never inject provisional spot proxies to avoid mid-contract shifts.
           Object.keys(POLY_5M_COIN_SLUGS).forEach(async (sym) => {
             try {
               const prefix = POLY_5M_COIN_SLUGS[sym];
               const newSlug = `${prefix}-updown-5m-${currentBoundary}`;
               let existing = _getPolymarketPriceToBeatLock(newSlug);
               if (!existing) {
-                const pyth = await getFreshPythLazerPrice(sym).catch(() => null);
-                if (pyth && Number.isFinite(pyth.price) && pyth.price > 0) {
-                  _lockPolymarketPriceToBeat(newSlug, pyth.price, 'pyth-boundary-open');
-                  console.info(`[BoundaryClock] 🎯 Locked exact second-0 spot PTB for ${sym} (${newSlug}): $${pyth.price}`);
-                } else {
-                  const scraped = await fetchPolymarketPriceToBeat(newSlug).catch(() => null);
-                  if (Number.isFinite(scraped) && scraped > 0) {
-                    _lockPolymarketPriceToBeat(newSlug, scraped, 'polymarket-event-page');
-                  }
+                const scraped = await fetchPolymarketPriceToBeat(newSlug).catch(() => null);
+                if (Number.isFinite(scraped) && scraped > 0) {
+                  _lockPolymarketPriceToBeat(newSlug, scraped, 'polymarket-event-page');
                 }
               }
             } catch (e) {}
