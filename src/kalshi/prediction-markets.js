@@ -2046,16 +2046,6 @@
           console.log(`[Poly5M-PTB] ${sym} ${marketSlug} → $${priceToBeatNum ?? 'pending'} (source: ${priceToBeatSource ?? 'waiting-for-open'}) [exact-contract]`);
         }
 
-        let chainlinkCurrentPriceNum = toPositiveFiniteNumber(cryptoWindow?.closePrice);
-        let chainlinkCurrentPriceTs = toPositiveFiniteNumber(cryptoWindow?.timestamp);
-        if (chainlinkCurrentPriceNum == null) {
-          chainlinkCurrentPriceNum = toPositiveFiniteNumber(rtds?.currentPriceNum);
-          chainlinkCurrentPriceTs = toPositiveFiniteNumber(rtds?.currentPriceTs);
-        }
-        const pythCurrent = await getFreshPythLazerPrice(sym);
-        const currentPriceNum = pythCurrent?.price ?? chainlinkCurrentPriceNum;
-        const currentPriceTs = pythCurrent?.timestamp ?? chainlinkCurrentPriceTs;
-        const currentPriceSource = pythCurrent?.source || 'polymarket-chainlink';
         const oracleBasisNum = pythCurrent && chainlinkCurrentPriceNum != null
           ? pythCurrent.price - chainlinkCurrentPriceNum
           : null;
