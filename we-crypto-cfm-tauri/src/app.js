@@ -4547,7 +4547,7 @@
           </div>
           <div>
             <div class="pred-coin-price">${fmtPrice(p.price)}</div>
-            <div class="pred-coin-src">${p.source} &middot; ${p.candleCount || '?'} x 5m${p.candleCount1m ? ` · ${p.candleCount1m} x 1m` : ''}</div>
+            <div class="pred-coin-src">${p.source || 'partial'} &middot; ${p.candleCount15m || p.candleCount || '?'} x 15m (pooled from exchanges: WS+CB+BIN etc.)${p.candleCount1m ? ` · ${p.candleCount1m} x 1m` : ''}</div>
           </div>
           <div class="pred-expand-icon">${expanded ? '−' : '+'}</div>
         </div>

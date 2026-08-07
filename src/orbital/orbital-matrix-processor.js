@@ -86,7 +86,11 @@ const kafka = new Kafka({
     retry: { initialRetryTime: 200, retries: 10 }
 });
 
-const consumer = kafka.consumer({ groupId: 'orbital-coherence-group' });
+// The consumer must be created fresh on every start. KafkaJS cannot reliably
+// reconnect a consumer instance after disconnect() — reusing one throws
+// "write after end" on the torn-down socket. So this holds the *current*
+// instance and is recreated by startProcessor / nulled by stopProcessor.
+let consumer = null;
 
 // The setInterval handle for the barrier loop (returned so the orchestrator can clear it)
 let barrierInterval = null;
@@ -102,6 +106,16 @@ let consumerRunning = false;
  * @returns {NodeJS.Timeout} The barrier interval handle (for clean shutdown via clearInterval)
  */
 async function startProcessor() {
+    // Idempotency guard: if a previous run left the consumer connected and
+    // running (e.g. an orchestrator restart that skipped stopProcessor), tear
+    // it down first. Subscribing on an already-running consumer makes KafkaJS
+    // throw "Cannot subscribe to topic while consumer is running".
+    if (consumerRunning || consumer) {
+        await stopProcessor();
+    }
+
+    // Fresh instance per start — a disconnected KafkaJS consumer cannot be reused.
+    consumer = kafka.consumer({ groupId: 'orbital-coherence-group' });
     await consumer.connect();
     console.log('[OrbitalProcessor] Connected to Redpanda.');
 
@@ -148,12 +162,17 @@ async function stopProcessor() {
         clearInterval(barrierInterval);
         barrierInterval = null;
     }
-    if (!consumerRunning) return;
+    if (!consumer) {
+        consumerRunning = false;
+        return;
+    }
     try {
         await consumer.disconnect();
     } finally {
+        consumer = null; // discard — a disconnected consumer cannot be reused
         consumerRunning = false;
         buffer.clear();
+        bufferedTicks = 0;
     }
 }
 

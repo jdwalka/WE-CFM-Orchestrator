@@ -192,6 +192,18 @@ function readCMCSecret() {
   ]);
 }
 
+function readPythLazerSecret() {
+  // Prefer PYTH_API (upgraded key name), then PYTH_NEW, then legacy
+  return readSecretFileValue([
+    'PYTH_API',
+    'PYTH_API.txt',
+    'PYTH_NEW',
+    'PYTH_NEW.txt',
+    'PYTH_NEW_API',
+    'PYTH_NEW_API.txt'
+  ]);
+}
+
 function readPublicEnv() {
   const secret = readCoinGeckoSecret();
   const secretTier = inferCoinGeckoTier(secret.value, secret.path);
@@ -240,6 +252,18 @@ function readPublicEnv() {
   ]) {
     const value = readEnvValue([name]);
     if (value) out[name] = value;
+  }
+
+  // Pyth key for realtime feeds (Hermes, Lazer, snapshots) — newest secret files first
+  const pythSecret = readPythLazerSecret();
+  const pythKey = pythSecret.value || readEnvValue(['PYTH_NEW', 'PYTH_API', 'PYTH_NEW_API', 'LAZER_TOKEN']);
+  if (pythKey) {
+    out.PYTH_NEW = pythKey;
+    out.PYTH_API = pythKey;
+    out.PYTH_NEW_API = pythKey;
+    out.PYTH_API_KEY = pythKey;
+    out.PYTH_LAZER_TOKEN = pythKey;
+    out.LAZER_TOKEN = pythKey;
   }
 
   return out;
@@ -325,6 +349,7 @@ function createWebSocketBridge(url, options = {}) {
 
   socket.on('open', () => dispatch('open'));
   socket.on('message', (data) => dispatch('message', data?.toString?.() ?? String(data ?? '')));
+  socket.on('pong', () => dispatch('pong'));
   socket.on('error', (err) => {
     err = err || {};
     dispatch('error', {
@@ -382,6 +407,11 @@ contextBridge.exposeInMainWorld('electron', {
     broadcastUpdate: (type, data) => ipcRenderer.send('web:broadcast-update', { type, data }),
   },
   ipcFetch: (url, opts) => ipcRenderer.invoke('ipc:fetch', url, opts),
+  // Raw-string file read (returns content or null) — used by cex-flow.js to pull
+  // the Python cex_flow_monitor.py / cex_high_freq_monitor.py JSON state files.
+  readFile: (filePath) => ipcRenderer.invoke('data:readFile', filePath)
+    .then((r) => (r && r.ok) ? r.content : null)
+    .catch(() => null),
   kalshi: {
     loadCSVTrades: (browserStateJson) => ipcRenderer.invoke('kalshi:loadCSVTrades', browserStateJson),
     fetchHistoricalContracts: (opts) => ipcRenderer.invoke('kalshi:fetchHistoricalContracts', opts),

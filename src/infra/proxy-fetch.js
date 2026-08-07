@@ -49,6 +49,8 @@
     'hypurrscan.io',
     'api.etherscan.io',
     'api.bscscan.com',
+    'api.gateio.ws',
+    'fx-api.gateio.ws',
   ]);
 
   // ── Bucket C: open / first-party APIs — direct ok in Electron ───────────
@@ -103,6 +105,8 @@
     'api.bitso.com': 'bitso',
     'www.bullish.com': 'bullish',
     'www.weex.com': 'weex',
+    // gate NOT in HOST_MAP — running proxy binary may lack /gate route;
+    // generic /proxy?url= works with current binary (verified 200).
   };
 
   const _origFetch = window.fetch.bind(window);

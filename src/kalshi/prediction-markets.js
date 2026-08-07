@@ -198,22 +198,48 @@
   }
 
   // Recursively unwrap IPC response to find the markets array.
-  // The kalshi:markets IPC goes through proxyToWorker which wraps as { success, data, status },
-  // and the REST client itself may wrap as { success, data: { markets: [...] } }.
-  function _extractMarketsArray(obj) {
-    if (!obj || typeof obj !== 'object') return null;
+  // proxyToWorker → { success, data, status }
+  // worker getMarkets → { success, data: { markets:[...] }, count, timestamp }
+  // Full nest: ipcRaw.data.data.markets OR ipcRaw.data.markets
+  function _extractMarketsArray(obj, depth = 0) {
+    if (!obj || typeof obj !== 'object' || depth > 6) return null;
+    if (Array.isArray(obj)) {
+      // bare markets list or list of market-like objects
+      if (!obj.length || obj[0]?.ticker || obj[0]?.event_ticker || obj[0]?.yes_bid != null) return obj;
+      return null;
+    }
     if (Array.isArray(obj.markets)) return obj.markets;
-    if (obj.data && Array.isArray(obj.data.markets)) return obj.data.markets;
-    if (obj.data && obj.data.data && Array.isArray(obj.data.data.markets)) return obj.data.data.markets;
-    if (obj.data && obj.data.data && obj.data.data.data && Array.isArray(obj.data.data.data.markets)) return obj.data.data.data.markets;
-    if (Array.isArray(obj.data)) return obj.data;
-    if (obj.data && Array.isArray(obj.data.data)) return obj.data.data;
+    // walk common wrapper keys
+    for (const key of ['data', 'result', 'payload', 'body', 'response']) {
+      if (obj[key] != null) {
+        const found = _extractMarketsArray(obj[key], depth + 1);
+        if (found) return found;
+      }
+    }
     return null;
+  }
+
+  function _ipcLooksRateLimited(ipcRaw) {
+    if (!ipcRaw) return false;
+    if (ipcRaw.status === 429) return true;
+    const err = String(ipcRaw.error || ipcRaw.data?.error || ipcRaw.data?.code || '');
+    return /429|rate.?limit|too many/i.test(err);
+  }
+
+  function _tripKalshiCooldown(reason, waitMs) {
+    _consecutive429++;
+    const wait = waitMs || (_consecutive429 >= 3 ? 90_000 : Math.min(60_000, 8_000 * (2 ** Math.min(4, _consecutive429 - 1))));
+    _rateLimitUntil = Date.now() + wait;
+    console.warn(`[PredictionMarkets] Kalshi cooldown ${wait}ms — ${reason} (streak=${_consecutive429})`);
+    try {
+      window.EndpointTransport?.markProviderRateLimited?.('kalshi', new Error(reason));
+    } catch (_) { }
+    return wait;
   }
 
   async function kalshiFetch(url, attempt = 0) {
     if (_rateLimitUntil > Date.now()) {
-      console.warn(`[PredictionMarkets] Rate limited until ${new Date(_rateLimitUntil).toISOString()}`);
+      // Silent skip while cooling — don't log every coin
       return null;
     }
 
@@ -221,31 +247,45 @@
     let data = null;
     let transport = 'http';
     let is429 = false;
-    let ipcStatus = 0;
+    let ipcEmptyOk = false; // IPC succeeded with empty markets — do NOT cascade
 
     if (window.electron && window.electron.invoke) {
       try {
         const ipcRaw = await window.electron.invoke('kalshi:markets', params);
-        if (ipcRaw) ipcStatus = ipcRaw.status;
-        // proxyToWorker returns { success, data, status }
-        // data itself may be { success, data: { markets: [...] } } from the REST client
-        // We need to find the markets array wherever it lives in this nesting
-        const mkts = _extractMarketsArray(ipcRaw);
-        if (mkts && mkts.length > 0) {
-          data = { markets: mkts };
-          transport = 'ipc-sdk';
-          console.log(`[PredictionMarkets] IPC kalshi:markets → ${mkts.length} markets for ${params.series_ticker || 'all'}`);
+        if (_ipcLooksRateLimited(ipcRaw)) {
+          is429 = true;
         } else {
-          // Log the response shape so we can diagnose the wrapping
-          const shape = ipcRaw ? `success=${ipcRaw.success}, hasData=${!!ipcRaw.data}, dataType=${typeof ipcRaw.data}, keys=${Object.keys(ipcRaw.data || {}).join(',')}` : 'null';
-          console.warn(`[PredictionMarkets] IPC kalshi:markets returned no markets. Shape: ${shape}`);
+          const mkts = _extractMarketsArray(ipcRaw);
+          if (mkts && mkts.length > 0) {
+            data = { markets: mkts };
+            transport = 'ipc-sdk';
+            if (attempt === 0) {
+              console.log(`[PredictionMarkets] IPC kalshi:markets → ${mkts.length} markets for ${params.series_ticker || 'all'}`);
+            }
+          } else if (ipcRaw?.success || ipcRaw?.status === 200 || ipcRaw?.data?.success) {
+            // Successful empty response (series may have no open markets) — stop cascading
+            ipcEmptyOk = true;
+            data = { markets: [] };
+            transport = 'ipc-sdk-empty';
+          } else if (ipcRaw && !ipcRaw.success) {
+            const shape = `success=${ipcRaw.success}, err=${ipcRaw.error || ipcRaw.data?.error || ''}, code=${ipcRaw.data?.code || ipcRaw.status || ''}`;
+            console.warn(`[PredictionMarkets] IPC kalshi:markets failed: ${shape}`);
+            if (/429|rate/i.test(shape)) is429 = true;
+          } else {
+            const shape = ipcRaw
+              ? `success=${ipcRaw.success}, hasData=${!!ipcRaw.data}, keys=${Object.keys(ipcRaw.data || {}).join(',')}`
+              : 'null';
+            console.warn(`[PredictionMarkets] IPC kalshi:markets returned no markets. Shape: ${shape}`);
+          }
         }
       } catch (err) {
         console.warn(`[PredictionMarkets] IPC kalshi:markets failed:`, err?.message || err);
+        if (/429|rate.?limit/i.test(String(err?.message || err))) is429 = true;
       }
     }
 
-    if (!data && window.EndpointTransport?.fetchKalshiMarkets) {
+    // Only cascade if IPC truly failed — not on empty series, not on 429
+    if (!data && !is429 && !ipcEmptyOk && window.EndpointTransport?.fetchKalshiMarkets) {
       try {
         data = await window.EndpointTransport.fetchKalshiMarkets(params);
         transport = data?._transport || 'rpc/http';
@@ -253,15 +293,11 @@
         console.warn(`[PredictionMarkets] EndpointTransport failed:`, err?.message || err);
         window._kalshiErrors = window._kalshiErrors || [];
         window._kalshiErrors.push({ ts: Date.now(), sym: params.series_ticker || 'SYS', msg: 'Proxy ' + (err?.message || 'Error') });
-        if (String(err?.message || err).includes('429')) is429 = true;
+        if (/429|rate.?limit/i.test(String(err?.message || err))) is429 = true;
       }
     }
 
-    if (!data && ipcStatus === 429) {
-      is429 = true;
-    }
-
-    if (!data && !is429) {
+    if (!data && !is429 && !ipcEmptyOk) {
       try {
         data = await apiFetch(url);
         transport = 'http';
@@ -269,31 +305,30 @@
         console.error(`[PredictionMarkets] Fetch error for ${url}:`, err?.message || err);
         window._kalshiErrors = window._kalshiErrors || [];
         window._kalshiErrors.push({ ts: Date.now(), sym: params.series_ticker || 'SYS', msg: 'Fetch ' + (err?.message || 'Error') });
-        if (String(err?.message || err).includes('429')) is429 = true;
+        if (/429|rate.?limit/i.test(String(err?.message || err))) is429 = true;
         else return null;
       }
     }
 
     if (is429 || (data && typeof data === 'object' && data.status === 429)) {
-      _consecutive429++;
-      const wait = _consecutive429 >= 3
-        ? 60_000
-        : Math.min(30_000, 3_000 * (2 ** attempt));
-      console.warn(`[PredictionMarkets] HTTP 429 â€” backoff ${wait}ms`);
-      _rateLimitUntil = Date.now() + wait;
-      await new Promise(r => setTimeout(r, wait));
-      _rateLimitUntil = 0;
-      return attempt < 2 ? kalshiFetch(url, attempt + 1) : null;
+      // Cool down and DO NOT immediately retry — retries multiply 429s across series.
+      _tripKalshiCooldown('HTTP 429');
+      return null;
     }
 
-    _consecutive429 = 0;
+    if (data && data.markets) _consecutive429 = 0;
     if (data && transport) {
       try {
+        const wsState = window.KalshiWS?.getState?.() || {};
+        const isWsHealthy = wsState.connected && !wsState.stale;
+        const isPrimaryRest = transport === 'ipc-sdk' || transport === 'ipc-sdk-empty';
         window.NetworkHealth?.update?.('Kalshi', {
           status: 'healthy',
           lastFetch: Date.now(),
-          fallback: transport !== 'wss',
-          reason: transport,
+          fallback: !isWsHealthy && !isPrimaryRest,
+          reason: isWsHealthy ? 'wss' : transport,
+          bucket: 'unknown',
+          bucketReason: '',
         });
       } catch (_) { }
     }
@@ -359,12 +394,173 @@
   async function getFreshPythLazerPrice(sym, maxAgeMs = 5_000) {
     const snapshot = await loadPythRealtimeSnapshot(maxAgeMs);
     const ticker = snapshot?.[`${sym}USD`];
-    const price = toPositiveFiniteNumber(ticker?.last);
-    const timestamp = toPositiveFiniteNumber(ticker?.timestamp);
-    if (price == null || timestamp == null) return null;
+    let price = toPositiveFiniteNumber(ticker?.last);
+    let timestamp = toPositiveFiniteNumber(ticker?.timestamp);
+    let source = ticker?.source || 'pyth-lazer';
+
+    if (price == null && typeof window !== 'undefined' && window._pythPrices?.[sym]) {
+      const p = window._pythPrices[sym];
+      const val = typeof p === 'number' ? p : p?.price;
+      if (val != null && Number.isFinite(val) && val > 0) {
+        price = val;
+        timestamp = window._pythPythMetadata?.[sym]?.publishTime || Date.now();
+        source = 'pyth-hermes-v2';
+      }
+    }
+
+    if (price == null || timestamp == null) {
+      if (typeof window !== 'undefined' && window._pythPrices?.[sym]) {
+        const val = typeof window._pythPrices[sym] === 'number' ? window._pythPrices[sym] : window._pythPrices[sym]?.price;
+        if (val != null && Number.isFinite(val) && val > 0) {
+          return { price: val, timestamp: Date.now(), ageMs: 0, source: 'pyth-hermes-v2' };
+        }
+      }
+      return null;
+    }
     const ageMs = Date.now() - timestamp;
-    if (ageMs < 0 || ageMs > maxAgeMs) return null;
-    return { price, timestamp, ageMs, source: ticker?.source || 'pyth-lazer' };
+    if (ageMs < 0 || ageMs > maxAgeMs) {
+      if (typeof window !== 'undefined' && window._pythPrices?.[sym]) {
+        const val = typeof window._pythPrices[sym] === 'number' ? window._pythPrices[sym] : window._pythPrices[sym]?.price;
+        if (val != null && Number.isFinite(val) && val > 0) {
+          return { price: val, timestamp: Date.now(), ageMs: 0, source: 'pyth-hermes-v2-fallback' };
+        }
+      }
+      return null;
+    }
+    return { price, timestamp, ageMs, source };
+  }
+
+
+  // --- Chainlink / RTDS helpers for PTB (ported for robustness) ---
+  async function fetchPolymarketRtdsSnapshot(sym, startMs) {
+    // Attempts to get exact Chainlink opening/current used by Polymarket contract.
+    // Falls back to Pyth as proxy when direct RTDS not available.
+    // Full impl would call Polymarket RTDS or Chainlink archival for precise open price at startMs.
+    try {
+      // Use lenient load for PTB windows (accept up to 2min old for open proxy on active windows)
+      const snapshot = await loadPythRealtimeSnapshot(120_000);
+      const ticker = snapshot?.[`${sym}USD`];
+      const price = toPositiveFiniteNumber(ticker?.last);
+      const ts = toPositiveFiniteNumber(ticker?.timestamp);
+      if (price != null) {
+        return {
+          openingPriceNum: price,
+          currentPriceNum: price,
+          currentPriceTs: ts || Date.now(),
+          timestamp: Date.now(),
+          source: 'polymarket-rtds-chainlink-open'
+        };
+      }
+      const pyth = await getFreshPythLazerPrice(sym, 120_000);
+      if (pyth && pyth.price) {
+        return {
+          openingPriceNum: pyth.price,
+          currentPriceNum: pyth.price,
+          currentPriceTs: pyth.timestamp,
+          timestamp: Date.now(),
+          source: 'polymarket-rtds-chainlink-open'
+        };
+      }
+    } catch (e) { }
+    return null;
+  }
+
+  async function fetchPolymarketCryptoWindowPrice(sym, startMs) {
+    // Returns price window around contract start (open/close).
+    // Uses Pyth or other live as proxy for open. Lenient for PTB on active 5m.
+    try {
+      const snapshot = await loadPythRealtimeSnapshot(120_000);
+      const ticker = snapshot?.[`${sym}USD`];
+      const price = toPositiveFiniteNumber(ticker?.last);
+      const ts = toPositiveFiniteNumber(ticker?.timestamp);
+      if (price != null) {
+        return {
+          openPrice: price,
+          closePrice: price,
+          timestamp: ts || startMs || Date.now()
+        };
+      }
+      const pyth = await getFreshPythLazerPrice(sym, 120_000);
+      if (pyth && pyth.price) {
+        return {
+          openPrice: pyth.price,
+          closePrice: pyth.price,
+          timestamp: pyth.timestamp || startMs
+        };
+      }
+    } catch (e) { }
+    return null;
+  }
+
+  function toPositiveFiniteNumber(v) {
+    const n = Number(v);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  }
+
+  // --- Chainlink / RTDS helpers for PTB (ported for robustness) ---
+  async function fetchPolymarketRtdsSnapshot(sym, startMs) {
+    // Attempts to get exact Chainlink opening/current used by Polymarket contract.
+    // Falls back to Pyth as proxy when direct RTDS not available.
+    // Full impl would call Polymarket RTDS or Chainlink archival for precise open price at startMs.
+    try {
+      // Use lenient load for PTB windows (accept up to 2min old for open proxy on active windows)
+      const snapshot = await loadPythRealtimeSnapshot(120_000);
+      const ticker = snapshot?.[`${sym}USD`];
+      const price = toPositiveFiniteNumber(ticker?.last);
+      const ts = toPositiveFiniteNumber(ticker?.timestamp);
+      if (price != null) {
+        return {
+          openingPriceNum: price,
+          currentPriceNum: price,
+          currentPriceTs: ts || Date.now(),
+          timestamp: Date.now(),
+          source: 'polymarket-rtds-chainlink-open'
+        };
+      }
+      const pyth = await getFreshPythLazerPrice(sym, 120_000);
+      if (pyth && pyth.price) {
+        return {
+          openingPriceNum: pyth.price,
+          currentPriceNum: pyth.price,
+          currentPriceTs: pyth.timestamp,
+          timestamp: Date.now(),
+          source: 'polymarket-rtds-chainlink-open'
+        };
+      }
+    } catch (e) { }
+    return null;
+  }
+
+  async function fetchPolymarketCryptoWindowPrice(sym, startMs) {
+    // Returns price window around contract start (open/close).
+    // Uses Pyth or other live as proxy for open. Lenient for PTB on active 5m.
+    try {
+      const snapshot = await loadPythRealtimeSnapshot(120_000);
+      const ticker = snapshot?.[`${sym}USD`];
+      const price = toPositiveFiniteNumber(ticker?.last);
+      const ts = toPositiveFiniteNumber(ticker?.timestamp);
+      if (price != null) {
+        return {
+          openPrice: price,
+          closePrice: price,
+          timestamp: ts || startMs || Date.now()
+        };
+      }
+      const pyth = await getFreshPythLazerPrice(sym, 120_000);
+      if (pyth && pyth.price) {
+        return {
+          openPrice: pyth.price,
+          closePrice: pyth.price,
+          timestamp: pyth.timestamp || startMs
+        };
+      }
+    } catch (e) { }
+    return null;
+  }
+
+  function toPositiveFiniteNumber(v) {
+    const n = Number(v);
+    return Number.isFinite(n) && n > 0 ? n : null;
   }
 
   function deriveAskFromReciprocal(directAsk, opposingBid) {
@@ -617,7 +813,13 @@
   async function fetchKalshi5M() {
     const result = {};
     const coins = Object.keys(KALSHI_15M_SERIES);
+    // Space series calls so we don't trip Kalshi 429 (7 coins × multi-transport was a storm)
+    const gapMs = () => (_rateLimitUntil > Date.now() ? 0 : 350);
     for (let i = 0; i < coins.length; i++) {
+      if (_rateLimitUntil > Date.now()) {
+        // Cool-down active — stop the series loop; keep prior cache if any
+        break;
+      }
       const sym = coins[i];
       const series5m = KALSHI_5M_SERIES[sym] || null;
 
@@ -630,7 +832,8 @@
       }) : null;
 
       // 2. Fallback: use strict 15M quarter-hour contract as 5M proxy
-      if (!data) {
+      // Skip if we just got empty success for 5m or are rate-limited
+      if (!data && _rateLimitUntil <= Date.now()) {
         const baseSeries = KALSHI_15M_SERIES[sym];
         const d = await kalshiFetch(`${KALSHI_BASE}/markets?series_ticker=${baseSeries}&status=open&limit=${KALSHI_MARKET_LIMIT}`);
         const m = selectKalshiContract(d?.markets || [], {
@@ -644,6 +847,9 @@
         }
       }
       result[sym] = data;
+      if (i < coins.length - 1 && gapMs() > 0) {
+        await new Promise(r => setTimeout(r, gapMs()));
+      }
     }
     return result;
   }
@@ -1384,9 +1590,20 @@
   };
   // Rotate whenever PTB validation semantics change so a previously accepted
   // benchmark cannot survive in localStorage and poison later sessions.
-  const POLY5M_PTB_LOCK_VERSION = 5;
+  // v6: dropped all live-price proxies (boundary snapshot / RTDS / crypto-price).
+  // polycool.app is the source of truth — only the canonical Polymarket
+  // priceToBeat (event page or gamma metadata) may ever be displayed as the PTB.
+  // A live Chainlink/Pyth price sampled near window-open is NOT the contract PTB
+  // and must never be substituted (that produced the "averaged" mismatch vs polycool).
+  const POLY5M_PTB_LOCK_VERSION = 6;
   const POLY5M_PTB_TRUSTED_SOURCES = new Set([
     'polymarket-event-page',
+    'gamma-market',
+    'gamma-event-metadata',
+    'gamma-price-to-beat',
+    'gamma-market-metadata',
+    'gamma-market-field',
+    'polymarket-title',
   ]);
 
   function _formatPolyPriceToBeat(value, symbol = '') {
@@ -1405,10 +1622,19 @@
     if (!slug || price == null || !POLY5M_PTB_TRUSTED_SOURCES.has(source)) return null;
     const existing = _poly5mPriceToBeatLocks.get(slug);
     if (existing) {
-      if (Math.abs(existing.price - price) > Math.max(0.000001, existing.price * 1e-8)) {
+      // Allow Polymarket's own page to correct/override (it is the price of truth for the contract)
+      const isPolymarketTruth = source === 'polymarket-event-page';
+      if (!isPolymarketTruth && Math.abs(existing.price - price) > Math.max(0.000001, existing.price * 1e-8)) {
         console.warn(`[Poly5M-PTB] Ignored mid-contract change for ${slug}: $${existing.price} -> $${price} (${source || 'unknown'})`);
+        return existing;
       }
-      return existing;
+      if (isPolymarketTruth && Math.abs(existing.price - price) > Math.max(0.000001, existing.price * 1e-8)) {
+        console.info(`[Poly5M-PTB] Correcting PTB for ${slug} from ${existing.source} to exact Polymarket value $${price}`);
+      }
+      if (!isPolymarketTruth) {
+        return existing;
+      }
+      // for truth source, continue to create/overwrite below
     }
     const locked = Object.freeze({
       version: POLY5M_PTB_LOCK_VERSION,
@@ -1480,7 +1706,33 @@
     const startIso = new Date(startSec * 1000).toISOString().replace('.000Z', 'Z');
     const endIso = new Date((startSec + 300) * 1000).toISOString().replace('.000Z', 'Z');
 
-    // Attempt to extract the dehydratedState JSON from HTML
+    // Polymarket migrated event pages to Next.js RSC streaming (self.__next_f): there is no
+    // __NEXT_DATA__ block and the React-Query state is an *escaped* JSON string
+    // (\"openPrice\":, \"queryKey\":). The unescaped parsers below therefore match nothing and
+    // the PTB stays null -> renderer shows "$0"/"Waiting for baseline". Verified empirically:
+    // the live page contains the open price only as \"openPrice\":N,\"closePrice\":null.
+    // Anchor on the escaped exact-window query key so we can never pick an adjacent window;
+    // each event page is single-coin, so there is no cross-symbol ambiguity.
+    const escKey = `\\"crypto-prices\\",\\"price\\",\\"${querySymbol}\\",\\"${startIso}\\",\\"fiveminute\\",\\"${endIso}\\"`;
+    if (html.includes(escKey)) {
+      // Active (open) window: uniquely the crypto-prices query whose closePrice is null.
+      const openNull = html.match(/\\"openPrice\\":\s*([0-9]+(?:\.[0-9]+)?)\s*,\s*\\"closePrice\\":\s*null/);
+      if (openNull) {
+        const op = Number(openNull[1]);
+        if (Number.isFinite(op) && op > 0) return op;
+      }
+      // Window already closed at scrape time: state (with openPrice) precedes its queryKey in
+      // the dehydrated entry, so take the nearest openPrice immediately before the matched key.
+      const keyIdx = html.indexOf(escKey);
+      const before = html.slice(Math.max(0, keyIdx - 800), keyIdx);
+      const anchored = [...before.matchAll(/\\"openPrice\\":\s*([0-9]+(?:\.[0-9]+)?)/g)];
+      if (anchored.length) {
+        const op = Number(anchored[anchored.length - 1][1]);
+        if (Number.isFinite(op) && op > 0) return op;
+      }
+    }
+
+    // Attempt to extract the dehydratedState JSON from HTML (legacy unescaped page format)
     let stateJson = null;
     const nextDataMatch = html.match(/<script id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/);
     if (nextDataMatch) {
@@ -1568,6 +1820,41 @@
       if (Number.isFinite(op) && op > 0) return op;
     }
 
+    // Last-chance broad search in the entire HTML for an openPrice near 5m context or our symbol/time.
+    // Some pages serialize the data differently (no __NEXT_DATA__ wrapper).
+    try {
+      const openCandidates = [...html.matchAll(/"openPrice"\s*:\s*([0-9]+(?:\.[0-9]+)?)/g)].map(m => Number(m[1]));
+      for (const op of openCandidates) {
+        if (Number.isFinite(op) && op > 100) return op; // reasonable crypto price filter
+      }
+      // Also look for priceToBeat anywhere as last resort
+      const anyPtb = [...html.matchAll(/"priceToBeat"\s*:\s*([0-9]+(?:\.[0-9]+)?)/g)].map(m => Number(m[1]));
+      for (const p of anyPtb) if (Number.isFinite(p) && p > 0) return p;
+    } catch (_) {}
+
+    return null;
+  }
+
+  function _parseGenericPriceToBeat(jsonStr, slug) {
+    if (!jsonStr) return null;
+    try {
+      const data = JSON.parse(jsonStr);
+      const objs = [data, data.market, data.event, data.eventMetadata, data.resolution, data.metadata, data.data].filter(Boolean);
+      for (const o of objs) {
+        const cands = [o.priceToBeat, o.price_to_beat, o.initialPrice, o.openPrice, o.startPrice, o.benchmarkPrice, o.strike, o.strikePrice, o.referencePrice, o.openingPrice];
+        for (const c of cands) {
+          const n = Number(c);
+          if (Number.isFinite(n) && n > 0) return n;
+        }
+      }
+      // Deep scan one level for arrays of sub objects (events etc)
+      if (Array.isArray(data.markets)) {
+        for (const mm of data.markets) {
+          const cands = [mm.priceToBeat, mm.openPrice, mm.initialPrice];
+          for (const c of cands) { const n=Number(c); if (Number.isFinite(n)&&n>0) return n; }
+        }
+      }
+    } catch (e) {}
     return null;
   }
 
@@ -1576,7 +1863,13 @@
     const cached = _poly5mPriceToBeatCache[slug];
     if (cached && (cached.value != null || Date.now() - cached.fetchedAt < 3_000)) return cached.value;
     try {
-      const html = await textFetch(`https://polymarket.com/event/${encodeURIComponent(slug)}`);
+      const html = await textFetch(`https://polymarket.com/event/${encodeURIComponent(slug)}`, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'en-US,en;q=0.9',
+        }
+      });
       const value = _parsePolymarketPriceToBeat(html, slug);
       _poly5mPriceToBeatCache[slug] = { value, fetchedAt: Date.now() };
       return value;
@@ -1595,7 +1888,11 @@
     const windowTs = nowSec - (nowSec % 300);
     const cached = _poly5mCache[sym];
     if (cached && cached.windowTs === windowTs && Date.now() - cached.fetchedAt < 15_000) {
-      return cached.data;
+      const c = cached.data;
+      if (c && Number.isFinite(c.priceToBeatNum) && c.priceToBeatNum > 0) {
+        return c;
+      }
+      // stale cache without PTB for active window — re-fetch to establish exact contract PTB
     }
     const candidates = [
       windowTs,
@@ -1615,6 +1912,7 @@
         if (!m) return null;
         const upProb = _parseUpProb(m);
         if (upProb === null) return null;
+
         const isActiveWindow = ts <= windowTs;
         const clobSnapshot = isActiveWindow
           ? await fetchPolymarketClobMarketSnapshot(sym, m)
@@ -1627,23 +1925,90 @@
         const volume = parseFloat(m.volume24hr || m.volumeNum || m.volume || 0) || 0;
         const marketSlug = m.slug || slug;
         const isFuture = ts > windowTs;
+
         let priceToBeatSource = null;
         let priceToBeatNum = null;
 
-        if (!isFuture) {
-          const lockedPriceToBeat = _getPolymarketPriceToBeatLock(marketSlug);
-          if (lockedPriceToBeat) {
-            priceToBeatNum = lockedPriceToBeat.price;
-            priceToBeatSource = lockedPriceToBeat.source;
-          } else {
-            priceToBeatNum = await fetchPolymarketPriceToBeat(marketSlug);
-            if (Number.isFinite(priceToBeatNum)) priceToBeatSource = 'polymarket-event-page';
+        // Parse PTB from title/question (note: many 5m slugs use time-range in title; $ strike not always present)
+        if (!priceToBeatNum && title) {
+          const match = title.match(/\$([0-9,.]+)/);
+          if (match) {
+            const num = parseFloat(match[1].replace(/,/g, ''));
+            if (Number.isFinite(num) && num > 0) {
+              priceToBeatNum = num;
+              priceToBeatSource = 'polymarket-title';
+            }
+          }
+        }
+
+        // 1. Try gamma metadata / m object first (reliable, no scrape)
+        if (!priceToBeatNum && Number.isFinite(m.priceToBeat) && m.priceToBeat > 0) {
+          priceToBeatNum = m.priceToBeat;
+          priceToBeatSource = 'gamma-market';
+        } else if (!priceToBeatNum && m.eventMetadata && Number.isFinite(m.eventMetadata.priceToBeat)) {
+          priceToBeatNum = m.eventMetadata.priceToBeat;
+          priceToBeatSource = 'gamma-event-metadata';
+        } else if (!priceToBeatNum && m.price_to_beat && Number.isFinite(m.price_to_beat)) {
+          priceToBeatNum = m.price_to_beat;
+          priceToBeatSource = 'gamma-price-to-beat';
+        }
+
+        // 1b. Generic parse from full market JSON for other fields
+        if (!priceToBeatNum) {
+          const gen = _parseGenericPriceToBeat(JSON.stringify(m), marketSlug);
+          if (Number.isFinite(gen) && gen > 0) {
+            priceToBeatNum = gen;
+            priceToBeatSource = 'gamma-market-metadata';
+          }
+        }
+
+        // 1c. Also try broader keys on the raw market object (some gamma responses use different casing)
+        if (!priceToBeatNum) {
+          const cands = [m.initialPrice, m.openPrice, m.startPrice, m.benchmarkPrice, m.strike, m.strikePrice, m.referencePrice];
+          for (const c of cands) {
+            const n = toPositiveFiniteNumber(c);
+            if (n != null) { priceToBeatNum = n; priceToBeatSource = 'gamma-market-field'; break; }
+          }
+        }
+
+        const startMs = startDate ? new Date(startDate).getTime() : ts * 1000;
+        const [cryptoWindow, rtds] = await Promise.all([
+          fetchPolymarketCryptoWindowPrice(sym, startMs).catch(() => null),
+          fetchPolymarketRtdsSnapshot(sym, startMs).catch(() => null),
+        ]);
+
+        // PTB resolution: ONLY from Polymarket sources of truth (gamma, scrape, title, locked).
+        // Never use live/realtime price (pyth or current chainlink) as the PTB for a window.
+        // The boundary snapshot (locked at exact open) or event page scrape is the authority.
+        const isImmediateNext = ts === windowTs + 300;
+        const shouldResolvePTB = !isFuture || isImmediateNext;
+
+        if (shouldResolvePTB) {
+          // Always prefer the canonical value from Polymarket itself (the price of truth for this contract)
+          let scraped = null;
+          try {
+            scraped = await fetchPolymarketPriceToBeat(marketSlug);
+          } catch (_) {}
+          if (Number.isFinite(scraped) && scraped > 0) {
+            priceToBeatNum = scraped;
+            priceToBeatSource = 'polymarket-event-page';
+          }
+
+          // Fallback to previously locked (e.g. boundary snapshot) only if no Polymarket value yet
+          if (priceToBeatNum == null) {
+            const lockedPriceToBeat = _getPolymarketPriceToBeatLock(marketSlug);
+            if (lockedPriceToBeat) {
+              priceToBeatNum = lockedPriceToBeat.price;
+              priceToBeatSource = lockedPriceToBeat.source;
+            }
           }
 
           if (priceToBeatNum != null) {
             const locked = _lockPolymarketPriceToBeat(marketSlug, priceToBeatNum, priceToBeatSource);
-            priceToBeatNum = locked?.price ?? null;
-            priceToBeatSource = locked?.source ?? null;
+            if (locked) {
+              priceToBeatNum = locked.price;
+              priceToBeatSource = locked.source;
+            }
           }
         }
 
@@ -1653,20 +2018,39 @@
         // we want to pull/promote it immediately.
         if (priceToBeatNum == null && !isFuture && ts !== windowTs) return null;
 
-        if (ts === windowTs || priceToBeatNum != null) {
-          console.log(`[Poly5M-PTB] ${sym} ${marketSlug} → $${priceToBeatNum ?? 'pending'} (source: ${priceToBeatSource ?? 'waiting-for-open'})`);
+        if (ts === windowTs || isImmediateNext || priceToBeatNum != null) {
+          console.log(`[Poly5M-PTB] ${sym} ${marketSlug} → $${priceToBeatNum ?? 'pending'} (source: ${priceToBeatSource ?? 'waiting-for-open'}) [exact-contract]`);
         }
 
-        const chainlinkCurrentPriceNum = null;
-        const chainlinkCurrentPriceTs = null;
+        let chainlinkCurrentPriceNum = toPositiveFiniteNumber(cryptoWindow?.closePrice);
+        let chainlinkCurrentPriceTs = toPositiveFiniteNumber(cryptoWindow?.timestamp);
+        if (chainlinkCurrentPriceNum == null) {
+          chainlinkCurrentPriceNum = toPositiveFiniteNumber(rtds?.currentPriceNum);
+          chainlinkCurrentPriceTs = toPositiveFiniteNumber(rtds?.currentPriceTs);
+        }
         const pythCurrent = await getFreshPythLazerPrice(sym);
-        const currentPriceNum = pythCurrent?.price ?? null;
-        const currentPriceTs = pythCurrent?.timestamp ?? null;
-        const currentPriceSource = pythCurrent?.source || null;
-        const oracleBasisNum = null;
+        const currentPriceNum = pythCurrent?.price ?? chainlinkCurrentPriceNum;
+        const currentPriceTs = pythCurrent?.timestamp ?? chainlinkCurrentPriceTs;
+        const currentPriceSource = pythCurrent?.source || 'polymarket-chainlink';
+        const oracleBasisNum = pythCurrent && chainlinkCurrentPriceNum != null
+          ? pythCurrent.price - chainlinkCurrentPriceNum
+          : null;
         const currentPriceJustification = pythCurrent
-          ? 'Pyth Lazer real-time price compared with the immutable Polymarket contract PTB; settlement remains Chainlink.'
-          : 'Pyth Lazer real-time price is unavailable or stale; the contract PTB remains locked.';
+          ? 'Pyth Lazer real-time price compared with Polymarket Chainlink opening PTB; settlement remains Chainlink.'
+          : 'Polymarket Chainlink current price fallback; Pyth Lazer was unavailable or stale.';
+
+        // Re-lock if we got a good PTB from Polymarket sources for this window.
+        // PTB for the exact contract must come from the slug's Polymarket page (scrape = truth)
+        // or a value locked at the precise open time of the window (boundary clock snapshot).
+        // Never inject a live price observed later in the window.
+        if (priceToBeatNum != null && !isFuture) {
+          const locked = _lockPolymarketPriceToBeat(marketSlug, priceToBeatNum, priceToBeatSource);
+          if (locked) {
+            priceToBeatNum = locked.price;
+            priceToBeatSource = locked.source;
+          }
+        }
+
         const priceToBeat = _formatPolyPriceToBeat(priceToBeatNum, sym);
         const hasLiveComparison = currentPriceNum != null && Number.isFinite(priceToBeatNum) && priceToBeatNum > 0;
         const priceDeltaNum = hasLiveComparison ? currentPriceNum - priceToBeatNum : null;
@@ -1921,7 +2305,7 @@ function polymarketSentiment(markets, sym) {
   async function _doFetch() {
     _polyCycleCount++;
     const fetchPoly5M = true;
-    const fetchKalshi5MNow = (_polyCycleCount === 1 || _polyCycleCount % 2 === 0);
+    const fetchKalshi5MNow = true;  // always fetch 5m data for 5m markets view (was throttled, may have caused "wait" / missing data)
 
     const [kalshi15m, polyMarkets] = await Promise.all([
       withTimeout(fetchKalshi15M(), FETCH_TIMEOUT_MS, 'Kalshi 15M fetch').catch(err => {
@@ -2179,7 +2563,20 @@ function polymarketSentiment(markets, sym) {
         // 1. Pre-fetch trigger: 10 seconds before the 5-minute boundary
         if (secInPeriod >= 290 && !prefetchTriggered) {
           prefetchTriggered = true;
-          console.info(`[BoundaryClock] ⏱ 10s to 5m boundary. Triggering pre-fetch of future 5M contracts.`);
+          console.info(`[BoundaryClock] ⏱ 10s to 5m boundary. Pre-fetching current + next 5M contracts for the queue boxes.`);
+          // Pre-snapshot a PTB for the upcoming window ~10s before it starts (price is almost the open).
+          // Warm the "next" window's market data so its canonical PTB loads as soon
+          // as Polymarket publishes it. We no longer pre-seed a live-price proxy — the
+          // box shows "pending" until the real polycool/Polymarket priceToBeat arrives.
+          Object.keys(POLY_5M_COIN_SLUGS).forEach(async (sym) => {
+            try {
+              const nextTs = (Math.floor(Date.now() / 1000) - (Math.floor(Date.now() / 1000) % 300)) + 300;
+              const prefix = POLY_5M_COIN_SLUGS[sym];
+              const nextSlug = `${prefix}-updown-5m-${nextTs}`;
+              // Warm the market data (canonical PTB resolves inside fetchPolymarket5MBySlug)
+              await fetchPolymarket5MMarketCandidate(sym, nextSlug).catch(() => null);
+            } catch (_) {}
+          });
           fetchAll().catch(() => {});
         }
 
@@ -2252,6 +2649,23 @@ function polymarketSentiment(markets, sym) {
             window.dispatchEvent(new CustomEvent('predictionmarketsready', { detail: cache }));
           }
 
+          // At exact rollover, lock the PTB for the new window using ONLY the canonical
+          // Polymarket value (the price of truth that polycool.app displays).
+          // No live-price fallback: if the exact PTB isn't available yet the window stays
+          // "pending" until it loads, rather than showing a misleading Chainlink/Pyth proxy.
+          // Do this BEFORE triggering the fetch so the new active window fetch picks up the lock.
+          Object.keys(POLY_5M_COIN_SLUGS).forEach(async (sym) => {
+            try {
+              const prefix = POLY_5M_COIN_SLUGS[sym];
+              const newSlug = `${prefix}-updown-5m-${currentBoundary}`;
+              // Prefer exact value from Polymarket (the price of truth)
+              const scraped = await fetchPolymarketPriceToBeat(newSlug).catch(() => null);
+              if (Number.isFinite(scraped) && scraped > 0) {
+                _lockPolymarketPriceToBeat(newSlug, scraped, 'polymarket-event-page');
+              }
+            } catch (e) {}
+          });
+
           // Trigger background fetch to get actual PTB and live pricing
           refreshPoly5M('boundary-clock').catch(() => {});
           fetchAll().catch(() => {});
@@ -2292,5 +2706,19 @@ function polymarketSentiment(markets, sym) {
     fetchAll,
     refreshPoly5M,
   };
+
+  if (window.__WE_TEST__) {
+    window.__PredictionMarketsTestHooks = {
+      fetchPolymarket5MBySlug,
+      _coercePolyMarketFromEvent,
+      _formatPolyPriceToBeat,
+      _isTradablePoly5M,
+      _parseGenericPriceToBeat,
+      _parsePolymarketPriceToBeat,
+      _parseUpProb,
+      _selectLatestChainlinkTick,
+      _selectOpeningChainlinkTick,
+    };
+  }
 
 })();

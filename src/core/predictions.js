@@ -70,11 +70,12 @@
     getKalshi15mSettlementContext,
   } = window.PredictionKalshiLogic;
   const SHORT_HORIZON_WEIGHTS = { 1: 0.25, 5: 0.45, 10: 0.75, 15: 2.40 };
+  // HIGH COVERAGE MODE (user: always take a trade) — low floors, lean not block.
   const SHORT_HORIZON_FILTERS = {
-    h1: { entryThreshold: 0.16, minAgreement: 0.62 },  // ★ RAISED: Filter out noise at 1min (was 0.08)
-    h5: { entryThreshold: 0.18, minAgreement: 0.64 },  // ★ RAISED: Filter out noise at 5min (was 0.12)
-    h10: { entryThreshold: 0.16, minAgreement: 0.58 }, // ★ Pre-settlement signal
-    h15: { entryThreshold: 0.10, minAgreement: 0.65 }, // ★ PRIMARY TARGET: Kalshi contract settlement
+    h1: { entryThreshold: 0.06, minAgreement: 0.50 },
+    h5: { entryThreshold: 0.08, minAgreement: 0.50 },
+    h10: { entryThreshold: 0.08, minAgreement: 0.50 },
+    h15: { entryThreshold: 0.06, minAgreement: 0.50 },
   };
 
   const candleCache = {};
@@ -145,7 +146,7 @@
   });
 
   // ── Backtest localStorage cache (cold-start / refresh acceleration) ───────
-  // Bump cache key to force recomputation after h1/h5 horizon-candle fix.
+  // Bump cache key to force recomputation after h1/h5 horizon-candle fix + 5m PTB anchor.
   const BT_CACHE_KEY = 'beta1_bt_cache_v2';
   const BT_CACHE_TTL_MS = 4 * 60 * 60 * 1000; // 4 hours
 
@@ -237,117 +238,37 @@
   } = window.PredictionRegimeWeights;
 
   // ================================================================
-  // PER_COIN_INDICATOR_BIAS — Data-driven from 7-day h15 backtest per-indicator accuracy
-  // Updated 2026-04-29. Each value = multiplier on COMPOSITE_WEIGHTS for that coin.
-  // Best/Worst indicators per coin sourced directly from backtest-runner.js diagnostic output.
+  // PER_COIN_INDICATOR_BIAS — retuned 2026-08-02 from advanced 30d h15 indicator accuracy.
+  // Caps extremes (no bias > 1.6 on tradable coins). XRP/SOL trade-disabled via TRADING_POLICY.
+  // Micro book/flow kept modest for live path (not in offline advanced suite).
   const PER_COIN_INDICATOR_BIAS = {
      BTC: {
-       stochrsi: 0.061,
-       vwma: 0.053,
-       volume: 1.2,
-       bands: 0.262,
-       williamsR: 2.453,
-       structure: 1.598,
-       fisher: 1.356,
-       keltner: 1.95,
-       cci: 1.287,
-       cmf: 0.85,
-       rsi: 0.92,
-       macd: 0.538,
-       persistence: 0.671,
-       ema: 0.437,
-       ichimoku: 0.264,
-       adx: 0.277,
-       vwap: 0.182,
-       sma: 0.145,
-       momentum: 0.194,
-       obv: 1.256,
-       hma: 1.3,
-       mfi: 1.52,
-       supertrend: 1.398,
-       fearGreed: 1.2,
-       book: 0.304,
-       flow: 0.284,
+       bands: 1.09, williamsR: 1.08, obv: 0.97, vwap: 1.05, hma: 0.9, momentum: 0.55,
+       stochrsi: 1.05, sma: 0.95, adx: 1.01, mfi: 1.13, supertrend: 1.01, ichimoku: 0.91,
+       keltner: 1.09, volume: 0.94, ema: 0.9, vwma: 0.86, macd: 0.91, structure: 1.13,
+       fisher: 1.08, persistence: 1.01, rsi: 0.63, cci: 1.07, cmf: 1.01,
+       fearGreed: 1.0, book: 0.85, flow: 0.80,
      },
      ETH: {
-       rsi: 0.018,
-       stochrsi: 1.101,
-       williamsR: 1.923,
-       bands: 2.045,
-       structure: 1.466,
-       keltner: 1.857,
-       cci: 0.942,
-       fisher: 1.686,
-       cmf: 0.607,
-       volume: 0.726,
-       persistence: 0.01,
-       obv: 1.055,
-       macd: 0.847,
-       ema: 0.011,
-       sma: 1.132,
-       adx: 0.12,
-       ichimoku: 0.047,
-       vwap: 0.852,
-       vwma: 0.484,
-       supertrend: 0.01,
-       momentum: 0.309,
-       mfi: 0.843,
-       hma: 0.415,
-       fearGreed: 1.062,
+       bands: 1.33, mfi: 1.1, sma: 0.97, adx: 1.11, supertrend: 1.13, ichimoku: 1.0,
+       hma: 0.85, vwap: 0.82, ema: 0.92, cmf: 1.1, momentum: 0.55, obv: 0.96,
+       fisher: 1.24, vwma: 0.94, macd: 0.84, cci: 1.22, rsi: 0.81, structure: 1.16,
+       persistence: 1.04, stochrsi: 1.11, williamsR: 1.3, keltner: 1.25, volume: 0.92,
+       fearGreed: 1.0, book: 0.90, flow: 0.85,
      },
      SOL: {
-       bands: 1.2,
-       fisher: 1.836,
-       williamsR: 0.31,
-       cci: 0.52,
-       hma: 1.43,
-       structure: 2.5,
-       keltner: 1.54,
-       obv: 1.477,
-       macd: 0.918,
-       ichimoku: 1.38,
-       adx: 0.054,
-       vwma: 0.17,
-       volume: 1.91,
-       sma: 0.08,
-       vwap: 2,
-       rsi: 1.5,
-       persistence: 0.017,
-       ema: 1.5,
-       cmf: 0.071,
-       supertrend: 0.02,
-       momentum: 0.077,
-       mfi: 1.2,
-       stochrsi: 0.055,
-       book: 0.489,
-       flow: 0.468,
-       fearGreed: 1,
+       williamsR: 1.14, cci: 1.12, sma: 1.09, mfi: 1.13, rsi: 1.02, supertrend: 1.02,
+       ema: 0.9, bands: 1.18, stochrsi: 0.86, volume: 0.95, cmf: 0.8, ichimoku: 0.92,
+       persistence: 0.77, adx: 0.9, hma: 0.76, vwap: 0.7, vwma: 0.72, macd: 0.9,
+       keltner: 1.31, fisher: 1.13, momentum: 0.55, obv: 0.91, structure: 1.27,
+       fearGreed: 0.9, book: 0.75, flow: 0.70,
      },
      XRP: {
-       structure: 1.03,
-       volume: 1.5,
-       vwap: 3.5,
-       fisher: 2.8,
-       rsi: 3.5,
-       obv: 1.5,
-       williamsR: 1.239,
-       bands: 0.841,
-       supertrend: 0.323,
-       cci: 0.562,
-       cmf: 0.592,
-       keltner: 0.485,
-       macd: 0.362,
-       stochrsi: 0.831,
-       persistence: 0.093,
-       ema: 0.134,
-       adx: 0.177,
-       ichimoku: 0.154,
-       sma: 0.016,
-       mfi: 0.152,
-       momentum: 0.054,
-       vwma: 0.026,
-       hma: 0.113,
-       fearGreed: 0.7,
+       vwap: 0.98, rsi: 0.91, fisher: 0.83, hma: 1.02, mfi: 1.02, momentum: 0.55,
+       sma: 0.81, macd: 1.08, vwma: 0.83, persistence: 0.95, ichimoku: 0.9, obv: 0.82,
+       volume: 0.84, adx: 0.83, ema: 0.77, keltner: 0.89, cci: 0.91, williamsR: 0.85,
+       supertrend: 0.79, cmf: 0.84, stochrsi: 0.96, bands: 0.95, structure: 1.08,
+       fearGreed: 0.7, book: 0.6, flow: 0.55,
      },
      HYPE: {
        williamsR: 6.5,
@@ -460,7 +381,7 @@
 
   // ── Exchange data fetchers — provided by data-fetchers.js scaffold ─────────
   const {
-    fetchWithTimeout, fetchAnalyticsWithRoute, fetchFearGreed,
+    fetchWithTimeout, fetchAnalyticsWithRoute, fetchFearGreed, resetGeckoRequestQueue, getFngCacheValue,
     fetchCDCCandles, fetchCDCBook, fetchCDCTrades,
     fetchGeckoJSON, fetchGeckoCandles, fetchGeckoTicker, fetchGeckoMaxHistory,
     fetchBINCandles, fetchBINBook, fetchBINTrades,
@@ -507,15 +428,30 @@
   };
   const BACKTEST_THRESHOLD_GRID = [0.08, 0.10, 0.12, 0.16, 0.20];
   const BACKTEST_AGREEMENT_GRID = [0.50, 0.54, 0.58];
+  // ALWAYS-TRADE MODE — every coin live, tiny minEdge; size risk elsewhere.
+  // User preference 2026-08-02: more bets, always able to take a side.
+  const ALWAYS_TRADE_MODE = true;
+  const TRADING_POLICY = {
+    BTC: { trade: true, paper: false, sessionPrefer: [], minEdge: 0.01 },
+    ETH: { trade: true, paper: false, sessionPrefer: [], minEdge: 0.01 },
+    SOL: { trade: true, paper: false, sessionPrefer: [], minEdge: 0.01 },
+    XRP: { trade: true, paper: false, sessionPrefer: [], minEdge: 0.01 },
+    BNB: { trade: true, paper: false, sessionPrefer: [], minEdge: 0.01 },
+    DOGE: { trade: true, paper: false, sessionPrefer: [], minEdge: 0.01 },
+    HYPE: { trade: true, paper: false, sessionPrefer: [], minEdge: 0.01 },
+  };
+  window.TRADING_POLICY = TRADING_POLICY;
+  window.ALWAYS_TRADE_MODE = ALWAYS_TRADE_MODE;
+
   const BACKTEST_FILTER_OVERRIDES = {
-    // Retuned 2026-06-22 via walk-forward OOS calibration.
-    BTC: { h1: { entryThreshold: 0.30, minAgreement: 0.54 }, h5: { entryThreshold: 0.30, minAgreement: 0.54 }, h10: { entryThreshold: 0.25, minAgreement: 0.58 }, h15: { entryThreshold: 0.25, minAgreement: 0.58 } },
-    ETH: { h1: { entryThreshold: 0.25, minAgreement: 0.50 }, h5: { entryThreshold: 0.25, minAgreement: 0.50 }, h10: { entryThreshold: 0.25, minAgreement: 0.50 }, h15: { entryThreshold: 0.25, minAgreement: 0.54 } },
-    XRP: { h1: { entryThreshold: 0.30, minAgreement: 0.58 }, h5: { entryThreshold: 0.30, minAgreement: 0.58 }, h10: { entryThreshold: 0.30, minAgreement: 0.58 }, h15: { entryThreshold: 0.30, minAgreement: 0.54 } },
-    SOL: { h1: { entryThreshold: 0.35, minAgreement: 0.50 }, h5: { entryThreshold: 0.35, minAgreement: 0.50 }, h10: { entryThreshold: 0.28, minAgreement: 0.54 }, h15: { entryThreshold: 0.30, minAgreement: 0.54 } },
-    BNB: { h1: { entryThreshold: 0.50, minAgreement: 0.72 }, h5: { entryThreshold: 0.50, minAgreement: 0.72 }, h10: { entryThreshold: 0.50, minAgreement: 0.72 }, h15: { entryThreshold: 0.50, minAgreement: 0.72 } },
-    DOGE: { h1: { entryThreshold: 0.28, minAgreement: 0.58 }, h5: { entryThreshold: 0.32, minAgreement: 0.60 }, h10: { entryThreshold: 0.35, minAgreement: 0.62 }, h15: { entryThreshold: 0.38, minAgreement: 0.66 } },
-    HYPE: { h1: { entryThreshold: 0.20, minAgreement: 0.56 }, h5: { entryThreshold: 0.25, minAgreement: 0.60 }, h10: { entryThreshold: 0.30, minAgreement: 0.62 }, h15: { entryThreshold: 0.33, minAgreement: 0.64 } },
+    // High-coverage: fire often on all books.
+    BTC: { h1: { entryThreshold: 0.08, minAgreement: 0.50 }, h5: { entryThreshold: 0.08, minAgreement: 0.50 }, h10: { entryThreshold: 0.08, minAgreement: 0.50 }, h15: { entryThreshold: 0.08, minAgreement: 0.50 } },
+    ETH: { h1: { entryThreshold: 0.06, minAgreement: 0.48 }, h5: { entryThreshold: 0.06, minAgreement: 0.48 }, h10: { entryThreshold: 0.06, minAgreement: 0.48 }, h15: { entryThreshold: 0.06, minAgreement: 0.48 } },
+    XRP: { h1: { entryThreshold: 0.08, minAgreement: 0.50 }, h5: { entryThreshold: 0.08, minAgreement: 0.50 }, h10: { entryThreshold: 0.08, minAgreement: 0.50 }, h15: { entryThreshold: 0.08, minAgreement: 0.50 } },
+    SOL: { h1: { entryThreshold: 0.08, minAgreement: 0.50 }, h5: { entryThreshold: 0.08, minAgreement: 0.50 }, h10: { entryThreshold: 0.08, minAgreement: 0.50 }, h15: { entryThreshold: 0.08, minAgreement: 0.50 } },
+    BNB: { h1: { entryThreshold: 0.10, minAgreement: 0.50 }, h5: { entryThreshold: 0.10, minAgreement: 0.50 }, h10: { entryThreshold: 0.10, minAgreement: 0.50 }, h15: { entryThreshold: 0.10, minAgreement: 0.50 } },
+    DOGE: { h1: { entryThreshold: 0.06, minAgreement: 0.48 }, h5: { entryThreshold: 0.06, minAgreement: 0.48 }, h10: { entryThreshold: 0.06, minAgreement: 0.48 }, h15: { entryThreshold: 0.06, minAgreement: 0.48 } },
+    HYPE: { h1: { entryThreshold: 0.06, minAgreement: 0.48 }, h5: { entryThreshold: 0.06, minAgreement: 0.48 }, h10: { entryThreshold: 0.06, minAgreement: 0.48 }, h15: { entryThreshold: 0.06, minAgreement: 0.48 } },
   };
   const ORBITAL_ROUTER_PROFILES = {
     core: {
@@ -569,6 +505,18 @@
   const BACKTEST_LOOKBACK_OBS = 160;
   const BACKTEST_MIN_REGIME_OBS = 18;
   const LIVE_DATA_TTL_MS = 870000;        // 14.5 min — candle cache stays valid across the full 15-min window
+  // ── Live-path performance profile (Canada node / 24-7 Electron) ──────────
+  // Walk-forward was 4 horizons × 250 steps × buildSignalModel(400 bars) →
+  // main-thread freezes and 25s prediction timeouts. Keep signal quality,
+  // cut redundant history that doesn't improve 5m/15m Kalshi decisions.
+  const PERF = {
+    candle1mLimit: 120,          // was 180
+    candle5mLimit: 150,          // was 300
+    candle15mLimit: 120,         // was 300
+    maxBacktestSteps: 120,       // was 250
+    backtestWindowBars: 200,     // was 400
+    firstPassTimeoutMs: 14000,   // slightly tighter than prior 20s-class caps when defined
+  };
   let geckoRequestQueue = Promise.resolve();
   let lastGeckoRequestAt = 0;
   let lastExchangeRequestAt = 0;
@@ -681,12 +629,12 @@
             GECKO_MARKET_SOFT_TIMEOUT_MS,
             null
           ),
-          fetchBINCandles(coin.sym, '1m', 180).catch(() => []),
-          fetchBINCandles(coin.sym, '5m', 300).catch(() => []),
-          fetchBINCandles(coin.sym, '15m', 300).catch(() => []),
-          fetchCBExchCandles(coin.sym, 60, 180).catch(() => []),
-          fetchCBExchCandles(coin.sym, 300, 300).catch(() => []),
-          fetchCBExchCandles(coin.sym, 900, 300).catch(() => []),
+          fetchBINCandles(coin.sym, '1m', PERF.candle1mLimit).catch(() => []),
+          fetchBINCandles(coin.sym, '5m', PERF.candle5mLimit).catch(() => []),
+          fetchBINCandles(coin.sym, '15m', PERF.candle15mLimit).catch(() => []),
+          fetchCBExchCandles(coin.sym, 60, PERF.candle1mLimit).catch(() => []),
+          fetchCBExchCandles(coin.sym, 300, PERF.candle5mLimit).catch(() => []),
+          fetchCBExchCandles(coin.sym, 900, PERF.candle15mLimit).catch(() => []),
           fetchCBExchBook(coin.sym).catch(() => null),
         ]);
         const prices = Array.isArray(market?.prices) ? market.prices : [];
@@ -728,12 +676,12 @@
       } else {
         // BTC / ETH / SOL / XRP / DOGE: Coinbase + Binance only
         const [bin1m, bin5m, bin15m, cb1m, cb5m, cb15m, cbBook, cbTrades] = await Promise.all([
-          fetchBINCandles(coin.sym, '1m', 180).catch(() => []),
-          fetchBINCandles(coin.sym, '5m', 300).catch(() => []),
-          fetchBINCandles(coin.sym, '15m', 300).catch(() => []),
-          fetchCBExchCandles(coin.sym, 60, 180).catch(() => []),
-          fetchCBExchCandles(coin.sym, 300, 300).catch(() => []),
-          fetchCBExchCandles(coin.sym, 900, 300).catch(() => []),
+          fetchBINCandles(coin.sym, '1m', PERF.candle1mLimit).catch(() => []),
+          fetchBINCandles(coin.sym, '5m', PERF.candle5mLimit).catch(() => []),
+          fetchBINCandles(coin.sym, '15m', PERF.candle15mLimit).catch(() => []),
+          fetchCBExchCandles(coin.sym, 60, PERF.candle1mLimit).catch(() => []),
+          fetchCBExchCandles(coin.sym, 300, PERF.candle5mLimit).catch(() => []),
+          fetchCBExchCandles(coin.sym, 900, PERF.candle15mLimit).catch(() => []),
           fetchCBExchBook(coin.sym).catch(() => null),
           fetchCBExchTrades(coin.sym).catch(() => []),
         ]);
@@ -741,6 +689,10 @@
         const ws1m = window.CandleWS ? window.CandleWS.getClosedBuckets1m(coin.sym) : [];
         const candles5m = anchoredPoolCandles(cb5m, bin5m);
         const candles15m = anchoredPoolCandles(ws15m_b, cb15m, bin15m);
+        console.log(`[15mPool DEBUG majors] ${coin.sym} | cb15m:${cb15m.length} bin15m:${bin15m.length} ws15m:${ws15m_b.length} pooled15m:${candles15m.length} | cb5m:${cb5m.length} bin5m:${bin5m.length}`);
+        if (candles15m.length === 0) {
+          console.warn(`[15mPool] ${coin.sym} 15m pooling got 0 bars - check WS connection and 15m REST fetches. Errors above may indicate rate limits or proxy blocks.`);
+        }
         const candles1m = anchoredPoolCandles(ws1m, cb1m, bin1m);
         // If exchange APIs returned nothing, keep existing cache rather than blanking it
         if (!candles5m.length) {
@@ -756,7 +708,7 @@
         candleCache[coin.sym] = {
           candles: candles5m, candles15m, candles1m,
           book: cbBook, trades: cbTrades,
-          source: sourceParts.join(' + '),
+          source: sourceParts.join(' + ') + (candles15m.length ? ' +15m-pooled' : ''),
           ts: Date.now(),
           longHistory: retainedLongHistory,
           longHistoryTs: retainedLongHistory?.length ? (existing.longHistoryTs || Date.now()) : 0,
@@ -1442,14 +1394,17 @@
 
   function signalFromScore(score) {
     const absScore = Math.abs(score);
-    if (absScore < 0.20) return 'neutral';               // scaled for post-amplification (1.6×)
-    // Positive score = bullish (UP), negative score = bearish (DOWN).
-    if (score > 0) return absScore > 0.55 ? 'strong_bull' : 'bullish';
-    return absScore > 0.55 ? 'strong_bear' : 'bearish';
+    // ALWAYS_TRADE: only pure zero is neutral — any lean becomes a side.
+    const deadband = (typeof window !== 'undefined' && window.ALWAYS_TRADE_MODE) ? 0.01 : 0.12;
+    if (absScore < deadband) return 'neutral';
+    if (score > 0) return absScore > 0.45 ? 'strong_bull' : 'bullish';
+    return absScore > 0.45 ? 'strong_bear' : 'bearish';
   }
 
-  function directionFromScore(score, threshold = 0.12) {
-    return score > threshold ? 'UP' : score < -threshold ? 'DOWN' : 'FLAT';
+  function directionFromScore(score, threshold = 0.04) {
+    // ALWAYS_TRADE: tiny threshold so we rarely return FLAT.
+    const t = (typeof window !== 'undefined' && window.ALWAYS_TRADE_MODE) ? 0.01 : threshold;
+    return score > t ? 'UP' : score < -t ? 'DOWN' : 'FLAT';
   }
 
   function scoreBucket(absScore) {
@@ -3006,7 +2961,7 @@
     else keltSig = clamp(-(kelt.position - 0.5) * 0.45, -0.22, 0.22);
 
     // Use cached Fear & Greed (non-blocking, updates in background)
-    const fng = _fngCache.value;
+    const fng = getFngCacheValue();
     let fngSig = 0;
     if (fng !== null) {
       if (fng < 30) fngSig = clamp((30 - fng) / 30 * 0.4, 0, 0.4);      // Extreme Fear → bullish
@@ -3507,28 +3462,58 @@
       confidence: Math.round(clamp(confidenceFromScore(Math.abs(score)) * (tapeVelocity.confidenceBoostMult || 1), 0, 95)),
       indicators: indicatorsSummary,
       projections: SHORT_HORIZON_MINUTES.reduce((acc, horizonMin) => {
-        const targetScale = horizonMin / 60;
-        const rangeScale = Math.max(0.12, Math.sqrt(horizonMin / 15) * 0.5) * projectionRangeExpansionMult;
+        // Binary-window scale: move over THIS horizon, not /60 hour fraction.
+        // Old targetScale=horizonMin/60 made 5m projections ~static, so polyAlign
+        // collapsed to "current vs PTB" and kept calling UP after lagging bull runs.
+        const targetScale = Math.max(0.35, Math.min(1.15, horizonMin / 15));
+        const rangeScale = Math.max(0.18, Math.sqrt(horizonMin / 15) * 0.55) * projectionRangeExpansionMult;
 
         // Use model score for projection target so UI targets match verdict direction
-        const expectedMovePct = Math.max(Math.abs(mom / 100), (atr / lastPrice) * 0.4);
+        const expectedMovePct = Math.max(Math.abs(mom / 100), (atr / lastPrice) * 0.55);
         const modelDrift = score * expectedMovePct;
 
-        const target = lastPrice * (1 + modelDrift * targetScale * projectionTargetDriftMult);
+        let target = lastPrice * (1 + modelDrift * targetScale * projectionTargetDriftMult);
         const entry = projectionKey(horizonMin);
         acc[entry] = { horizonMin, target, high: target + atr * rangeScale, low: target - atr * rangeScale };
 
         // For the 5-min horizon, align target to the current 5-min Polymarket contract
+        // Settlement = final price vs FIXED price-to-beat (not candle open→close).
         if (horizonMin === 5) {
           const coinKey = String(options.sym || '').toUpperCase();
           const p5m = window.PredictionMarkets?.getCoin(coinKey)?.poly5m ?? null;
-          const polyRef = p5m?.targetPriceNum ?? null;
+          const polyRef = Number(p5m?.targetPriceNum ?? p5m?.priceToBeatNum);
           const polyYes = p5m?.probability ?? null;
-          if (polyRef !== null && polyRef > 0) {
-            const sigma = (atr * rangeScale) || (lastPrice * 0.0017 * projectionRangeExpansionMult);
-            const z = (target - polyRef) / sigma;
+          if (Number.isFinite(polyRef) && polyRef > 0) {
+            const closeTimeMs = p5m?.closeTime ? new Date(p5m.closeTime).getTime() : null;
+            const remainingMs = Number.isFinite(closeTimeMs) ? Math.max(0, closeTimeMs - Date.now()) : 5 * 60_000;
+            const remainingFrac = clamp(remainingMs / (5 * 60_000), 0.08, 1);
+            const atrDollar = (Number.isFinite(atr) && atr > 0) ? atr : lastPrice * 0.0017;
+
+            // Expected end-of-window price: current + score-driven move that can
+            // actually cross PTB within remaining time (score ±1 ≈ ~0.55 ATR full window).
+            const expectedMove = score * atrDollar * 0.55 * remainingFrac * projectionTargetDriftMult;
+            // Live momentum (1-bar) also counts — lagging composite often still UP while tape is DOWN.
+            const liveMomBoost = clamp((mom / 100) * lastPrice * 0.35 * remainingFrac, -atrDollar * 0.4, atrDollar * 0.4);
+            const meanFinal = lastPrice + expectedMove + liveMomBoost;
+            target = meanFinal;
+            acc[entry].target = meanFinal;
+            acc[entry].high = meanFinal + atrDollar * rangeScale * Math.sqrt(remainingFrac);
+            acc[entry].low = meanFinal - atrDollar * rangeScale * Math.sqrt(remainingFrac);
+
+            // Uncertainty shrinks as the window expires (path already realized).
+            const sigma = Math.max(
+              lastPrice * 0.00004,
+              atrDollar * 0.42 * Math.sqrt(remainingFrac) * projectionRangeExpansionMult
+            );
+            const z = (meanFinal - polyRef) / sigma;
             const pAbove = normalCDF(z);
-            const modelYesPct = Math.round(pAbove * 100);
+            // Soft-clamp extreme certainties early in the window when gap is tiny
+            const gapFrac = (lastPrice - polyRef) / polyRef;
+            let modelYesPct = Math.round(pAbove * 100);
+            if (remainingFrac > 0.55 && Math.abs(gapFrac) < 0.00035 && Math.abs(score) < 0.22) {
+              // Coin-flip zone: refuse fake 70%+ from noise
+              modelYesPct = Math.round(clamp(modelYesPct, 38, 62));
+            }
             const polyYesPct = polyYes !== null ? Math.round(polyYes * 100) : null;
             const divergence = polyYesPct !== null ? Math.abs(modelYesPct - polyYesPct) : null;
             const gapPct = ((polyRef - lastPrice) / lastPrice) * 100;
@@ -3536,6 +3521,7 @@
             const yesDir = 'UP';
             const noDir = 'DOWN';
             const cdfImpliedDir = modelYesPct >= 50 ? yesDir : noDir;
+            // Prefer CDF direction for 5m binary (settlement objective) over free momentum dir
             const dirConflict = dir !== 'FLAT' && cdfImpliedDir !== dir;
 
             acc[entry].polyAlign = {
@@ -3545,7 +3531,11 @@
               polyYesPct,
               divergence,
               strikeDir: 'above',
-              closeTimeMs: p5m?.closeTime ? new Date(p5m.closeTime).getTime() : null,
+              closeTimeMs,
+              remainingMs,
+              remainingFrac,
+              meanFinal,
+              sigma,
               dirConflict,
               cdfImpliedDir,
               status: divergence === null ? 'no-market'
@@ -4745,17 +4735,18 @@
       const barMinutes = inferBarMinutes(candles) || 5;
       const horizonBars = Math.max(1, Math.round(horizonMin / barMinutes));
 
-      // Limit backtest steps to prevent UI freeze
-      const maxBacktestSteps = 250;
+      // Limit backtest steps to prevent UI freeze / Canada-node CPU thrash
+      const maxBacktestSteps = PERF.maxBacktestSteps;
       const minStartIndex = Math.max(26, horizonBars + 10);
       const startIndex = Math.max(minStartIndex, candles.length - horizonBars - maxBacktestSteps);
+      const windowBars = PERF.backtestWindowBars;
 
       const observations = [];
       const history = [];
 
       for (let idx = startIndex; idx < candles.length - horizonBars; idx++) {
-        // Slice window to max 400 items to bound buildSignalModel's O(N) complexity
-        const windowCandles = candles.slice(Math.max(0, idx + 1 - 400), idx + 1);
+        // Slice window to bound buildSignalModel's O(N) complexity
+        const windowCandles = candles.slice(Math.max(0, idx + 1 - windowBars), idx + 1);
         const model = buildSignalModel(windowCandles, null, [], {
           includeMicrostructure: false,
           includeSetups: false,
@@ -4816,6 +4807,7 @@
       sym: coin.sym,
       source: cache.source,
       candleCount: Math.max(cache.candles?.length || 0, cache.candles1m?.length || 0),
+      candleCount15m: cache.candles15m?.length || 0,
       ...results,
       advanced: getCachedAdvancedBacktest(cache),
       summary: {
@@ -5228,17 +5220,35 @@
 
     if (chainSnapshot && !chainSnapshot.error) {
       const chainScore = Number(chainSnapshot.score || 0);
-      pushPacket({
-        family: 'onchain',
-        category: 'onchain',
-        label: 'Blockchain pressure',
-        detail: `${chainSnapshot.chain || chainSnapshot.label || coin.sym} · ${chainSnapshot.signal || 'NEUTRAL'} (${chainSnapshot.source || 'chain'})`,
-        direction: Math.sign(chainScore || 0),
-        strength: clamp(Math.abs(chainScore) / 0.55, 0, 1),
-        freshness: chainFreshness,
-        trust: chainTrust,
-        relevance: ultraFast ? 0.48 : shortBias ? 0.58 : 0.68,
-      });
+      const chainRisk = Number(chainSnapshot.risk || 0);
+      // Only emit directional on-chain pressure when score is real (not congestion proxy).
+      if (Math.abs(chainScore) >= 0.08) {
+        pushPacket({
+          family: 'onchain',
+          category: 'onchain',
+          label: 'Blockchain pressure',
+          detail: `${chainSnapshot.chain || chainSnapshot.label || coin.sym} · ${chainSnapshot.signal || 'NEUTRAL'} (${chainSnapshot.source || 'chain'})`,
+          direction: Math.sign(chainScore || 0),
+          strength: clamp(Math.abs(chainScore) / 0.55, 0, 1),
+          freshness: chainFreshness,
+          trust: chainTrust,
+          // On-chain metrics lag badly for 5m binaries — de-weight ultra-short
+          relevance: ultraFast ? 0.12 : shortBias ? 0.38 : 0.68,
+        });
+      } else if (chainRisk >= 0.25) {
+        riskPackets.push(applyRouterProfile({
+          family: 'onchain-risk',
+          category: 'onchain',
+          role: 'risk',
+          label: 'On-chain congestion',
+          detail: `${chainSnapshot.chain || coin.sym} congestion=${chainSnapshot.congestion || 'MED'} (non-directional)`,
+          direction: 0,
+          strength: clamp(chainRisk, 0, 1),
+          freshness: chainFreshness,
+          trust: chainTrust,
+          relevance: ultraFast ? 0.55 : 0.40,
+        }, routerProfile));
+      }
     } else if (chainSnapshot?.error) {
       riskPackets.push(applyRouterProfile({
         family: 'onchain-risk',
@@ -5767,19 +5777,34 @@
     if (!cache) return { error: 'Insufficient data' };
 
     let candles15m = cache.candles15m || [];
-    if (candles15m.length < 8 && cache.candles && cache.candles.length >= 24) {
-      candles15m = bucketCandles(cache.candles, 15 * 60 * 1000);
-      cache.candles15m = candles15m;
+    // Prefer pre-pooled multi-source 15m (CB + BIN + WS + others via anchoredPoolCandles).
+    // Only fall back to bucketing the 5m pooled candles if the dedicated 15m series is really empty.
+    // This ensures 15m markets actually use the pooled data from multiple exchanges/WS.
+    if ((!candles15m || candles15m.length < 4) && cache.candles && cache.candles.length >= 24) {
+      const fallback = bucketCandles(cache.candles, 15 * 60 * 1000);
+      if (fallback.length > candles15m.length) {
+        candles15m = fallback;
+        cache.candles15m = candles15m;
+      }
     }
+    console.log(`[15mPool SNAPSHOT] ${coin.sym} using candles15m len=${candles15m.length} (from cache ${cache.candles15m?.length || 0}), 5m=${cache.candles?.length}, debug=${JSON.stringify(cache._15m || {})}`);
 
-    if (candles15m.length < 8) {
+    if (candles15m.length < 4) {
+      console.warn(`[15mPool] ${coin.sym} 15m bars <4 after pooling (ws:${(window.CandleWS ? window.CandleWS.getClosedBuckets15m(coin.sym) : []).length}, cb:${cache._cb15m?.length||0}, bin:${cache._bin15m?.length||0}). Using 5m fallback or partial. Check exchange-ws errors and proxy.`);
       return {
         sym: coin.sym, name: coin.name, color: coin.color, icon: coin.icon,
         price: cache?.ticker?.usd || window._predictions?.[coin.sym]?.price || 0,
         signal: 'neutral', confidence: 15, score: 0,
         ts: computedTs, timestamp: computedTs,
-        source: 'loading', candleCount: cache?.candles15m?.length || 0, updatedAt: '–',
-        error: 'Insufficient data',
+        source: `partial (15m pooled ${candles15m.length} bars from exchanges)`, candleCount: cache?.candles?.length || 0, candleCount1m: cache?.candles1m?.length || 0, candleCount15m: candles15m.length, updatedAt: '–',
+        _15mPoolingDebug: {
+          ws: window.CandleWS ? (window.CandleWS.getClosedBuckets15m(coin.sym) || []).length : 0,
+          cb: cache?._cb15m?.length || 0,
+          bin: cache?._bin15m?.length || 0,
+          pooled: candles15m.length,
+          fallbackUsed: true
+        },
+        error: 'Insufficient 15m data (pooled from exchanges)',
         indicators: {}, diagnostics: {}, volatility: { label: 'Unknown', atrPct: 0 },
         projections: {}, reversalFlags: [], scalpSetups: [],
       };
@@ -5807,12 +5832,14 @@
 
     // ── CFM Floating Router ─────────────────────────────────────────
     // Base score from existing packet router (unchanged path)
-    const baseScore = routed.action === 'invalidated'
+    // ALWAYS_TRADE: never zero-out on invalidated/stand-aside — keep directional lean.
+    const always = !!ALWAYS_TRADE_MODE;
+    const baseScore = (routed.action === 'invalidated' && !always)
       ? 0
       : routed.action === 'stand-aside'
-        ? timed.score * 0.45
-        : clamp(timed.score * routed.confidenceMultiplier, -1, 1);
-    const baseConf = Math.round(clamp(timed.confidence * routed.confidenceMultiplier, 0, 95));
+        ? timed.score * (always ? 0.85 : 0.45)
+        : clamp(timed.score * Math.max(routed.confidenceMultiplier || 1, always ? 0.85 : 0), -1, 1);
+    const baseConf = Math.round(clamp(timed.confidence * Math.max(routed.confidenceMultiplier || 1, always ? 0.85 : 0), 0, 95));
 
     // Enrich with: CFM anchor packets + outcome calibration + singularity resolver
     const cfmEnrich = window.CFMRouter?.enrich(
@@ -5822,20 +5849,124 @@
     let normalizedScore = cfmEnrich?.finalScore ?? baseScore;
     let normalizedConfidence = cfmEnrich?.finalConf ?? baseConf;
     let resolvedRouterAction = cfmEnrich?.resolvedAction ?? routed.action;
+    // Force tradeable action unless truly invalid and not in always-trade mode
+    if (always && (resolvedRouterAction === 'stand-aside' || resolvedRouterAction === 'watch' || resolvedRouterAction === 'invalidated')) {
+      resolvedRouterAction = 'trade';
+    }
     const executionGuard = buildExecutionGuard(timed, effectiveCache);
-    if (executionGuard?.blocked && resolvedRouterAction !== 'invalidated') {
+    if (executionGuard?.blocked && resolvedRouterAction !== 'invalidated' && !always) {
       resolvedRouterAction = 'stand-aside';
       normalizedScore = clamp(normalizedScore * 0.45, -1, 1);
       normalizedConfidence = Math.round(clamp(normalizedConfidence * 0.62, 0, 95));
     }
     const liveTimingGuard = buildLiveTimingGuard(coin, effectiveCache, normalizedScore, fastTiming);
     if (liveTimingGuard?.conflict && resolvedRouterAction !== 'invalidated') {
-      if (liveTimingGuard.hard || resolvedRouterAction === 'trade') {
+      if (!always && (liveTimingGuard.hard || resolvedRouterAction === 'trade')) {
         resolvedRouterAction = 'stand-aside';
       }
-      normalizedScore = clamp(normalizedScore * liveTimingGuard.scoreMultiplier, -1, 1);
-      normalizedConfidence = Math.round(clamp(normalizedConfidence * liveTimingGuard.confidenceMultiplier, 0, 95));
+      // ALWAYS_TRADE: dampen only, never stand-aside on tape conflict
+      const mult = always ? Math.max(0.55, liveTimingGuard.scoreMultiplier || 1) : liveTimingGuard.scoreMultiplier;
+      normalizedScore = clamp(normalizedScore * mult, -1, 1);
+      normalizedConfidence = Math.round(clamp(normalizedConfidence * (always ? 0.85 : liveTimingGuard.confidenceMultiplier), 0, 95));
     }
+    // ALWAYS_TRADE: if score is essentially flat, lean with live tape / PTB / last non-zero core
+    if (always && Math.abs(normalizedScore) < 0.04) {
+      const liveDir = liveTimingGuard?.liveDir || 0;
+      const core = Number(timed.diagnostics?.coreScore ?? timed.score ?? 0);
+      const lean = liveDir !== 0 ? liveDir * 0.12 : (core !== 0 ? Math.sign(core) * 0.10 : 0.08);
+      normalizedScore = lean;
+      normalizedConfidence = Math.max(normalizedConfidence, 35);
+      resolvedRouterAction = 'trade';
+    }
+
+    // ── 5m PTB settlement anchor ───────────────────────────────────────────
+    // Polymarket 5m pays UP iff final ≥ price-to-beat. Free-form momentum often
+    // lags after multi-green candles and keeps calling UP into a PTB fail.
+    // Re-score vs live PTB + short drift so "flip UP" cannot fire against tape.
+    let ptbAnchor = null;
+    try {
+      const p5m = window.PredictionMarkets?.getCoin?.(coin.sym)?.poly5m;
+      const ptb = Number(p5m?.targetPriceNum ?? p5m?.priceToBeatNum);
+      const livePx = Number(liveTimingGuard?.livePrice || timed.price || 0);
+      if (p5m && Number.isFinite(ptb) && ptb > 0 && Number.isFinite(livePx) && livePx > 0) {
+        const closeTimeMs = p5m.closeTime ? new Date(p5m.closeTime).getTime() : null;
+        const remainingMs = Number.isFinite(closeTimeMs) ? Math.max(0, closeTimeMs - Date.now()) : 5 * 60_000;
+        const remainingFrac = clamp(remainingMs / (5 * 60_000), 0.08, 1);
+        const atrPct = Number(timed.volatility?.atrPct);
+        const atrDollar = (Number.isFinite(atrPct) && atrPct > 0)
+          ? livePx * (atrPct / 100)
+          : livePx * 0.0017;
+        const expectedMove = normalizedScore * atrDollar * 0.55 * remainingFrac;
+        const liveDrift1m = liveTimingGuard?.drift1mPct != null
+          ? (liveTimingGuard.drift1mPct / 100) * livePx * 0.5
+          : 0;
+        const meanFinal = livePx + expectedMove + liveDrift1m;
+        const sigma = Math.max(livePx * 0.00004, atrDollar * 0.42 * Math.sqrt(remainingFrac));
+        const z = (meanFinal - ptb) / sigma;
+        const pUp = normalCDF(z);
+        const modelYesPct = Math.round(pUp * 100);
+        const gapFrac = (livePx - ptb) / ptb;
+        const liveDir = liveTimingGuard?.liveDir || 0;
+        // Map P(UP) → score in [-1,1]; 50% → 0
+        const ptbScore = clamp((pUp - 0.5) * 2.0, -1, 1);
+        // Hard veto: don't "flip UP" when already below/at PTB without live up-tape.
+        // Lagging bull composites after multi-green 15m runs were the main false-UP source.
+        const falseUp = normalizedScore > 0.08 && (
+          (gapFrac < 0 && liveDir <= 0) ||
+          (gapFrac < 0.00020 && liveDir < 0 && remainingFrac < 0.60) ||
+          (gapFrac < 0 && modelYesPct < 55) ||
+          (modelYesPct <= 45 && liveDir <= 0)
+        );
+        // Hard veto: don't "flip DOWN" when firmly above PTB with upward tape
+        const falseDown = normalizedScore < -0.08 && (
+          (gapFrac > 0.00035 && liveDir >= 0 && remainingFrac < 0.45) ||
+          (modelYesPct >= 58 && liveDir > 0)
+        );
+        const blend = remainingFrac < 0.35 ? 0.72 : remainingFrac < 0.65 ? 0.55 : 0.40;
+        const before = normalizedScore;
+        if (falseUp || falseDown) {
+          // ALWAYS_TRADE: re-anchor to PTB score but keep a tradeable side (never flat block)
+          normalizedScore = clamp(
+            always
+              ? (Math.abs(ptbScore) >= 0.04 ? ptbScore : Math.sign(ptbScore || normalizedScore || 1) * 0.08)
+              : (normalizedScore * 0.15 + ptbScore * 0.85),
+            -1, 1
+          );
+          normalizedConfidence = Math.round(clamp(normalizedConfidence * (always ? 0.75 : 0.55), 0, 95));
+          if (!always && Math.abs(normalizedScore) < 0.14) resolvedRouterAction = 'stand-aside';
+          else if (always) resolvedRouterAction = 'trade';
+        } else {
+          normalizedScore = clamp(normalizedScore * (1 - blend) + ptbScore * blend, -1, 1);
+          if (always && Math.abs(normalizedScore) < 0.04) {
+            normalizedScore = Math.sign(ptbScore || normalizedScore || 1) * 0.08;
+          }
+          if (always) resolvedRouterAction = 'trade';
+        }
+        // Refresh polyAlign on the result projections for UI/odds
+        ptbAnchor = {
+          ptb, livePx, meanFinal, modelYesPct, pUp, gapFrac, remainingFrac,
+          before, after: normalizedScore, falseUp, falseDown, liveDir,
+        };
+        if (timed.projections?.p5) {
+          timed.projections.p5.target = meanFinal;
+          timed.projections.p5.polyAlign = {
+            ...(timed.projections.p5.polyAlign || {}),
+            ref: ptb,
+            gapPct: ((ptb - livePx) / livePx) * 100,
+            modelYesPct,
+            cdfImpliedDir: modelYesPct >= 50 ? 'UP' : 'DOWN',
+            remainingMs,
+            remainingFrac,
+            meanFinal,
+            dirConflict: Math.sign(before) !== 0 && Math.sign(before) !== Math.sign(ptbScore),
+            status: 'ptb-anchored',
+          };
+        }
+      }
+    } catch (ptbErr) {
+      console.warn('[PTB-Anchor] 5m re-score failed:', ptbErr?.message || ptbErr);
+    }
+
     let normalizedSignal = resolvedRouterAction === 'invalidated'
       ? 'neutral'
       : signalFromScore(normalizedScore);
@@ -5845,10 +5976,14 @@
     if (typeof window !== 'undefined' && window.QuantumFlowTensor) {
       qftResult = window.QuantumFlowTensor.run(coin.sym, { direction: normalizedSignal, score: normalizedScore }, effectiveBook);
       if (qftResult && qftResult.active) {
-        normalizedSignal = qftResult.qftDirection;
-        normalizedScore = clamp(normalizedScore * qftResult.qftScoreModifier, -1, 1);
-        if (qftResult.qftDirection === 'wait') {
-          resolvedRouterAction = 'stand-aside';
+        if (qftResult.qftDirection === 'wait' && always) {
+          // ALWAYS_TRADE: ignore QFT wait — keep lean
+        } else {
+          normalizedSignal = qftResult.qftDirection;
+          normalizedScore = clamp(normalizedScore * qftResult.qftScoreModifier, -1, 1);
+          if (qftResult.qftDirection === 'wait') {
+            resolvedRouterAction = 'stand-aside';
+          }
         }
       }
     }
@@ -5906,6 +6041,7 @@
         quantRegime: routerContext.quantRegime,
         executionGuard,
         liveTimingGuard,
+        ptbAnchor,
         liveBook: effectiveBook ? {
           source: effectiveBook.source || null,
           ageMs: liveBookAgeMs,
@@ -5937,11 +6073,28 @@
       ts: computedTs,
       timestamp: computedTs,
       source: cache.candles1m?.length
-        ? `${cache.source}${effectiveBook?.source === 'orderbook-ws' ? ' + live book' : ''} + pooled 1m`
-        : `${cache.source}${effectiveBook?.source === 'orderbook-ws' ? ' + live book' : ''}`,
+        ? `${cache.source}${effectiveBook?.source === 'orderbook-ws' ? ' + live book' : ''} + pooled 1m${cache.candles15m?.length ? ' + pooled 15m' : ''}`
+        : `${cache.source}${effectiveBook?.source === 'orderbook-ws' ? ' + live book' : ''}${cache.candles15m?.length ? ' + pooled 15m' : ''} (15m from exchanges)`,
       updatedAt: new Date().toLocaleTimeString(),
       candleCount: cache.candles.length,
       candleCount1m: cache.candles1m?.length || 0,
+      candleCount15m: cache.candles15m?.length || 0,
+      _15mPoolingDebug: {
+        ws: window.CandleWS ? (window.CandleWS.getClosedBuckets15m(coin.sym) || []).length : 0,
+        cb: cache._cb15m?.length || 0,
+        bin: cache._bin15m?.length || 0,
+        gecko: cache._gecko15m?.length || 0,
+        pooled: cache.candles15m?.length || 0,
+        sourceInCache: cache.source || 'n/a'
+      },
+      _15mPoolingDebug: {
+        ws: window.CandleWS ? (window.CandleWS.getClosedBuckets15m(coin.sym) || []).length : 0,
+        cb: cache._cb15m?.length || 0,
+        bin: cache._bin15m?.length || 0,
+        gecko: cache._gecko15m?.length || 0,
+        pooled: cache.candles15m?.length || 0,
+        sourceInCache: cache.source || 'n/a'
+      },
     };
 
     // ★ REGIME CLASSIFICATION — Statistical analysis for adaptive thresholds
@@ -6051,6 +6204,8 @@
               confidence: rlOut.decision.confidence,
               rapidMove: rlOut.decision.rapidMove,
               reason: rlOut.reason,
+              pathway: rlOut.decision.pathway || null,
+              pathways: rlOut.decision.pathways || [],
               mispricing: rlOut.decision.mispricing || null,
               rlActionId: rlOut.decision.actionId,
               sniperDecision: rlOut.decision.sniperDecision || null,
@@ -6293,7 +6448,7 @@
     forceReset() {
       // Unstick a hung predictionRunPromise so the next runAll() starts fresh.
       predictionRunPromise = null;
-      geckoRequestQueue = Promise.resolve();  // abandon backed-up serial gecko chain
+      resetGeckoRequestQueue();  // abandon backed-up serial gecko chain
       // Preserve lastGeckoRequestAt so manual refreshes cannot bypass CoinGecko pacing.
       window.throttledFetchReset?.();          // drain stale throttle waitQueue
     },
@@ -6414,7 +6569,7 @@
 
       // Reset gecko serial queue and throttle waiters so stale calls from prior
       // runs (e.g. after Refresh clicks) don't block this fresh run.
-      geckoRequestQueue = Promise.resolve();
+      resetGeckoRequestQueue();
       // Preserve lastGeckoRequestAt so rapid refreshes keep the provider gap.
       window.throttledFetchReset?.();
       predictionRunPromise = (async () => {
@@ -6485,7 +6640,13 @@
               price: candleCache?.[coin.sym]?.ticker?.usd || 0,
               signal: 'neutral', confidence: 10, score: 0,
               ts: fallbackTs, timestamp: fallbackTs,
-              source: 'error', candleCount: candleCache?.[coin.sym]?.candles?.length || 0, updatedAt: new Date().toLocaleTimeString(),
+              source: 'error', candleCount: candleCache?.[coin.sym]?.candles?.length || 0, candleCount1m: candleCache?.[coin.sym]?.candles1m?.length || 0, candleCount15m: candleCache?.[coin.sym]?.candles15m?.length || 0, updatedAt: new Date().toLocaleTimeString(),
+              _15mPoolingDebug: {
+                ws: window.CandleWS ? (window.CandleWS.getClosedBuckets15m(coin.sym) || []).length : 0,
+                cb: candleCache?.[coin.sym]?._cb15m?.length || 0,
+                bin: candleCache?.[coin.sym]?._bin15m?.length || 0,
+                pooled: candleCache?.[coin.sym]?.candles15m?.length || 0
+              },
               error: cpErr.message || 'Compute error',
               indicators: {}, diagnostics: {}, volatility: { label: 'Unknown', atrPct: 0 },
               projections: {}, reversalFlags: [], scalpSetups: [],
@@ -6542,13 +6703,17 @@
         runInferenceOverlay(window._predictions).catch(() => { });
         runTideOverlay(window._predictions).catch(() => { });
 
-        warmAdvancedBacktests().catch(() => { });
-        // Phase 2: enrich with slow proxy-routed sources 30 s after initial score.
-        // Fires and forgets — each coin re-scores itself, then dispatches predictionsEnriched.
+        // Heavy advanced backtests only when UI is visible (skip on headless Canada node)
+        const uiHidden = typeof document !== 'undefined' && document.hidden;
+        if (!uiHidden) {
+          warmAdvancedBacktests().catch(() => { });
+        }
+        // Phase 2: enrich with slow proxy-routed sources after initial score.
+        // Longer delay when hidden to avoid pile-up with the next prediction cycle.
         setTimeout(() => {
           Promise.allSettled(PREDICTION_COINS.map(c => enrichCoinDataBackground(c).catch(() => { })))
             .then(() => { saveBtCache(); window.dispatchEvent(new CustomEvent('predictionsEnriched')); });
-        }, 30000);
+        }, uiHidden ? 55_000 : 30_000);
         return window._predictions;
       })();
       try {

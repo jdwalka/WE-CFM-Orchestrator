@@ -48,3 +48,13 @@
 - Days: 7  Candles: 2016
 - Coins analyzed: BTC, ETH, SOL, XRP
 - Log: G:\WECRYP\backtest-logs\advanced-2026-06-22.log
+
+## Advanced Backtest — 2026-08-02T04:04:23.577Z
+- Days: 30  Candles: 8640
+- Coins analyzed: BTC, ETH, SOL, XRP
+- Log: G:\WECRYP\backtest-logs\advanced-2026-08-02.log
+
+## Advanced Backtest — 2026-08-02T04:15:50.145Z
+- Days: 30  Candles: 8640
+- Coins analyzed: BTC, ETH, SOL, XRP
+- Log: G:\WECRYP\backtest-logs\advanced-2026-08-02.log

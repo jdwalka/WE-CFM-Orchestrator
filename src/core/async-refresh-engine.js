@@ -225,21 +225,24 @@
             }
 
             const run = (async () => {
-                const fetchSource = async (source) => {
+                // Sequential fallback (not Promise.any race): racing aborted every
+                // losing source and spammed NetworkHealth with false "timeapi DEGRADED"
+                // even when Akamai already won the clock sync.
+                const fetchSource = async (source, timeoutMs = 4000) => {
                     const ctrl = new AbortController();
                     const timeoutId = setTimeout(() => {
                         try {
-                            ctrl.abort(new DOMException('Async refresh fetch timed out after 2500ms', 'TimeoutError'));
+                            ctrl.abort(new DOMException(`Async refresh fetch timed out after ${timeoutMs}ms`, 'TimeoutError'));
                         } catch (_) {
                             try { ctrl.abort(); } catch (_) { }
                         }
-                    }, 2500);
+                    }, timeoutMs);
                     try {
-                        const res = await fetch(source.url, { signal: ctrl.signal });
-                        if (!res.ok) return Promise.reject(new Error(`${source.name} HTTP ${res.status}`));
+                        const res = await fetch(source.url, { signal: ctrl.signal, cache: 'no-store' });
+                        if (!res.ok) throw new Error(`${source.name} HTTP ${res.status}`);
                         const data = source.isText ? await res.text() : await res.json();
                         const sourceMs = source.parse(data);
-                        if (!Number.isFinite(sourceMs)) return Promise.reject(new Error(`${source.name} returned invalid timestamp`));
+                        if (!Number.isFinite(sourceMs)) throw new Error(`${source.name} returned invalid timestamp`);
                         return { ...source, sourceMs };
                     } finally {
                         clearTimeout(timeoutId);
@@ -247,7 +250,20 @@
                 };
 
                 try {
-                    const winner = await Promise.any(this.timeSyncSources.map(source => fetchSource(source)));
+                    let winner = null;
+                    let lastErr = null;
+                    for (const source of this.timeSyncSources) {
+                        try {
+                            // Prefer fast text sources (Akamai ~200ms); give JSON APIs more headroom.
+                            const timeoutMs = source.isText ? 2500 : 5000;
+                            winner = await fetchSource(source, timeoutMs);
+                            break;
+                        } catch (err) {
+                            lastErr = err;
+                        }
+                    }
+                    if (!winner) throw lastErr || new Error('all clock sources failed');
+
                     const localMs = Date.now();
                     const offsetMs = winner.sourceMs - localMs;
                     this.clockOffsetMs = offsetMs;
@@ -293,7 +309,9 @@
         async streamPredictions(runId) {
             const streamId = 'predictions';
             let cycle = 0;
-            let nextRunAt = this.nextAlignedAt(30_000);
+            // Visible UI: 30s. Hidden / headless Canada node: 45s (less CPU, same decision quality).
+            const cycleMs = () => (typeof document !== 'undefined' && document.hidden) ? 45_000 : 30_000;
+            let nextRunAt = this.nextAlignedAt(cycleMs());
 
             while (this.running && this.runId === runId) {
                 try {
@@ -302,16 +320,17 @@
 
                     cycle++;
                     const cycleStart = this.nowMs();
+                    const period = cycleMs();
 
                     // Trigger prediction run asynchronously
                     if (window.PredictionEngine?.runAll) {
                         const predictionPromise = Promise.resolve().then(() => window.PredictionEngine.runAll());
 
-                        // Timeout guard: 25s
+                        // Timeout guard: 22s (lighter candle/walk-forward should finish well under this)
                         const predictions = await Promise.race([
                             predictionPromise,
                             new Promise((_, reject) =>
-                                setTimeout(() => reject(new Error('Predictions timeout (25s)')), 25000)
+                                setTimeout(() => reject(new Error('Predictions timeout (22s)')), 22000)
                             )
                         ]);
 
@@ -333,10 +352,10 @@
                             detail: `${elapsedMs}ms`,
                         });
 
-                        console.log(`[Stream:Predictions] Cycle ${cycle} complete (${elapsedMs}ms)`);
+                        console.log(`[Stream:Predictions] Cycle ${cycle} complete (${elapsedMs}ms, period=${period}ms)`);
                     }
 
-                    nextRunAt = this.nextAlignedAt(30_000, nextRunAt + 30_000);
+                    nextRunAt = this.nextAlignedAt(period, nextRunAt + period);
                 } catch (err) {
                     console.warn(`[Stream:Predictions] Error:`, err.message);
                     this.setStreamState(streamId, {
@@ -345,7 +364,7 @@
                         detail: err.message,
                     });
                     await this.sleepUntil(this.nowMs() + 5_000);
-                    nextRunAt = this.nextAlignedAt(30_000);
+                    nextRunAt = this.nextAlignedAt(cycleMs());
                 }
             }
         }
@@ -364,14 +383,15 @@
             let cycle = 0;
             const lastBySym = {};
             const lastRescoreTs = {};    // Per-coin rescore cooldown tracker
-            const RESCORE_COOLDOWN_MS = 10000; // Min 10s between rescores per coin (was 5s — caused main-thread pile-up)
-            const OBSERVE_COOLDOWN_MS = 3000; // Min 3s between tuner observations per coin
+            const RESCORE_COOLDOWN_MS = 12_000; // Min 12s between rescores per coin (was 10s)
+            const OBSERVE_COOLDOWN_MS = 4000; // Min 4s between tuner observations per coin
             const lastObserveTs = {};
 
             while (this.running && this.runId === runId) {
                 try {
                     const hidden = typeof document !== 'undefined' && document.hidden;
-                    const intervalMs = hidden ? 5000 : 1000;
+                    // Visible: 1.5s sample. Hidden: 8s (was 5s idle still spinning).
+                    const intervalMs = hidden ? 8000 : 1500;
                     await this.sleep(intervalMs);
                     if (!this.running || this.runId !== runId) break;
                     if (hidden) continue; // Skip all work when tab is backgrounded

@@ -414,8 +414,9 @@ function renderMarkets5M() {
     const snipes = window.PredictionMarkets?.getSnipes?.() || [];
     const COINS_5M = ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'BNB', 'HYPE'];
     const hasMarketData = Object.values(pm).some((coin) =>
-      coin?.kalshi15m || coin?.poly != null || coin?.poly5m
+      coin?.kalshi15m || coin?.poly != null || coin?.poly5m || coin?.kalshi5m
     );
+    console.log('[5mMarkets] hasMarketData=', hasMarketData, 'pm keys sample', Object.keys(pm).slice(0,3), 'poly5m sample', Object.values(pm).map(c=>!!c?.poly5m).slice(0,3));
     if (!hasMarketData && window.PredictionMarkets?.fetchAll && Date.now() - _markets5mFetchKickTs > 10_000) {
       _markets5mFetchKickTs = Date.now();
       window.PredictionMarkets.fetchAll()
@@ -516,26 +517,39 @@ function renderMarkets5M() {
     function _modelOdds5m(sym) {
       const p = pred[sym];
       if (!p) return null;
+      // 0. Prefer live PTB-anchored re-score (settlement objective, not free momentum)
+      const ptbYes = p.diagnostics?.ptbAnchor?.modelYesPct;
+      if (Number.isFinite(ptbYes)) {
+        return _clamp(ptbYes / 100, 0.02, 0.98);
+      }
       // 1. Check if we have exact polyAlign on the p5 projection
       const polyYesPct = p.projections?.p5?.polyAlign?.modelYesPct;
       if (Number.isFinite(polyYesPct)) {
         return _clamp(polyYesPct / 100, 0.02, 0.98);
       }
-      // 2. Check the h5 projection target vs priceToBeat
+      // 2. Check the h5 projection target vs priceToBeat (time-aware sigma)
       const p5 = pm[sym]?.poly5m;
-      const ptb = p5?.targetPriceNum ?? p5?.priceToBeatNum;
+      const ptb = Number(p5?.targetPriceNum ?? p5?.priceToBeatNum);
       const proj = p.projections?.p5 ?? null;
-      if (proj && Number.isFinite(proj.target) && Number.isFinite(ptb) && ptb > 0) {
-        const expectedMovePct = p.volatility?.atrPct ? (p.volatility.atrPct / 100) : 0.0017;
-        const lastPrice = p.price || proj.target;
-        const sigma = lastPrice * expectedMovePct * Math.max(0.12, Math.sqrt(5 / 15) * 0.5);
+      const lastPrice = Number(p.price || proj?.target);
+      if (proj && Number.isFinite(proj.target) && Number.isFinite(ptb) && ptb > 0 && Number.isFinite(lastPrice) && lastPrice > 0) {
+        const closeMs = p5?.closeTime ? new Date(p5.closeTime).getTime() : null;
+        const remainingFrac = Number.isFinite(closeMs)
+          ? Math.max(0.08, Math.min(1, (closeMs - Date.now()) / (5 * 60_000)))
+          : 0.6;
+        const atrPct = p.volatility?.atrPct ? (p.volatility.atrPct / 100) : 0.0017;
+        const atrDollar = lastPrice * atrPct;
+        const sigma = Math.max(lastPrice * 0.00004, atrDollar * 0.42 * Math.sqrt(remainingFrac));
         const z = (proj.target - ptb) / (sigma || 1);
         return _clamp(normalCDF(z), 0.02, 0.98);
       }
-      // 3. Fallback to h5 horizonScore
+      // 3. Fallback to h5 horizonScore — never use raw free-momentum alone for 5m PTB
       const h5Score = p.horizonScores?.h5 ?? p.diagnostics?.fastTiming?.horizonScores?.h5;
-      if (Number.isFinite(h5Score)) {
-        return _clamp(0.5 + h5Score * 0.40, 0.02, 0.98);
+      if (Number.isFinite(h5Score) && Number.isFinite(ptb) && ptb > 0 && Number.isFinite(lastPrice) && lastPrice > 0) {
+        // Convert score to a mild PTB lean only when already on that side of PTB
+        const gap = lastPrice - ptb;
+        const sideLean = gap >= 0 ? 0.08 : -0.08;
+        return _clamp(0.5 + sideLean + h5Score * 0.22, 0.05, 0.95);
       }
       return null;
     }
@@ -767,6 +781,65 @@ function renderMarkets5M() {
         </div>
       `;
     }
+    function _renderGrokRangePanel(sym) {
+      // 5m Grok is OFF — show 15m + hourly Grok range guidance only
+      const api = (typeof window !== 'undefined')
+        ? (window.GrokRangeOverlay || window.GrokRangeGrok)
+        : null;
+      if (!api || typeof api.getGuidance !== 'function') return '';
+      const g15 = api.getGuidance(sym, 15);
+      const g60 = api.getGuidance(sym, 60);
+      if (!g15 && !g60) {
+        const stats = window.GrokAnalyticsMemory && window.GrokAnalyticsMemory.getStats
+          ? window.GrokAnalyticsMemory.getStats()
+          : null;
+        const samples = stats && stats.byCoin && stats.byCoin[sym] ? stats.byCoin[sym].samples : 0;
+        return `<div class="rationale-block" style="margin-top:8px;background:var(--color-surface-2);border-radius:6px;padding:10px;border-left:3px solid var(--color-accent);">
+          <div style="font-size:10px;color:var(--color-text-faint);text-transform:uppercase;letter-spacing:0.06em;font-weight:700;margin-bottom:4px;">🤖 Grok 15m + Hourly</div>
+          <div style="font-size:11px;color:var(--color-text-muted);">Building session memory… ${samples} samples · first call after ~1 min</div>
+        </div>`;
+      }
+
+      function _oneBlock(label, g) {
+        if (!g) return '';
+        const ageS = Math.max(0, Math.round((Date.now() - (g.ts || 0)) / 1000));
+        const ageLabel = ageS < 60 ? `${ageS}s ago` : `${Math.floor(ageS / 60)}m ago`;
+        if (g.error && !g.call) {
+          return `<div style="margin-top:6px;font-size:11px;color:var(--color-orange);">${label}: ${g.error} · ${ageLabel}</div>`;
+        }
+        const call = String(g.call || 'WAIT');
+        const callColor = call === 'UP' ? 'var(--color-green)' : call === 'DOWN' ? 'var(--color-red)' : 'var(--color-orange)';
+        const callIcon = call === 'UP' ? '▲' : call === 'DOWN' ? '▼' : '◆';
+        const confRaw = Number(g.confidence) || 0;
+        const confPct = confRaw <= 1 ? Math.round(confRaw * 100) : Math.round(confRaw);
+        const notes = String(g.notes || g.rationale || '').slice(0, 220);
+        const range = g.range;
+        const rangeLine = range && (range.low || range.high || range.widthPct)
+          ? ` · range ${range.low != null ? '$' + Number(range.low).toLocaleString() : '?'}-${range.high != null ? '$' + Number(range.high).toLocaleString() : '?'}${range.widthPct != null ? ` (${Number(range.widthPct).toFixed(2)}%)` : ''}`
+          : '';
+        const mem = g.memory ? ` · mem ${g.memory.sampleCount || 0} samples / ${g.memory.sessionMinutes || 0}m` : '';
+        return `<div style="margin-top:6px;">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+            <span style="font-size:10px;color:var(--color-text-faint);font-weight:700;text-transform:uppercase;">${label}</span>
+            <span style="color:${callColor};font-weight:800;font-size:13px;">${callIcon} ${call}</span>
+            <span style="font-size:11px;color:var(--color-text-muted);">${confPct}%${rangeLine}</span>
+            <span style="font-size:10px;color:var(--color-text-faint);">${ageLabel}${mem}</span>
+          </div>
+          ${notes ? `<div style="font-size:11px;color:var(--color-text);margin-top:3px;line-height:1.35;">${notes}</div>` : ''}
+        </div>`;
+      }
+
+      return `<div class="rationale-block" style="margin-top:8px;background:var(--color-surface-2);border-radius:6px;padding:10px;border-left:3px solid var(--color-accent);">
+        <div style="font-size:10px;color:var(--color-text-faint);text-transform:uppercase;letter-spacing:0.06em;font-weight:700;margin-bottom:2px;">🤖 Grok 15m + Hourly Analysis</div>
+        ${_oneBlock('15m', g15)}
+        ${_oneBlock('1h', g60)}
+      </div>`;
+    }
+
+    function _renderGrok5mGuidance(sym) {
+      // Legacy name for call sites — 5m Grok is OFF; show 15m + hourly only
+      return _renderGrokRangePanel(sym);
+    }
     function _fmtVol(v) {
       if (!v || v < 1) return '';
       if (v >= 1_000_000) return `$${(v / 1_000_000).toFixed(1)}M`;
@@ -791,6 +864,47 @@ function renderMarkets5M() {
           </span>`;
     }).join('')}
       </div>` : '';
+
+    // ── Grok Broader / Systemic Insights (separate part of 5m markets) ──
+    // Only appears when Grok produced extra content beyond the per-coin specific UP/DOWN call, notes, and confidence.
+    function _renderGrokBroaderInsights() {
+      const api = (typeof window !== 'undefined') ? (window.FiveMinGrok || window.FiveMinClaude) : null;
+      if (!api || typeof api.getAllGuidance !== 'function') return '';
+      const all = api.getAllGuidance() || {};
+      const extras = [];
+      for (const sym of COINS_5M) {
+        const g = all[sym];
+        if (!g) continue;
+        const obs = (g.broaderObservations || '').trim();
+        const patterns = (g.marketPatterns || '').trim();
+        const setups = Array.isArray(g.scalpSetups) ? g.scalpSetups.filter(s => s && (s.label || s.ai_description)).length : 0;
+        if (obs || patterns || setups > 0) {
+          extras.push({ sym, obs, patterns, setupsCount: setups, ts: g.ts });
+        }
+      }
+      if (!extras.length) return '';
+
+      const items = extras.map(e => {
+        const parts = [];
+        if (e.obs) parts.push(`<div style="margin:2px 0 4px;"><strong>Insight:</strong> ${e.obs}</div>`);
+        if (e.patterns) parts.push(`<div style="margin:2px 0;font-size:10px;color:var(--color-text-muted);">Patterns: ${e.patterns}</div>`);
+        if (e.setupsCount) parts.push(`<div style="font-size:10px;color:#a5b4fc;">+${e.setupsCount} specialized scalp setup(s) noted</div>`);
+        return `<div style="margin-bottom:7px;padding-bottom:5px;border-bottom:1px dashed var(--color-border);">
+          <span style="font-weight:700;color:#8a6dff;">${e.sym}</span> ${parts.join('')}
+        </div>`;
+      }).join('');
+
+      return `<div style="background:linear-gradient(180deg,rgba(138,109,255,0.07),var(--color-surface));border:1px solid #8a6dff44;border-radius:8px;padding:9px 11px;margin:0 0 14px 0;">
+        <div style="font-size:10px;font-weight:800;color:#8a6dff;letter-spacing:0.03em;margin-bottom:5px;display:flex;align-items:center;gap:6px;">
+          🤖 GROK — ADDITIONAL / SYSTEMIC OBSERVATIONS
+          <span style="margin-left:auto;font-size:9px;font-weight:400;opacity:0.7;">(non per-coin content)</span>
+        </div>
+        ${items}
+        <div style="font-size:9px;color:var(--color-text-faint);margin-top:2px;">Derived from Grok 5m PTB analysis over Redpanda/Kafka + Redis + Firebase pipeline data.</div>
+      </div>`;
+    }
+
+    const grokBroader = _renderGrokBroaderInsights();
 
     // ── Per-coin cards ──────────────────────────────────────────────────
     const cards = COINS_5M.map(sym => {
@@ -857,6 +971,8 @@ function renderMarkets5M() {
           <!-- 5M Micro-indicators -->
           ${_render5mIndicators(sym)}
 
+          <!-- Grok lives on Hourly Ranges panel (15m + 1h Kalshi), not 5m tab -->
+
           <!-- Market Divergence Alert -->
           ${primaryMarketProb != null ? (() => {
           const note = _marketNote(sym, primaryMarketProb, primaryMarketLabel);
@@ -905,7 +1021,7 @@ function renderMarkets5M() {
                 </div>
                 <div style="font-size:11px;color:var(--color-text-faint);margin-top:3px;" id="p5cd-${sym}" data-close="${p5.closeTime || p5.endDate || ''}">⏱ ${_countdown(p5.closeTime || p5.endDate)}</div>
                 ${liveCurrentLabel ? `<div style="font-size:11px;color:var(--color-text-muted);margin-top:4px;">Current (${String(liveCurrentSource).startsWith('pyth-lazer') ? 'Pyth' : 'Chainlink'}) <strong id="p5-current-${sym}" style="color:var(--color-text)">${liveCurrentLabel}</strong></div>` : ''}
-                ${p5.targetPrice ? `<div style="font-size:11px;color:var(--color-text);margin-top:4px;">Price to beat <strong>${p5.targetPriceApprox ? '~' : ''}${p5.targetPrice}</strong></div>` : ''}
+                ${(p5.targetPrice || Number.isFinite(Number(p5.targetPriceNum || p5.priceToBeatNum))) ? `<div style="font-size:11px;color:var(--color-text);margin-top:4px;">Price to beat <strong>${p5.targetPriceApprox ? '~' : ''}${p5.targetPrice || ('$' + Number(p5.targetPriceNum || p5.priceToBeatNum).toLocaleString())}</strong></div>` : ''}
                 ${live5m ? `<div id="p5-live-${sym}" style="font-size:11px;color:${live5m.dir === 'UP' ? 'var(--color-green)' : 'var(--color-red)'};margin-top:4px;">${live5m.state} by <strong>${_fmtSignedPriceDelta(live5m.delta)}</strong></div>` : `<div id="p5-live-${sym}" style="font-size:11px;color:var(--color-orange);margin-top:4px;">Waiting for Polymarket price-to-beat baseline</div>`}
                 ${Number.isFinite(liveOracleBasis) ? `<div style="font-size:10px;color:var(--color-text-faint);margin-top:3px;">Pyth/Chainlink basis ${_fmtSignedPriceDelta(liveOracleBasis)} · settlement ${p5.settlementLiveDirection || 'pending'}</div>` : ''}
                 <div style="font-size:10px;color:var(--color-text-faint);margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="${p5.slug || ''}">${p5.slug || 'poly5m'}</div>
@@ -919,18 +1035,18 @@ function renderMarkets5M() {
             <div style="background:var(--color-surface-2);border-radius:6px;padding:10px;">
               <div style="font-size:10px;color:var(--color-text-faint);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:5px;">Model Odds (5m)</div>
               ${(() => {
-          const modelOdds = _modelOdds5m(sym);
-          if (modelOdds == null) return `<span style="color:var(--color-text-faint);font-size:11px">Run predictions</span>`;
-          const action = modelOdds >= 0.55 ? '▲ BUY YES' : modelOdds <= 0.45 ? '▼ BUY NO' : '◆ WAIT';
-          const actionColor = modelOdds >= 0.55 ? 'var(--color-green)' : modelOdds <= 0.45 ? 'var(--color-red)' : 'var(--color-text-faint)';
-          return modelOdds != null ? `
+                const modelOdds = _modelOdds5m(sym);
+                if (modelOdds == null) return `<span style="color:var(--color-text-faint);font-size:11px">Run predictions</span>`;
+                const action = modelOdds >= 0.55 ? '▲ BUY YES' : modelOdds <= 0.45 ? '▼ BUY NO' : '◆ WAIT';
+                const actionColor = modelOdds >= 0.55 ? 'var(--color-green)' : modelOdds <= 0.45 ? 'var(--color-red)' : 'var(--color-text-faint)';
+                return modelOdds != null ? `
                   <div style="display:flex;gap:8px;align-items:baseline;margin-bottom:4px;">
                     <span style="color:${actionColor};font-size:14px;font-weight:700">${Math.round(modelOdds * 100)}%</span>
                     <span style="font-size:12px;color:var(--color-text-muted)">YES</span>
                   </div>
                   <div style="font-size:11px;color:var(--color-text-faint);margin-top:3px;">${action}</div>
                 ` : `<span style="color:var(--color-text-faint);font-size:11px">—</span>`;
-        })()}
+              })()}
             </div>
 
           </div>
@@ -949,7 +1065,7 @@ function renderMarkets5M() {
                 <div style="flex:0 0 108px;min-width:108px;padding:7px 6px;border-radius:4px;background:var(--color-surface);border:1px solid ${activeColor};text-align:center;">
                   <div style="font-size:9px;color:var(--color-text-muted);margin-bottom:2px;">${timeLabel}</div>
                   <div style="font-size:13px;font-weight:700;color:${probColor}">${Math.round(m.yes * 100)}%</div>
-                  <div style="font-size:10px;color:${m.targetPrice ? 'var(--color-text)' : 'var(--color-orange)'};margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="${m.priceToBeatSource || 'Awaiting fixed benchmark'}">${m.targetPrice || 'PTB pending'}</div>
+                  <div style="font-size:10px;color:${m.targetPrice || m.targetPriceNum ? 'var(--color-text)' : 'var(--color-orange)'};margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="${m.priceToBeatSource || 'Awaiting fixed benchmark'}">${m.targetPrice || (Number.isFinite(Number(m.targetPriceNum)) ? ('$' + Number(m.targetPriceNum).toLocaleString()) : 'PTB pending')}</div>
                 </div>`;
               }).join('')}
             </div>
@@ -979,10 +1095,11 @@ function renderMarkets5M() {
       <div class="section-header">
         <span class="section-title">Fast Markets (5m)</span>
         <span style="font-size:11px;color:var(--color-text-faint);">
-          Polymarket 5m odds · model comparison
+          Polycool/Polymarket 5m (Chainlink PTB) · Grok xAI analysis
         </span>
       </div>
       ${snipeBanner}
+      ${grokBroader}
       <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:12px;padding:4px 0;">
         ${cards}
       </div>
@@ -3294,7 +3411,14 @@ async function renderPredictions() {
       ` : ''}
 
       <!-- Prediction Cards Grid -->
-      <div class="section-header"><span class="section-title">15-Minute UP / DOWN Window</span>
+      <div class="section-header">
+        <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+          <span class="section-title">15-Minute UP / DOWN Window</span>
+          ${(() => {
+            const next15mCloseMs = (Math.floor(Date.now() / 900000) + 1) * 900000;
+            return `<span class="k15-expiry" data-close-ms="${next15mCloseMs}" style="font-family:var(--font-mono);font-size:11px;font-weight:800;padding:3px 10px;border-radius:12px;background:rgba(0,229,255,0.12);color:#00e5ff;border:1px solid rgba(0,229,255,0.3)">⏱ 00:00 to Decision Lock</span>`;
+          })()}
+        </div>
         <div style="display:flex;align-items:center;gap:8px">
           <button class="btn-sm" id="toggleHighConfidenceOverlay" style="font-size:10px;padding:4px 10px">HC Overlay: ${isHighConfidenceOverlayOn() ? 'ON' : 'OFF'}</button>
           <button class="btn-sm" id="rerunPreds" style="font-size:10px;padding:4px 10px">Refresh Analysis</button>

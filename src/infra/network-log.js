@@ -48,6 +48,13 @@
     blockchair: 'Blockchair',
     solana: 'Solana RPC',
     alchemy: 'Alchemy RPC',
+    gate: 'Gate',
+    'gate.io': 'Gate',
+    timeapi: 'TimeAPI',
+    'timeapi.io': 'TimeAPI',
+    whalealert: 'Whale Alert',
+    'whale-alert': 'Whale Alert',
+    'whale alert': 'Whale Alert',
   };
   const HOST_TO_PROVIDER = {
     'api.bitget.com': 'Bitget',
@@ -72,8 +79,15 @@
     'api.blockcypher.com': 'Blockcypher',
     'api.blockchair.com': 'Blockchair',
     'api.mainnet-beta.solana.com': 'Solana RPC',
+    'solana-rpc.publicnode.com': 'Solana RPC',
+    'solana-api.projectserum.com': 'Solana RPC',
     'eth-mainnet.g.alchemy.com': 'Alchemy RPC',
     'polygon-mainnet.g.alchemy.com': 'Alchemy RPC',
+    'api.gateio.ws': 'Gate',
+    'fx-api.gateio.ws': 'Gate',
+    'timeapi.io': 'TimeAPI',
+    'time.akamai.com': 'TimeAPI',
+    'api.whale-alert.io': 'Whale Alert',
   };
   function canonicalProviderName(input) {
     const raw = String(input || '').trim();
@@ -180,7 +194,9 @@
     if (host.includes('blockcypher')) return 'Blockcypher';
     if (host.includes('blockchair')) return 'Blockchair';
     if (host.includes('alchemy.com')) return 'Alchemy RPC';
-    if (host.includes('solana.com')) return 'Solana RPC';
+    if (host.includes('solana.com') || host.includes('projectserum') || host.includes('helius-rpc') || (host.includes('publicnode.com') && host.includes('solana'))) return 'Solana RPC';
+    if (host.includes('gateio') || host.includes('gate.io')) return 'Gate';
+    if (host.includes('timeapi') || host.includes('time.akamai')) return 'TimeAPI';
     if (HOST_TO_PROVIDER[host]) return HOST_TO_PROVIDER[host];
     return host || 'Network';
   }
@@ -194,15 +210,17 @@
   }
 
   function classifyFailure(detail = {}) {
-    const text = `${detail.error || ''} ${detail.statusText || ''}`.toLowerCase();
+    const text = `${detail.error || ''} ${detail.statusText || ''} ${detail.reason || ''}`.toLowerCase();
     const status = Number(detail.status || 0);
     if (text.includes('name_not_resolved') || text.includes('enotfound') || text.includes('eai_again') || text.includes('dns')) return 'dns-fail';
     if (text.includes('cert') || text.includes('ssl') || text.includes('tls') || [495, 496, 525, 526].includes(status)) return 'tls-fail';
     if (text.includes('handshake') || text.includes('unexpected-response') || text.includes('upgrade')) return 'handshake-fail';
     if (text.includes('timeout') || text.includes('timed out') || text.includes('abort')) return 'timeout';
+    if (text.includes('stale')) return 'stale-reconnect';
+    if (text.includes('code=1000') || text.includes('code=1001') || text.includes('code=1005') || text.includes('route')) return 'lifecycle-reconnect';
     if (text.includes('network changed') || text.includes('err_network_changed')) return 'route-change';
     if (text.includes('econnreset') || text.includes('socket hang up')) return 'socket-reset';
-    if (/credential|kalshi-api-key\.txt not found|auth-header-failed|signature generation|requires node ws|browser websocket cannot send/.test(text)) return 'auth-config-fail';
+    if (/credential|kalshi-api-key\.txt not found|auth-header-failed|signature generation|requires node ws|browser websocket cannot send|auth-config-fail/.test(text)) return 'auth-config-fail';
     if (status >= 500) return 'upstream-http-fail';
     return 'network-fail';
   }
@@ -212,6 +230,13 @@
     const failureClass = String(detail.failureClass || '').toLowerCase();
     const text = `${detail.error || ''} ${detail.statusText || ''} ${detail.reason || ''}`.toLowerCase();
 
+    if (fc === 'stale-reconnect' || fc === 'lifecycle-reconnect' || /stale[-\s]*watchdog|demote|hysteresis|scheduler|circuit|oscillat|internal|code=1000|code=1001|code=1005/.test(text)) {
+      return {
+        bucket: 'app/logic',
+        reason: detail.error || detail.reason || 'internal WSS lifecycle/watchdog reconnect',
+      };
+    }
+
     if (text.includes('all_connections_down')) {
       return {
         bucket: 'network/transport',
@@ -219,7 +244,7 @@
       };
     }
 
-    if (/credential|kalshi-api-key\.txt not found|auth-header-failed|signature generation|requires node ws|browser websocket cannot send/.test(text)) {
+    if (failureClass === 'auth-config-fail' || /credential|kalshi-api-key\.txt not found|auth-header-failed|signature generation|requires node ws|browser websocket cannot send/.test(text)) {
       return {
         bucket: 'app/logic',
         bucketReason: detail.error || detail.reason || 'local credential/auth configuration issue',
@@ -232,12 +257,6 @@
       return {
         bucket: 'provider/api',
         bucketReason: status ? `upstream API reject (${status})` : 'upstream API reject',
-      };
-    }
-    if (/stale[-\s]*watchdog|demote|hysteresis|scheduler|circuit|oscillat|internal/.test(text)) {
-      return {
-        bucket: 'app/logic',
-        bucketReason: detail.error || detail.reason || 'internal handling issue',
       };
     }
     if (/event:error/.test(text) && /readystate=3/.test(text)) {
@@ -272,6 +291,7 @@
       'Bitget', 'BingX', 'Kraken', 'Gemini', 'Hyperliquid', 'CoinW', 'Ourbit', 'LBank',
       'Bitstamp', 'Bitso', 'WhiteBIT', 'Weex', 'Upbit', 'Bitvavo', 'Etherscan',
       'Mempool.space', 'Blockchair', 'Solana RPC', 'Alchemy RPC', 'Bybit', 'OKX', 'KuCoin',
+      'Gate', 'TimeAPI', 'Whale Alert',
     ]).has(provider);
   }
 
@@ -292,13 +312,18 @@
 
   function healthStatusFor(entry) {
     if (!entry) return 'unknown';
+    if (entry.type === 'TRANSPORT_OK') return 'healthy';
+    if (entry.bucket === 'app/logic' || entry.failureClass === 'stale-reconnect' || entry.failureClass === 'lifecycle-reconnect' || entry.failureClass === 'auth-config-fail') {
+      return 'healthy';
+    }
     const optional = isOptionalProvider(entry.provider);
     const transient = isTransient(entry);
 
     if (entry.status === 401) return optional ? 'degraded' : 'down';
     if (entry.status && entry.status >= 500) return (optional || transient) ? 'degraded' : 'down';
     if (entry.type === 'NETWORK_ERROR') return (optional || transient) ? 'degraded' : 'down';
-    return 'degraded';
+    if (entry.type === 'TRANSPORT_FAIL' && entry.bucket === 'network/transport') return 'degraded';
+    return 'healthy';
   }
 
   function inferRouteHint(entry) {
@@ -363,16 +388,17 @@
 
     try {
       if (window.NetworkHealth?.update) {
+        const computedStatus = healthStatusFor(entry);
         window.NetworkHealth.update(entry.provider, {
-          status: healthStatusFor(entry),
+          status: computedStatus,
           lastFetch: entry.ts,
           fallback: false,
           transient: isTransient(entry),
           reason: `${entry.error || `${entry.status || 'network'} ${entry.statusText}`.trim()}${entry.routeHint ? ` (${entry.routeHint})` : ''}`,
           failureClass: entry.failureClass,
           statusCode: entry.status,
-          bucket: entry.bucket,
-          bucketReason: entry.bucketReason,
+          bucket: computedStatus === 'healthy' ? 'unknown' : entry.bucket,
+          bucketReason: computedStatus === 'healthy' ? '' : entry.bucketReason,
         });
       }
     } catch (_) {}

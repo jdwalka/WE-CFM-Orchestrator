@@ -34,6 +34,42 @@
     return String(root || '').replace(/[\\/]+$/, '');
   }
 
+  function localRootLetter() {
+    const match = String(LOCAL_ROOT || '').match(/^([A-Za-z]):\\/);
+    return match ? match[1].toUpperCase() : '';
+  }
+
+  function pickPrimaryLocalRoot(drives) {
+    const letters = (drives || [])
+      .filter(d => d && d.type === 'local' && d.letter)
+      .map(d => String(d.letter).toUpperCase());
+    const preferred = ['G', 'F', 'D', 'C'];
+    const picked = preferred.find(letter => letters.includes(letter)) || letters[0];
+    return picked ? `${picked}:\\WECRYPTO\\data` : LOCAL_ROOT;
+  }
+
+  function buildCloudMirrorRoots(root) {
+    const base = normalizeRoot(root);
+    if (!base) return [];
+    return uniquePaths([
+      `${base}\\WECRYPTO\\data`,
+    ]);
+  }
+
+  function dataRootForDriveRoot(root) {
+    const base = normalizeRoot(root);
+    if (!base) return null;
+    return `${base}\\WECRYPTO\\data`;
+  }
+
+  function isGoogleDriveRoot(root) {
+    const value = normalizeRoot(root);
+    return /(?:^|\\)(?:My Drive|Google Drive(?:\s*\(.+\))?|OneDrive.*)$/i.test(value);
+  }
+
+  function isPreferredGoogleDriveRoot(root) {
+    // Treat any cloud drive (Google Drive, OneDrive) as preferred so it's included in discovery
+    return isGoogleDriveRoot(root);
   function resolveLocalSpoolRoot() {
     const localAppData = normalizeRoot(window.desktopApp?.userEnv?.localAppData);
     return localAppData
@@ -99,6 +135,70 @@
 
   async function runDriveDiscovery() {
     try {
+      const drives = window.desktopApp?.getDrives ? await window.desktopApp.getDrives() : [];
+      const googleStatus = window.desktopApp?.getGoogleDriveTargets
+        ? await window.desktopApp.getGoogleDriveTargets({ force: true }).catch(() => null)
+        : null;
+
+      const localRoots = (drives || [])
+        .filter(d => d?.type === 'local' && d.root)
+        .map(d => dataRootForDriveRoot(d.root));
+      const networkRoots = (drives || [])
+        .filter(d => d?.type === 'network' && d.root)
+        .map(d => dataRootForDriveRoot(d.root));
+      const cloudRoots = (drives || [])
+        .filter(d => d?.type === 'cloud' && d.root)
+        .flatMap(d => buildCloudMirrorRoots(d.root));
+      const googleRoots = (googleStatus?.targets || [])
+        .map(target => target?.root)
+        .filter(Boolean)
+        .flatMap(buildCloudMirrorRoots);
+
+      const candidateRoots = uniquePaths([
+        pickPrimaryLocalRoot(drives),
+        ...cloudRoots,
+        ...googleRoots,
+        ...networkRoots,
+        ...localRoots,
+        LOCAL_ROOT,
+      ]);
+
+      const probes = await Promise.all(candidateRoots.map(probeStorageRoot));
+      const writableRoots = uniquePaths(probes.filter(p => p.ok).map(p => p.root));
+      const failedRoots = probes
+        .filter(p => !p.ok)
+        .map(p => ({ root: p.root, error: p.error || p.code || 'probe failed' }));
+
+      _storage.ready = writableRoots.length > 0;
+      _storage.discoveredAt = Date.now();
+      _storage.drives = Array.isArray(drives) ? drives : [];
+      _storage.accountHints = (googleStatus?.targets || [])
+        .map(target => target?.name || target?.account || target?.root)
+        .filter(Boolean);
+      _storage.googleRoots = uniquePaths(cloudRoots);
+      _storage.googleTargets = uniquePaths(googleRoots);
+      _storage.writableRoots = writableRoots;
+      _storage.failedRoots = failedRoots;
+
+      if (!writableRoots.length) {
+        console.warn('[DataLogger] no writable storage roots discovered; logs will stay buffered until storage recovers');
+        return;
+      }
+
+      LOCAL_ROOT = writableRoots[0];
+      DRIVE_PATHS = writableRoots.slice(1);
+      _stats.session.storageReady = true;
+      _stats.session.storageRoots = writableRoots.length;
+      _stats.session.lastStorageDiscovery = _storage.discoveredAt;
+      
+      console.log('[DataLogger] writable storage roots:', writableRoots.join(' | '));
+      
+      // Load freshest data from C: immediately
+      await loadFreshestData();
+      
+      // Background load historical from H:
+      setTimeout(backloadHistoricalData, 5000);
+      
       LOCAL_ROOT = resolveLocalSpoolRoot();
       const localProbe = await probeStorageRoot(LOCAL_ROOT);
       if (!localProbe.ok) {
@@ -158,7 +258,7 @@
             }
             if (res?.data || res?.content) {
               const content = res.data || res.content;
-              const lines = content.split('\\n');
+              const lines = content.split(/\r?\n/);
               for (const line of lines) {
                 if (!line.trim()) continue;
                 try {
@@ -217,7 +317,7 @@
             const res = await window.dataStore.readFile(path);
             if (res?.data || res?.content) {
               const content = res.data || res.content;
-              const lines = content.split('\\n');
+              const lines = content.split(/\r?\n/);
               for (const line of lines) {
                 if (!line.trim()) continue;
                 try {
@@ -291,6 +391,7 @@
   function todayStr() { return localDayStr(); }
 
   function filePaths(category) {
+    if (!_storage.ready || !_storage.writableRoots.length) return [];
     const day = todayStr();
     const paths = [`${LOCAL_ROOT}\\${day}\\${category}.jsonl`];
     for (const d of DRIVE_PATHS) paths.push(`${d}\\${day}\\${category}.jsonl`);

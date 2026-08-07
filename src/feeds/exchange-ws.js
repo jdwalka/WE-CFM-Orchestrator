@@ -34,14 +34,14 @@ const PROVIDER_BREAKER_CONFIG = {
   const WS_STARTUP_STAGGER_MS = 900;
   const OPTIONAL_WS_POOL_TICK_MS = 3000;
   const OPTIONAL_WS_POOL_DEFAULT_DWELL_MS = 35000;
-  const OPTIONAL_REST_PROBE_MIN_INTERVAL_MS = 45_000;
+  const OPTIONAL_REST_PROBE_MIN_INTERVAL_MS = 300_000; // 5 min - reduce spam from failing optionals
   const OPTIONAL_REST_PROBE_TIMEOUT_MS = 4500;
   const OPTIONAL_REST_PROBE_BATCH = 3;
 
   const STORE = {}; // provider -> sym -> snapshot
   const MEMPOOL = { btcUnconfirmed: 0, btcValue: 0, lastTxTs: 0 };
   const CONNECTIONS = {}; // name -> { ws, reconnectMs, timer, active, extra }
-  const DEFAULT_DISABLED_WS_PROVIDERS = new Set(['BULLISH', 'OURBIT', 'COINW']);
+  const DEFAULT_DISABLED_WS_PROVIDERS = new Set(['BULLISH', 'OURBIT', 'COINW', 'UPBIT', 'BITSTAMP', 'WHITEBIT', 'COINW', 'BITSO', 'LBANK', 'WEEX']);
   const DEFAULT_BINANCE_WS_ENDPOINTS = [
     'wss://data-stream.binance.vision',
     'wss://stream.binance.com:9443',
@@ -49,19 +49,17 @@ const PROVIDER_BREAKER_CONFIG = {
   const OPTIONAL_WS_POOL = { timer: null, roster: [] };
   const OPTIONAL_REST_STATUS = {};
   const OPTIONAL_REST_ENDPOINTS = {
+    // Only real public API endpoints that return JSON and are not homepages
     UPBIT: 'https://api.upbit.com/v1/market/all',
     BITGET: 'https://api.bitget.com/api/v2/spot/public/symbols',
     BINGX: 'https://open-api.bingx.com/openApi/swap/v2/quote/contracts',
     BITVAVO: 'https://api.bitvavo.com/v2/markets',
     GEMINI: 'https://api.gemini.com/v1/symbols',
-    COINW: 'https://www.coinw.com',
-    LBANK: 'https://www.lbank.com',
-    BITSTAMP: 'https://www.bitstamp.net',
-    BITSO: 'https://api.bitso.com/v3/available_books/',
-    BULLISH: 'https://www.bullish.com',
-    WHITEBIT: 'https://api.whitebit.com/api/v4/public/markets',
-    OURBIT: 'https://ourbit.com',
-    WEEX: 'https://www.weex.com',
+    // Skip flaky/homepage ones to reduce 403 noise and rate limits on proxy
+    // COINW, BITSTAMP (homepage), WHITEBIT, OURBIT, WEEX, LBANK, BULLISH, BITSO disabled by default
+    // If you want them, enable explicitly and use proper API paths e.g.:
+    // BITSTAMP: 'https://www.bitstamp.net/api/v2/ticker/btcusd/',
+    // WHITEBIT: 'https://api.whitebit.com/api/v4/public/markets',
   };
 
   function flagEnabled(value) {
@@ -349,7 +347,7 @@ const PROVIDER_BREAKER_CONFIG = {
 
   async function probeOptionalRestRoute(name, force = false) {
     const provider = String(name || '').toUpperCase();
-    if (!provider || !OPTIONAL_REST_ENDPOINTS[provider]) return null;
+    if (!provider || !OPTIONAL_REST_ENDPOINTS[provider] || isProviderDisabled(provider)) return null;
     const prev = OPTIONAL_REST_STATUS[provider] || {};
     const tsNow = now();
     if (!force && prev.ts && (tsNow - prev.ts) < OPTIONAL_REST_PROBE_MIN_INTERVAL_MS) return prev;
@@ -646,17 +644,11 @@ const PROVIDER_BREAKER_CONFIG = {
   }
 
   function warmOptionalWsRoutes(reason = 'manual') {
-    const roster = OPTIONAL_WS_POOL.roster || [];
-    if (!roster.length) return;
-    const nowTs = now();
-    // Force a route sweep: bring every optional provider due immediately.
-    for (const cfg of roster) {
-      cfg.nextDue = nowTs;
-      cfg.activeUntil = 0;
-      cfg.lastWarmReason = reason;
-      void probeOptionalRestRoute(cfg.name, true);
+    // NO-OP to reduce spam from failing optionals (429/403/404/502 seen in logs).
+    // 15m pooling for majors relies on Coinbase WS + CB/BIN 15m REST, not these.
+    if (reason !== 'startup') {
+      console.log('[ExchangeWS] Optional WS/REST warming disabled - focusing on core 15m sources.');
     }
-    optionalPoolTick();
   }
 
   function cfgName(cfg) {
@@ -1312,6 +1304,11 @@ const PROVIDER_BREAKER_CONFIG = {
         { type: "trade", codes, isOnlyRealtime: true }
       ]));
     };
+    c.ws.onerror = (e) => {
+      // Upbit often 429 on handshake - slow down reconnect aggressively
+      if (c.reconnectMs < 30000) c.reconnectMs = 30000;
+      console.warn('[UpbitWS] handshake error (likely rate limit 429), backing off');
+    };
     c.ws.onmessage = async (ev) => {
       recordSuccess('UPBIT');
       let text;
@@ -1749,6 +1746,9 @@ const PROVIDER_BREAKER_CONFIG = {
       c.reconnectMs = RECONNECT_BASE_MS;
       c.ws.send(JSON.stringify({ op: 'unconfirmed_sub' }));
     };
+    c.ws.onerror = () => {
+      if (c.reconnectMs < 60000) c.reconnectMs = 60000; // 502s are server-side, back off hard
+    };
     c.ws.onmessage = (ev) => {
       let msg;
       try { msg = JSON.parse(ev.data); } catch (_) { return; }
@@ -1819,7 +1819,8 @@ const PROVIDER_BREAKER_CONFIG = {
       { name: 'WEEX', connectFn: connectWeex, intervalMs: 300000 },
     ];
     startupPlan.forEach(([name, connectFn, delayMs]) => scheduleProviderStart(name, connectFn, delayMs));
-    startOptionalWsPool(optionalPoolPlan, WS_STARTUP_STAGGER_MS * 6);
+    // startOptionalWsPool disabled - see warmOptionalWsRoutes
+    // startOptionalWsPool(optionalPoolPlan, WS_STARTUP_STAGGER_MS * 6);
     connectDexPaprikaSSE();
   }
 

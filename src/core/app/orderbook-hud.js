@@ -511,8 +511,8 @@ function initOBHud() {
         const m = Math.floor(s / 60);
         const sec = s % 60;
         if (el.classList.contains('k15-expiry')) {
-          el.textContent = `⏱ ${m}m${String(sec).padStart(2, '0')}s`;
-          el.style.color = s < 60 ? 'var(--color-red)' : s < 180 ? '#ffd700' : '';
+          el.textContent = `⏱ ${m}m${String(sec).padStart(2, '0')}s to Decision Lock`;
+          el.style.color = s < 60 ? 'var(--color-red)' : s < 300 ? '#ffd700' : '#00e5ff';
         } else {
           const str = m > 0 ? `${m}m ${String(sec).padStart(2, '0')}s` : `${sec}s`;
           el.innerHTML = `⏱ <strong>${str}</strong> left`;
@@ -774,4 +774,5 @@ window.APP_ORDERBOOK_HUD = {
   startDepthLive, updateDepthBook, updateDepthAlerts, updateDepthRawWalls, 
   updateDepthAnalyzer, drawLiqMap, initOBHud, drawOrbital, refreshCexFlow
 };
+Object.assign(window, window.APP_ORDERBOOK_HUD);
 })();

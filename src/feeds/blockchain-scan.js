@@ -10,7 +10,7 @@
 
   const CACHE = {};
   let _timer = null;
-  const INTERVAL_MS = 45000; // poll every 45 s
+  const INTERVAL_MS = 90_000; // 90s — on-chain is slow-moving; was 45s
 
   // ── Helpers ────────────────────────────────────────────────────────────────
   function fmtCompact(n) {
@@ -208,7 +208,11 @@
 
       const vsize = m.vsize || 0;
       const feeFast = f.fastestFee || 0;
-      const score = vsize > 200e6 ? 0.55 : vsize > 80e6 ? 0.25 : vsize < 5e6 ? -0.1 : 0;
+      // Congestion is NOT a short-horizon price direction. Treating large mempools
+      // as BULLISH was adding fake UP pressure into 5m/15m binary calls.
+      // Keep score neutral for directional models; expose congestion as risk only.
+      const score = 0;
+      const congestion = vsize > 150e6 ? 'HIGH' : vsize > 60e6 ? 'MED' : 'LOW';
       return {
         sym: 'BTC', label: 'Bitcoin', chain: 'Bitcoin Network',
         source: 'mempool.space / Alchemy', explorerUrl: 'https://mempool.space',
@@ -220,7 +224,9 @@
           { k: 'Fee Slow', v: f.minimumFee ? `${f.minimumFee} sat/vB` : '—' },
           { k: 'Block Height', v: height != null ? Number(height).toLocaleString() : '—' },
         ],
-        congestion: vsize > 150e6 ? 'HIGH' : vsize > 60e6 ? 'MED' : 'LOW',
+        congestion,
+        // Risk flag for routers (not a bullish/bearish directional score)
+        risk: congestion === 'HIGH' ? 0.55 : congestion === 'MED' ? 0.28 : 0.08,
         score, signal: scoreLabel(score), ts: Date.now(),
       };
     } catch (e) {
@@ -323,22 +329,6 @@
     } catch (e) {
       console.debug('[BlockchainScan] ETH fetch error:', e.message);
       return { sym: 'ETH', label: 'Ethereum / Base', chain: 'Ethereum Mainnet', error: e.message, metrics: [], score: 0 };
-    }
-  }
-        metrics: [
-          { k: 'L1 Gas Avg', v: gasAvg ? `${gasAvg.toFixed(1)} Gwei` : '—' },
-          { k: 'L1 Gas Fast', v: gasFast ? `${gasFast.toFixed(1)} Gwei` : '—' },
-          { k: 'Base L2 Gas', v: baseGasGwei ? `${baseGasGwei.toFixed(4)} Gwei` : '—' },
-          { k: 'Block Height', v: block ? block.toLocaleString() : '—' },
-          { k: 'Txs Today', v: '—' },
-          { k: 'Total Addrs', v: '—' },
-        ],
-        congestion: gasAvg > 50 ? 'HIGH' : gasAvg > 20 ? 'MED' : 'LOW',
-        score, signal: scoreLabel(score), ts: Date.now(),
-      };
-    } catch (e) {
-      console.debug('[BlockchainScan] ETH fetch error:', e.message);
-      return { sym: 'ETH', label: 'Ethereum', chain: 'Ethereum Mainnet', error: e.message, metrics: [], score: 0 };
     }
   }
 

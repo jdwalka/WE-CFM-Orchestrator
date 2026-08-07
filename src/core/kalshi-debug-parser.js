@@ -115,8 +115,16 @@ class KalshiDebugLogParser {
    */
   extractCoin(ticker) {
     if (!ticker) return null;
-    const match = ticker.match(/KX([A-Z]+)/);
-    return match ? match[1].substring(0, 3) : null;
+    const str = String(ticker).toUpperCase();
+    if (str.includes('BTC')) return 'BTC';
+    if (str.includes('ETH')) return 'ETH';
+    if (str.includes('SOL')) return 'SOL';
+    if (str.includes('XRP')) return 'XRP';
+    if (str.includes('DOGE')) return 'DOGE';
+    if (str.includes('BNB')) return 'BNB';
+    if (str.includes('HYPE')) return 'HYPE';
+    const match = str.match(/KX([A-Z]+)/);
+    return match ? match[1] : null;
   }
 
   /**

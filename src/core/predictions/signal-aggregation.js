@@ -2,7 +2,8 @@
 (function() {
   const { SIGNAL_GATE, REGIME_CONFIDENCE_MAP, SIGNAL_GATE_OVERRIDES } = window.PREDICTIONS_WEIGHTS || window;
 
-
+  // Keep in sync with signal-gates.js (ALWAYS_TRADE uses short guard).
+  const CLOSE_WINDOW_GUARD_SECS = 4;
 
   function evaluateSignalGate(pred, coin, regime) {
     if (!pred || pred.signal === 'neutral' || !Number.isFinite(pred.score)) {
@@ -143,8 +144,8 @@
     return { passed: true, gated: false, quality: 'high', label: '✅ STRONG', reasons: [] };
   }
 
-window.PREDICTIONS_SIGNAL_AGGREGATION = {
-  CLOSE_WINDOW_GUARD_SECS,
-  evaluateSignalGate
-};
+  window.PREDICTIONS_SIGNAL_AGGREGATION = {
+    CLOSE_WINDOW_GUARD_SECS,
+    evaluateSignalGate
+  };
 })();

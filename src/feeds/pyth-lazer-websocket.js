@@ -10,9 +10,72 @@ try {
   require('dotenv').config({ path: path.resolve(__dirname, '../../.env'), quiet: true });
 } catch (_) { }
 
+const fs = require('fs');
+const pathMod = path;
+
+function readPythSecretFromFile() {
+  const secretDirs = [
+    pathMod.resolve(process.cwd(), 'secrets'),
+    pathMod.resolve(__dirname, '../../secrets'),
+    pathMod.resolve(__dirname, '../../../secrets'),
+  ];
+  // Newest first: user upgraded → secrets/PYTH_API (+ PYTH_NEW)
+  const candidates = [
+    'PYTH_API',
+    'PYTH_API.txt',
+    'PYTH_NEW',
+    'PYTH_NEW.txt',
+    'PYTH_NEW_API',
+    'PYTH_NEW_API.txt'
+  ];
+  for (const dir of secretDirs) {
+    for (const name of candidates) {
+      try {
+        const p = pathMod.join(dir, name);
+        if (!fs.existsSync(p)) continue;
+        // The file may hold a bare token, a label line followed by the token,
+        // or KEY=value. Parse line-wise — never return multi-line content.
+        const lines = fs.readFileSync(p, 'utf8')
+          .split(/\r?\n/)
+          .map((l) => l.trim())
+          .filter((l) => l && !l.startsWith('#'));
+        for (const line of lines) {
+          const kv = line.match(/^[A-Za-z0-9_.-]+\s*=\s*(.+)$/);
+          if (kv) return kv[1].trim().replace(/^["']|["']$/g, '');
+        }
+        // Token = longest whitespace-free line (skips short label lines),
+        // matching readSecretScalar in electron/main.js.
+        const best = lines.filter((l) => !/\s/.test(l))
+          .reduce((a, b) => (b.length > a.length ? b : a), '');
+        if (best) return best.replace(/^["']|["']$/g, '');
+      } catch (_) {}
+    }
+  }
+  return '';
+}
+
 const { PythLazerClient } = require("@pythnetwork/pyth-lazer-sdk");
 
-const LAZER_TOKEN = process.env.PYTH_LAZER_TOKEN || process.env.LAZER_TOKEN || process.env.PYTH_API_KEY || "";
+let LAZER_TOKEN = process.env.PYTH_LAZER_TOKEN || process.env.PYTH_API_KEY || process.env.PYTH_API || process.env.PYTH_NEW || process.env.PYTH_NEW_API || process.env.LAZER_TOKEN || '';
+let LAZER_TOKEN = process.env.PYTH_API || process.env.PYTH_NEW || process.env.PYTH_NEW_API || process.env.PYTH_LAZER_TOKEN || process.env.PYTH_API_KEY || process.env.LAZER_TOKEN || '';
+const fromSecret = readPythSecretFromFile();
+if (fromSecret) {
+  LAZER_TOKEN = fromSecret;
+  process.env.PYTH_API = fromSecret;
+  process.env.PYTH_NEW = fromSecret;
+  process.env.PYTH_NEW_API = fromSecret;
+  process.env.PYTH_LAZER_TOKEN = fromSecret;
+  process.env.PYTH_API_KEY = fromSecret;
+  process.env.LAZER_TOKEN = fromSecret;
+  console.log('[PythLazerWS] Using token from secrets/PYTH_API or env for realtime');
+} else if (process.env.PYTH_LAZER_TOKEN || process.env.PYTH_API_KEY || process.env.PYTH_API || process.env.PYTH_NEW || process.env.PYTH_NEW_API) {
+  LAZER_TOKEN = process.env.PYTH_LAZER_TOKEN || process.env.PYTH_API_KEY || process.env.PYTH_API || process.env.PYTH_NEW || process.env.PYTH_NEW_API || process.env.LAZER_TOKEN;
+}
+
+  console.log('[PythLazerWS] Using newest key from secrets/PYTH_API for realtime');
+} else if (process.env.PYTH_API || process.env.PYTH_NEW || process.env.PYTH_NEW_API) {
+  LAZER_TOKEN = process.env.PYTH_API || process.env.PYTH_NEW || process.env.PYTH_NEW_API;
+}
 
 const PRICE_FEED_IDS = {
   BTC: 1,
@@ -42,7 +105,7 @@ class PythLazerWebSocketHandler {
   async connect() {
     try {
       if (!LAZER_TOKEN) {
-        throw new Error("PYTH_LAZER_TOKEN not set");
+        throw new Error("PYTH_NEW_API not set");
       }
       console.log("[PythLazerWS] Initializing official SDK client...");
 

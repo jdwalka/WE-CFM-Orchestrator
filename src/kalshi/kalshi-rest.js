@@ -12,7 +12,7 @@
 
 // SafeGuard: kalshi-typescript is a Node.js module, only available in Electron/Node context
 const kalshiTypeScript = (typeof require !== 'undefined') ? require('kalshi-typescript') : null;
-const { Configuration, PortfolioApi, OrdersApi } = kalshiTypeScript || {};
+const { Configuration, PortfolioApi, OrdersApi, EventsApi, MarketApi } = kalshiTypeScript || {};
 
 // Optional contract queue manager to handle early/overlapping contracts
 let ContractQueue = null;
@@ -20,6 +20,63 @@ try {
   ContractQueue = require('../core/contract-queue-manager');
 } catch (e) {
   ContractQueue = null;
+}
+
+// ─────────────────────────────────────────────────────────────
+// Clock-skew compensation
+//
+// Kalshi rejects requests whose KALSHI-ACCESS-TIMESTAMP drifts too far from
+// its own clock (401 "header_timestamp_expired"). kalshi-typescript signs
+// with a raw Date.now(), so any local clock drift breaks auth on every
+// call. We patch its signer to add a measured offset (shared with the WSS
+// signer in electron/kalshi-credentials.js via kalshi-clock.js), and
+// self-heal by recalibrating + retrying once whenever that error is seen.
+//
+// Browser: this file is also loaded as a <script> (no require). Use no-op
+// fallbacks so parse/eval succeeds; real calibration only runs in Node/Electron.
+// ─────────────────────────────────────────────────────────────
+const _kalshiClock = (typeof require !== 'undefined')
+  ? (() => { try { return require('./kalshi-clock'); } catch (_) { return null; } })()
+  : null;
+const calibrateKalshiClock = _kalshiClock?.calibrateKalshiClock || (async () => 0);
+const getKalshiClockOffsetMs = _kalshiClock?.getKalshiClockOffsetMs || (() => 0);
+const resetKalshiClockCalibration = _kalshiClock?.resetKalshiClockCalibration || (() => {});
+
+if (kalshiTypeScript) {
+  try {
+    const { KalshiAuth } = require('kalshi-typescript/dist/auth');
+    KalshiAuth.prototype.generateAuthHeaders = function (method, reqPath) {
+      const timestampStr = String(Date.now() + getKalshiClockOffsetMs());
+      const signature = this.signPssText(timestampStr + method + reqPath);
+      return {
+        'KALSHI-ACCESS-KEY': this.apiKey,
+        'KALSHI-ACCESS-SIGNATURE': signature,
+        'KALSHI-ACCESS-TIMESTAMP': timestampStr,
+      };
+    };
+
+    const axios = require('axios');
+    axios.interceptors.response.use(
+      (response) => response,
+      async (error) => {
+        const config = error.config;
+        const code = error.response?.data?.error?.code;
+        if (config && !config._kalshiClockRetried && error.response?.status === 401 && code === 'header_timestamp_expired') {
+          config._kalshiClockRetried = true;
+          resetKalshiClockCalibration();
+          const urlMatch = String(config.url || '').match(/^(https?:\/\/[^/]+\/trade-api\/v2)/);
+          const baseUrl = (config.baseURL ? `${config.baseURL.replace(/\/$/, '')}` : null)
+            || (urlMatch ? urlMatch[1] : null)
+            || 'https://api.elections.kalshi.com/trade-api/v2';
+          await calibrateKalshiClock(baseUrl);
+          return axios(config);
+        }
+        return Promise.reject(error);
+      }
+    );
+  } catch (_) {
+    // kalshi-typescript internals unavailable — clock-skew patch skipped, falls back to library default
+  }
 }
 
 class KalshiRestClient {
@@ -39,7 +96,14 @@ class KalshiRestClient {
     
     this.portfolioApi = new PortfolioApi(this.config);
     this.ordersApi = new OrdersApi(this.config);
-    
+    this.eventsApi = new EventsApi(this.config);
+    this.marketApi = new MarketApi(this.config);
+
+    // Kick off clock calibration immediately so the first signed request
+    // already carries a corrected timestamp instead of relying on the
+    // retry-on-401 path in the response interceptor above.
+    calibrateKalshiClock(this.baseUrl);
+
     // Monitoring
     this.stats = {
       calls: 0,
@@ -226,25 +290,106 @@ class KalshiRestClient {
   }
 
   /**
-   * Cancel all orders
+   * Cancel all resting orders (optionally scoped by filters.ticker/eventTicker).
+   * kalshi-typescript has no single "cancel all" endpoint, so this lists resting
+   * orders first and batch-cancels their IDs.
    */
   async cancelAllOrders(filters = {}) {
     try {
       this.stats.calls++;
       this.stats.lastCall = Date.now();
-      
-      const response = await this.ordersApi.cancelAllOrders(filters);
+
+      const resting = await this.ordersApi.getOrders(
+        filters.ticker,
+        filters.eventTicker,
+        undefined,
+        undefined,
+        'resting',
+        filters.limit || 200,
+        undefined,
+        filters.subaccount
+      );
+      const orderIds = (resting.data?.orders || []).map((o) => o.order_id).filter(Boolean);
+      if (!orderIds.length) {
+        return { success: true, data: { orders_cancelled: 0 }, cancelledCount: 0, timestamp: Date.now() };
+      }
+
+      const response = await this.ordersApi.batchCancelOrders({
+        orders: orderIds.map((order_id) => ({ order_id }))
+      });
       return {
         success: true,
         data: response.data,
-        cancelledCount: response.data?.orders_cancelled || 0,
+        cancelledCount: orderIds.length,
         timestamp: Date.now()
       };
     } catch (error) {
       this.stats.errors++;
       this.stats.lastError = error.message;
-      
+
       console.error('[Kalshi REST] cancelAllOrders failed:', error.message);
+      return {
+        success: false,
+        error: error.message,
+        code: error.response?.status || 'UNKNOWN',
+        timestamp: Date.now()
+      };
+    }
+  }
+
+  /**
+   * Get a single market by ticker
+   */
+  async getMarket(ticker) {
+    try {
+      this.stats.calls++;
+      this.stats.lastCall = Date.now();
+
+      const response = await this.marketApi.getMarket(ticker);
+      return {
+        success: true,
+        data: response.data,
+        timestamp: Date.now()
+      };
+    } catch (error) {
+      this.stats.errors++;
+      this.stats.lastError = error.message;
+      console.error('[Kalshi REST] getMarket failed:', error.message);
+      return {
+        success: false,
+        error: error.message,
+        code: error.response?.status || 'UNKNOWN',
+        timestamp: Date.now()
+      };
+    }
+  }
+
+  /**
+   * Get recent trades, optionally filtered by market ticker
+   */
+  async getTrades(ticker, filters = {}) {
+    try {
+      this.stats.calls++;
+      this.stats.lastCall = Date.now();
+
+      const response = await this.marketApi.getTrades(
+        filters.limit,
+        filters.cursor,
+        ticker,
+        filters.minTs,
+        filters.maxTs,
+        filters.isBlockTrade
+      );
+      return {
+        success: true,
+        data: response.data,
+        count: response.data?.trades?.length || 0,
+        timestamp: Date.now()
+      };
+    } catch (error) {
+      this.stats.errors++;
+      this.stats.lastError = error.message;
+      console.error('[Kalshi REST] getTrades failed:', error.message);
       return {
         success: false,
         error: error.message,
@@ -261,8 +406,8 @@ class KalshiRestClient {
     try {
       this.stats.calls++;
       this.stats.lastCall = Date.now();
-      
-      const response = await this.portfolioApi.getEvent({ eventId });
+
+      const response = await this.eventsApi.getEvent(eventId, true);
       return {
         success: true,
         data: response.data,
@@ -282,20 +427,37 @@ class KalshiRestClient {
   }
 
   /**
-   * Get all events with optional filtering
+   * Get all events with optional filtering. If filters.eventTicker is set,
+   * fetches that single event (optionally with its nested markets);
+   * otherwise lists events per the other filters.
    */
   async getEvents(filters = {}) {
     try {
       this.stats.calls++;
       this.stats.lastCall = Date.now();
-      
-      const params = {
-        eventTicker: filters.eventTicker,
-        withNestedMarkets: filters.withNestedMarkets || false,
-        ...filters
-      };
-      
-      const response = await this.portfolioApi.getEvents(params);
+
+      if (filters.eventTicker) {
+        const response = await this.eventsApi.getEvent(filters.eventTicker, filters.withNestedMarkets !== false);
+        const events = response.data?.event ? [response.data.event] : [];
+        return {
+          success: true,
+          data: { events, markets: response.data?.markets || [] },
+          count: events.length,
+          marketCount: response.data?.markets?.length || 0,
+          timestamp: Date.now()
+        };
+      }
+
+      const response = await this.eventsApi.getEvents(
+        filters.limit,
+        filters.cursor,
+        filters.withNestedMarkets,
+        filters.withMilestones,
+        filters.status,
+        filters.seriesTicker,
+        filters.minCloseTs,
+        filters.minUpdatedTs
+      );
       return {
         success: true,
         data: response.data,
@@ -323,8 +485,14 @@ class KalshiRestClient {
     try {
       this.stats.calls++;
       this.stats.lastCall = Date.now();
-      
-      const response = await this.portfolioApi.getMultivariateEvents(filters);
+
+      const response = await this.eventsApi.getMultivariateEvents(
+        filters.limit,
+        filters.cursor,
+        filters.seriesTicker,
+        filters.collectionTicker,
+        filters.withNestedMarkets
+      );
       return {
         success: true,
         data: response.data,
@@ -352,7 +520,7 @@ class KalshiRestClient {
       this.stats.calls++;
       this.stats.lastCall = Date.now();
       
-      const response = await this.portfolioApi.getEventMetadata({ eventId });
+      const response = await this.eventsApi.getEventMetadata(eventId);
       return {
         success: true,
         data: response.data,
@@ -379,11 +547,18 @@ class KalshiRestClient {
       this.stats.calls++;
       this.stats.lastCall = Date.now();
       
-      const response = await this.portfolioApi.getMarketCandlesticksByEvent({
-        seriesId,
+      // NOTE: kalshi-typescript's signature is (ticker, seriesTicker, startTs, endTs,
+      // periodInterval, options) — startTs/endTs/periodInterval are required by the API
+      // but were never part of this method's params; pass them via `params` until callers
+      // are updated to supply a time range.
+      const response = await this.eventsApi.getMarketCandlesticksByEvent(
         eventId,
-        ...params
-      });
+        seriesId,
+        params.startTs,
+        params.endTs,
+        params.periodInterval,
+        params
+      );
       return {
         success: true,
         data: response.data,
@@ -411,11 +586,19 @@ class KalshiRestClient {
       this.stats.calls++;
       this.stats.lastCall = Date.now();
       
-      const response = await this.portfolioApi.getEventForecastPercentilesHistory({
-        seriesId,
+      // NOTE: kalshi-typescript's signature is (ticker, seriesTicker, percentiles, startTs,
+      // endTs, periodInterval, options) — percentiles/startTs/endTs/periodInterval are
+      // required by the API but were never part of this method's params; pass them via
+      // `params` until callers are updated to supply them.
+      const response = await this.eventsApi.getEventForecastPercentilesHistory(
         eventId,
-        ...params
-      });
+        seriesId,
+        params.percentiles,
+        params.startTs,
+        params.endTs,
+        params.periodInterval,
+        params
+      );
       return {
         success: true,
         data: response.data,
@@ -579,6 +762,7 @@ class KalshiRestClient {
       const balance = await this.getBalance();
       return {
         status: balance.success ? 'healthy' : 'unhealthy',
+        error: balance.success ? undefined : balance.error,
         details: balance,
         timestamp: Date.now()
       };

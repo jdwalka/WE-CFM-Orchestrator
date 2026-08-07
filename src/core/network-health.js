@@ -82,6 +82,12 @@
         'Ourbit',
         'Weex',
         'Polymarket',
+        'Gate',
+        'TimeAPI',
+        'Solana RPC',
+        'Alchemy RPC',
+        'Whale Alert',
+        'api.whale-alert.io',
     ]);
     const OPTIONAL_PROVIDER_KEYS = new Set([
         'alternative.me',
@@ -103,9 +109,20 @@
         'ourbit',
         'weex',
         'polymarket',
+        'gate',
+        'gate.io',
+        'api.gateio.ws',
+        'whalealert',
+        'whale alert',
+        'api.whale-alert.io',
+        'whale-alert.io',
+        'timeapi',
+        'timeapi.io',
+        'solanarpc',
+        'alchemyrpc',
     ]);
     const TRANSIENT_REASON_RE = /(abort|timed?\s*out|timeout|502|503|504|429|network\s*changed|econnreset|socket hang up|failed to fetch)/i;
-    const APP_LOGIC_RE = /(stale[-\s]*watchdog|stale[-\s]*demote|demote|hysteresis|scheduler|circuit|loop|oscillat|internal|state bug|coordination|reconnect storm|thrash|browser websocket cannot send|requires node ws|credential|crypto unavailable|signature generation)/i;
+    const APP_LOGIC_RE = /(stale[-\s]*watchdog|stale[-\s]*demote|stale-reconnect|lifecycle-reconnect|auth-config-fail|demote|hysteresis|scheduler|circuit|loop|oscillat|internal|state bug|coordination|reconnect storm|thrash|browser websocket cannot send|requires node ws|credential|crypto unavailable|signature generation|ipc-sdk|rpc\/http)/i;
     const NETWORK_TRANSPORT_RE = /(dns|tls|ssl|cert|handshake|upgrade|timeout|abort|route|network|econnreset|socket hang up|websocket|wss|readyState=3|connect failure|closed-before-open)/i;
     const PROVIDER_API_RE = /(http\s*(401|403|404|408|409|410|412|415|422|429|5\d\d)|status\s*(401|403|404|408|409|410|412|415|422|429|5\d\d)|upstream|rate limit|unauthorized|forbidden|not found)/i;
     const BUCKETS = {
@@ -141,6 +158,10 @@
         if (key.includes('kalshi')) return 'Kalshi';
         if (key.includes('polymarket')) return 'Polymarket';
         if (key.includes('pyth') || key.includes('hermes')) return 'Pyth';
+        if (key.includes('gateio') || key === 'gate' || key.includes('gate.io')) return 'Gate';
+        if (key.includes('timeapi') || key.includes('time.akamai')) return 'TimeAPI';
+        if (key.includes('projectserum') || key.includes('solana') || key.includes('publicnode')) return 'Solana RPC';
+        if (key.includes('alchemy')) return 'Alchemy RPC';
         return raw;
     }
 
@@ -280,6 +301,8 @@
         } else if (status === 'healthy') {
             failureCounters[provider].count = 0;
             failureCounters[provider].alertActive = false;
+            state[provider].bucket = BUCKETS.UNKNOWN;
+            state[provider].bucketReason = '';
         } else if (status !== 'down') {
             failureCounters[provider].alertActive = false;
         }
@@ -376,11 +399,12 @@
         const handshakeHint = ws.lastHandshakeStatus ? ` hs=${ws.lastHandshakeStatus}` : '';
 
         if (wsConnected && !wsStale) {
+            // Live WSS is primary — never label as Fallback just because REST also has ok stats
             update('Kalshi', {
                 status: 'healthy',
                 lastFetch: ws.lastMessageTs || transport.lastSync || now,
-                fallback: kalshiPref && kalshiPref !== 'wss' && kalshiPref !== 'rpc',
-                reason: kalshiPref ? `via ${kalshiPref}${authHint}${handshakeHint}` : `wss live${authHint}${handshakeHint}`,
+                fallback: false,
+                reason: `wss live${kalshiPref && kalshiPref !== 'wss' ? ` (rest also ${kalshiPref})` : ''}${authHint}${handshakeHint}`,
                 bucket: BUCKETS.UNKNOWN,
                 bucketReason: '',
             });
@@ -1006,6 +1030,7 @@
         'api.mainnet-beta.solana.com': 'Solana RPC',
         'eth-mainnet.g.alchemy.com': 'Alchemy RPC',
         'polygon-mainnet.g.alchemy.com': 'Alchemy RPC',
+        'api.whale-alert.io': 'Whale Alert',
     };
 
     const ENDPOINT_HOST_PROBES = [
@@ -1015,7 +1040,7 @@
         { provider: 'Chain.so', url: 'https://chain.so/api/v2/get_info/DOGE' },
         { provider: 'Mempool.space', url: 'https://mempool.space/api/blocks/tip/height' },
         { provider: 'Etherscan', url: 'https://api.etherscan.io/api?module=proxy&action=eth_blockNumber' },
-        { provider: 'Solana RPC', url: 'https://api.mainnet-beta.solana.com', method: 'POST', body: '{"jsonrpc":"2.0","id":1,"method":"getHealth"}' },
+        { provider: 'Solana RPC', url: 'https://api.mainnet-beta.solana.com', fallbackUrl: 'https://solana-mainnet.g.alchemy.com/v2/UNcUYppLXPl4s0jAkQe_J', method: 'POST', body: '{"jsonrpc":"2.0","id":1,"method":"getEpochInfo"}' },
     ];
 
     const ENDPOINT_PROBE_STALE_MS = 90_000;
@@ -1064,7 +1089,7 @@
                 const timer = setTimeout(() => ctrl.abort(new Error('endpoint-probe-timeout')), 4500);
                 const fetchFn = typeof window.proxyFetch === 'function' ? window.proxyFetch : fetch;
                 try {
-                    const res = await fetchFn(cfg.url, {
+                    let res = await fetchFn(cfg.url, {
                         method: cfg.method || 'GET',
                         cache: 'no-store',
                         signal: ctrl.signal,
@@ -1073,7 +1098,22 @@
                             : { Accept: 'application/json,*/*' },
                         body: cfg.body || undefined,
                     });
-                    const ok = typeof res?.ok === 'boolean' ? res.ok : (Number(res?.status || 0) > 0 && Number(res?.status || 0) < 500);
+                    let ok = typeof res?.ok === 'boolean' ? res.ok : (Number(res?.status || 0) > 0 && Number(res?.status || 0) < 500);
+                    if (!ok && cfg.fallbackUrl) {
+                        try {
+                            const res2 = await fetchFn(cfg.fallbackUrl, {
+                                method: cfg.method || 'GET',
+                                cache: 'no-store',
+                                signal: ctrl.signal,
+                                headers: cfg.body ? { Accept: 'application/json', 'Content-Type': 'application/json' } : { Accept: 'application/json,*/*' },
+                                body: cfg.body || undefined,
+                            });
+                            if (typeof res2?.ok === 'boolean' ? res2.ok : (Number(res2?.status || 0) > 0 && Number(res2?.status || 0) < 500)) {
+                                res = res2;
+                                ok = true;
+                            }
+                        } catch (_) {}
+                    }
                     update(cfg.provider, {
                         status: ok ? 'healthy' : 'degraded',
                         lastFetch: now,
@@ -1085,16 +1125,43 @@
                         bucketReason: ok ? '' : `probe ${cfg.url}`,
                     });
                 } catch (err) {
-                    update(cfg.provider, {
-                        status: 'degraded',
-                        lastFetch: now,
-                        fallback: fetchFn !== fetch,
-                        optional: true,
-                        transient: true,
-                        reason: String(err?.message || err || 'endpoint probe failed').slice(0, 120),
-                        bucket: BUCKETS.NETWORK_TRANSPORT,
-                        bucketReason: String(err?.message || err || 'endpoint probe failed'),
-                    });
+                    let recovered = false;
+                    if (cfg.fallbackUrl) {
+                        try {
+                            const res2 = await fetchFn(cfg.fallbackUrl, {
+                                method: cfg.method || 'GET',
+                                cache: 'no-store',
+                                signal: ctrl.signal,
+                                headers: cfg.body ? { Accept: 'application/json', 'Content-Type': 'application/json' } : { Accept: 'application/json,*/*' },
+                                body: cfg.body || undefined,
+                            });
+                            if (typeof res2?.ok === 'boolean' ? res2.ok : (Number(res2?.status || 0) > 0 && Number(res2?.status || 0) < 500)) {
+                                recovered = true;
+                                update(cfg.provider, {
+                                    status: 'healthy',
+                                    lastFetch: now,
+                                    fallback: true,
+                                    optional: true,
+                                    transient: false,
+                                    reason: 'Endpoint probe OK (fallback)',
+                                    bucket: BUCKETS.UNKNOWN,
+                                    bucketReason: '',
+                                });
+                            }
+                        } catch (_) {}
+                    }
+                    if (!recovered) {
+                        update(cfg.provider, {
+                            status: 'degraded',
+                            lastFetch: now,
+                            fallback: fetchFn !== fetch,
+                            optional: true,
+                            transient: true,
+                            reason: String(err?.message || err || 'endpoint probe failed').slice(0, 120),
+                            bucket: BUCKETS.NETWORK_TRANSPORT,
+                            bucketReason: String(err?.message || err || 'endpoint probe failed'),
+                        });
+                    }
                 } finally {
                     clearTimeout(timer);
                 }
@@ -1153,5 +1220,6 @@
         failureCounters,
     };
     startLocalStatusBridge();
-    setInterval(syncLiveProbe, 5000);
+    // 12s probe cadence (was 5s) — cuts health-check fetch/WS chatter ~60% on Canada node
+    setInterval(syncLiveProbe, 12_000);
 })();

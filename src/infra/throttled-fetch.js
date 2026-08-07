@@ -7,9 +7,9 @@
 //   queuedFetch(url)              — strict serial queue with 65ms breathing room between calls
 (function() {
   // ── 1. CONCURRENT THROTTLE ────────────────────────────────────────────────
-  const MAX_CONCURRENT   = 30;     // Safe limit for Chromium native fetch fallback when proxy is down
-  const FETCH_TIMEOUT_MS = 60000;  // very lenient deadline per request (60 s) for Tor routing
-  const SLOT_GAP_MS      = 25;     // breathing room between slots to protect proxy event loop
+  const MAX_CONCURRENT   = 16;     // was 30 — fewer parallel REST blasts; proxy + Canada node stay stable
+  const FETCH_TIMEOUT_MS = 45000;  // was 60s — fail faster, free slots for live path
+  const SLOT_GAP_MS      = 30;     // slight breathing room for local proxy event loop
   const API_TIMEOUT_MS = {
     coingecko: 20000,
     coinbase: 20000,

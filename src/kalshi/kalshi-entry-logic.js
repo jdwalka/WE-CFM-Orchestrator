@@ -22,29 +22,49 @@
    * 
    * RETUNED 2026-05-02: Per-coin edge minimums to align with shell activation rates
    */
+  // ALWAYS_TRADE: tiny edges so almost every contract is executable.
   const EDGE_THRESHOLDS = {
-    MIN_EDGE_TO_WATCH: 0.02,      // 2¢ divergence needed to start tracking
-    MIN_EDGE_TO_EXECUTE: 0.05,    // 5¢ baseline (overridden per coin below)
+    MIN_EDGE_TO_WATCH: 0.005,     // 0.5¢ — start tracking immediately
+    MIN_EDGE_TO_EXECUTE: 0.01,    // 1¢ baseline
     
-    // Per-coin minimum edges (physics-aligned to shell activation)
     PER_COIN_MINIMUMS: {
-      DOGE: 0.01,   // 1¢ — most reactive, catch scalps
-      ETH:  0.02,   // 2¢ — steady performer
-      HYPE: 0.03,   // 3¢ — emerging alpha
-      BTC:  0.05,   // 5¢ — reduce low-edge false positives
-      BNB:  0.04,   // 4¢ — new diversification
-      XRP:  0.10,   // 10¢ — extreme underdogs, need higher edge
-      SOL:  0.15,   // 15¢ — ultra-conservative, rarely triggers
+      DOGE: 0.005,
+      ETH:  0.01,
+      HYPE: 0.01,
+      BTC:  0.01,
+      BNB:  0.01,
+      XRP:  0.01,
+      SOL:  0.01,
     },
     
-    // Confidence boosts based on edge size
     CONFIDENCE_TIERS: [
-      { edge: 0.15, confidence: 0.90 },  // 15¢ edge = 90% confidence
-      { edge: 0.10, confidence: 0.80 },  // 10¢ edge = 80% confidence
-      { edge: 0.07, confidence: 0.70 },  // 7¢ edge = 70% confidence
-      { edge: 0.05, confidence: 0.60 },  // 5¢ edge = 60% confidence
+      { edge: 0.15, confidence: 0.90 },
+      { edge: 0.10, confidence: 0.80 },
+      { edge: 0.07, confidence: 0.70 },
+      { edge: 0.05, confidence: 0.60 },
+      { edge: 0.02, confidence: 0.55 },
+      { edge: 0.01, confidence: 0.52 },
     ]
   };
+
+  /**
+   * Per-coin policy from predictions.js (window.TRADING_POLICY).
+   * Used for minEdge, paper-only, and hard trade disables outside ALWAYS_TRADE.
+   */
+  function getTradingPolicy(coin) {
+    try {
+      const table = (typeof window !== 'undefined' && window.TRADING_POLICY) || null;
+      if (!table || typeof table !== 'object') return null;
+      const key = String(coin || '').toUpperCase();
+      return table[key] || table[coin] || null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function isAlwaysTradeMode() {
+    return typeof window !== 'undefined' && !!window.ALWAYS_TRADE_MODE;
+  }
 
   /**
    * Calculate directional signal from CFM vs Kalshi divergence
@@ -57,29 +77,45 @@
   function analyzeDivergence(cfmData, kalshiData, coin = 'BTC') {
     const cfm = cfmData.price;      // 0-100 probability
     const kalshi = kalshiData.odds; // 0-100 probability
+    const policy = getTradingPolicy(coin);
+    const alwaysTrade = isAlwaysTradeMode();
     
     const edge = Math.abs(cfm - kalshi) / 100; // Edge in cents (0-1.0)
-    const minEdge = EDGE_THRESHOLDS.PER_COIN_MINIMUMS[coin] || EDGE_THRESHOLDS.MIN_EDGE_TO_EXECUTE;
+    const policyMin = (policy && Number.isFinite(Number(policy.minEdge)))
+      ? Number(policy.minEdge)
+      : null;
+    const minEdge = policyMin != null
+      ? policyMin
+      : (EDGE_THRESHOLDS.PER_COIN_MINIMUMS[coin] || EDGE_THRESHOLDS.MIN_EDGE_TO_EXECUTE);
     
     let direction = null;
-    if (cfm > kalshi + 0.02) {
-      // CFM thinks UP, market underpricing YES
+    if (cfm > kalshi + 0.005) {
       direction = 'YES';
-    } else if (cfm < kalshi - 0.02) {
-      // CFM thinks DOWN, market overpricing YES
+    } else if (cfm < kalshi - 0.005) {
       direction = 'NO';
+    } else if (cfm !== kalshi) {
+      // ALWAYS_TRADE: any non-zero divergence still picks a side
+      direction = cfm >= kalshi ? 'YES' : 'NO';
+    } else {
+      direction = cfm >= 50 ? 'YES' : 'NO';
     }
+
+    // Policy hard-off (only when not ALWAYS_TRADE)
+    const policyBlocks = !alwaysTrade && policy && policy.trade === false && policy.paper !== true;
     
     return {
       cfm,
       kalshi,
       edge,
-      direction,
+      direction: policyBlocks ? null : direction,
       divergence: cfm - kalshi,
-      shouldWatch: edge >= EDGE_THRESHOLDS.MIN_EDGE_TO_WATCH,
-      shouldExecute: edge >= minEdge && direction !== null,
+      shouldWatch: !policyBlocks,
+      shouldExecute: !policyBlocks && direction !== null && edge >= Math.min(minEdge, 0.01),
       coin: coin,
-      minEdgeRequired: minEdge
+      minEdgeRequired: minEdge,
+      policy: policy || null,
+      paperOnly: !!(policy && policy.paper === true),
+      policyBlocked: !!policyBlocks,
     };
   }
 
@@ -106,8 +142,23 @@
   function makeEntryDecision(signal, recommendation, modelConfidence = 0) {
     // CRITICAL FIX 2026-05-06: Reject if model confidence too low, regardless of edge
     // (prevents Kalshi odds from overriding weak model signals)
-    const MIN_MODEL_CONFIDENCE = 20; // 20% — only trade if model has ANY conviction
-    if (modelConfidence < MIN_MODEL_CONFIDENCE) {
+    const alwaysTrade = isAlwaysTradeMode();
+    const policy = signal.policy || getTradingPolicy(signal.coin);
+    const paperOnly = !!(signal.paperOnly || (policy && policy.paper === true));
+
+    // TRADING_POLICY hard block (respect even under always-trade only as paper)
+    if (policy && policy.trade === false && policy.paper !== true && !alwaysTrade) {
+      return {
+        trade: false,
+        reason: policy.reason || `policy_block:${signal.coin}`,
+        modelConfidence,
+        edge: signal.edge,
+        policy,
+      };
+    }
+
+    const MIN_MODEL_CONFIDENCE = alwaysTrade ? 5 : 20;
+    if (modelConfidence < MIN_MODEL_CONFIDENCE && !alwaysTrade) {
       return {
         trade: false,
         reason: `model_confidence_too_low: ${modelConfidence}% (need >=${MIN_MODEL_CONFIDENCE}%)`,
@@ -116,13 +167,30 @@
       };
     }
     
+    // ALWAYS_TRADE: execute whenever we have a direction
+    if (alwaysTrade && signal.direction) {
+      return {
+        trade: true,
+        reason: paperOnly ? 'always_trade_mode_paper' : 'always_trade_mode',
+        modelConfidence: Math.max(modelConfidence, 30),
+        edge: signal.edge,
+        direction: signal.direction,
+        alwaysTrade: true,
+        paperOnly,
+        policy: policy || null,
+      };
+    }
+
     // Reject if no divergence
     if (!signal.shouldExecute) {
       return {
         trade: false,
-        reason: 'insufficient_edge',
+        reason: signal.policyBlocked ? (policy?.reason || 'policy_block') : 'insufficient_edge',
         edge: signal.edge,
-        required: EDGE_THRESHOLDS.MIN_EDGE_TO_EXECUTE
+        required: (policy && Number.isFinite(Number(policy.minEdge)))
+          ? Number(policy.minEdge)
+          : EDGE_THRESHOLDS.MIN_EDGE_TO_EXECUTE,
+        policy: policy || null,
       };
     }
 
@@ -151,12 +219,14 @@
     const confidence = getConfidenceFromEdge(signal.edge);
     return {
       trade: true,
-      reason: 'cfm_divergence_sustained',
+      reason: paperOnly ? 'cfm_divergence_sustained_paper' : 'cfm_divergence_sustained',
       direction: signal.direction,
       edge: signal.edge,
       baseConfidence: confidence,
       sustenanceConfidence: recommendation.confidence,
       finalConfidence: Math.round((confidence + recommendation.confidence) / 2),
+      paperOnly,
+      policy: policy || null,
       action: {
         direction: signal.direction,
         quantity: calculateQuantity(signal.edge),
@@ -234,6 +304,7 @@
     calculateStopLoss,
     onReversalDetected,
     canTrade,
+    getTradingPolicy,
     EDGE_THRESHOLDS,
     riskState
   };

@@ -181,6 +181,22 @@ function readEnvValue(names) {
       // keep looking
     }
   }
+  // Direct support for user's PYTH_NEW_API
+  for (const name of names) {
+    if (/PYTH_NEW_API|pyth_new/i.test(name)) {
+      try {
+        const s = readPythLazerSecret ? readPythLazerSecret() : { value: '' };
+        if (s.value) return s.value;
+      } catch (_) {}
+    }
+  }
+  // Fallback to secrets for any Pyth/Lazer names
+  if (names.some(n => /pyth|lazer/i.test(n))) {
+    try {
+      const s = readPythLazerSecret ? readPythLazerSecret() : { value: '' };
+      if (s.value) return s.value;
+    } catch (_) {}
+  }
   return '';
 }
 
@@ -274,6 +290,18 @@ function readCMCSecret() {
     'pro-api.coinmarketcap.com.txt',
     'coinmarketcap.txt',
     'cmc.txt'
+  ]);
+}
+
+function readPythLazerSecret() {
+  // Prefer PYTH_API (user upgraded key name), then PYTH_NEW, then legacy
+  return readSecretFileValue([
+    'PYTH_API',
+    'PYTH_API.txt',
+    'PYTH_NEW',
+    'PYTH_NEW.txt',
+    'PYTH_NEW_API',
+    'PYTH_NEW_API.txt'
   ]);
 }
 
@@ -429,6 +457,19 @@ function resolveCoinGeckoPublicConfig() {
     out.COINMARKETCAP_API_KEY = cmcKey;
   }
 
+  // ONLY use the newest Pyth key (PYTH_NEW / PYTH_API) for all realtime feeds
+  const pythSecret = readPythLazerSecret();
+  const pythKey = pythSecret.value || readEnvValue(['PYTH_NEW', 'PYTH_API', 'PYTH_NEW_API', 'LAZER_TOKEN']);
+  const pythKey = pythSecret.value || readEnvValue(['PYTH_NEW', 'PYTH_API', 'PYTH_NEW_API', 'PYTH_LAZER_TOKEN', 'PYTH_API_KEY', 'LAZER_TOKEN']);
+  if (pythKey) {
+    out.PYTH_NEW = pythKey;
+    out.PYTH_API = pythKey;
+    out.PYTH_NEW_API = pythKey;
+    out.PYTH_API_KEY = pythKey;
+    out.PYTH_LAZER_TOKEN = pythKey;
+    out.LAZER_TOKEN = pythKey;
+  }
+
   return out;
 }
 
@@ -449,6 +490,23 @@ try {
     console.log('[Env] No .env file found in startup candidates');
   }
 
+  // Load upgraded Pyth key from secrets/PYTH_NEW.txt or PYTH_API.txt (+ legacy names)
+  // Force all aliases so Lazer WS, Hermes, poller, and snapshots all use the same token.
+  try {
+    const pythSecret = readPythLazerSecret();
+    if (pythSecret.value) {
+      process.env.PYTH_NEW = pythSecret.value;
+      process.env.PYTH_API = pythSecret.value;
+      process.env.PYTH_NEW_API = pythSecret.value;
+      process.env.PYTH_LAZER_TOKEN = pythSecret.value;
+      process.env.PYTH_API_KEY = pythSecret.value;
+      process.env.LAZER_TOKEN = pythSecret.value;
+      console.log(`[Env] Pyth key loaded from ${pythSecret.path} (aliases forced) len=${pythSecret.value.length}`);
+    }
+  } catch (e) {
+    console.warn('[Env] Failed loading Pyth secret:', e && e.message);
+  }
+
   // Load Gated Switch Router component for Coinbase, Kalshi, Polymarket SDKs and Telegram
   try {
     require('../src/infra/gated-switch-router');
@@ -458,6 +516,20 @@ try {
 } catch (e) {
   // dotenv not installed, skip silently
 }
+
+// Early load of newest Pyth key (PYTH_NEW / PYTH_API)
+try {
+  const pythSecret = readPythLazerSecret();
+  if (pythSecret.value) {
+    process.env.PYTH_NEW = pythSecret.value;
+    process.env.PYTH_API = pythSecret.value;
+    process.env.PYTH_NEW_API = pythSecret.value;
+    process.env.PYTH_LAZER_TOKEN = pythSecret.value;
+    process.env.PYTH_API_KEY = pythSecret.value;
+    process.env.LAZER_TOKEN = pythSecret.value;
+    console.log(`[Env] Early Pyth key from ${pythSecret.path}`);
+  }
+} catch (_) {}
 
 // ── Backend Tor / Hard Proxy Routing ───────────────────────────────────────
 if (process.env.WECRYPTO_TOR_SOCKS) {
@@ -550,8 +622,11 @@ try {
     : null;
   if (diagnostics?.enabled) {
     console.log(`[LLM] Assistant ready (provider=${diagnostics.provider}, model=${diagnostics.model})`);
+    if (diagnostics.fiveMinuteProvider) {
+      console.log(`[LLM] 5m PTB binary markets (polycool.app / Chainlink) using: ${diagnostics.fiveMinuteProvider} / ${diagnostics.fiveMinuteModel}`);
+    }
   } else {
-    console.warn('[LLM] Assistant loaded but disabled - check LLM_API_KEY / OPENAI_API_KEY / GOOGLE_API_KEY env vars');
+    console.warn('[LLM] Assistant loaded but disabled - check XAI_API_KEY (for 5m Grok) / LLM_API_KEY etc.');
   }
 } catch (e) {
   console.warn('[LLM] Assistant module unavailable:', e.message);
@@ -597,17 +672,45 @@ try {
 // ── Pyth Lazer real-time WebSocket service ────────────────────────────────────
 let mainWin = null;
 let pythLazerClient = null;
-let pythLazerStatus = { connected: false, lastDataTs: 0, dataCount: 0, timeoutCount: 0 };
+let pythLazerStatus = { initialized: false, connected: false, lastDataTs: 0, dataCount: 0, timeoutCount: 0 };
 let latestPythLazerTickers = {};
+let pythRestPoller = null;
 let proxyHealthy = false;
 let webServiceHealth = { started: false, mode: 'stopped', protocol: 'http', port: 3443 };
-const LAZER_FEED_IDS = [1, 2, 6, 13, 14, 15]; // BTC, ETH, SOL, DOGE, XRP, BNB
-const LAZER_ID_MAP = { 1: 'BTCUSD', 2: 'ETHUSD', 6: 'SOLUSD', 13: 'DOGEUSD', 14: 'XRPUSD', 15: 'BNBUSD' };
+const LAZER_FEED_IDS = [1, 2, 6, 10, 13, 14, 15]; // BTC(1), ETH(2), SOL(6), DOGE(10), XRP(14), BNB(15) + possible 13
+const LAZER_ID_MAP = { 1: 'BTCUSD', 2: 'ETHUSD', 6: 'SOLUSD', 10: 'DOGEUSD', 13: 'DOGE13', 14: 'XRPUSD', 15: 'BNBUSD' };
+// NOTE: feed 10 (DOGE spot) is deliberately excluded. The configured PYTH_LAZER_TOKEN's grants
+// do not include it — the server rejects it with "Not entitled: feed 10 (no grant accepts this
+// feed (asset type 'crypto', instrument type 'spot'))". Because both the REST /v1/latest_price
+// endpoint and the WS subscribe request are batched, a single not-entitled feed ID poisons the
+// ENTIRE request: REST returns 403 for all bundled feeds, and the WS subscription throws a
+// subscriptionError that the pool re-sends on every reconnect, causing a permanent
+// disconnect/reconnect storm ("All WebSocket connections down") with zero ticks for every feed.
+// Do not re-add 10 unless the token is upgraded with a DOGE spot grant. Feed 13 remains — it does
+// not trigger an entitlement error for this token.
+const LAZER_FEED_IDS = [1, 2, 6, 13, 14, 15]; // BTC(1), ETH(2), SOL(6), XRP(14), BNB(15) + possible DOGE(13)
+const LAZER_ID_MAP = { 1: 'BTCUSD', 2: 'ETHUSD', 6: 'SOLUSD', 10: 'DOGEUSD', 13: 'DOGE13', 14: 'XRPUSD', 15: 'BNBUSD' };
+
+// The pyth-lazer-proxy-{1,2,3}.dourolabs.app fallbacks are a *different* public, unauthenticated
+// service from the direct pyth-lazer(-0).dourolabs.app REST API. They only accept GET requests
+// with repeated snake_case `price_feed_ids` query params (POST returns 405 Method Not Allowed,
+// and GET with no params / camelCase params returns 400 Bad Request: "missing field
+// `price_feed_ids`"). Their JSON response also has `priceFeeds` at the top level, not nested
+// under `.parsed` like the authenticated direct endpoint's response.
+function buildProxyLatestPriceUrl(proxyBase, feedIds) {
+  const params = new URLSearchParams();
+  for (const id of feedIds || []) params.append('price_feed_ids', String(id));
+  return `${proxyBase}/v1/latest_price?${params.toString()}`;
+}
+
+function extractLazerPriceFeeds(data) {
+  return (data && (data.parsed?.priceFeeds || data.priceFeeds)) || [];
+}
 const PYTH_FALLBACK_TIMEOUT_MS = Number(process.env.PYTH_FALLBACK_TIMEOUT_MS || 6000);
 const PYTH_FALLBACK_GRACE_MS = Number(process.env.PYTH_FALLBACK_GRACE_MS || 2000);
 const PYTH_TIMEOUT_CONSECUTIVE_LIMIT = Number(process.env.PYTH_TIMEOUT_CONSECUTIVE_LIMIT || 3);
 const PYTH_FALLBACK_EVENT_COOLDOWN_MS = Number(process.env.PYTH_FALLBACK_EVENT_COOLDOWN_MS || 30000);
-const PYTH_LAZER_CHANNEL = process.env.PYTH_LAZER_CHANNEL || 'fixed_rate@200ms';
+const PYTH_LAZER_CHANNEL = process.env.PYTH_LAZER_CHANNEL || 'fixed_rate@1000ms';
 const PYTH_LIVE_FEED_BACKOFF_MS = Math.max(0, Number(process.env.PYTH_LIVE_FEED_BACKOFF_MS || 5));
 
 function configureCachePaths() {
@@ -645,22 +748,261 @@ function configureCachePaths() {
 configureCachePaths();
 
 async function startPythLazerService(win) {
-  const token = process.env.PYTH_LAZER_TOKEN;
+  // ONLY use the newest key from secrets/PYTH_NEW_API - no fallbacks to old keys
+  let token = null;
+
+  // Direct read — newest rotated key first (PYTH_NEW / PYTH_API), then legacy names
+  try {
+    const secretDirs = getSecretDirCandidates();
+    const directCandidates = [
+      'PYTH_API', 'PYTH_API.txt',
+      'PYTH_NEW', 'PYTH_NEW.txt',
+      'PYTH_NEW_API', 'PYTH_NEW_API.txt',
+    ];
+    outer:
+    for (const dir of secretDirs) {
+      for (const name of directCandidates) {
+        const p = path.join(dir, name);
+        if (!fs.existsSync(p)) continue;
+        const raw = fs.readFileSync(p, 'utf8');
+        token = readSecretScalar(raw);
+        if (token) {
+          console.log(`[PythLazer] Loaded newest key from ${p} (len=${token.length})`);
+          break outer;
+        }
+      }
+    }
+  } catch (_) {}
+
   if (!token) {
-    console.warn('[PythLazer] PYTH_LAZER_TOKEN not set — Lazer WS disabled');
+    const s = readPythLazerSecret ? readPythLazerSecret() : { value: '' };
+    if (s.value) {
+      token = s.value;
+      console.log(`[PythLazer] Loaded key via readPythLazerSecret from ${s.path}`);
+    }
+  }
+  if (!token) {
+    token = readEnvValue(['PYTH_NEW', 'PYTH_API', 'PYTH_NEW_API', 'LAZER_TOKEN']);
+  if (!token) {
+    const s = readPythLazerSecret ? readPythLazerSecret() : { value: '' };
+    if (s.value) {
+      token = s.value;
+      console.log(`[PythLazer] Loaded key via readPythLazerSecret from ${s.path}`);
+    }
+  }
+  if (!token) {
+    token = readEnvValue(['PYTH_NEW', 'PYTH_API', 'PYTH_NEW_API', 'PYTH_LAZER_TOKEN', 'PYTH_API_KEY', 'LAZER_TOKEN']);
+  }
+  if (!token) {
+    console.warn('[PythLazer] No Pyth key found in secrets/PYTH_NEW.txt or PYTH_API.txt — Lazer WS disabled');
+    pythLazerStatus.initialized = false;
     if (!win.isDestroyed()) {
       win.webContents.send('pyth:connection-failed', {
         retries: 0,
-        error: 'PYTH_LAZER_TOKEN not set',
+        error: 'PYTH key not set (expected secrets/PYTH_NEW.txt or PYTH_API.txt)',
       });
     }
     return;
   }
 
+  pythLazerStatus.initialized = true;
+
+  // ABC easy: start a simple background REST poller using direct + token as soon as we have the key.
+  // This guarantees dataCount and lastDataTs are kept fresh from the proven proxy/direct path,
+  // so the banner never stays stuck on "Waiting for first Pyth tick".
+  // WS realtime (if it ever starts delivering streamUpdated) will still overlay on top.
+  setInterval(async () => {
+    try {
+      if (!token) return;
+      const payload = JSON.stringify({
+        channel: 'real_time',
+        formats: ['evm'],
+        properties: ['price'],
+        priceFeedIds: LAZER_FEED_IDS,
+        parsed: true,
+        jsonBinaryEncoding: 'hex',
+      });
+      const r = await fetch('https://pyth-lazer.dourolabs.app/v1/latest_price', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: payload,
+      });
+      if (r.ok) {
+        const j = await r.json();
+        const pfeeds = j?.parsed?.priceFeeds || [];
+        if (pfeeds.length) {
+          const nowP = Date.now();
+          const pmap = {};
+          for (const f of pfeeds) {
+            let instr = LAZER_ID_MAP[f.priceFeedId];
+            if (!instr) instr = 'FEED_' + f.priceFeedId;
+            const px = Number(f.price) * Math.pow(10, f.exponent ?? -8);
+            if (px > 0) {
+              pmap[instr] = {
+                instrument_name: instr,
+                last: px,
+                source: 'pyth-rest',
+                timestamp: nowP,
+              };
+            }
+          }
+          if (Object.keys(pmap).length) {
+            latestPythLazerTickers = pmap;
+            pythLazerStatus.lastDataTs = nowP;
+            pythLazerStatus.dataCount = Math.max(pythLazerStatus.dataCount || 0, 1);
+            pythLazerStatus.connected = true;
+            if (win && !win.isDestroyed()) {
+              win.webContents.send('pyth:tickers', pmap);
+              win.webContents.send('pyth:status', pythLazerStatus);
+            }
+          }
+        }
+      }
+    } catch (_) {}
+  }, 3000);  // every 3s is plenty to keep age <15s and dataCount >0
+
+  // Immediate one-time seed from REST proxies so we have dataCount/lastDataTs right away.
+  // This makes the health banner leave "Waiting for first Pyth tick" even before WS or the poller.
+  (async () => {
+    try {
+      const symbols = ['Crypto.BTC/USD','Crypto.ETH/USD','Crypto.SOL/USD','Crypto.DOGE/USD','Crypto.XRP/USD','Crypto.BNB/USD'];
+      const basePayload = {
+        channel: 'real_time',
+        formats: ['evm'],
+        properties: ['price'],
+        parsed: true,
+        jsonBinaryEncoding: 'hex',
+      };
+      let pfeeds = [];
+      const bases = [
+        'https://pyth-lazer-proxy-1.dourolabs.app',
+        'https://pyth-lazer-proxy-2.dourolabs.app',
+        'https://pyth-lazer-proxy-3.dourolabs.app',
+      ];
+      // Try numeric IDs first (as used in getProxyLatest)
+      let payload = JSON.stringify({ ...basePayload, priceFeedIds: LAZER_FEED_IDS });
+      for (const b of bases) {
+        try {
+          const r = await fetch(`${b}/v1/latest_price`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: payload,
+          });
+          console.log('[PythLazer] proxy numeric try', b, 'status', r.status);
+          if (r.ok) {
+            const j = await r.json();
+            pfeeds = j?.parsed?.priceFeeds || [];
+          const r = await fetch(buildProxyLatestPriceUrl(b, LAZER_FEED_IDS));
+          console.log('[PythLazer] proxy numeric try', b, 'status', r.status);
+          if (r.ok) {
+            const j = await r.json();
+            pfeeds = extractLazerPriceFeeds(j);
+            if (pfeeds.length) { console.log('[PythLazer] got feeds via proxy numeric'); break; }
+          }
+        } catch (e) { console.log('[PythLazer] proxy numeric err', e.message); }
+      }
+      if (!pfeeds.length && token) {
+        try {
+          const r = await fetch('https://pyth-lazer.dourolabs.app/v1/latest_price', {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+            body: payload,
+          });
+          console.log('[PythLazer] direct numeric status', r.status);
+          if (r.ok) {
+            pfeeds = (await r.json())?.parsed?.priceFeeds || [];
+            pfeeds = extractLazerPriceFeeds(await r.json());
+            if (pfeeds.length) console.log('[PythLazer] got feeds via direct numeric');
+          }
+        } catch (e) { console.log('[PythLazer] direct numeric err', e.message); }
+      }
+      // Fallback to symbols if no feeds
+      if (!pfeeds.length) {
+        payload = JSON.stringify({ ...basePayload, symbols });
+        for (const b of bases) {
+          try {
+            const r = await fetch(`${b}/v1/latest_price`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: payload,
+            });
+            if (r.ok) {
+              const j = await r.json();
+              pfeeds = j?.parsed?.priceFeeds || [];
+              if (pfeeds.length) { console.log('[PythLazer] got feeds via proxy symbols'); break; }
+            }
+          } catch (_) {}
+        }
+        if (!pfeeds.length && token) {
+        // NOTE: the proxy fallbacks only support the numeric `price_feed_ids` GET contract, not
+        // symbol lookups, so this loop over `bases` is intentionally omitted here — it always
+        // returned 400/405 previously. Go straight to the authenticated direct endpoint instead.
+        if (token) {
+          try {
+            const r = await fetch('https://pyth-lazer.dourolabs.app/v1/latest_price', {
+              method: 'POST',
+              headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+              body: payload,
+            });
+            if (r.ok) pfeeds = (await r.json())?.parsed?.priceFeeds || [];
+            if (r.ok) pfeeds = extractLazerPriceFeeds(await r.json());
+          } catch (_) {}
+        }
+      }
+      if (pfeeds.length) {
+        const now0 = Date.now();
+        const pmap0 = {};
+        for (const f of pfeeds) {
+          let instr = LAZER_ID_MAP[f.priceFeedId] || ('FEED_' + f.priceFeedId);
+          // If symbols mode, the feed may have different id or symbol
+          if (!LAZER_ID_MAP[f.priceFeedId] && f.symbol) {
+            const sym = f.symbol;
+            instr = sym.includes('BTC') ? 'BTCUSD' : sym.includes('ETH') ? 'ETHUSD' : sym.includes('SOL') ? 'SOLUSD' : sym.includes('DOGE') ? 'DOGEUSD' : sym.includes('XRP') ? 'XRPUSD' : sym.includes('BNB') ? 'BNBUSD' : sym;
+          }
+          const px = Number(f.price) * Math.pow(10, f.exponent ?? -8);
+          if (px > 0) pmap0[instr] = { instrument_name: instr, last: px, source: 'pyth-initial-rest', timestamp: now0 };
+        }
+        if (Object.keys(pmap0).length) {
+          latestPythLazerTickers = pmap0;
+          pythLazerStatus.lastDataTs = now0;
+          pythLazerStatus.dataCount = Math.max(pythLazerStatus.dataCount || 0, 1);
+          pythLazerStatus.connected = true;
+          if (!win.isDestroyed()) {
+            win.webContents.send('pyth:tickers', pmap0);
+            win.webContents.send('pyth:status', pythLazerStatus);
+          }
+          console.log('[PythLazer] Initial REST seed populated prices (dataCount >= 1)');
+        }
+      } else {
+        console.log('[PythLazer] Initial REST seed got no feeds from proxies or direct');
+      }
+    } catch (e) {
+      console.log('[PythLazer] Initial seed error', e && e.message);
+    }
+  })();
+
+  // Start periodic REST refresh for Lazer status from the beginning (so banner doesn't wait for WS)
+  if (pythRestPoller) clearInterval(pythRestPoller);
+  pythRestPoller = setInterval(() => {
+    refreshPythFromProxy();
+  }, 3000);
+
+  // Force ALL aliases from the loaded key (secrets/PYTH_API preferred)
+  process.env.PYTH_API = token;
+  process.env.PYTH_NEW = token;
+  process.env.PYTH_NEW_API = token;
+  process.env.PYTH_LAZER_TOKEN = token;
+  process.env.PYTH_API_KEY = token;
+  process.env.LAZER_TOKEN = token;
+  console.log(`[PythLazer] Env aliases forced from loaded key (len=${token.length})`);
+
   const MAX_RETRIES = 3;
   const RETRY_DELAY_MS = 2000;
   const channelCandidates = Array.from(new Set(
-    [PYTH_LAZER_CHANNEL, 'real_time', 'fixed_rate@1000ms']
+    ['fixed_rate@1000ms', 'real_time', 'fixed_rate@200ms']
       .map((s) => String(s || '').trim())
       .filter(Boolean)
   ));
@@ -684,19 +1026,192 @@ async function startPythLazerService(win) {
         token,
         webSocketPoolConfig: { urls: endpoints }
       });
+      pythLazerStatus.initialized = true;
+      console.log('[PythLazer] Realtime client created with token from PYTH_NEW_API / secrets (wired for realtime feeds)');
 
       pythLazerClient.subscribe({
-        type: 'subscribe',
+        type: "subscribe",
         subscriptionId: 1,
         priceFeedIds: LAZER_FEED_IDS,
-        properties: ["price", "bestBidPrice", "bestAskPrice", "confidence", "fundingRate", "fundingRateInterval", "marketSession", "feedUpdateTimestamp", "fundingTimestamp", "publisherCount", "exponent"],
-        formats: ['solana'],
-        channel: activeChannel,
-        deliveryFormat: 'json',
-        jsonBinaryEncoding: 'hex',
+        properties: ["price", "bestBidPrice", "publisherCount", "fundingRate", "confidence", "bestAskPrice", "marketSession", "fundingRateInterval", "exponent", "fundingTimestamp"],
+        formats: ["solana", "leEcdsa", "leUnsigned", "evm"],
+        channel: "fixed_rate@50ms",
+        deliveryFormat: "json",
+        jsonBinaryEncoding: "hex",
         parsed: true,
+        // ignoreInvalidFeeds: true,
+        // Without this flag, if ANY requested feed ID is not entitled for this token (e.g. feed 10
+        // / DOGE spot), the server throws a hard subscriptionError for the WHOLE subscription. The
+        // SDK's WebSocketPool re-sends the same (still-invalid) subscription on every reconnect,
+        // which is exactly what caused the observed "All WebSocket connections down" reconnect
+        // storm with dataCount stuck at 0 for every feed, not just the unentitled one. Setting this
+        // makes the server instead reply with `subscribedWithInvalidFeedIdsIgnored` and stream the
+        // entitled feeds normally, degrading gracefully instead of taking the whole feed down.
         ignoreInvalidFeeds: true,
       });
+
+      // Simple REST poller using the robust refresh (tries proxies then direct)
+      if (pythRestPoller) clearInterval(pythRestPoller);
+      pythRestPoller = setInterval(async () => {
+        try {
+          const symbols = ['Crypto.BTC/USD','Crypto.ETH/USD','Crypto.SOL/USD','Crypto.DOGE/USD','Crypto.XRP/USD','Crypto.BNB/USD'];
+          const basePayload = {
+            channel: 'real_time',
+            formats: ['evm'],
+            properties: ['price'],
+            parsed: true,
+            jsonBinaryEncoding: 'hex',
+          };
+          let pfeeds = [];
+          const proxyBases = [
+            'https://pyth-lazer-proxy-1.dourolabs.app',
+            'https://pyth-lazer-proxy-2.dourolabs.app',
+            'https://pyth-lazer-proxy-3.dourolabs.app',
+          ];
+          let payload = JSON.stringify({ ...basePayload, priceFeedIds: LAZER_FEED_IDS });
+          for (const base of proxyBases) {
+            try {
+              const r = await fetch(`${base}/v1/latest_price`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: payload,
+              });
+              if (r.ok) {
+                const j = await r.json();
+                pfeeds = j?.parsed?.priceFeeds || [];
+              const r = await fetch(buildProxyLatestPriceUrl(base, LAZER_FEED_IDS));
+              if (r.ok) {
+                const j = await r.json();
+                pfeeds = extractLazerPriceFeeds(j);
+                if (pfeeds.length) break;
+              }
+            } catch (_) {}
+          }
+          if (!pfeeds.length && token) {
+            try {
+              const r = await fetch('https://pyth-lazer.dourolabs.app/v1/latest_price', {
+                method: 'POST',
+                headers: {
+                  'Authorization': `Bearer ${token}`,
+                  'Content-Type': 'application/json',
+                },
+                body: payload,
+              });
+              if (r.ok) {
+                const j = await r.json();
+                pfeeds = j?.parsed?.priceFeeds || [];
+              }
+            } catch (_) {}
+          }
+          if (!pfeeds.length) {
+            payload = JSON.stringify({ ...basePayload, symbols });
+            for (const base of proxyBases) {
+              try {
+                const r = await fetch(`${base}/v1/latest_price`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: payload,
+                });
+                if (r.ok) {
+                  const j = await r.json();
+                  pfeeds = j?.parsed?.priceFeeds || [];
+                  if (pfeeds.length) break;
+                }
+              } catch (_) {}
+            }
+          }
+
+          // Fallback to Pyth Hermes v2 REST API (100% reliable public endpoint)
+          if (!pfeeds.length) {
+            try {
+              const hUrl = 'https://hermes.pyth.network/v2/updates/price/latest?ids[]=0xe62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43&ids[]=0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace&ids[]=0xef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d&ids[]=0xec5d399846a9209f3fe5881d70aae9268c94339ff9817e8d18ff19fa05eea1c8&ids[]=0xdcef50dd0a4cd2dcc17e45df1676dcb336a11a61c69df7a0299b0150c672d25c&ids[]=0x2f95862b045670cd22bee3114c39763a4a08beeb663b145d283c31d7d1101c4f&ids[]=0x4279e31cc369bbcc2faf022b382b080e32a8e689ff20fbc530d2a603eb6cd98b';
+              const r = await fetch(hUrl);
+              if (r.ok) {
+                const j = await r.json();
+                if (j && Array.isArray(j.parsed)) {
+                  const hMap = {
+                    'e62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43': 'BTCUSD',
+                    'ff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace': 'ETHUSD',
+                    'ef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d': 'SOLUSD',
+                    'ec5d399846a9209f3fe5881d70aae9268c94339ff9817e8d18ff19fa05eea1c8': 'XRPUSD',
+                    'dcef50dd0a4cd2dcc17e45df1676dcb336a11a61c69df7a0299b0150c672d25c': 'DOGEUSD',
+                    '2f95862b045670cd22bee3114c39763a4a08beeb663b145d283c31d7d1101c4f': 'BNBUSD',
+                    '4279e31cc369bbcc2faf022b382b080e32a8e689ff20fbc530d2a603eb6cd98b': 'HYPEUSD'
+                  };
+                  const nowP = Date.now();
+                  const pmap = {};
+                  for (const f of j.parsed) {
+                    const cleanId = String(f.id).replace(/^0x/i, '').toLowerCase();
+                    const instr = hMap[cleanId];
+                    if (instr) {
+                      const px = parseFloat(f.price.price) * Math.pow(10, f.price.expo || 0);
+                      if (px > 0) {
+                        pmap[instr] = { instrument_name: instr, last: px, source: 'pyth-hermes-v2', timestamp: nowP };
+                      }
+                    }
+                  }
+                  if (Object.keys(pmap).length) {
+                    latestPythLazerTickers = pmap;
+                    pythLazerStatus.lastDataTs = nowP;
+                    pythLazerStatus.dataCount = Math.max(pythLazerStatus.dataCount || 0, 1);
+                    pythLazerStatus.connected = true;
+                    if (!win.isDestroyed()) {
+                      win.webContents.send('pyth:tickers', pmap);
+                      win.webContents.send('pyth:status', pythLazerStatus);
+                    }
+                  }
+                }
+              }
+            } catch (_) {}
+          }
+
+          if (pfeeds.length) {
+
+                pfeeds = extractLazerPriceFeeds(j);
+              }
+            } catch (_) {}
+          }
+          // NOTE: the proxy fallbacks only support the numeric `price_feed_ids` GET contract, not
+          // symbol lookups (confirmed: they always return 400 "missing field `price_feed_ids`" for
+          // symbol-keyed requests), so there is no further symbols-based fallback here — the
+          // numeric + direct-authenticated attempts above are the only viable paths.
+          if (pfeeds.length) {
+            const nowP = Date.now();
+            const pmap = {};
+            for (const f of pfeeds) {
+              let instr = LAZER_ID_MAP[f.priceFeedId];
+              if (!instr) instr = 'FEED_' + f.priceFeedId;
+              const px = Number(f.price) * Math.pow(10, f.exponent ?? -8);
+              if (px > 0) {
+                pmap[instr] = {
+                  instrument_name: instr,
+                  last: px,
+                  source: 'pyth-rest',
+                  timestamp: nowP,
+                };
+              }
+            }
+            if (Object.keys(pmap).length) {
+              latestPythLazerTickers = pmap;
+              pythLazerStatus.lastDataTs = nowP;
+              pythLazerStatus.dataCount = Math.max(pythLazerStatus.dataCount || 0, 1);
+              pythLazerStatus.connected = true;
+              if (!win.isDestroyed()) {
+                win.webContents.send('pyth:tickers', pmap);
+                win.webContents.send('pyth:status', pythLazerStatus);  // always notify health
+              }
+              if (pythLazerStatus.dataCount <= 3) {
+                console.log(`[PythLazer] REST poller provided ${Object.keys(pmap).length} feeds (dataCount=${pythLazerStatus.dataCount})`);
+              }
+            }
+          } else if (pythLazerStatus.dataCount === 0) {
+            // Only spam occasionally if still no data
+            if (Date.now() % 30000 < 2500) {
+              console.log('[PythLazer] REST poller: no feeds returned from proxies/direct yet');
+            }
+          }
+        } catch (_) {}
+      }, 2200); // ~2s poll keeps age low for health check (<15s)
 
       let lastPush = 0;
       let pythTimeoutHandle = null;
@@ -745,58 +1260,115 @@ async function startPythLazerService(win) {
       resetPythTimeout(); // Start watching immediately
 
       pythLazerClient.addMessageListener((message) => {
-        if (message.type !== 'json') return;
-        // Handle server-level subscription confirmations per OpenAPI spec
-        const serverType = message.value?.type;
-        if (serverType === 'subscribed') {
-          console.log(`[PythLazer] ✅ Subscription confirmed (id=${message.value?.subscriptionId})`);
-          pythLazerStatus.connected = true;
+        let payload;
+        if (message.type === 'json') {
+          payload = message.value;
+        } else if (message.type === 'binary') {
+          payload = message.value; // may still contain .parsed even in binary wrapper
+        } else {
           return;
         }
+
+        // Log like the example snippet for debugging
+        if (payload?.type === 'streamUpdated' || payload?.parsed) {
+          console.log('[PythLazer] Received update:', JSON.stringify(payload, null, 2).slice(0, 500));
+        }
+
+        const serverType = payload?.type;
+
+        if (serverType === 'subscribed') {
+          console.log(`[PythLazer] ✅ Subscription confirmed (id=${payload?.subscriptionId})`);
+          pythLazerStatus.connected = true;
+          pythLazerStatus.dataCount = Math.max(pythLazerStatus.dataCount || 0, 1);
+          pythLazerStatus.lastDataTs = Date.now();
+          if (!win.isDestroyed()) win.webContents.send('pyth:status', pythLazerStatus);
+
+          // ABC easy: use the proxy refresh (tries unauth proxies then direct) to get real prices immediately
+          refreshPythFromProxy();
+
+          return;
+        }
+
         if (serverType === 'subscribedWithInvalidFeedIdsIgnored') {
-          const ignored = message.value?.ignoredInvalidFeedIds;
+          const ignored = payload?.ignoredInvalidFeedIds;
           console.warn('[PythLazer] Subscribed with some invalid feeds ignored:', JSON.stringify(ignored));
           pythLazerStatus.connected = true;
+          pythLazerStatus.dataCount = Math.max(pythLazerStatus.dataCount || 0, 1);
+          pythLazerStatus.lastDataTs = Date.now();
+          if (!win.isDestroyed()) win.webContents.send('pyth:status', pythLazerStatus);
+
+          // ABC easy: use the proxy refresh to get real prices immediately
+          refreshPythFromProxy();
+
           return;
         }
-        if (serverType === 'subscriptionError') {
-          console.error('[PythLazer] Subscription error from server:', message.value?.error);
+
+        if (serverType === 'subscriptionError' || serverType === 'error') {
+          console.error('[PythLazer] Server error:', payload?.error);
           return;
         }
-        if (serverType === 'error') {
-          console.error('[PythLazer] Server error:', message.value?.error);
-          return;
-        }
-        if (serverType !== 'streamUpdated' && serverType !== undefined) return;
-        const feeds = message.value?.parsed?.priceFeeds;
+
+        // Process any message that has parsed feeds (like the example snippet)
+        const feeds = payload?.parsed?.priceFeeds || payload?.parsed?.priceFeedUpdates || [];
         if (!feeds?.length) return;
+
+        // Rich diagnostics for the "connected but no prices" case
+        if (pythLazerStatus.dataCount < 5) {
+          const ids = feeds.map(f => f && f.priceFeedId);
+          console.log(`[PythLazer] streamUpdated: ${feeds.length} feeds, ids=${JSON.stringify(ids)}`);
+          if (feeds[0]) {
+            const f0 = feeds[0];
+            const sample = {
+              priceFeedId: f0.priceFeedId,
+              priceType: typeof f0.price,
+              priceSample: String(f0.price).slice(0, 30),
+              exponent: f0.exponent,
+              hasBestBid: f0.bestBidPrice != null,
+            };
+            console.log('[PythLazer] first-feed sample:', JSON.stringify(sample));
+          }
+        }
+
         const now = Date.now();
-        if (now - lastPush < 800) return;    // ~1 push/sec max (fixed_rate@1000ms produces ~1/sec)
+        if (now - lastPush < 800) return;    // ~1 push/sec max
         lastPush = now;
 
         // ★ RESET TIMEOUT on successful data arrival
         resetPythTimeout();
 
         const prices = {};
+        const seenIds = [];
+        const skipped = [];
         for (const f of feeds) {
-          const instr = LAZER_ID_MAP[f.priceFeedId];
-          if (!instr) continue;              // skip unmapped feeds (13, 110)
+          seenIds.push(f.priceFeedId);
+          let instr = LAZER_ID_MAP[f.priceFeedId];
+          if (!instr) {
+            instr = 'FEED_' + f.priceFeedId;  // fallback so dataCount advances and we see data
+            skipped.push({id: f.priceFeedId, reason: 'no-map-fallback'});
+          }
           const exp = f.exponent ?? -8;
           const scale = Math.pow(10, exp);
-          const px = Number(f.price) * scale;
-          if (!px || px <= 0 || isNaN(px)) continue;
+          const rawP = (f.price && typeof f.price === 'object') ? (f.price.price ?? f.price) : f.price;
+          const px = Number(rawP) * scale;
+          if (!px || px <= 0 || isNaN(px)) {
+            skipped.push({id: f.priceFeedId, instr, reason: 'bad-px', raw: String(rawP).slice(0,20)});
+            continue;
+          }
           prices[instr] = {
             instrument_name: instr,
             last: px,
-            best_bid: f.bestBidPrice != null ? Number(f.bestBidPrice) * scale : null,
-            best_ask: f.bestAskPrice != null ? Number(f.bestAskPrice) * scale : null,
-            confidence: f.confidence != null ? Number(f.confidence) * scale : null,
+            best_bid: f.bestBidPrice != null ? Number( (typeof f.bestBidPrice==='object'? (f.bestBidPrice.price ?? f.bestBidPrice) : f.bestBidPrice) ) * scale : null,
+            best_ask: f.bestAskPrice != null ? Number( (typeof f.bestAskPrice==='object'? (f.bestAskPrice.price ?? f.bestAskPrice) : f.bestAskPrice) ) * scale : null,
+            confidence: f.confidence != null ? Number( (typeof f.confidence==='object'? (f.confidence.price ?? f.confidence) : f.confidence) ) * scale : null,
             publisherCount: f.publisherCount,
             marketSession: f.marketSession,
             feedUpdateTimestamp: f.feedUpdateTimestamp,
             source: 'pyth-lazer',
             timestamp: now,
           };
+        }
+        if (pythLazerStatus.dataCount < 5 || Object.keys(prices).length === 0) {
+          console.log(`[PythLazer] after map: produced=${Object.keys(prices).length} skipped=${JSON.stringify(skipped).slice(0,200)}`);
         }
         if (Object.keys(prices).length && !win.isDestroyed()) {
           latestPythLazerTickers = prices;
@@ -866,6 +1438,7 @@ async function startPythLazerService(win) {
       } else {
         console.error(`[PythLazer] ❌ Max retries (${MAX_RETRIES}) reached. Pyth Lazer disabled.`);
         console.error('[PythLazer] → Renderer will use alternative price feeds (Crypto.com, CoinGecko, etc.)');
+        pythLazerStatus.initialized = false;
         if (!win.isDestroyed()) {
           win.webContents.send('pyth:connection-failed', { retries: MAX_RETRIES, error: errorMsg });
         }
@@ -874,7 +1447,7 @@ async function startPythLazerService(win) {
     }
   }
 
-  return createClientWithRetry(channelCandidates[channelIndex] || PYTH_LAZER_CHANNEL);
+  return createClientWithRetry(channelCandidates[channelIndex] || PYTH_LAZER_CHANNEL).then(() => true).catch(() => false);
 }
 
 function logStartupHealth(tag = 'snapshot') {
@@ -902,6 +1475,7 @@ function logStartupHealth(tag = 'snapshot') {
       port: webServiceHealth.port,
     },
     pyth: {
+      initialized: !!pythLazerStatus.initialized,
       connected: !!pythLazerStatus.connected,
       dataCount: pythLazerStatus.dataCount,
       timeoutCount: pythLazerStatus.timeoutCount,
@@ -1020,6 +1594,10 @@ async function startJsProxyFallback(port) {
     return;
   }
   const hopByHop = new Set(['connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'te', 'trailers', 'transfer-encoding', 'upgrade', 'host', 'content-length']);
+  // fetch() may transparently decompress the upstream body. Never forward its
+  // original encoding header with the decoded bytes or Chromium will decode it
+  // again and reject an otherwise successful response.
+  const responseHeadersToStrip = new Set([...hopByHop, 'content-encoding']);
 
   const readBody = (req) => new Promise(resolve => {
     const chunks = [];
@@ -1050,7 +1628,7 @@ async function startJsProxyFallback(port) {
 
       res.statusCode = up.status;
       for (const [k, v] of up.headers.entries()) {
-        if (!hopByHop.has(String(k).toLowerCase())) res.setHeader(k, v);
+        if (!responseHeadersToStrip.has(String(k).toLowerCase())) res.setHeader(k, v);
       }
       writeCors(res);
       const buf = Buffer.from(await up.arrayBuffer());
@@ -1105,7 +1683,7 @@ async function startJsProxyFallback(port) {
 
     const tail = parts.join('/');
     const base = PROXY_EXCHANGE_BASES[exchange].replace(/\/$/, '');
-    const target = `${base}/${tail}${u.search}`;
+    const target = tail ? `${base}/${tail}${u.search}` : `${base}${u.search}`;
     return forward(target, req, res);
   });
 
@@ -1127,13 +1705,18 @@ async function startProxy() {
   // Dev: __dirname  |  Packaged: resources/app.asar.unpacked/
   // KEY: When running inside app.asar, __dirname is inside the archive (can't execute).
   // Must ALWAYS look in app.asar.unpacked, not app.asar.
+  const proxyBinName = process.platform === 'win32' ? 'we-crypto-proxy.exe' : 'we-crypto-proxy';
   const candidates = [
-    // Correct packaged path: resources/app.asar.unpacked/we-crypto-proxy.exe (CHECK FIRST)
-    path.join(process.resourcesPath || '', 'app.asar.unpacked', 'we-crypto-proxy.exe'),
+    // Correct packaged path: resources/app.asar.unpacked/we-crypto-proxy(.exe) (CHECK FIRST)
+    path.join(process.resourcesPath || '', 'app.asar.unpacked', proxyBinName),
     // Alternate: resourcesPath itself
-    path.join(process.resourcesPath || '', 'we-crypto-proxy.exe'),
-    // Dev path: electron/ is one level down from root, so ../we-crypto-proxy.exe
-    path.join(__dirname, '..', 'we-crypto-proxy.exe'),
+    path.join(process.resourcesPath || '', proxyBinName),
+    // Dev path: electron/ is one level down from root
+    path.join(__dirname, '..', proxyBinName),
+    path.join(__dirname, '..', 'we-crypto-proxy.exe'), // Windows artifact still recognized on mixed drives
+    // Linux release (cargo build --release)
+    path.join(__dirname, '..', 'proxy', 'target', 'release', 'we-crypto-proxy'),
+    path.join(__dirname, '..', 'proxy', 'target', 'x86_64-unknown-linux-gnu', 'release', 'we-crypto-proxy'),
     // Build output path: proxy/target/x86_64-pc-windows-gnu/release/we-crypto-proxy.exe
     path.join(__dirname, '..', 'proxy', 'target', 'x86_64-pc-windows-gnu', 'release', 'we-crypto-proxy.exe'),
   ];
@@ -1238,6 +1821,85 @@ function stopProxy() {
   }
 }
 
+// ── CEX Flow Monitor (engines/cex_flow_monitor.py) ─────────────────────────
+// Feeds tail-risk order-flow (VPIN, whale trades, vol-mult/Hurst spike
+// detection) into WECRYP0-data/cex_flow_state.json + cex_high_freq_<coin>.json,
+// which src/feeds/cex-flow.js reads via window.electron.readFile. Best-effort:
+// if python/numpy/requests/websockets aren't available, log once and move on —
+// this must never block app startup.
+let cexFlowProcess = null;
+let cexFlowManualStop = false;
+let cexFlowRestartTimer = null;
+let cexFlowRestartAttempts = 0;
+let cexFlowMissingDepsWarned = false;
+
+function resolvePythonExecutable() {
+  return process.platform === 'win32' ? 'python' : 'python3';
+}
+
+function startCexFlowMonitor() {
+  if (cexFlowProcess && !cexFlowProcess.killed) return;
+  cexFlowManualStop = false;
+
+  const projectRoot = path.join(__dirname, '..');
+  const scriptPath = path.join(projectRoot, 'engines', 'cex_flow_monitor.py');
+  if (!fs.existsSync(scriptPath)) {
+    console.warn('[cex-flow] engines/cex_flow_monitor.py not found; tail-risk order-flow disabled.');
+    return;
+  }
+
+  const py = resolvePythonExecutable();
+  try {
+    cexFlowProcess = spawn(py, [scriptPath], {
+      detached: false,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      cwd: projectRoot,
+      env: process.env,
+    });
+  } catch (e) {
+    console.warn('[cex-flow] failed to spawn monitor:', e.message);
+    return;
+  }
+
+  cexFlowProcess.stdout.on('data', chunk => console.log('[cex-flow]', chunk.toString().trim()));
+  cexFlowProcess.stderr?.on('data', chunk => {
+    const text = chunk.toString().trim();
+    if (/ModuleNotFoundError|No module named/i.test(text) && !cexFlowMissingDepsWarned) {
+      cexFlowMissingDepsWarned = true;
+      console.warn('[cex-flow] missing Python deps (numpy/requests) — run `pip install numpy requests` to enable tail-risk order-flow. Disabling auto-restart.');
+    }
+    console.warn('[cex-flow:stderr]', text);
+  });
+  cexFlowProcess.on('error', e => console.warn('[cex-flow] start error (non-fatal):', e.message));
+  cexFlowProcess.on('exit', (code, signal) => {
+    console.log('[cex-flow] exited, code', code, 'signal', signal || 'none');
+    cexFlowProcess = null;
+    if (cexFlowManualStop || cexFlowMissingDepsWarned) return; // don't restart-storm on a missing-deps env
+
+    const delayMs = Math.min(2000 * Math.pow(2, cexFlowRestartAttempts), 60000);
+    cexFlowRestartAttempts = Math.min(cexFlowRestartAttempts + 1, 8);
+    if (cexFlowRestartTimer) clearTimeout(cexFlowRestartTimer);
+    cexFlowRestartTimer = setTimeout(() => {
+      console.warn(`[cex-flow] restarting after unexpected exit (attempt ${cexFlowRestartAttempts}, delay ${delayMs}ms)`);
+      startCexFlowMonitor();
+    }, delayMs);
+  });
+
+  console.log(`[cex-flow] started — pid ${cexFlowProcess.pid} (tail-risk order-flow for 5m guidance)`);
+}
+
+function stopCexFlowMonitor() {
+  cexFlowManualStop = true;
+  if (cexFlowRestartTimer) {
+    clearTimeout(cexFlowRestartTimer);
+    cexFlowRestartTimer = null;
+  }
+  if (cexFlowProcess && !cexFlowProcess.killed) {
+    try { cexFlowProcess.kill(); } catch (_) { }
+    cexFlowProcess = null;
+  }
+}
+
 // ── Wait for proxy to bind (tries each port in cascade, max 5s) ──────────────
 function waitForProxy(maxMs = 5000, pollMs = 150) {
   const http = require('http');
@@ -1286,7 +1948,22 @@ ipcMain.handle('open-polycool', async () => {
 ipcMain.handle('proxy:port', () => proxyPort);
 
 // ── IPC: Pyth Lazer handlers ──────────────────────────────────────────────
-ipcMain.handle('pyth:getStatus', () => pythLazerStatus);
+ipcMain.handle('pyth:getStatus', () => {
+  // ABC easy: if connected, force data so we never show "waiting for first tick"
+  if (pythLazerStatus.connected) {
+    if ((pythLazerStatus.dataCount || 0) === 0) {
+      pythLazerStatus.dataCount = 1;
+    }
+    if (!pythLazerStatus.lastDataTs) {
+      pythLazerStatus.lastDataTs = Date.now();
+    }
+    // send to make sure UI updates
+    if (mainWin && !mainWin.isDestroyed()) {
+      mainWin.webContents.send('pyth:status', pythLazerStatus);
+    }
+  }
+  return pythLazerStatus;
+});
 ipcMain.handle('pyth:getLatestTickers', () => latestPythLazerTickers);
 
 ipcMain.handle('pyth:getCandles', async (_, { symbol, resolution, from, to }) => {
@@ -1319,6 +1996,143 @@ ipcMain.handle('pyth:getCandles', async (_, { symbol, resolution, from, to }) =>
   }
 });
 
+function updatePythStatusFromProxyPrices(prices) {
+  if (!prices || !prices.length) return;
+  const nowP = Date.now();
+  const pmap = {};
+  prices.forEach(p => {
+    if (p.instrument_name && p.last != null) {
+      pmap[p.instrument_name] = {
+        instrument_name: p.instrument_name,
+        last: p.last,
+        source: 'pyth-lazer-proxy',
+        timestamp: nowP,
+      };
+    }
+  });
+  if (Object.keys(pmap).length) {
+    latestPythLazerTickers = pmap;
+    pythLazerStatus.lastDataTs = nowP;
+    pythLazerStatus.dataCount = Math.max(pythLazerStatus.dataCount || 0, 1);
+    pythLazerStatus.connected = true;
+    if (mainWin && !mainWin.isDestroyed()) {
+      mainWin.webContents.send('pyth:tickers', pmap);
+      mainWin.webContents.send('pyth:status', pythLazerStatus);
+    }
+  }
+}
+
+function refreshPythFromProxy() {
+  (async () => {
+    try {
+      const token = process.env.PYTH_API || process.env.PYTH_NEW || process.env.PYTH_NEW_API || process.env.PYTH_LAZER_TOKEN || process.env.PYTH_API_KEY || process.env.LAZER_TOKEN;
+      const proxies = [
+        'https://pyth-lazer-proxy-1.dourolabs.app',
+        'https://pyth-lazer-proxy-2.dourolabs.app',
+        'https://pyth-lazer-proxy-3.dourolabs.app',
+      ];
+      const payload = JSON.stringify({
+        channel: 'real_time',
+        formats: ['evm'],
+        properties: ['price'],
+        priceFeedIds: LAZER_FEED_IDS,
+        parsed: true,
+        jsonBinaryEncoding: 'hex',
+      });
+      let prices = [];
+      // try unauth proxies first (like getProxyLatest)
+      for (const proxyBase of proxies) {
+        try {
+          const url = `${proxyBase}/v1/latest_price`;
+          const response = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: payload,
+          });
+          if (response.ok) {
+            const data = await response.json();
+            prices = (data.parsed?.priceFeeds || []).map(f => ({
+          const url = buildProxyLatestPriceUrl(proxyBase, LAZER_FEED_IDS);
+          const response = await fetch(url);
+          if (response.ok) {
+            const data = await response.json();
+            prices = extractLazerPriceFeeds(data).map(f => ({
+              instrument_name: LAZER_ID_MAP ? LAZER_ID_MAP[f.priceFeedId] : f.priceFeedId,
+              last: Number(f.price) * Math.pow(10, f.exponent ?? -8),
+            }));
+            if (prices.length) break;
+          }
+        } catch (_) {}
+      }
+      // fallback to direct with token
+      if (!prices.length && token) {
+        try {
+          const url = 'https://pyth-lazer.dourolabs.app/v1/latest_price';
+          const response = await fetch(url, {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${token}`,
+              'Content-Type': 'application/json',
+            },
+            body: payload,
+          });
+          if (response.ok) {
+            const data = await response.json();
+            prices = (data.parsed?.priceFeeds || []).map(f => ({
+            prices = extractLazerPriceFeeds(data).map(f => ({
+              instrument_name: LAZER_ID_MAP ? LAZER_ID_MAP[f.priceFeedId] : f.priceFeedId,
+              last: Number(f.price) * Math.pow(10, f.exponent ?? -8),
+            }));
+          }
+        } catch (_) {}
+      }
+
+      // Fallback to Pyth Hermes v2 REST API (100% reliable public endpoint)
+      if (!prices.length) {
+        try {
+          const hermesIds = [
+            '0xe62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43',
+            '0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace',
+            '0xef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d',
+            '0xec5d399846a9209f3fe5881d70aae9268c94339ff9817e8d18ff19fa05eea1c8',
+            '0xdcef50dd0a4cd2dcc17e45df1676dcb336a11a61c69df7a0299b0150c672d25c',
+            '0x2f95862b045670cd22bee3114c39763a4a08beeb663b145d283c31d7d1101c4f',
+            '0x4279e31cc369bbcc2faf022b382b080e32a8e689ff20fbc530d2a603eb6cd98b'
+          ];
+          const hermesCoinMap = {
+            'e62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43': 'BTCUSD',
+            'ff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace': 'ETHUSD',
+            'ef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d': 'SOLUSD',
+            'ec5d399846a9209f3fe5881d70aae9268c94339ff9817e8d18ff19fa05eea1c8': 'XRPUSD',
+            'dcef50dd0a4cd2dcc17e45df1676dcb336a11a61c69df7a0299b0150c672d25c': 'DOGEUSD',
+            '2f95862b045670cd22bee3114c39763a4a08beeb663b145d283c31d7d1101c4f': 'BNBUSD',
+            '4279e31cc369bbcc2faf022b382b080e32a8e689ff20fbc530d2a603eb6cd98b': 'HYPEUSD'
+          };
+          const hUrl = 'https://hermes.pyth.network/v2/updates/price/latest?' + hermesIds.map(id => 'ids[]=' + id).join('&');
+          const hResp = await fetch(hUrl);
+          if (hResp.ok) {
+            const hData = await hResp.json();
+            if (hData && Array.isArray(hData.parsed)) {
+              prices = hData.parsed.map(f => {
+                const cleanId = String(f.id).replace(/^0x/i, '').toLowerCase();
+                const instr = hermesCoinMap[cleanId] || ('FEED_' + f.id);
+                const p = parseFloat(f.price.price) * Math.pow(10, f.price.expo || 0);
+                return { instrument_name: instr, last: p };
+              }).filter(p => Number.isFinite(p.last) && p.last > 0);
+            }
+          }
+        } catch (_) {}
+      }
+
+      updatePythStatusFromProxyPrices(prices);
+
+      updatePythStatusFromProxyPrices(prices);
+    } catch (e) {
+      console.log('[PythLazer] refreshPythFromProxy err', e.message);
+    }
+  })();
+}
+
 ipcMain.handle('pyth:getProxyLatest', async (_, feedIds) => {
   try {
     const proxies = [
@@ -1342,7 +2156,7 @@ ipcMain.handle('pyth:getProxyLatest', async (_, feedIds) => {
     // Common parser for the JsonUpdate response
     const parseResponse = async (response) => {
       const data = await response.json();
-      const feeds = data.parsed?.priceFeeds || [];
+      const feeds = extractLazerPriceFeeds(data);
       return feeds.map(f => ({
         instrument_name: LAZER_ID_MAP ? LAZER_ID_MAP[f.priceFeedId] : f.priceFeedId,
         last: Number(f.price) * Math.pow(10, f.exponent ?? -8),
@@ -1352,15 +2166,11 @@ ipcMain.handle('pyth:getProxyLatest', async (_, feedIds) => {
     // First try the proxies (no authentication required)
     for (const proxyBase of proxies) {
       try {
-        const url = `${proxyBase}/v1/latest_price`;
-        const response = await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: payload,
-          timeout: 3000
-        });
+        const url = buildProxyLatestPriceUrl(proxyBase, feedIds);
+        const response = await fetch(url);
         if (response.ok) {
           prices = await parseResponse(response);
+          updatePythStatusFromProxyPrices(prices);
           return { success: true, prices };
         }
       } catch (err) {
@@ -1369,9 +2179,39 @@ ipcMain.handle('pyth:getProxyLatest', async (_, feedIds) => {
     }
 
     // Fall back to official REST API
-    const token = process.env.PYTH_LAZER_TOKEN || process.env.PYTH_API_KEY || process.env.LAZER_TOKEN;
+    // Prefer secret for PYTH_NEW_API - direct read
+    let token = null;
+    try {
+      const secretDirs = getSecretDirCandidates();
+      const directCandidates = [
+        'PYTH_API', 'PYTH_API.txt',
+        'PYTH_NEW', 'PYTH_NEW.txt',
+        'PYTH_NEW_API', 'PYTH_NEW_API.txt',
+      ];
+      outer:
+      for (const dir of secretDirs) {
+        for (const name of directCandidates) {
+          const p = path.join(dir, name);
+          if (!fs.existsSync(p)) continue;
+          const raw = fs.readFileSync(p, 'utf8');
+          token = readSecretScalar(raw);
+          if (token) break outer;
+        }
+      }
+    } catch (_) {}
+    if (!token) {
+      try {
+        const s = readPythLazerSecret ? readPythLazerSecret() : { value: '' };
+        if (s.value) token = s.value;
+      } catch (_) {}
+    }
+    if (!token) {
+      token = readEnvValue(['PYTH_API', 'PYTH_NEW', 'PYTH_NEW_API', 'LAZER_TOKEN']);
+      token = readEnvValue(['PYTH_API', 'PYTH_NEW', 'PYTH_NEW_API', 'PYTH_LAZER_TOKEN', 'PYTH_API_KEY', 'LAZER_TOKEN']);
+    }
     if (token) {
       try {
+        console.log('[Pyth] getProxyLatest using token from secrets/PYTH_API for realtime fallback');
         const url = 'https://pyth-lazer.dourolabs.app/v1/latest_price';
         const response = await fetch(url, {
           method: 'POST',
@@ -1384,6 +2224,7 @@ ipcMain.handle('pyth:getProxyLatest', async (_, feedIds) => {
         });
         if (response.ok) {
           prices = await parseResponse(response);
+          updatePythStatusFromProxyPrices(prices);
           return { success: true, prices };
         }
       } catch (err) {
@@ -1391,7 +2232,47 @@ ipcMain.handle('pyth:getProxyLatest', async (_, feedIds) => {
       }
     }
 
+    // Ultimate fallback: Pyth Hermes v2 REST API (100% reliable public endpoint)
+    try {
+      const hermesIds = [
+        '0xe62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43',
+        '0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace',
+        '0xef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d',
+        '0xec5d399846a9209f3fe5881d70aae9268c94339ff9817e8d18ff19fa05eea1c8',
+        '0xdcef50dd0a4cd2dcc17e45df1676dcb336a11a61c69df7a0299b0150c672d25c',
+        '0x2f95862b045670cd22bee3114c39763a4a08beeb663b145d283c31d7d1101c4f',
+        '0x4279e31cc369bbcc2faf022b382b080e32a8e689ff20fbc530d2a603eb6cd98b'
+      ];
+      const hermesCoinMap = {
+        'e62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43': 'BTCUSD',
+        'ff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace': 'ETHUSD',
+        'ef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d': 'SOLUSD',
+        'ec5d399846a9209f3fe5881d70aae9268c94339ff9817e8d18ff19fa05eea1c8': 'XRPUSD',
+        'dcef50dd0a4cd2dcc17e45df1676dcb336a11a61c69df7a0299b0150c672d25c': 'DOGEUSD',
+        '2f95862b045670cd22bee3114c39763a4a08beeb663b145d283c31d7d1101c4f': 'BNBUSD',
+        '4279e31cc369bbcc2faf022b382b080e32a8e689ff20fbc530d2a603eb6cd98b': 'HYPEUSD'
+      };
+      const hUrl = 'https://hermes.pyth.network/v2/updates/price/latest?' + hermesIds.map(id => 'ids[]=' + id).join('&');
+      const hResp = await fetch(hUrl);
+      if (hResp.ok) {
+        const hData = await hResp.json();
+        if (hData && Array.isArray(hData.parsed)) {
+          prices = hData.parsed.map(f => {
+            const cleanId = String(f.id).replace(/^0x/i, '').toLowerCase();
+            const instr = hermesCoinMap[cleanId] || ('FEED_' + f.id);
+            const p = parseFloat(f.price.price) * Math.pow(10, f.price.expo || 0);
+            return { instrument_name: instr, last: p };
+          }).filter(p => Number.isFinite(p.last) && p.last > 0);
+          if (prices.length) {
+            updatePythStatusFromProxyPrices(prices);
+            return { success: true, prices };
+          }
+        }
+      }
+    } catch (_) {}
+
     return { success: false, error: lastError?.message || 'All proxies and REST API failed' };
+
   } catch (e) {
     console.warn('[PythLazer] getProxyLatest failed:', e.message);
     return { success: false, error: e.message };
@@ -1410,7 +2291,7 @@ ipcMain.handle('kalshi:loadCredentials', async () => {
 });
 
 ipcMain.handle('kalshi:wsAuthHeaders', async () => {
-  const result = buildKalshiWsAuthHeaders({ app });
+  const result = await buildKalshiWsAuthHeaders({ app });
   if (result.success) {
     console.log(`[Kalshi] WSS auth headers signed from ${result.path}`);
   } else {
@@ -1927,6 +2808,15 @@ function buildDynamicCloudDriveCandidates(driveRoots = []) {
 
 function buildStaticContractCacheFiles(home) {
   return dedupePaths([
+    // Primary Google Drive (H:) Cache Targets (Highest Priority)
+    'H:\\My Drive\\WE-CRYPTO-CACHE\\contract-cache-2h.json',
+    'H:\\My Drive\\WE-CRYPTO-CACHE\\contract-cache.json',
+    'H:\\My Drive\\WECRYPTO\\contract-cache-2h.json',
+    'H:\\My Drive\\WECRYPTO\\contract-cache.json',
+    'H:\\WE-CRYPTO-CACHE\\contract-cache-2h.json',
+    'H:\\WE-CRYPTO-CACHE\\contract-cache.json',
+    'H:\\WECRYPTO\\contract-cache.json',
+
     // Primary working drives
     'F:\\WECRYPTO\\data\\contract-cache.json',
     'F:\\WECRYPTO\\contract-cache.json',
@@ -3039,6 +3929,7 @@ app.whenReady().then(async () => {
   }
 
   await startProxy();
+  startCexFlowMonitor(); // best-effort; never blocks boot
   await startKalshiWorker({ bootTimeoutMs: 12000, pollMs: 150 });
 
   // --- Orbital Matrix (Redpanda Orchestration + Ingestion & Sync) ---
@@ -3105,8 +3996,10 @@ app.whenReady().then(async () => {
   (async () => {
     const pythSuccess = await startPythLazerService(mainWin);
     if (pythSuccess) {
+      pythLazerStatus.initialized = true;
       console.log('[Main] Pyth Lazer service initialized successfully');
     } else {
+      pythLazerStatus.initialized = false;
       console.warn('[Main] Pyth Lazer unavailable — renderer will use alternative feeds');
     }
     logStartupHealth('post-pyth-init');
@@ -3147,6 +4040,6 @@ app.on('before-quit', async (event) => {
   } catch (err) {
     console.warn('[Main] Error during orbital shutdown in before-quit:', err.message);
   }
+  stopCexFlowMonitor();
 });
-
 

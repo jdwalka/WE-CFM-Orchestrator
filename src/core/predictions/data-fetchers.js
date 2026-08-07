@@ -11,6 +11,16 @@
   const GECKO_MIN_GAP_MS = 60_000;
   const GECKO_RATE_LIMIT_PAUSE_MS = 5 * 60_000;
   const GECKO_AUTH_PAUSE_MS = 5 * 60_000;
+  // This module has its own IIFE, so these request-pacing variables cannot be
+  // declared in predictions.js. Keeping them here makes every fetcher usable
+  // as soon as this script loads.
+  let geckoRequestQueue = Promise.resolve();
+  let lastGeckoRequestAt = 0;
+  let lastExchangeRequestAt = 0;
+  // Fear & Greed cache. Was previously read/written as a bare `_fngCache` from
+  // predictions.js's separate IIFE without ever being declared anywhere,
+  // throwing "_fngCache is not defined" on every OrderBookImbalance cycle.
+  let _fngCache = { ts: 0, value: null };
   const BIN_SYMS = { BTC: 'BTCUSDT', ETH: 'ETHUSDT', SOL: 'SOLUSDT', XRP: 'XRPUSDT', DOGE: 'DOGEUSDT', BNB: 'BNBUSDT' };
   const MEXC_SYMS = { BTC: 'BTCUSDT', ETH: 'ETHUSDT', SOL: 'SOLUSDT', XRP: 'XRPUSDT', HYPE: 'HYPEUSDT', DOGE: 'DOGEUSDT', BNB: 'BNBUSDT' };
   const BYBIT_BASE = 'https://api.bybit.com/v5';
@@ -68,6 +78,16 @@
 
   function randomBetween(min, max) {
     return Math.floor(min + Math.random() * Math.max(1, max - min + 1));
+  }
+
+  function wait(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  function resetGeckoRequestQueue() {
+    // Do not reset lastGeckoRequestAt: manual refreshes must keep the provider
+    // pacing gap even when their stale queued work is discarded.
+    geckoRequestQueue = Promise.resolve();
   }
 
   async function waitExchangeJitter(minGapMs = 90) {
@@ -215,11 +235,16 @@
     const buckets = new Map();
     seriesList.filter(Array.isArray).forEach(series => {
       series.forEach(candle => {
-        const ts = Number(candle?.t);
+        let ts = Number(candle?.t);
         const close = Number(candle?.c);
         // Skip candles with non-finite timestamp or zero/near-zero price
-        // (protects against exchanges returning bad candles that pass individual filters)
         if (!Number.isFinite(ts) || !Number.isFinite(close) || close <= 0) return;
+
+        // Normalize timestamp to nearest minute boundary.
+        // This fixes misalignment between sources (WS vs REST, different exchanges)
+        // so that 15m (and 5m) bars from Coinbase, Binance, Gecko, WS etc actually pool together.
+        ts = Math.floor(ts / 60000) * 60000;
+
         const bucket = buckets.get(ts) || { t: ts, o: [], h: [], l: [], c: [], v: [] };
         bucket.o.push(Number(candle.o || close));
         bucket.h.push(Number(candle.h || close));
@@ -772,6 +797,9 @@
 
   // Equal-weight pool across all exchanges — no single exchange is anchored
   function anchoredPoolCandles(cbSeries, ...fallbackSeries) {
+    // For 15m markets we rely heavily on this to combine Coinbase WS 15m buckets +
+    // CB/BIN/CDC/etc 15m REST candles. Timestamp normalization inside poolMinuteCandles
+    // ensures bars actually merge instead of staying siloed.
     return poolMinuteCandles(...[cbSeries, ...fallbackSeries].filter(s => s?.length));
   }
 
@@ -813,10 +841,16 @@
     return _fngCache.value;
   }
 
+  // Exposed so predictions.js (a separate IIFE) can read the cached value
+  // synchronously without needing its own copy of the pacing state.
+  function getFngCacheValue() {
+    return _fngCache.value;
+  }
+
   window.PREDICTIONS_DATA_FETCHERS = {
     CDC_BASE, GECKO_BASE, BIN_BASE, MEXC_BASE, CB_EXCH_BASE, BYBIT_BASE, KUCOIN_BASE, BFNX_BASE,
     CB_EXCH_SYMS, BIN_SYMS, MEXC_SYMS, BYBIT_SYMS, KUCOIN_SYMS, BFNX_SYMS,
-    fetchWithTimeout, fetchAnalyticsWithRoute, fetchFearGreed,
+    fetchWithTimeout, fetchAnalyticsWithRoute, fetchFearGreed, resetGeckoRequestQueue, getFngCacheValue,
     fetchCDCCandles, fetchCDCBook, fetchCDCTrades,
     fetchGeckoJSON, fetchGeckoCandles, fetchGeckoTicker, fetchGeckoMaxHistory,
     fetchBINCandles, fetchBINBook, fetchBINTrades,

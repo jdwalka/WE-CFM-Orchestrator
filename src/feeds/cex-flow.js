@@ -16,7 +16,7 @@
 
   const COINS = ['BTC', 'ETH', 'SOL', 'XRP', 'BNB', 'DOGE', 'HYPE'];
   const BINANCE_SPOT_SYMS = new Set(['BTC', 'ETH', 'SOL', 'XRP', 'BNB', 'DOGE']);
-  const POLL_MS = 15000;
+  const POLL_MS = 25000; // was 15s — secondary REST fallbacks don't need sub-20s cadence
   const TIMEOUT = 9000;
   const CACHE = {};        // sym → { exchanges[], aggregate, ts }
   const VOL_HISTORY = {};    // `${exchange}_${sym}` → [vol24h, ...]  (rolling 8)

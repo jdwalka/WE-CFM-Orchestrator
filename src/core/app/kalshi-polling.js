@@ -109,4 +109,5 @@ function scheduleNewContractRetries() {
 window.APP_KALSHI_POLLING = {
   startKalshiPolling, stopKalshiPolling, loadKalshiHistoricalContracts, scheduleNewContractRetries
 };
+Object.assign(window, window.APP_KALSHI_POLLING);
 })();

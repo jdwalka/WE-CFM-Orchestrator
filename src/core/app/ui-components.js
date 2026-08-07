@@ -33,30 +33,53 @@ function predictionCard(p) {
     const _yesDirEarly = _strikeDirEarly === 'below' ? 'down' : 'up';
     const _noDirEarly = _yesDirEarly === 'up' ? 'down' : 'up';
 
-    const modelDir = p.score > 0.12 ? 'up' : p.score < -0.12 ? 'down' : 'wait';
+    // Fetch Grok 15m & Hourly range overlay guidance if available
+    const grokOverlayApi = (typeof window !== 'undefined') ? (window.GrokRangeOverlay || window.GrokRangeGrok) : null;
+    const grok15mGuidance = grokOverlayApi && typeof grokOverlayApi.getGuidance === 'function'
+      ? grokOverlayApi.getGuidance(p.sym, 15)
+      : null;
+    let grokBinaryCall = null;
+    let grokConfPct = null;
+    let grokNotesText = '';
+    if (grok15mGuidance && !grok15mGuidance.error && grok15mGuidance.call) {
+      const gCall = String(grok15mGuidance.call).toUpperCase();
+      grokBinaryCall = gCall === 'UP' ? _yesDirEarly : gCall === 'DOWN' ? _noDirEarly : null;
+      const cRaw = Number(grok15mGuidance.confidence) || 0.60;
+      grokConfPct = cRaw <= 1 ? Math.round(cRaw * 100) : Math.round(cRaw);
+      grokNotesText = String(grok15mGuidance.notes || grok15mGuidance.rationale || '').trim();
+    }
+
+    const modelDir = p.score > 0.02 ? 'up' : p.score < -0.02 ? 'down' : 'wait';
     const kalshiDir = kalshiProb !== null ? (kalshiProb >= 0.5 ? _yesDirEarly : _noDirEarly) : null;
 
     let verdictDir, verdictSource;
     // MODEL-AGNOSTIC PRINCIPLE: Verdict color reflects MODEL conviction ONLY, never Kalshi odds.
-    // Kalshi is used for divergence awareness + comparison bar only (not verdict color override).
+    // Always project an explicit binary decision belief (YES / NO / UP / DOWN) rather than defaulting to WAIT.
 
     if (_kAlignEarly?.modelYesPct != null) {
       // Use CDF P(close ≥ strike) — correct for binary contracts
       const myp = _kAlignEarly.modelYesPct;
-      if (myp >= 58) { verdictDir = _yesDirEarly; verdictSource = 'model-cdf'; }
-      else if (myp <= 42) { verdictDir = _noDirEarly; verdictSource = 'model-cdf'; }
-      else { verdictDir = 'wait'; verdictSource = 'model-cdf-neutral'; }
+      if (myp >= 50.5) { verdictDir = _yesDirEarly; verdictSource = 'model-cdf'; }
+      else if (myp <= 49.5) { verdictDir = _noDirEarly; verdictSource = 'model-cdf'; }
+      else { verdictDir = _yesDirEarly; verdictSource = 'model-cdf-lean'; }
     } else if (modelDir !== 'wait') {
-      // Model has conviction (raw score > ±0.12) — USE IT for verdict color
       verdictDir = modelDir;
       verdictSource = 'model';
+    } else if (p.score !== 0) {
+      verdictDir = p.score > 0 ? _yesDirEarly : _noDirEarly;
+      verdictSource = 'model-score-lean';
+    } else if (grokBinaryCall) {
+      verdictDir = grokBinaryCall;
+      verdictSource = 'grok-inference-lean';
+    } else if (kalshiDir !== null) {
+      verdictDir = kalshiDir;
+      verdictSource = 'kalshi-market-lean';
     } else {
-      // Model has no conviction → show as WAIT (don't fade to Kalshi)
-      verdictDir = 'wait';
-      verdictSource = 'model-uncertain';
+      verdictDir = 'up';
+      verdictSource = 'default-lean';
     }
 
-    // Safety gate: avoid late/borderline calls that commonly flip wrong near settlement.
+    // Safety gate: note late/borderline entry risks without obliterating the binary belief
     const tickerAgeMs = Math.max(0, Date.now() - Number(window._lastTickerFetchTs || 0));
     const isTickerStale = tickerAgeMs > 8_000;
     const msToClose = _k15mV?.closeTime
@@ -69,17 +92,18 @@ function predictionCard(p) {
       ? Math.abs(_kAlignEarly.gapPct) < 0.08
       : false;
     const isWeakConviction = Math.abs(Number(p.score || 0)) < 0.18;
-    if (verdictDir !== 'wait' && inSafetyWindow && (isTickerStale || isBorderlineStrike || isWeakConviction)) {
-      verdictDir = 'wait';
-      verdictSource = isTickerStale
-        ? 'safety-stale-data'
+    let safetyGuardActive = false;
+    let safetyGuardReason = '';
+    if (inSafetyWindow && (isTickerStale || isBorderlineStrike || isWeakConviction)) {
+      safetyGuardActive = true;
+      safetyGuardReason = isTickerStale
+        ? 'Stale data in 5m pre-close window'
         : isBorderlineStrike
-          ? 'safety-borderline-strike'
-          : 'safety-weak-conviction';
+          ? 'Borderline strike gap in 5m pre-close window'
+          : 'Weak conviction in 5m pre-close window';
     }
 
-    // Targeted guard (ultra-late only): keep aggressive mispricing capture intact,
-    // but block semi-confidence crowd-conflict flips in the last seconds.
+    // Targeted guard (ultra-late only)
     const confNorm = _normalizeConfidence(p.confidence) ?? 0;
     const isSemiConfidence = confNorm >= 0.40 && confNorm < 0.70;
     const isCrowdConflict =
@@ -87,27 +111,23 @@ function predictionCard(p) {
     const isUltraLateWindow =
       Number.isFinite(msToClose) && msToClose >= 0 && msToClose <= 45_000;
 
-    if (
-      verdictDir !== 'wait' &&
-      isSemiConfidence &&
-      isCrowdConflict &&
-      isUltraLateWindow
-    ) {
-      verdictDir = 'wait';
-      verdictSource = 'safety-semi-confidence-ultra-late';
+    if (isSemiConfidence && isCrowdConflict && isUltraLateWindow) {
+      safetyGuardActive = true;
+      safetyGuardReason = 'Semi-confidence crowd conflict in last 45s';
     }
 
-    // Fade flag: raw price direction conflicts with Kalshi crowd (informational only — betAction does NOT use this)
+    // Fade flag: raw price direction conflicts with Kalshi crowd
     const _fadeActive = kalshiDir !== null && modelDir !== 'wait' && modelDir !== kalshiDir;
     const _fadeSolid = _fadeActive && Math.abs(p.score) >= 0.20;
     const _fadeSoft = _fadeActive && !_fadeSolid;
-    // Bet action derived from verdictDir (Kalshi-certainty and CDF-aware — not raw score direction)
     const _betAction = verdictDir === _yesDirEarly ? 'YES' : verdictDir === _noDirEarly ? 'NO' : null;
     const compositeEdge = 0.75 * Math.abs(p.score) + 0.25 * (kalshiEdge ?? 0);
 
-    const verdictMain = verdictDir === 'up' ? '▲ UP' : verdictDir === 'down' ? '▼ DOWN' : '◆ WAIT';
-    const strength = verdictDir === 'wait' ? 'NEUTRAL'
-      : compositeEdge >= 0.42 ? 'STRONG' : compositeEdge >= 0.22 ? 'MODERATE' : 'LIGHT';
+    const isYesVerdict = verdictDir === _yesDirEarly;
+    const binaryOutcomeText = isYesVerdict ? 'BUY YES' : 'BUY NO';
+    const verdictMain = isYesVerdict ? `▲ ${binaryOutcomeText}` : `▼ ${binaryOutcomeText}`;
+    const strength = safetyGuardActive ? 'GUARDED'
+      : compositeEdge >= 0.42 ? 'STRONG' : compositeEdge >= 0.22 ? 'MODERATE' : 'LEAN';
     const scoreStr = Number.isFinite(p.score) ? (p.score > 0 ? '+' : '') + p.score.toFixed(2) : '—';
 
     // ── Pre-compute model probability (outer scope — used in verdict banner + comparison bar) ──
@@ -493,10 +513,17 @@ function predictionCard(p) {
             <div class="pred-coin-src">${p.source === 'error'
         ? `<span style="color:var(--color-orange,#f90);font-size:9px">⚠ ${p.error ? p.error.slice(0, 50) : 'compute error'} — will retry</span>`
         : p.source === 'loading'
-          ? `<span style="color:var(--color-text-muted,#888);font-size:9px">⏳ loading candles…</span>`
-          : `${p.source} &middot; ${p.candleCount || '?'} x 5m${p.candleCount1m ? ` · ${p.candleCount1m} x 1m` : ''}`
+          ? `<span style="color:var(--color-text-muted,#888);font-size:9px">⏳ loading 15m pooled candles…</span>`
+          : `${p.source || 'partial'} &middot; ${p.candleCount15m || p.candleCount || '?'} x 15m (pooled from exchanges: WS+CB+BIN+G etc.)${p.candleCount1m ? ` · ${p.candleCount1m} x 1m` : ''}`
       }</div>
           </div>
+          ${p._15mPoolingDebug ? `
+          <div style="font-size:8px;color:#ffeb3b;margin-top:2px;background:rgba(0,0,0,0.3);padding:2px 4px;border-radius:2px;">
+            15m POOL DEBUG (exchanges): WS=${p._15mPoolingDebug.ws} CB=${p._15mPoolingDebug.cb} BIN=${p._15mPoolingDebug.bin} G=${p._15mPoolingDebug.gecko||0} → pooled=${p._15mPoolingDebug.pooled} | cacheSrc=${p._15mPoolingDebug.sourceInCache || 'n/a'} ${p._15mPoolingDebug.fallbackUsed ? '(5m fallback used)' : ''}
+          </div>` : `
+          <div style="font-size:8px;color:#ffeb3b;margin-top:2px;background:rgba(0,0,0,0.2);padding:2px 4px;border-radius:2px;">
+            15m POOL: ${p.candleCount15m || '?'} bars pooled from exchanges (WS/CB/BIN) - see [15mPool] console logs for per-source counts or click Refresh
+          </div>`}
           <div class="pred-expand-icon">${expanded ? '−' : '+'}</div>
         </div>
 
@@ -515,6 +542,7 @@ function predictionCard(p) {
             <span style="color:${_modelProbColor};font-weight:700">${_modelProbStr}</span>
             <span>·</span>
             <span>${p.confidence}% conf</span>
+            ${grokBinaryCall ? `<span class="pred-source-badge" style="border-color:rgba(0,229,255,0.45);color:#00e5ff" title="${escapeHtml(grokNotesText)}">🤖 GROK ${grok15mGuidance.call} ${grokConfPct}%</span>` : ''}
             ${_edgePpCard != null && _edgePpCard >= 10 ? `<span style="color:${_edgePpCard >= 20 ? 'var(--color-green)' : '#ffd700'};font-weight:800;font-size:9px;padding:1px 5px;border-radius:3px;background:${_edgePpCard >= 20 ? 'rgba(38,212,126,0.12)' : 'rgba(255,215,0,0.12)'}">${_edgePpCard}pp ${_fadeActive ? 'FADE' : 'EDGE'}</span>` : ''}
             ${londonBadge}${calibBadge}${weakBadge}${safetyBadge}${hcBadge}
             <span style="font-size:9px;padding:2px 6px;border-radius:9999px;background:var(--color-surface-2);color:${setup15.cls === 'bull' ? 'var(--color-green)' : setup15.cls === 'bear' ? 'var(--color-red)' : 'var(--color-text-muted)'};font-weight:700;text-transform:uppercase">${setup15.label}</span>
@@ -524,6 +552,20 @@ function predictionCard(p) {
           ${(p.llm?.ai_wording?.primary_rationale) ? `<div class="pred-verdict-rationale" style="color:#8fa8ff"><span style="font-weight:700">✨ AI:</span> ${escapeHtml(p.llm.ai_wording.primary_rationale)}</div>` : ratPrimary ? `<div class="pred-verdict-rationale">${ratPrimary}</div>` : ''}
           <div class="pred-verdict-bar-wrap">
             <div class="pred-verdict-bar-fill ${verdictDir}" style="width:${p.confidence}%"></div>
+          </div>
+          <!-- Projected Binary Decision & Countdown Box -->
+          <div class="binary-decision-box" style="margin-top:8px;padding:8px 10px;background:rgba(0,229,255,0.04);border:1px solid rgba(0,229,255,0.25);border-radius:6px;">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:4px;">
+              <span style="font-size:10px;font-weight:800;color:#00e5ff;text-transform:uppercase;letter-spacing:0.06em;">🎯 BINARY OUTCOME DECISION</span>
+              <span class="k15-expiry" data-close-ms="${_k15mV?.closeTime ? new Date(_k15mV.closeTime).getTime() : (Math.floor(Date.now() / 900000) + 1) * 900000}" style="font-family:var(--font-mono);font-size:11px;font-weight:800;padding:2px 8px;border-radius:4px;background:rgba(0,229,255,0.12);color:#00e5ff;">⏱ 00:00 to Decision Lock</span>
+            </div>
+            <div style="font-size:12px;font-weight:700;color:${isYesVerdict ? 'var(--color-green)' : 'var(--color-red)'};">
+              ${isYesVerdict ? '▲ PROJECTED OUTCOME: YES (Price ≥ Strike)' : '▼ PROJECTED OUTCOME: NO (Price < Strike)'}
+            </div>
+            <div style="font-size:11px;color:var(--color-text-muted);margin-top:2px;">
+              Model CDF P(YES): <strong style="color:var(--color-text);">${_modelYesPctCard}%</strong> ${grokBinaryCall ? `· Grok Inference: <strong style="color:#00e5ff;">${grok15mGuidance.call} (${grokConfPct}%)</strong>` : ''}
+            </div>
+            ${grokNotesText ? `<div style="font-size:11px;color:var(--color-text);margin-top:3px;line-height:1.35;"><span style="color:#00e5ff;font-weight:700;">🤖 Grok Rationale:</span> ${escapeHtml(grokNotesText)}</div>` : ''}
           </div>
           <!-- Model vs Kalshi Comparison Bar -->
           ${_liveKPctCard !== null ? `
@@ -1055,6 +1097,8 @@ function normalizePredictionCardData(raw, fallbackSym = '') {
       source: incoming.source || (hasPayload ? 'partial' : 'loading'),
       candleCount: incoming.candleCount ?? 0,
       candleCount1m: incoming.candleCount1m ?? 0,
+      candleCount15m: incoming.candleCount15m ?? 0,
+      _15mPoolingDebug: incoming._15mPoolingDebug || null,
       updatedAt: incoming.updatedAt || 'pending',
       indicators: incoming.indicators || {},
       diagnostics: incoming.diagnostics || {},
@@ -2969,4 +3013,5 @@ window.APP_UI_COMPONENTS = {
   buildFifteenMinuteMovePlan, countConfirmingSignals, calcEdge, buildNarrativeCallouts,
   marketRow
 };
+Object.assign(window, window.APP_UI_COMPONENTS);
 })();
