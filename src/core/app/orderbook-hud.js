@@ -774,4 +774,5 @@ window.APP_ORDERBOOK_HUD = {
   startDepthLive, updateDepthBook, updateDepthAlerts, updateDepthRawWalls, 
   updateDepthAnalyzer, drawLiqMap, initOBHud, drawOrbital, refreshCexFlow
 };
+Object.assign(window, window.APP_ORDERBOOK_HUD);
 })();

@@ -484,4 +484,5 @@ window.APP_OBSERVABILITY = {
   _obsNum, _obsNormRegime, _obsPct, _obsEsc, _obsLatencyBuckets, 
   _obsGetQuantDriftSnapshot, _obsEmergencyToolsSummary, _obsBuildMetrics, _obsRenderHist
 };
+Object.assign(window, window.APP_OBSERVABILITY);
 })();

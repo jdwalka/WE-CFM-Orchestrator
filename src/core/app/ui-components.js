@@ -3013,4 +3013,5 @@ window.APP_UI_COMPONENTS = {
   buildFifteenMinuteMovePlan, countConfirmingSignals, calcEdge, buildNarrativeCallouts,
   marketRow
 };
+Object.assign(window, window.APP_UI_COMPONENTS);
 })();
