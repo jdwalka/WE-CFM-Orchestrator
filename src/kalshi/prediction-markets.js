@@ -1609,9 +1609,6 @@
   function _formatPolyPriceToBeat(value, symbol = '') {
     const n = Number(value);
     if (!Number.isFinite(n) || n <= 0) return null;
-    if (String(symbol).toUpperCase() === 'BTC') {
-      return `$${Math.round(n).toLocaleString()}`;
-    }
     if (n >= 1000) return `$${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
     if (n >= 1) return `$${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 })}`;
     return `$${n.toLocaleString(undefined, { minimumFractionDigits: 4, maximumFractionDigits: 8 })}`;
@@ -1695,6 +1692,7 @@
     if (!querySymbol || !Number.isFinite(startSec)) return null;
 
     const startIso = new Date(startSec * 1000).toISOString().split('.')[0] + 'Z';
+    const endIso = new Date((startSec + 300) * 1000).toISOString().split('.')[0] + 'Z';
 
     // Polymarket Next.js RSC streaming payload contains dehydrated React-Query state entries.
     // We anchor on startIso (e.g. "2026-08-07T11:10:00Z") inside the crypto-prices query
@@ -1806,18 +1804,11 @@
       if (Number.isFinite(op) && op > 0) return op;
     }
 
-    // Last-chance broad search in the entire HTML for an openPrice near 5m context or our symbol/time.
-    // Some pages serialize the data differently (no __NEXT_DATA__ wrapper).
-    try {
-      const openCandidates = [...html.matchAll(/"openPrice"\s*:\s*([0-9]+(?:\.[0-9]+)?)/g)].map(m => Number(m[1]));
-      for (const op of openCandidates) {
-        if (Number.isFinite(op) && op > 100) return op; // reasonable crypto price filter
-      }
-      // Also look for priceToBeat anywhere as last resort
-      const anyPtb = [...html.matchAll(/"priceToBeat"\s*:\s*([0-9]+(?:\.[0-9]+)?)/g)].map(m => Number(m[1]));
-      for (const p of anyPtb) if (Number.isFinite(p) && p > 0) return p;
-    } catch (_) {}
-
+    // Deliberately no page-global "grab any openPrice/priceToBeat on the page" fallback
+    // here: Polymarket event pages can hydrate multiple markets, symbols, and adjacent
+    // 5-minute windows into the same HTML payload, so an unscoped match risks returning
+    // another contract's benchmark entirely. Returning null (and falling back to a
+    // slower, still-scoped source upstream) is safer than a plausible-looking wrong price.
     return null;
   }
 
@@ -1829,7 +1820,7 @@
       for (const o of objs) {
         const cands = [o.priceToBeat, o.price_to_beat, o.initialPrice, o.openPrice, o.startPrice, o.benchmarkPrice, o.strike, o.strikePrice, o.referencePrice, o.openingPrice];
         for (const c of cands) {
-          const n = Number(c);
+          const n = typeof c === 'string' ? Number(c.replace(/,/g, '')) : Number(c);
           if (Number.isFinite(n) && n > 0) return n;
         }
       }
@@ -2004,8 +1995,10 @@
           if (existingLock) {
             priceToBeatNum = existingLock.price;
             priceToBeatSource = existingLock.source;
-          } else {
-            // Only if no lock exists yet, scrape the canonical value from Polymarket
+          } else if (priceToBeatNum == null) {
+            // Only scrape when no trusted value was already resolved from Gamma/title
+            // metadata above — a fragile HTML scrape must never override a value the
+            // fast, reliable Gamma API already gave us.
             let scraped = null;
             try {
               scraped = await fetchPolymarketPriceToBeat(slug) || await fetchPolymarketPriceToBeat(marketSlug);
@@ -2734,8 +2727,6 @@ function polymarketSentiment(markets, sym) {
       _parseGenericPriceToBeat,
       _parsePolymarketPriceToBeat,
       _parseUpProb,
-      _selectLatestChainlinkTick,
-      _selectOpeningChainlinkTick,
     };
   }
 

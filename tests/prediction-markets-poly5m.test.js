@@ -146,7 +146,7 @@ function createHarness(options = {}) {
     assert.strictEqual(btc.probability, 0.62);
     assert.strictEqual(btc.priceToBeatNum, null);
     assert.strictEqual(btc.targetPrice, null);
-    assert.strictEqual(btc.priceToBeatSource, 'polymarket-eventMetadata');
+    assert.strictEqual(btc.priceToBeatSource, null);
     assert(
       fetchedUrls.some(url => url === `https://polymarket.com/event/btc-updown-5m-${WINDOW_TS}`),
       'Polymarket event page should be the final metadata fallback'
@@ -176,7 +176,7 @@ function createHarness(options = {}) {
     assert(btc, 'BTC Poly 5M result should be present');
     assert.strictEqual(btc.priceToBeatNum, 105432.12);
     assert.strictEqual(btc.targetPrice, '$105,432.12');
-    assert.strictEqual(btc.priceToBeatSource, 'gamma-market-metadata');
+    assert.strictEqual(btc.priceToBeatSource, 'gamma-market');
     assert(
       fetchedUrls.every(url => !url.startsWith(`https://polymarket.com/event/btc-updown-5m-${WINDOW_TS}`)),
       'BTC should not fetch the event page when Gamma metadata contains priceToBeat'

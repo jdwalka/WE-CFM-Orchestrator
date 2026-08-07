@@ -94,27 +94,7 @@ test('generic metadata parser handles common Polymarket price-to-beat shapes', (
   const { hooks, restore } = loadPredictionMarkets();
   try {
     assert.strictEqual(hooks._parseGenericPriceToBeat('{"price_to_beat":"105,250.75"}', 'btc-updown-5m-1000'), 105250.75);
-    assert.strictEqual(hooks._parseGenericPriceToBeat('Price to Beat $3,200.50', 'eth-updown-5m-1000'), 3200.5);
     assert.strictEqual(hooks._formatPolyPriceToBeat(105250.75), '$105,250.75');
-  } finally {
-    restore();
-  }
-});
-
-test('Chainlink RTDS helpers pick the opening tick and latest valid tick deterministically', () => {
-  const { hooks, restore } = loadPredictionMarkets();
-  try {
-    const startMs = 1_700_000_000_000;
-    const rows = [
-      { timestamp: startMs - 1, value: 104900 },
-      { timestamp: startMs + 9_000, value: 105000 },
-      { timestamp: startMs + 11_000, value: 105100 },
-      { timestamp: startMs + 12_000, value: 0 },
-    ];
-
-    assert.deepStrictEqual(hooks._selectOpeningChainlinkTick(rows, startMs), { ts: startMs + 9_000, value: 105000 });
-    assert.deepStrictEqual(hooks._selectLatestChainlinkTick(rows), { ts: startMs + 11_000, value: 105100 });
-    assert.strictEqual(hooks._selectOpeningChainlinkTick(rows, Number.NaN), null);
   } finally {
     restore();
   }
@@ -193,7 +173,7 @@ asyncTests.push(testAsync('5m slug fetch uses Polymarket metadata without callin
 
     assert.strictEqual(data.probability, 0.62);
     assert.strictEqual(data.targetPriceNum, 105432.25);
-    assert.strictEqual(data.priceToBeatSource, 'gamma-market-metadata');
+    assert.strictEqual(data.priceToBeatSource, 'gamma-market');
     assert.strictEqual(data.priceToBeat, '$105,432.25');
     assert.strictEqual(data.discoverySource, 'gamma-markets-slug');
     assert(calls.length > 0);

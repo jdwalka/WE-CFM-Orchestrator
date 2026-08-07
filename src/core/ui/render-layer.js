@@ -384,14 +384,24 @@ function updateMarkets5MLivePrices(prices) {
     for (const sym of ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'BNB', 'HYPE']) {
       const ticker = prices?.[`${sym}USD`];
       const current = Number(ticker?.last);
-      const target = Number(markets[sym]?.poly5m?.targetPriceNum);
+      const p5 = markets[sym]?.poly5m;
+      const target = Number(p5?.targetPriceNum ?? p5?.priceToBeatNum);
       if (!Number.isFinite(current) || current <= 0) continue;
 
       const currentEl = document.getElementById(`p5-current-${sym}`);
       if (currentEl) currentEl.textContent = `$${fmtPrice(current)}`;
       if (!Number.isFinite(target) || target <= 0) continue;
 
-      const delta = current - target;
+      // This handler is fed by the raw Pyth Lazer tick stream, but settlement is
+      // Chainlink-only. Comparing a fast Pyth spot price directly against the
+      // Chainlink-sourced PTB can be off by a few dollars — enough to flip the
+      // shown direction on cents-margin contracts — so prefer the Chainlink
+      // current price when we have one and only fall back to the raw tick
+      // before Chainlink has reported for this window.
+      const chainlinkCurrent = Number(p5?.chainlinkCurrentPriceNum);
+      const settlementCurrent = Number.isFinite(chainlinkCurrent) && chainlinkCurrent > 0 ? chainlinkCurrent : current;
+
+      const delta = settlementCurrent - target;
       const direction = delta >= 0 ? 'UP' : 'DOWN';
       const state = delta >= 0 ? 'above' : 'below';
       const deltaLabel = `$${fmtPrice(Math.abs(delta))}`;
@@ -449,9 +459,20 @@ function renderMarkets5M() {
       return `<span class="badge-neutral" style="${sz}">◆ WAIT</span>`;
     }
     function _live5mSignal(p5, fallbackCurrentPx = null) {
-      let current = Number.isFinite(fallbackCurrentPx) && fallbackCurrentPx > 0
-        ? Number(fallbackCurrentPx)
-        : (p5?.currentPriceNum == null ? NaN : Number(p5.currentPriceNum));
+      // Polymarket 5m contracts settle exclusively against Chainlink, so the
+      // primary UP/DOWN signal traders act on must compare like-for-like against
+      // the Chainlink-sourced price-to-beat. A faster spot tick (Pyth, the app's
+      // general ticker) can diverge from Chainlink by a few dollars — enough to
+      // flip direction on cents-margin contracts even when settlement wouldn't
+      // actually flip — so it's only used as a fallback when Chainlink has no
+      // reading yet.
+      const chainlinkCurrent = Number(p5?.chainlinkCurrentPriceNum);
+      const useChainlink = Number.isFinite(chainlinkCurrent) && chainlinkCurrent > 0;
+      const current = useChainlink
+        ? chainlinkCurrent
+        : (Number.isFinite(fallbackCurrentPx) && fallbackCurrentPx > 0
+          ? Number(fallbackCurrentPx)
+          : (p5?.currentPriceNum == null ? NaN : Number(p5.currentPriceNum)));
       const target = Number(p5?.targetPriceNum ?? p5?.priceToBeatNum);
       if (!Number.isFinite(current) || current <= 0 || !Number.isFinite(target) || target <= 0) return null;
       const delta = current - target;
@@ -462,6 +483,7 @@ function renderMarkets5M() {
         deltaPct: delta / target,
         dir: delta >= 0 ? 'UP' : 'DOWN',
         state: delta >= 0 ? 'ABOVE' : 'BELOW',
+        source: useChainlink ? 'polymarket-chainlink' : 'fallback',
       };
     }
     function _liveSide(sig, large) {
@@ -918,12 +940,15 @@ function renderMarkets5M() {
 
       const p5prob = p5?.probability ?? null;
       const live5m = _live5mSignal(p5, curPx);
-      const liveCurrentSource = tick?.source === 'pyth-lazer'
-        ? 'pyth-lazer'
-        : (p5?.currentPriceSource || 'polymarket-chainlink');
+      const liveCurrentSource = live5m?.source === 'polymarket-chainlink'
+        ? 'polymarket-chainlink'
+        : (tick?.source === 'pyth-lazer' ? 'pyth-lazer' : (p5?.currentPriceSource || 'polymarket-chainlink'));
       const liveCurrentLabel = live5m ? `$${fmtPrice(live5m.current)}` : p5?.currentPrice;
-      const liveOracleBasis = live5m && Number.isFinite(Number(p5?.chainlinkCurrentPriceNum))
-        ? live5m.current - Number(p5.chainlinkCurrentPriceNum)
+      // Basis footnote compares the fast spot tick against Chainlink for
+      // transparency — independent of which one live5m actually used above.
+      const fastCurrentPx = Number.isFinite(curPx) && curPx > 0 ? Number(curPx) : Number(p5?.currentPriceNum);
+      const liveOracleBasis = Number.isFinite(fastCurrentPx) && Number.isFinite(Number(p5?.chainlinkCurrentPriceNum))
+        ? fastCurrentPx - Number(p5.chainlinkCurrentPriceNum)
         : p5?.oracleBasisNum;
       const primaryMarketProb = p5prob;
       const primaryMarketLabel = 'Poly 5M';
