@@ -14,6 +14,14 @@
 const kalshiTypeScript = (typeof require !== 'undefined') ? require('kalshi-typescript') : null;
 const { Configuration, PortfolioApi, OrdersApi } = kalshiTypeScript || {};
 
+// Optional contract queue manager to handle early/overlapping contracts
+let ContractQueue = null;
+try {
+  ContractQueue = require('../core/contract-queue-manager');
+} catch (e) {
+  ContractQueue = null;
+}
+
 class KalshiRestClient {
   constructor(apiKeyId, privateKeyPem, environment = 'production') {
     this.apiKeyId = apiKeyId;
@@ -148,13 +156,24 @@ class KalshiRestClient {
         };
       }
       
-      if (!orderRequest.side || !orderRequest.action || !orderRequest.quantity || !orderRequest.yes_price === undefined) {
+      if (!orderRequest.side || !orderRequest.action || !orderRequest.quantity || orderRequest.yes_price === undefined) {
         return {
           success: false,
           error: 'side, action, quantity, yes_price required',
           code: 'VALIDATION_ERROR',
           timestamp: Date.now()
         };
+      }
+
+      // Delegate to ContractQueue if available to handle early/overlapping contracts
+      if (ContractQueue && typeof ContractQueue.handleOrder === 'function') {
+        try {
+          const queued = await ContractQueue.handleOrder(orderRequest, this);
+          return queued;
+        } catch (err) {
+          // fallback to direct submit
+          console.warn('[Kalshi REST] ContractQueue.handleOrder failed, falling back to direct order:', err?.message || err);
+        }
       }
       
       const response = await this.ordersApi.createOrder(orderRequest);

@@ -24,9 +24,14 @@
   const CMC_GLOBAL_PATH = '/global-metrics/quotes/latest';
   const CMC_FEAR_INDEX_PATH = '/fear-and-greed/latest';
   const CACHE_TTL_MS = 60 * 60 * 1000;  // 1-hour cache to save credits
-  const POLL_MS = 3600_000;  // 1-hour poll (saves 10k monthly hard cap)
+  const CMC_QUOTES_MIN_INTERVAL_MS = 6 * 60 * 1000;  // ~7.2K quote calls/month at 30d uptime
+  const CMC_GLOBAL_MIN_INTERVAL_MS = 60 * 60 * 1000; // ~720 global calls/month
+  const CMC_MIN_POLL_MS = CMC_QUOTES_MIN_INTERVAL_MS;
+  const POLL_MS = CMC_MIN_POLL_MS;
   const CMC_RATE_LIMIT_COOLDOWN_MS = 10 * 60 * 1000;
   const CMC_AUTH_COOLDOWN_MS = 30 * 60 * 1000;
+  const CMC_FNG_PRO_ENABLED = false; // Alternative.me avoids burning CMC monthly quota.
+  const FNG_CACHE_TTL_MS = 15 * 60 * 1000;
   const FNG_TIMEOUT_MS = 5000;
   const cache = {};   // sym → { price, marketCap, volume24h, change24h, ts }
   const globalMetrics = {}; // { dominance, totalMarketCap, totalVolume24h, ts }
@@ -34,6 +39,8 @@
   let cmcFearGreedUnsupported = false;
   let cmcRateLimitedUntil = 0;
   let cmcProDisabledUntil = 0;
+  let lastQuotesCmcRequestTs = 0;
+  let lastGlobalCmcRequestTs = 0;
 
   // ── Credential helpers ──────────────────────────────────────────────────────
   function getApiKey() {
@@ -106,8 +113,7 @@
     if (status === 429 || /rate|limit|quota/i.test(message || '')) {
       cmcRateLimitedUntil = Date.now() + CMC_RATE_LIMIT_COOLDOWN_MS;
       console.warn(`[CMC] Rate limited; cooling down until ${new Date(cmcRateLimitedUntil).toLocaleTimeString()}`);
-    }
-    if (status === 401 || /api key|unauthorized/i.test(message || '')) {
+    } else if (status === 401 || /api key|unauthorized/i.test(message || '')) {
       cmcProDisabledUntil = Date.now() + CMC_AUTH_COOLDOWN_MS;
       console.warn('[CMC] Pro key rejected; disabling CMC Pro for this session window.');
       try {
@@ -120,7 +126,7 @@
     return Date.now() < cmcRateLimitedUntil;
   }
 
-  // ── Rate limiter (CMC Trial: ~30 req/min; Pro: 10K/month = ~14 req/min) ──────────────────
+  // ── Short-term limiter; monthly quota is enforced by endpoint-level freshness gates. ───────
   let _lastRequestTime = 0;
   let _fetchQueue = Promise.resolve();
   let _fetchQueueLength = 0;
@@ -151,16 +157,22 @@
     const apiKey = getApiKey();
     const symbolStr = symbolList(symbols).join(',');
     const isProMode = hasApiKey();
+    const cached = cachedQuotes(symbols);
+    const now = Date.now();
 
     if (!symbolStr) return {};
+    if (lastQuotesCmcRequestTs && (now - lastQuotesCmcRequestTs) < CMC_QUOTES_MIN_INTERVAL_MS) {
+      return cached;
+    }
     if (!isProMode) {
       const reason = cmcUnavailableReason();
       markCmcUnavailable(reason);
-      return cachedQuotes(symbols);
+      return cached;
     }
-    if (isCoolingDown()) return cachedQuotes(symbols);
+    if (isCoolingDown()) return cached;
 
     try {
+      lastQuotesCmcRequestTs = Date.now();
       const buildUrl = (mode) => {
         if (mode !== 'pro') throw new Error('CMC requires a valid API key');
         return `${CMC_PRO_QUOTES_BASE_URL}${CMC_QUOTES_PATH}?symbol=${encodeURIComponent(symbolStr)}&convert=USD`;
@@ -177,7 +189,7 @@
           const result = await window._proxyOrchestrator.fetch(buildUrl(isProMode ? 'pro' : 'trial'), {
             endpoint: 'cmc',
             cacheType: 'price-quotes',
-            retries: 2,
+            retries: 0,
             fallbackChain: ['cmc', 'coingecko', 'coinbase', 'cache'],
             requestOptions: { headers: buildHeaders(isProMode ? 'pro' : 'trial') },
           });
@@ -275,7 +287,12 @@
   async function getGlobalMetrics() {
     const isProMode = hasApiKey();
     const apiKey = getApiKey();
+    const now = Date.now();
 
+    if ((globalMetrics.ts && (now - globalMetrics.ts) < CMC_GLOBAL_MIN_INTERVAL_MS)
+      || (lastGlobalCmcRequestTs && (now - lastGlobalCmcRequestTs) < CMC_GLOBAL_MIN_INTERVAL_MS)) {
+      return globalMetrics;
+    }
     if (!isProMode) {
       markCmcUnavailable(cmcUnavailableReason());
       return globalMetrics;
@@ -283,6 +300,7 @@
     if (isCoolingDown()) return globalMetrics;
 
     try {
+      lastGlobalCmcRequestTs = Date.now();
       const buildUrl = (mode) => {
         if (mode !== 'pro') throw new Error('CMC requires a valid API key');
         return `${CMC_PRO_GLOBAL_BASE_URL}${CMC_GLOBAL_PATH}?convert=USD`;
@@ -337,8 +355,10 @@
   // ── Fear & Greed Index ────────────────────────────────────────────────────
   async function getFearGreedIndex() {
     try {
+      if (fearGreed.ts && (Date.now() - fearGreed.ts) < FNG_CACHE_TTL_MS) return fearGreed;
+
       // Primary: CoinMarketCap (if available)
-      if (!isCoolingDown() && !cmcFearGreedUnsupported) {
+      if (CMC_FNG_PRO_ENABLED && !isCoolingDown() && !cmcFearGreedUnsupported) {
         const usePro = hasApiKey();
         const cmcUrl = usePro ? `${CMC_PRO_FNG_BASE_URL}${CMC_FEAR_INDEX_PATH}` : '';
         const cmcHeaders = { Accept: 'application/json' };
@@ -423,6 +443,8 @@
 
   function startPolling(symbols, interval = POLL_MS) {
     if (_pollTimer) return;
+    const requestedInterval = Number(interval) || POLL_MS;
+    const effectiveInterval = Math.max(requestedInterval, CMC_MIN_POLL_MS);
     const pollFn = async () => {
       const mode = hasApiKey() ? 'Pro' : 'Trial';
       console.debug(`[CMC ${mode}] Poll (${symbols.length} coins)…`);
@@ -431,8 +453,11 @@
       await getFearGreedIndex();
     };
     pollFn().catch(e => console.warn('[CMC] Poll init failed:', e.message));
-    _pollTimer = setInterval(pollFn, interval);
-    console.info(`[CMC ${hasApiKey() ? 'Pro' : 'Trial'}] Polling: ${interval}ms (${symbols.length} coins)`);
+    _pollTimer = setInterval(pollFn, effectiveInterval);
+    if (effectiveInterval !== requestedInterval) {
+      console.warn(`[CMC] Requested poll ${requestedInterval}ms clamped to ${effectiveInterval}ms for monthly quota protection.`);
+    }
+    console.info(`[CMC ${hasApiKey() ? 'Pro' : 'Trial'}] Polling: ${effectiveInterval}ms (${symbols.length} coins)`);
   }
 
   function stopPolling() {

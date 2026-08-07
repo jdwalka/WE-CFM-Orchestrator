@@ -866,9 +866,9 @@
     },
     {
       sym: 'XRP', handlers: [
+        () => xrpLedger('https://xrplcluster.com/'),
         () => xrpLedger('https://s2.ripple.com:51234/'),
         () => xrpLedger('https://s1.ripple.com:51234/'),
-        () => xrpLedger('https://xrplcluster.com/'),
       ]
     },
     { sym: 'BNB',  handlers: [bnbAlchemy, bnbAnkrRpc, bnbBscscan, bnbBlockscout] },

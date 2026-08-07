@@ -23,7 +23,7 @@
   const EXCHANGE_CACHE = {}; // `${exchange}_${sym}` -> { value, ts, inFlight }
   const EXCHANGE_POLL_INTERVAL_MS = {
     Binance: 30000,
-    Coinbase: 30000,
+    Coinbase: 15000,
     Kraken: 30000,
     Bybit: 30000,
     OKX: 30000,
@@ -36,7 +36,7 @@
     Gemini: 120000,
     CoinW: 120000,
     LBank: 180000,
-    Bitstamp: 180000,
+    Bitstamp: 30000,
     Bitso: 180000,
     Bullish: 300000,
     WhiteBIT: 300000,
@@ -250,13 +250,37 @@
       return { exchange, available: false, reason: 'Not listed' };
     }
     try {
-      const publicHeaders = { headers: { 'Accept': 'application/json' } };
+      let jwtStr1 = null;
+      let jwtStr2 = null;
+      try {
+        if (window.desktopApp && window.desktopApp.generateCoinbaseJWT) {
+          const [res1, res2] = await Promise.all([
+            window.desktopApp.generateCoinbaseJWT({
+              requestMethod: 'GET',
+              requestPath: `api.coinbase.com/api/v3/brokerage/market/products/${sym}-USD/ticker?limit=100`
+            }),
+            window.desktopApp.generateCoinbaseJWT({
+              requestMethod: 'GET',
+              requestPath: `api.coinbase.com/api/v3/brokerage/market/products/${sym}-USD`
+            })
+          ]);
+          if (res1 && res1.success) jwtStr1 = res1.jwt;
+          if (res2 && res2.success) jwtStr2 = res2.jwt;
+        }
+      } catch(e) { console.warn('[CexFlow] CB JWT failed:', e.message); }
+
+      const headers1 = { 'Accept': 'application/json' };
+      if (jwtStr1) headers1['Authorization'] = `Bearer ${jwtStr1}`;
+      
+      const headers2 = { 'Accept': 'application/json' };
+      if (jwtStr2) headers2['Authorization'] = `Bearer ${jwtStr2}`;
+
       const url1 = `https://api.coinbase.com/api/v3/brokerage/market/products/${sym}-USD/ticker?limit=100`;
       const url2 = `https://api.coinbase.com/api/v3/brokerage/market/products/${sym}-USD`;
 
       const [tradesRes, tickerRes] = await Promise.allSettled([
-        getJson(url1, publicHeaders),
-        getJson(url2, publicHeaders),
+        getJson(url1, { headers: headers1 }),
+        getJson(url2, { headers: headers2 }),
       ]);
 
       if (tradesRes.status === 'rejected') {
@@ -826,6 +850,76 @@
       }
       if (i + batchSize < COINS.length) await wait(75);
     }
+
+    // INTEGRATION: Load local Python supervisor and high-frequency state files
+    if (window.electron && typeof window.electron.readFile === 'function') {
+      try {
+        const supervisorStr = await window.electron.readFile('WECRYP0-data/cex_flow_state.json');
+        if (supervisorStr) {
+          const supervisorState = JSON.parse(supervisorStr);
+          const activeMonitors = supervisorState.active_monitors || [];
+          
+          for (const coin of COINS) {
+            const pyStats = supervisorState.coins?.[coin];
+            if (pyStats) {
+              if (!CACHE[coin]) {
+                CACHE[coin] = { exchanges: [], aggregate: {}, ts: Date.now() };
+              }
+              
+              // Merge/Override aggregate stats with supervisor metrics
+              CACHE[coin].aggregate = {
+                ...CACHE[coin].aggregate,
+                score: pyStats.vol_mult > 2.0 
+                  ? (pyStats.buy_pct > pyStats.sell_pct ? 0.35 : -0.35) 
+                  : (pyStats.buy_pct > pyStats.sell_pct ? 0.15 : -0.15),
+                label: pyStats.signal,
+                volMult: pyStats.vol_mult,
+                hurst_v: pyStats.hurst_v,
+                vr_v: pyStats.vr_v,
+                distributing: pyStats.signal === 'DISTRIBUTING' ? 1 : 0,
+                accumulating: pyStats.signal === 'ACCUMULATING' ? 1 : 0,
+                volatile: pyStats.signal === 'VOLATILE' ? 1 : 0,
+              };
+              
+              CACHE[coin].ts = supervisorState.ts * 1000; // Convert to ms timestamp
+              
+              // If high-frequency monitor is active, load the child JSON state
+              if (activeMonitors.includes(coin)) {
+                try {
+                  const hfStr = await window.electron.readFile(`WECRYP0-data/cex_high_freq_${coin.toLowerCase()}.json`);
+                  if (hfStr) {
+                    const hfState = JSON.parse(hfStr);
+                    CACHE[coin].hf = {
+                      active: true,
+                      connected: hfState.connected,
+                      tradesPerSec: hfState.trades_per_sec,
+                      vpin: hfState.vpin,
+                      whaleTrades10k: hfState.whale_trades_1m_10k,
+                      whaleTrades50k: hfState.whale_trades_1m_50k,
+                      price: hfState.price,
+                      buyPct: hfState.buy_pct_1m,
+                      sellPct: hfState.sell_pct_1m,
+                    };
+                    
+                    // Override price with high-frequency spot price for precision
+                    CACHE[coin].price = hfState.price;
+                  }
+                } catch (hfErr) {
+                  CACHE[coin].hf = { active: true, connected: false };
+                }
+              } else {
+                CACHE[coin].hf = { active: false };
+              }
+              
+              detail[coin] = CACHE[coin];
+            }
+          }
+        }
+      } catch (err) {
+        console.warn('[CexFlow] Python state sync skipped/failed:', err.message);
+      }
+    }
+
     window.dispatchEvent(new CustomEvent('cex-flow-update', { detail }));
     return detail;
   }

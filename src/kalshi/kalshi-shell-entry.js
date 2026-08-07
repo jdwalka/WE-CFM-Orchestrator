@@ -143,5 +143,45 @@
     COIN_SHELL_CONFIG,
   };
 
+  // Edge mode: when the shell is running on a co-located VPS, the latest
+  // Sig_prob float and spin state are pushed into the local edge Redis by
+  // tools/edge-weight-sync.js. We override the synchronous decision path
+  // to consume them so the per-tick loop never has to round-trip back
+  // to the brain.
+  const EDGE_MODE = process.env.WECRYPTO_EDGE_MODE === '1';
+  const edgeReader = EDGE_MODE
+    ? (function () {
+        try { return require('./edge-sig-prob-reader'); }
+        catch (_) { return null; }
+      })()
+    : null;
+
+  async function getEdgeSigProb(asset) {
+    if (!edgeReader) return null;
+    return edgeReader.getSigProb(asset);
+  }
+
+  async function getEdgeSpin(asset) {
+    if (!edgeReader) return null;
+    return edgeReader.getSpin(asset);
+  }
+
+  async function decideWithEdge(coin, fallbackSpin) {
+    if (!edgeReader) return makeShellEntry(coin, fallbackSpin);
+    const [sigProb, spin] = await Promise.all([
+      edgeReader.getSigProb(coin),
+      edgeReader.getSpin(coin),
+    ]);
+    if (sigProb == null) {
+      return { trade: false, reason: 'edge_sigprob_missing', coin, spinState: fallbackSpin };
+    }
+    const effectiveSpin = spin != null ? spin : fallbackSpin;
+    if (sigProb < 0.55) {
+      return { trade: false, reason: 'edge_below_sig_threshold', coin, sigProb, spinState: effectiveSpin };
+    }
+    const decision = makeShellEntry(coin, effectiveSpin, sigProb);
+    if (decision.trade) decision.edgeSigProb = sigProb;
+    return decision;
+  }
   console.log('[KalshiShellEntry] Loaded — H-subshell 11-state entry framework active');
 })();

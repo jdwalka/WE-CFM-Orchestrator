@@ -38,6 +38,8 @@ let ingestorProcess = null;
 let processorIntervalHandle = null;
 let orbitalServiceProcess = null;
 let orchestratorReady = false;
+let shutdownInFlight = null;
+let shutdownComplete = false;
 
 // WE-CRYPTO proxies
 let httpProxyProcess = null;
@@ -140,14 +142,14 @@ async function waitForRedpandaReady(maxWaitMs = 60000) {
  */
 async function isDockerAvailable() {
     return new Promise((resolve) => {
-        exec('docker ps', (err, stdout, stderr) => { 
+        exec('docker ps', (err, stdout, stderr) => {
             if (err) {
                 console.error('[OrbitalOrchestrator] isDockerAvailable failed:', err.message, stderr);
                 try {
                     fs.writeFileSync(require('path').join(process.cwd(), 'docker-error.log'), 'Docker err: ' + err.message + '\nStderr: ' + stderr);
-                } catch(e) {}
+                } catch (e) { }
             }
-            resolve(!err); 
+            resolve(!err);
         });
     });
 }
@@ -158,7 +160,7 @@ async function isDockerAvailable() {
 function spawnDockerCompose(workspacePath) {
     return new Promise((resolve, reject) => {
         console.log('[OrbitalOrchestrator] Spawning docker-compose for Redpanda services...');
-        const proc = spawn('docker-compose', ['up', '-d', 'redpanda', 'redpanda-console'], {
+        const proc = spawn('docker', ['compose', 'up', '-d', 'redpanda', 'redpanda-console'], {
             cwd: workspacePath,
             stdio: ['ignore', 'pipe', 'pipe']
         });
@@ -167,7 +169,9 @@ function spawnDockerCompose(workspacePath) {
         proc.stderr.on('data', (data) => { stderr += data.toString(); console.warn('[Docker-Compose]', data.toString().trim()); });
         proc.on('close', (code) => {
             if (code !== 0) {
-                console.warn(`[OrbitalOrchestrator] docker-compose exited with code ${code}. Assuming services are already running or externally managed.`);
+                const detail = stderr.trim().split(/\r?\n/).slice(-4).join(' | ');
+                reject(new Error(`docker compose up failed with code ${code}${detail ? `: ${detail}` : ''}`));
+                return;
             }
             resolve(proc);
         });
@@ -248,6 +252,7 @@ async function startOrbitalSystem(workspacePath) {
         return true;
     }
 
+    shutdownComplete = false;
     try {
         console.log('[OrbitalOrchestrator] ===== Starting Orbital System =====');
 
@@ -301,7 +306,7 @@ async function startOrbitalSystem(workspacePath) {
     } catch (err) {
         console.error('[OrbitalOrchestrator] FATAL: Failed to start Orbital System:', err.message);
         recordStatusEvent('error', 'Orbital system failed to start', { error: err.message });
-        await shutdownOrbitalSystem(false); // Do not kill proxies if Orbital fails
+        await shutdownOrbitalSystem(false, { stopDocker: false }); // Preserve containers for diagnostics/retry.
         throw err;
     }
 }
@@ -309,7 +314,18 @@ async function startOrbitalSystem(workspacePath) {
 /**
  * Graceful shutdown: stop all services and bring down docker-compose.
  */
-async function shutdownOrbitalSystem(stopProxiesFlag = true) {
+function shutdownOrbitalSystem(stopProxiesFlag = true, options = {}) {
+    if (shutdownComplete) return Promise.resolve();
+    if (shutdownInFlight) return shutdownInFlight;
+    shutdownInFlight = performShutdownOrbitalSystem(stopProxiesFlag, options)
+        .finally(() => {
+            shutdownComplete = true;
+            shutdownInFlight = null;
+        });
+    return shutdownInFlight;
+}
+
+async function performShutdownOrbitalSystem(stopProxiesFlag = true, options = {}) {
     console.log('[OrbitalOrchestrator] Initiating graceful shutdown...');
 
     try {
@@ -344,11 +360,14 @@ async function shutdownOrbitalSystem(stopProxiesFlag = true) {
             // Bridge not initialized — safe to ignore
         }
 
-        // Bring down docker-compose
-        if (dockerComposeProcess) {
-            dockerComposeProcess.kill('SIGTERM');
+        // Keep the broker persistent across Electron restarts. Cluster teardown
+        // is destructive to availability and must be explicitly requested.
+        if (options.stopDocker === true) {
+            if (dockerComposeProcess && !dockerComposeProcess.killed) {
+                dockerComposeProcess.kill('SIGTERM');
+            }
             await new Promise((resolve) => {
-                exec('docker-compose down', { cwd: process.env.WECRYP_ROOT || process.cwd() }, (err) => {
+                exec('docker compose down', { cwd: process.env.WECRYP_ROOT || process.cwd() }, (err) => {
                     if (err) {
                         console.warn('[OrbitalOrchestrator] docker-compose down warning:', err.message);
                     } else {
@@ -357,6 +376,8 @@ async function shutdownOrbitalSystem(stopProxiesFlag = true) {
                     resolve();
                 });
             });
+        } else {
+            console.log('[OrbitalOrchestrator] Redpanda containers left running');
         }
 
         orchestratorReady = false;
@@ -366,6 +387,13 @@ async function shutdownOrbitalSystem(stopProxiesFlag = true) {
         console.error('[OrbitalOrchestrator] Error during shutdown:', err.message);
         recordStatusEvent('warn', 'Orbital shutdown encountered an error', { error: err.message });
     }
+}
+
+async function restartOrbitalSystem(workspacePath) {
+    recordStatusEvent('info', 'Orbital restart requested');
+    await shutdownOrbitalSystem(false, { stopDocker: false });
+    _statusCache = null;
+    return startOrbitalSystem(workspacePath);
 }
 
 /**
@@ -395,7 +423,8 @@ async function getOrbitalStatus() {
             docker: 'unknown',
             ingestor: !!ingestorProcess,
             processor: !!processorIntervalHandle,
-            nodes: 0,
+            nodes: Number(lastProbeState.nodes || 0),
+            nodesDown: [],
             topics: []
         };
 
@@ -421,27 +450,63 @@ async function getOrbitalStatus() {
             }
 
             if (redpandaReady) {
+                // Use Node's built-in http.get instead of undici-backed fetch to avoid
+                // ECONNRESET on Redpanda's Admin HTTP server (known undici incompatibility).
+                const httpGetJson = (url, timeoutMs = 4000) => new Promise((resolve, reject) => {
+                    const http = require('http');
+                    const req = http.get(url, (res) => {
+                        let body = '';
+                        res.on('data', chunk => { body += chunk; });
+                        res.on('end', () => {
+                            if (res.statusCode >= 200 && res.statusCode < 300) {
+                                try { resolve({ ok: true, statusCode: res.statusCode, body: JSON.parse(body) }); }
+                                catch (e) { reject(new Error(`JSON parse error: ${e.message}`)); }
+                            } else {
+                                reject(new Error(`HTTP ${res.statusCode}`));
+                            }
+                        });
+                    });
+                    req.setTimeout(timeoutMs, () => { req.destroy(new Error('timeout')); });
+                    req.on('error', reject);
+                });
+
                 // Node count via Redpanda Admin REST API
                 try {
-                    const res = await fetch('http://localhost:9644/v1/brokers', { signal: AbortSignal.timeout(4000) });
-                    if (res.ok) {
-                        const brokers = await res.json();
-                        status.nodes = Array.isArray(brokers) ? brokers.length : 0;
-                    }
+                    const { body: brokers } = await httpGetJson('http://127.0.0.1:9644/v1/brokers');
+                    const brokerList = Array.isArray(brokers) ? brokers : [];
+                    const activeBrokers = brokerList.filter(broker => (
+                        broker?.is_alive !== false && broker?.membership_status === 'active'
+                    ));
+                    status.nodes = activeBrokers.length;
+                    status.nodesDown = brokerList
+                        .filter(broker => broker?.is_alive === false || broker?.membership_status !== 'active')
+                        .map(broker => broker?.node_id)
+                        .filter(nodeId => Number.isFinite(nodeId));
+                    if (status.nodesDown.length) status.redpanda = 'degraded';
                 } catch (e) {
                     console.warn('[OrbitalOrchestrator] Failed to fetch brokers:', e.message);
                 }
 
+                if (!status.nodes) {
+                    try {
+                        const { body: health } = await httpGetJson('http://127.0.0.1:9644/v1/cluster/health_overview');
+                        const allNodes = Array.isArray(health?.all_nodes) ? health.all_nodes : [];
+                        const downNodes = Array.isArray(health?.nodes_down) ? health.nodes_down : [];
+                        status.nodes = Math.max(0, allNodes.length - downNodes.length);
+                        status.nodesDown = downNodes;
+                        status.redpanda = health?.is_healthy === false ? 'degraded' : status.redpanda;
+                    } catch (e) {
+                        console.warn('[OrbitalOrchestrator] Failed to fetch cluster health:', e.message);
+                    }
+                }
+
                 // Orbital topic list via Redpanda Console REST API
                 try {
-                    const res = await fetch('http://localhost:8081/api/topics', { signal: AbortSignal.timeout(4000) });
-                    if (res.ok) {
-                        const data = await res.json();
-                        if (data && Array.isArray(data.topics)) {
-                            status.topics = data.topics
-                                .map(t => t.topicName)
-                                .filter(name => name && name.includes('wecrypto.orbital'));
-                        }
+                    const { body: data } = await httpGetJson('http://127.0.0.1:8081/api/topics');
+                    if (data && Array.isArray(data.topics)) {
+                        status.topics = data.topics
+                            .map(t => t.topicName)
+                            .filter(name => name && name.includes('wecrypto.orbital'));
                     }
                 } catch (e) {
                     console.warn('[OrbitalOrchestrator] Failed to fetch topics:', e.message);
@@ -486,7 +551,7 @@ async function getOrbitalStatus() {
 
 async function startProxies(workspacePath) {
     console.log('[OrbitalOrchestrator] Starting WE-CRYPTO proxies...');
-    
+
     // 1. WebSocket Proxy
     if (!wsProxyProcess || wsProxyProcess.killed) {
         const wsProxyScript = path.join(workspacePath, 'src', 'infra', 'ws-proxy-server.js');
@@ -513,14 +578,14 @@ async function startProxies(workspacePath) {
             path.join(workspacePath, 'proxy', 'target', 'x86_64-pc-windows-gnu', 'release', 'we-crypto-proxy.exe'),
             path.join(workspacePath, 'proxy', 'target', 'release', 'we-crypto-proxy.exe'),
         ];
-        
+
         let exePath = candidates.find(p => fs.existsSync(p));
         if (!exePath && process.resourcesPath) {
-             const cp = [
-                 path.join(process.resourcesPath, 'app.asar.unpacked', 'we-crypto-proxy.exe'),
-                 path.join(process.resourcesPath, 'we-crypto-proxy.exe')
-             ];
-             exePath = cp.find(p => fs.existsSync(p));
+            const cp = [
+                path.join(process.resourcesPath, 'app.asar.unpacked', 'we-crypto-proxy.exe'),
+                path.join(process.resourcesPath, 'we-crypto-proxy.exe')
+            ];
+            exePath = cp.find(p => fs.existsSync(p));
         }
 
         if (exePath) {
@@ -565,7 +630,7 @@ binance-data    = "https://data-api.binance.vision"`;
             } catch (e) {
                 console.warn('[OrbitalOrchestrator] could not write config.toml:', e.message);
             }
-            
+
             httpProxyProcess = spawn(exePath, [], {
                 detached: false,
                 cwd: proxyDir,
@@ -583,15 +648,16 @@ binance-data    = "https://data-api.binance.vision"`;
 
 async function stopProxies() {
     if (httpProxyProcess && !httpProxyProcess.killed) {
-        try { httpProxyProcess.kill(); } catch (e) {}
+        try { httpProxyProcess.kill(); } catch (e) { }
     }
     if (wsProxyProcess && !wsProxyProcess.killed) {
-        try { wsProxyProcess.kill(); } catch (e) {}
+        try { wsProxyProcess.kill(); } catch (e) { }
     }
 }
 
 module.exports = {
     startOrbitalSystem,
+    restartOrbitalSystem,
     shutdownOrbitalSystem,
     getOrbitalStatus,
     isOrchestrationReady: () => orchestratorReady

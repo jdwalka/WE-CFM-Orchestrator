@@ -41,12 +41,12 @@ ENV NODE_ENV=production \
     NODE_OPTIONS="--max-old-space-size=8192" \
     WECRYPTO_REQUIRE_CLOUD_READY=0
 
-# Health check for backend server
-HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
-    CMD curl -f http://localhost:3443/health || exit 1
+# Health check — web service exposes /api/status; proxy /health via curl
+HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
+    CMD curl -sf http://localhost:3443/api/status > /dev/null || exit 1
 
 # Expose ports
-EXPOSE 3443 9092 8081
+EXPOSE 3443 3010 3000
 
-# Default command: start backend services
-CMD ["tail", "-f", "/dev/null"]
+# Runtime entry point (headless: orbital pipeline + web service)
+CMD ["node", "scripts/start-runtime.js"]

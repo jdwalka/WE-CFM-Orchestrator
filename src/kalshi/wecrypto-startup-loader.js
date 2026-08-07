@@ -39,6 +39,20 @@
     }
   }
 
+  // ── Phase 2b: RL stack model (optional pre-trained bundle) ─────────
+  async function phaseLoadRLStack() {
+    if (!window.TradingRLAgent?.loadModel) return false;
+    try {
+      const ok = await window.TradingRLAgent.loadModel('models/rl-stack-bundle.json');
+      if (ok) log('✓ RL stack model loaded (DQN+MCTS+CFR+mispricing)');
+      else log('ℹ RL stack using online-learned defaults (no bundle yet)');
+      return ok;
+    } catch (err) {
+      log(`ℹ RL stack model skip: ${err.message}`);
+      return false;
+    }
+  }
+
   // ── Phase 2: Load Cached Historical Data (fast, <100ms) ─────────
   async function phaseLoadHistoricalCache() {
     log('Phase 2: Loading historical contract cache...');
@@ -187,6 +201,8 @@
       const phase2Start = Date.now();
       await phaseLoadHistoricalCache();
       log(`  Phase 2 took ${Date.now() - phase2Start}ms`);
+
+      phaseLoadRLStack().catch(() => {});
 
       // Phase 3: Non-blocking (app is live at this point)
       // Fires in background to populate accuracy scorecard

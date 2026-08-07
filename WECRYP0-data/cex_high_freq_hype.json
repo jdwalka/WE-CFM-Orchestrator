@@ -1,0 +1,13 @@
+{
+  "symbol": "HYPE",
+  "connected": true,
+  "ts": 1782131377.727892,
+  "price": 68.25,
+  "buy_pct_1m": 30.509995259001936,
+  "sell_pct_1m": 69.49000474099806,
+  "trades_per_sec": 0.2,
+  "whale_trades_1m_10k": 0,
+  "whale_trades_1m_50k": 0,
+  "vpin": 0.3772303131087827,
+  "last_update": 1782131387.4548445
+}

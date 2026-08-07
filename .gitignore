@@ -5,6 +5,7 @@ node_modules (1)/
 # Build output
 dist/
 build/
+.vercel/
 # Do not add sibling dist-* release folders. They are intentionally not ignored
 # so accidental generated output stays visible in git status.
 

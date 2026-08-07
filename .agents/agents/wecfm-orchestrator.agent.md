@@ -3,7 +3,6 @@ description: "Use when: working on WE CFM Orchestrator, crypto/prediction-market
 name: "WE CFM Orchestrator Agent"
 tools: [vscode/getProjectSetupInfo, vscode/installExtension, vscode/memory, vscode/newWorkspace, vscode/resolveMemoryFileUri, vscode/runCommand, vscode/switchAgent, vscode/vscodeAPI, vscode/extensions, vscode/askQuestions, execute/runNotebookCell, execute/getTerminalOutput, execute/killTerminal, execute/sendToTerminal, execute/createAndRunTask, execute/runInTerminal, read/getNotebookSummary, read/problems, read/readFile, read/viewImage, read/readNotebookCellOutput, read/terminalSelection, read/terminalLastCommand, agent/runSubagent, edit/createDirectory, edit/createFile, edit/createJupyterNotebook, edit/editFiles, edit/editNotebook, edit/rename, search/codebase, search/fileSearch, search/listDirectory, search/textSearch, search/searchSubagent, search/usages, web/fetch, web/githubTextSearch, browser/openBrowserPage, browser/readPage, browser/screenshotPage, browser/navigatePage, browser/clickElement, browser/dragElement, browser/hoverElement, browser/typeInPage, browser/runPlaywrightCode, browser/handleDialog, todo, artifacts, artifactRules]
 argument-hint: "Describe the crypto signal improvement, prediction market integration, UI feature, or trading analytics task"
-user-invocable: true
 ---
 You are a specialized assistant for the WE CFM Orchestrator project. Your focus is on the crypto market orchestration app, prediction signals, contract alignment, market scanning, and the Electron-based UI / desktop build.
 

@@ -96,18 +96,30 @@
   }
 
     function withCoinGeckoAuth(url, options = {}) {
-      // Return options unchanged, auth is handled in URL query params now
+      // Return options unchanged; auth is handled in URL query params.
       return options;
     }
-  
+
+    function normalizeCoinGeckoApiKey(rawValue) {
+      const value = String(rawValue || '').trim();
+      if (!value) return '';
+      const demoMatch = value.match(/\bCG-[A-Za-z0-9_-]{8,}\b/i);
+      if (demoMatch) return demoMatch[0];
+      const token = value
+        .split(/[\s"'`]+/)
+        .map(part => part.trim())
+        .find(part => /^[A-Za-z0-9_-]{20,}$/.test(part) && !/^https?:/i.test(part));
+      return token || '';
+    }
+
     function coinGeckoUrl(url) {
-      const key = String(resolveRuntimeKey('COINGECKO_API_KEY') || '').trim();
+      const key = normalizeCoinGeckoApiKey(resolveRuntimeKey('COINGECKO_API_KEY'));
       const tier = String(resolveRuntimeKey('COINGECKO_API_TIER') || '').trim().toLowerCase();
       if (!key) return url;
       try {
         const u = new URL(String(url), window.location.href);
         if (u.hostname.includes('coingecko')) {
-          const isDemo = key.startsWith('CG-') || tier === 'demo' || tier === 'free';
+          const isDemo = tier === 'demo' || tier === 'free' || key.startsWith('CG-') || (tier !== 'pro' && tier !== 'trial');
           if (!isDemo) {
             u.hostname = 'pro-api.coingecko.com';
             u.searchParams.set('x_cg_pro_api_key', key);

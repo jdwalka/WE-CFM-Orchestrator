@@ -394,6 +394,7 @@ contextBridge.exposeInMainWorld('electron', {
     status: () => ipcRenderer.invoke('telegram:status'),
     login: (apiId, apiHash) => ipcRenderer.invoke('telegram:login', { apiId, apiHash }),
     getChannelHistory: (channelName, limit) => ipcRenderer.invoke('telegram:get-channel-history', { channelName, limit }),
+    sendMessage: (chat, text, parseMode) => ipcRenderer.invoke('telegram:send-message', { chat, text, parseMode }),
     onAuthRequest: (cb) => {
       const handler = (_e, data) => cb(data);
       ipcRenderer.on('telegram:auth-request', handler);
@@ -478,11 +479,16 @@ contextBridge.exposeInMainWorld('_orbitalBroadcaster', {
     ipcRenderer.send('orbital:pushVertex', { kind, data: data || {} });
   },
   getDiagnostics: () => ipcRenderer.invoke('orbital:broadcaster:diagnostics'),
+  getOrbitalStatus: () => ipcRenderer.invoke('orbital:status'),
+  restartOrbitalSystem: () => ipcRenderer.invoke('orbital:restart'),
 });
 
 contextBridge.exposeInMainWorld('dataStore', {
   appendLine: (filePath, line) => ipcRenderer.invoke('data:appendLine', filePath, line),
+  appendLineDetailed: (filePath, line) => ipcRenderer.invoke('data:appendLineDetailed', filePath, line),
   writeFile: (filePath, content) => ipcRenderer.invoke('data:writeFile', filePath, content),
+  writeFileDetailed: (filePath, content) => ipcRenderer.invoke('data:writeFileDetailed', filePath, content),
+  syncFileIncremental: (request) => ipcRenderer.invoke('data:syncFileIncremental', request),
   ensureDir: (dirPath) => ipcRenderer.invoke('data:ensureDir', dirPath),
   readFile: (filePath) => ipcRenderer.invoke('data:readFile', filePath),
   listDir: (dirPath) => ipcRenderer.invoke('data:listDir', dirPath),

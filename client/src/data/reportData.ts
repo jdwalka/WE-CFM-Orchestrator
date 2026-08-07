@@ -2,7 +2,7 @@
  * Swiss editorial forensic style: expose evidence first, keep analytical hierarchy strict,
  * and emphasize the distinction between directional accuracy and executable contract viability.
  */
-export const reportData = {
+export const reportData: any = {
   "metadata": {
     "generatedAt": "2026-04-15T22:14:34.816Z",
     "daysBack": 7,

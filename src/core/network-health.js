@@ -12,12 +12,50 @@
     ];
 
     const DEFAULT_STATUS = {
-        status: 'unknown', // healthy | degraded | down | unknown
+        status: 'unknown', // healthy | degraded | down | recovering | unknown
         lastFetch: null,
         fallback: false,
         reason: '',
         bucket: 'unknown',
         bucketReason: '',
+    };
+
+    const CRITICAL_PROVIDERS = new Set([
+        'Kalshi',
+        'Pyth',
+        'Crypto.com',
+        'ProxyOrchestrator',
+    ]);
+
+    const WS_PROVIDER_NAMES = {
+        BINANCE: 'Binance',
+        COINBASE: 'Coinbase',
+        KRAKEN: 'Kraken',
+        BYBIT: 'Bybit',
+        HYPERLIQUID: 'Hyperliquid',
+        OKX: 'OKX',
+        KUCOIN: 'KuCoin',
+        GATE: 'Gate',
+        BULLISH: 'Bullish',
+        UPBIT: 'Upbit',
+        BITGET: 'Bitget',
+        BINGX: 'BingX',
+        BITVAVO: 'Bitvavo',
+        GEMINI: 'Gemini',
+        COINW: 'CoinW',
+        LBANK: 'LBank',
+        BITSTAMP: 'Bitstamp',
+        BITSO: 'Bitso',
+        WHITEBIT: 'WhiteBIT',
+        OURBIT: 'Ourbit',
+        WEEX: 'Weex',
+    };
+
+    const recovery = {
+        active: false,
+        reason: '',
+        phase: '',
+        startedAt: 0,
     };
 
 
@@ -36,6 +74,14 @@
         'DexScreener',
         'Chain.so',
         'Bullish',
+        'CoinW',
+        'LBank',
+        'Bitstamp',
+        'Bitso',
+        'WhiteBIT',
+        'Ourbit',
+        'Weex',
+        'Polymarket',
     ]);
     const OPTIONAL_PROVIDER_KEYS = new Set([
         'alternative.me',
@@ -49,6 +95,14 @@
         'chain.so',
         'chainso',
         'bullish',
+        'coinw',
+        'lbank',
+        'bitstamp',
+        'bitso',
+        'whitebit',
+        'ourbit',
+        'weex',
+        'polymarket',
     ]);
     const TRANSIENT_REASON_RE = /(abort|timed?\s*out|timeout|502|503|504|429|network\s*changed|econnreset|socket hang up|failed to fetch)/i;
     const APP_LOGIC_RE = /(stale[-\s]*watchdog|stale[-\s]*demote|demote|hysteresis|scheduler|circuit|loop|oscillat|internal|state bug|coordination|reconnect storm|thrash|browser websocket cannot send|requires node ws|credential|crypto unavailable|signature generation)/i;
@@ -107,12 +161,20 @@
     };
 
 
+    function isCriticalProvider(provider) {
+        return CRITICAL_PROVIDERS.has(canonicalProviderName(provider));
+    }
+
     function classify(provider, statusObj) {
         const reason = String(statusObj?.reason || '');
         const inputStatus = statusObj?.status || 'unknown';
         const providerKey = String(provider || '').toLowerCase().replace(/\s+/g, '');
         const isOptional = isOptionalProvider(provider) || OPTIONAL_PROVIDER_KEYS.has(providerKey);
         const isTransient = !!statusObj?.transient || TRANSIENT_REASON_RE.test(reason);
+
+        if (inputStatus === 'recovering') {
+            return { status: 'recovering', isOptional, isTransient: true };
+        }
 
         let status = inputStatus;
         if (inputStatus === 'down' && (isOptional || isTransient)) {
@@ -208,12 +270,17 @@
         state[provider].lastUpdate = Date.now();
         recomputeBucketCounters();
 
-        // Persistent failure tracking
-        if (status === 'down' && !isOptional && !isTransient) {
+        // Persistent failure tracking (skip during coordinated recovery)
+        if (recovery.active && (isOptional || isTransient || status === 'recovering')) {
+            failureCounters[provider].count = 0;
+            failureCounters[provider].alertActive = false;
+        } else if (status === 'down' && !isOptional && !isTransient) {
             failureCounters[provider].count++;
             failureCounters[provider].lastDown = Date.now();
-        } else {
+        } else if (status === 'healthy') {
             failureCounters[provider].count = 0;
+            failureCounters[provider].alertActive = false;
+        } else if (status !== 'down') {
             failureCounters[provider].alertActive = false;
         }
 
@@ -234,7 +301,17 @@
 
     function displayRow(row) {
         if (!row) return row;
-        if (row.optional && row.lastFetch && (Date.now() - row.lastFetch) > OPTIONAL_FAILURE_TTL_MS) {
+        const ageMs = row.lastFetch ? (Date.now() - row.lastFetch) : Number.POSITIVE_INFINITY;
+        if (row.status === 'recovering' && !recovery.active && ageMs > 90_000) {
+            return {
+                ...row,
+                status: row.optional ? 'unknown' : 'degraded',
+                reason: row.optional ? '' : (row.reason || 'Recovery timed out'),
+                staleOptional: !!row.optional,
+            };
+        }
+        if (row.optional && row.lastFetch && ageMs > OPTIONAL_FAILURE_TTL_MS) {
+            if (row.status === 'healthy') return { ...row };
             return {
                 ...row,
                 status: 'unknown',
@@ -243,6 +320,16 @@
                 bucket: BUCKETS.UNKNOWN,
                 bucketReason: '',
                 staleOptional: true,
+            };
+        }
+        if (!row.optional && row.status === 'degraded' && row.transient && ageMs > 120_000 && !recovery.active) {
+            return {
+                ...row,
+                status: 'unknown',
+                reason: '',
+                bucket: BUCKETS.UNKNOWN,
+                bucketReason: '',
+                staleTransient: true,
             };
         }
         return { ...row };
@@ -416,6 +503,7 @@
             'etherscan',
             'coingecko',
             'dexscreener',
+            'polymarket',
         ]);
         const sumEndpointCounts = (counts = {}, includeOptional = true) => Object.entries(counts || {})
             .filter(([endpoint]) => includeOptional || !optionalProxyEndpoints.has(String(endpoint).toLowerCase()))
@@ -688,6 +776,360 @@
         localStatusBridgeTimer = setInterval(refreshLocalProviderStatuses, LOCAL_STATUS_BRIDGE_MS);
     }
 
+    function setRecoveryPhase(phase) {
+        recovery.phase = String(phase || '');
+        if (typeof window.dispatchEvent === 'function') {
+            window.dispatchEvent(new CustomEvent('network-recovery-phase', { detail: { ...recovery } }));
+        }
+    }
+
+    function beginRecovery(reason = 'manual') {
+        recovery.active = true;
+        recovery.reason = String(reason || 'manual');
+        recovery.startedAt = Date.now();
+        recovery.phase = 'starting';
+        for (const [provider, row] of Object.entries(state)) {
+            if (!row) continue;
+            const isOptional = row.optional || isOptionalProvider(provider);
+            if (!isOptional) continue;
+            if (row.status !== 'degraded' && row.status !== 'down') continue;
+            update(provider, {
+                status: 'recovering',
+                lastFetch: row.lastFetch,
+                fallback: true,
+                transient: true,
+                reason: 'Reconnecting after idle',
+                bucket: BUCKETS.UNKNOWN,
+                bucketReason: '',
+            });
+        }
+        if (typeof window.dispatchEvent === 'function') {
+            window.dispatchEvent(new CustomEvent('network-recovery-start', { detail: { ...recovery } }));
+        }
+    }
+
+    function endRecovery() {
+        recovery.active = false;
+        recovery.phase = 'complete';
+        syncLiveProbe();
+        if (typeof window.dispatchEvent === 'function') {
+            window.dispatchEvent(new CustomEvent('network-recovery-end', { detail: { ...recovery } }));
+        }
+    }
+
+    function getRecoveryState() {
+        return { ...recovery };
+    }
+
+    function getSummary() {
+        const rows = get();
+        const summary = {
+            healthy: 0,
+            degraded: 0,
+            down: 0,
+            recovering: 0,
+            unknown: 0,
+            optional: 0,
+            critical: 0,
+            criticalHealthy: 0,
+            criticalTotal: CRITICAL_PROVIDERS.size,
+            recoveringActive: recovery.active,
+            recoveryPhase: recovery.phase || '',
+        };
+        for (const [provider, row] of Object.entries(rows)) {
+            if (!row) continue;
+            const critical = isCriticalProvider(provider);
+            const optional = row.optional || isOptionalProvider(provider);
+            if (critical) summary.critical += 1;
+            if (optional) summary.optional += 1;
+            switch (row.status) {
+                case 'healthy':
+                    summary.healthy += 1;
+                    if (critical) summary.criticalHealthy += 1;
+                    break;
+                case 'degraded':
+                    summary.degraded += 1;
+                    break;
+                case 'down':
+                    summary.down += 1;
+                    break;
+                case 'recovering':
+                    summary.recovering += 1;
+                    break;
+                default:
+                    summary.unknown += 1;
+                    break;
+            }
+        }
+        return summary;
+    }
+
+    function syncExchangeWsHealth(now = Date.now()) {
+        const status = window.ExchangeWS?.getStatus?.();
+        if (!status?.connections) return;
+        const optionalWsNames = new Set([
+            'BINANCE', 'COINBASE', 'KRAKEN', 'BYBIT', 'HYPERLIQUID', 'OKX', 'KUCOIN', 'GATE',
+            'BULLISH', 'UPBIT', 'BITGET', 'BINGX', 'BITVAVO', 'GEMINI',
+            'COINW', 'LBANK', 'BITSTAMP', 'BITSO', 'WHITEBIT', 'OURBIT', 'WEEX',
+        ]);
+        const optionalPool = new Map(
+            (status.optionalPool?.providers || []).map((row) => [String(row?.name || '').toUpperCase(), row || {}]),
+        );
+        const optionalRest = status.optionalRest || {};
+        for (const [rawName, conn] of Object.entries(status.connections)) {
+            const label = WS_PROVIDER_NAMES[rawName] || canonicalProviderName(rawName);
+            if (!label) continue;
+            const tracked = !!state[label] || optionalWsNames.has(rawName);
+            if (!tracked) continue;
+            const connected = !!conn?.connected;
+            const optionalFeed = optionalWsNames.has(String(rawName || '').toUpperCase());
+            const poolRow = optionalPool.get(String(rawName || '').toUpperCase());
+            const restRow = optionalRest[String(rawName || '').toUpperCase()] || poolRow?.restProbe || null;
+            const active = optionalFeed ? !!poolRow?.active : !!conn?.active;
+            if (connected) {
+                update(label, {
+                    status: 'healthy',
+                    lastFetch: now,
+                    fallback: false,
+                    transient: false,
+                    reason: 'WS live',
+                    bucket: BUCKETS.UNKNOWN,
+                    bucketReason: '',
+                });
+            } else if (optionalFeed && restRow?.ok && !active && !recovery.active) {
+                const via = restRow.via ? ` via ${restRow.via}` : '';
+                update(label, {
+                    status: 'healthy',
+                    lastFetch: Number(restRow.ts || now),
+                    fallback: restRow.via !== 'direct',
+                    transient: false,
+                    reason: `REST route ok (${Math.max(1, Math.round(Number(restRow.latencyMs || 0)))}ms${via})`,
+                    bucket: BUCKETS.UNKNOWN,
+                    bucketReason: '',
+                });
+            } else if (optionalFeed && !active && !recovery.active) {
+                update(label, {
+                    status: 'unknown',
+                    lastFetch: Number(restRow?.ts || poolRow?.lastStart || now),
+                    fallback: false,
+                    transient: true,
+                    optional: true,
+                    reason: restRow?.error
+                        ? `Optional standby · REST probe failed: ${String(restRow.error).slice(0, 90)}`
+                        : 'Optional feed standby',
+                    bucket: BUCKETS.UNKNOWN,
+                    bucketReason: '',
+                });
+            } else if (active || recovery.active) {
+                update(label, {
+                    status: recovery.active ? 'recovering' : 'degraded',
+                    lastFetch: now,
+                    fallback: true,
+                    transient: true,
+                    reason: recovery.active
+                        ? 'WS reconnecting'
+                        : `WS offline${conn?.reconnectMs ? ` · retry ${Math.max(1, Math.round(Number(conn.reconnectMs) / 1000))}s` : ''}`,
+                    bucket: BUCKETS.NETWORK_TRANSPORT,
+                    bucketReason: 'exchange websocket not connected',
+                });
+            }
+        }
+    }
+
+    function syncTickerHealth(now = Date.now()) {
+        const tickerTs = Number(window._lastTickerFetchTs || 0);
+        if (!tickerTs) return;
+        const ageMs = now - tickerTs;
+        if (ageMs < 45_000) {
+            update('Crypto.com', {
+                status: 'healthy',
+                lastFetch: tickerTs,
+                fallback: false,
+                transient: false,
+                reason: ageMs < 8000 ? 'Live tickers' : `Tickers ${Math.round(ageMs / 1000)}s old`,
+                bucket: BUCKETS.UNKNOWN,
+                bucketReason: '',
+            });
+        } else if (ageMs < 180_000) {
+            update('Crypto.com', {
+                status: recovery.active ? 'recovering' : 'degraded',
+                lastFetch: tickerTs,
+                fallback: true,
+                transient: true,
+                reason: `Stale tickers (${Math.round(ageMs / 1000)}s)`,
+                bucket: BUCKETS.NETWORK_TRANSPORT,
+                bucketReason: 'primary ticker feed has not refreshed recently',
+            });
+        }
+    }
+
+    function syncKalshiWsHealth(now = Date.now()) {
+        const ws = window.KalshiWS?.getState?.() || {};
+        if (ws.connected && !ws.stale) return;
+        if (recovery.active && (ws.reconnectAttempts || ws.suspended)) {
+            update('Kalshi', {
+                status: 'recovering',
+                lastFetch: ws.lastMessageTs || now,
+                fallback: true,
+                transient: true,
+                reason: ws.suspended
+                    ? `WSS suspended · retry ${Math.max(0, Math.ceil(Number(ws.suspendInMs || 0) / 1000))}s`
+                    : `WSS reconnecting (${ws.reconnectAttempts || 0})`,
+                bucket: BUCKETS.NETWORK_TRANSPORT,
+                bucketReason: ws.lastIssueReason || ws.lastError || '',
+            });
+        }
+    }
+
+    const HOST_CANONICAL = {
+        'api.bitget.com': 'Bitget',
+        'open-api.bingx.com': 'BingX',
+        'api.kraken.com': 'Kraken',
+        'api.gemini.com': 'Gemini',
+        'api.hyperliquid.xyz': 'Hyperliquid',
+        'www.coinw.com': 'CoinW',
+        'ourbit.com': 'Ourbit',
+        'www.lbank.com': 'LBank',
+        'www.bitstamp.net': 'Bitstamp',
+        'api.bitso.com': 'Bitso',
+        'whitebit.com': 'WhiteBIT',
+        'api.whitebit.com': 'WhiteBIT',
+        'www.weex.com': 'Weex',
+        'www.bullish.com': 'Bullish',
+        'api.upbit.com': 'Upbit',
+        'api.bitvavo.com': 'Bitvavo',
+        'chain.so': 'Chain.so',
+        'api.etherscan.io': 'Etherscan',
+        'mempool.space': 'Mempool.space',
+        'api.blockcypher.com': 'Blockcypher',
+        'api.blockchair.com': 'Blockchair',
+        'api.mainnet-beta.solana.com': 'Solana RPC',
+        'eth-mainnet.g.alchemy.com': 'Alchemy RPC',
+        'polygon-mainnet.g.alchemy.com': 'Alchemy RPC',
+    };
+
+    const ENDPOINT_HOST_PROBES = [
+        { provider: 'Kraken', url: 'https://api.kraken.com/0/public/Time' },
+        { provider: 'Gemini', url: 'https://api.gemini.com/v1/symbols' },
+        { provider: 'Hyperliquid', url: 'https://api.hyperliquid.xyz/info', method: 'POST', body: '{"type":"meta"}' },
+        { provider: 'Chain.so', url: 'https://chain.so/api/v2/get_info/DOGE' },
+        { provider: 'Mempool.space', url: 'https://mempool.space/api/blocks/tip/height' },
+        { provider: 'Etherscan', url: 'https://api.etherscan.io/api?module=proxy&action=eth_blockNumber' },
+        { provider: 'Solana RPC', url: 'https://api.mainnet-beta.solana.com', method: 'POST', body: '{"jsonrpc":"2.0","id":1,"method":"getHealth"}' },
+    ];
+
+    const ENDPOINT_PROBE_STALE_MS = 90_000;
+    const ENDPOINT_PROBE_BATCH = 4;
+    let endpointProbeCursor = 0;
+    let endpointProbeInFlight = false;
+    let optionalWarmCounter = 0;
+
+    function pruneDuplicateProviders() {
+        for (const [host, canonical] of Object.entries(HOST_CANONICAL)) {
+            const hostRow = state[host];
+            if (!hostRow) continue;
+            const canonicalRow = state[canonical];
+            if (canonicalRow && Number(canonicalRow.lastFetch || 0) >= Number(hostRow.lastFetch || 0)) {
+                delete state[host];
+                if (failureCounters[host]) delete failureCounters[host];
+                continue;
+            }
+            if (!canonicalRow) {
+                state[canonical] = { ...hostRow, optional: true };
+                delete state[host];
+                if (failureCounters[host]) delete failureCounters[host];
+            }
+        }
+    }
+
+    async function probeEndpointHostBatch(now = Date.now()) {
+        if (endpointProbeInFlight || !ENDPOINT_HOST_PROBES.length) return;
+        endpointProbeInFlight = true;
+        try {
+            const due = [];
+            for (let i = 0; i < ENDPOINT_HOST_PROBES.length; i++) {
+                const idx = (endpointProbeCursor + i) % ENDPOINT_HOST_PROBES.length;
+                const cfg = ENDPOINT_HOST_PROBES[idx];
+                const row = state[cfg.provider];
+                const ageMs = row?.lastFetch ? (now - row.lastFetch) : Number.POSITIVE_INFINITY;
+                if (!row || ageMs >= ENDPOINT_PROBE_STALE_MS || row.status === 'unknown') {
+                    due.push(cfg);
+                }
+                if (due.length >= ENDPOINT_PROBE_BATCH) break;
+            }
+            endpointProbeCursor = (endpointProbeCursor + due.length) % ENDPOINT_HOST_PROBES.length;
+
+            for (const cfg of due) {
+                const ctrl = new AbortController();
+                const timer = setTimeout(() => ctrl.abort(new Error('endpoint-probe-timeout')), 4500);
+                const fetchFn = typeof window.proxyFetch === 'function' ? window.proxyFetch : fetch;
+                try {
+                    const res = await fetchFn(cfg.url, {
+                        method: cfg.method || 'GET',
+                        cache: 'no-store',
+                        signal: ctrl.signal,
+                        headers: cfg.body
+                            ? { Accept: 'application/json', 'Content-Type': 'application/json' }
+                            : { Accept: 'application/json,*/*' },
+                        body: cfg.body || undefined,
+                    });
+                    const ok = typeof res?.ok === 'boolean' ? res.ok : (Number(res?.status || 0) > 0 && Number(res?.status || 0) < 500);
+                    update(cfg.provider, {
+                        status: ok ? 'healthy' : 'degraded',
+                        lastFetch: now,
+                        fallback: fetchFn !== fetch,
+                        optional: true,
+                        transient: !ok,
+                        reason: ok ? 'Endpoint probe OK' : `Endpoint probe HTTP ${res?.status || 'error'}`,
+                        bucket: ok ? BUCKETS.UNKNOWN : BUCKETS.PROVIDER_API,
+                        bucketReason: ok ? '' : `probe ${cfg.url}`,
+                    });
+                } catch (err) {
+                    update(cfg.provider, {
+                        status: 'degraded',
+                        lastFetch: now,
+                        fallback: fetchFn !== fetch,
+                        optional: true,
+                        transient: true,
+                        reason: String(err?.message || err || 'endpoint probe failed').slice(0, 120),
+                        bucket: BUCKETS.NETWORK_TRANSPORT,
+                        bucketReason: String(err?.message || err || 'endpoint probe failed'),
+                    });
+                } finally {
+                    clearTimeout(timer);
+                }
+            }
+        } finally {
+            endpointProbeInFlight = false;
+        }
+    }
+
+    function syncLiveProbe() {
+        const now = Date.now();
+        syncExchangeWsHealth(now);
+        syncTickerHealth(now);
+        syncKalshiWsHealth(now);
+        pruneDuplicateProviders();
+        refreshLocalProviderStatuses();
+        optionalWarmCounter += 1;
+        if (optionalWarmCounter % 6 === 0) {
+            try { window.ExchangeWS?.warmOptionalWsRoutes?.('health-sync'); } catch (_) { }
+        }
+        void probeEndpointHostBatch(now);
+    }
+
+    function markSuccess(provider, detail = {}) {
+        update(canonicalProviderName(provider), {
+            status: 'healthy',
+            lastFetch: detail.lastFetch || Date.now(),
+            fallback: false,
+            transient: false,
+            reason: detail.reason || '',
+            bucket: BUCKETS.UNKNOWN,
+            bucketReason: '',
+        });
+    }
+
     window.NetworkHealth = {
         update,
         updateTransport,
@@ -695,10 +1137,21 @@
         getAll,
         getTransport,
         getBucketCounters,
+        getSummary,
+        getRecoveryState,
+        beginRecovery,
+        endRecovery,
+        setRecoveryPhase,
+        syncLiveProbe,
+        markSuccess,
+        isCriticalProvider,
         classifyBucket,
         BUCKETS,
+        HOST_CANONICAL,
         PROVIDERS,
+        CRITICAL_PROVIDERS,
         failureCounters,
     };
     startLocalStatusBridge();
+    setInterval(syncLiveProbe, 5000);
 })();

@@ -22,6 +22,13 @@
   const KALSHI_BASE = 'https://api.elections.kalshi.com/trade-api/v2';
   const POLY_GAMMA = 'https://gamma-api.polymarket.com';
   const POLY_CLOB = 'https://clob.polymarket.com';
+  const POLY_CLOB_MARKET_WS = 'wss://ws-subscriptions-clob.polymarket.com/ws/market';
+  const POLY_GAMMA_ACTIVE_EVENTS_FALLBACKS = [
+    { tagId: 21, source: 'gamma-events-tag21-crypto' },
+    { tagId: 1, source: 'gamma-events-tag1-user-fallback' },
+  ];
+  const POLY_5M_FALLBACK_JUSTIFICATION =
+    'Deterministic slug lookup is exact and lowest latency; active event scans are slower/noisier and Gamma tag ids drift, so they only fill discovery gaps after exact slug routes fail.';
 
   const COIN_PATTERNS = {
     BTC: [/\bbitcoin\b/i, /\bbtc\b/i],
@@ -57,6 +64,15 @@
     HYPE: 'KXHYPE15M',
   };
 
+  // Direct 5-minute UP/DOWN series — BNB/HYPE gracefully null if not live on Kalshi
+  const KALSHI_5M_SERIES = {
+    BTC: 'KXBTC5M',
+    ETH: 'KXETH5M',
+    SOL: 'KXSOL5M',
+    XRP: 'KXXRP5M',
+    DOGE: 'KXDOGE5M',
+  };
+
   // Polymarket Up/Down 5-minute markets use deterministic slugs:
   // {prefix}-updown-5m-{unixWindowStart}. Outcomes are ["Up", "Down"].
   const POLY_5M_COIN_SLUGS = {
@@ -68,17 +84,6 @@
     BNB: 'bnb',
     HYPE: 'hype',
   };
-
-  const POLY_CHAINLINK_SYMBOLS = {
-    BTC: 'btc/usd',
-    ETH: 'eth/usd',
-    SOL: 'sol/usd',
-    XRP: 'xrp/usd',
-    DOGE: 'doge/usd',
-    BNB: 'bnb/usd',
-    HYPE: 'hype/usd',
-  };
-
 
   let cache = {};
   let lastFetch = 0;
@@ -216,10 +221,12 @@
     let data = null;
     let transport = 'http';
     let is429 = false;
+    let ipcStatus = 0;
 
     if (window.electron && window.electron.invoke) {
       try {
         const ipcRaw = await window.electron.invoke('kalshi:markets', params);
+        if (ipcRaw) ipcStatus = ipcRaw.status;
         // proxyToWorker returns { success, data, status }
         // data itself may be { success, data: { markets: [...] } } from the REST client
         // We need to find the markets array wherever it lives in this nesting
@@ -248,6 +255,10 @@
         window._kalshiErrors.push({ ts: Date.now(), sym: params.series_ticker || 'SYS', msg: 'Proxy ' + (err?.message || 'Error') });
         if (String(err?.message || err).includes('429')) is429 = true;
       }
+    }
+
+    if (!data && ipcStatus === 429) {
+      is429 = true;
     }
 
     if (!data && !is429) {
@@ -293,6 +304,67 @@
     const n = Number(value);
     if (!Number.isFinite(n)) return null;
     return Math.max(0, Math.min(1, n));
+  }
+
+  function toPositiveFiniteNumber(value) {
+    if (value == null || value === '') return null;
+    const n = Number(value);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  }
+
+  const PYTH_LAZER_PRICE_FEED_IDS = { BTC: 1, ETH: 2, SOL: 6, DOGE: 10, XRP: 14, BNB: 15 };
+  let _pythRealtimeSnapshot = { fetchedAt: 0, prices: null, inFlight: null };
+
+  async function loadPythRealtimeSnapshot(maxAgeMs) {
+    const now = Date.now();
+    if (_pythRealtimeSnapshot.prices && now - _pythRealtimeSnapshot.fetchedAt <= 1_000) {
+      return _pythRealtimeSnapshot.prices;
+    }
+    if (_pythRealtimeSnapshot.inFlight) return _pythRealtimeSnapshot.inFlight;
+
+    _pythRealtimeSnapshot.inFlight = (async () => {
+      let prices = await window.pythLazer?.getLatestTickers?.();
+      const hasFreshCache = Object.values(prices || {}).some(ticker => {
+        const timestamp = toPositiveFiniteNumber(ticker?.timestamp);
+        return timestamp != null && now - timestamp >= 0 && now - timestamp <= maxAgeMs;
+      });
+
+      if (!hasFreshCache && window.pythLazer?.getProxyLatest) {
+        const feedIds = Object.values(PYTH_LAZER_PRICE_FEED_IDS);
+        const proxyResult = await withTimeout(
+          window.pythLazer.getProxyLatest(feedIds),
+          2_500,
+          'Pyth Lazer latest price'
+        ).catch(() => null);
+        if (proxyResult?.success && Array.isArray(proxyResult.prices)) {
+          prices = Object.fromEntries(proxyResult.prices.map(ticker => [
+            ticker.instrument_name,
+            {
+              last: ticker.last,
+              timestamp: Date.now(),
+              source: 'pyth-lazer-proxy',
+            },
+          ]));
+        }
+      }
+
+      _pythRealtimeSnapshot.prices = prices || {};
+      _pythRealtimeSnapshot.fetchedAt = Date.now();
+      return _pythRealtimeSnapshot.prices;
+    })().finally(() => { _pythRealtimeSnapshot.inFlight = null; });
+
+    return _pythRealtimeSnapshot.inFlight;
+  }
+
+  async function getFreshPythLazerPrice(sym, maxAgeMs = 5_000) {
+    const snapshot = await loadPythRealtimeSnapshot(maxAgeMs);
+    const ticker = snapshot?.[`${sym}USD`];
+    const price = toPositiveFiniteNumber(ticker?.last);
+    const timestamp = toPositiveFiniteNumber(ticker?.timestamp);
+    if (price == null || timestamp == null) return null;
+    const ageMs = Date.now() - timestamp;
+    if (ageMs < 0 || ageMs > maxAgeMs) return null;
+    return { price, timestamp, ageMs, source: ticker?.source || 'pyth-lazer' };
   }
 
   function deriveAskFromReciprocal(directAsk, opposingBid) {
@@ -539,6 +611,43 @@
     return result;
   }
 
+  // ---- Kalshi 5M — covers all 7 coins; dedicated 5M series tried first,
+  // falls back to nearest-expiry 15M market as real-time proxy ----
+
+  async function fetchKalshi5M() {
+    const result = {};
+    const coins = Object.keys(KALSHI_15M_SERIES);
+    for (let i = 0; i < coins.length; i++) {
+      const sym = coins[i];
+      const series5m = KALSHI_5M_SERIES[sym] || null;
+
+      // 1. Try dedicated 5M series (e.g. KXBTC5M)
+      let data = series5m ? await fetchKalshiSeriesForSym(series5m, {
+        suppressWarnings: true,
+        bucketMs: BUCKET_MS_5M,
+        minTradableMs: MIN_TRADABLE_MS_5M,
+        strictQuarterHour: false,
+      }) : null;
+
+      // 2. Fallback: use strict 15M quarter-hour contract as 5M proxy
+      if (!data) {
+        const baseSeries = KALSHI_15M_SERIES[sym];
+        const d = await kalshiFetch(`${KALSHI_BASE}/markets?series_ticker=${baseSeries}&status=open&limit=${KALSHI_MARKET_LIMIT}`);
+        const m = selectKalshiContract(d?.markets || [], {
+          nowMs: Date.now(),
+          bucketMs: BUCKET_MS_15M,
+          minTradableMs: MIN_TRADABLE_MS_15M_PROXY,
+          strictQuarterHour: true,
+        });
+        if (m) {
+          data = buildKalshiContractData(m, { _proxy15m: true });
+        }
+      }
+      result[sym] = data;
+    }
+    return result;
+  }
+
   // ---- Snipe detection: contracts closing within 5 min with strong bias ----
   const SNIPE_WINDOW_MS = 5 * 60_000;
   const SNIPE_THRESHOLD = 0.65;
@@ -547,7 +656,7 @@
     const snipes = [];
     const now = Date.now();
     for (const [sym, data] of Object.entries(c)) {
-      for (const [label, market] of [['Kalshi 15M', data?.kalshi15m]]) {
+      for (const [label, market] of [['Kalshi 15M', data?.kalshi15m], ['Kalshi 5M', data?.kalshi5m]]) {
         if (!market?.closeTime || market.probability == null) continue;
         const ms = new Date(market.closeTime).getTime() - now;
         if (ms <= 0 || ms > SNIPE_WINDOW_MS) continue;
@@ -761,6 +870,251 @@
     return [];
   }
 
+  function _extractPolyEventArray(result) {
+    if (Array.isArray(result)) return result;
+    if (Array.isArray(result?.events)) return result.events;
+    if (Array.isArray(result?.results)) return result.results;
+    if (Array.isArray(result?.data)) return result.data;
+    return [];
+  }
+
+  function _safeJsonArray(value) {
+    if (Array.isArray(value)) return value;
+    if (typeof value !== 'string') return [];
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (_) {
+      return [];
+    }
+  }
+
+  function _polyOutcomeIndex(m, outcomeName, fallback = 0) {
+    const outcomes = _safeJsonArray(m?.outcomes);
+    const idx = outcomes.findIndex(o => String(o || '').trim().toLowerCase() === outcomeName);
+    return idx >= 0 ? idx : fallback;
+  }
+
+  function _polyClobTokenIds(m) {
+    return _safeJsonArray(m?.clobTokenIds)
+      .map(v => String(v || '').trim())
+      .filter(Boolean);
+  }
+
+  function _bestBidAskFromBookRows(rows, side) {
+    if (!Array.isArray(rows) || !rows.length) return null;
+    let best = null;
+    for (const row of rows) {
+      const price = Number(row?.price);
+      if (!Number.isFinite(price) || price <= 0 || price >= 1) continue;
+      if (best == null) {
+        best = price;
+      } else if (side === 'bid') {
+        best = Math.max(best, price);
+      } else {
+        best = Math.min(best, price);
+      }
+    }
+    return best;
+  }
+
+  function _coercePolyMarketFromEvent(event, expectedSlug) {
+    if (!event || typeof event !== 'object') return null;
+    const markets = Array.isArray(event.markets) ? event.markets : [];
+    let market = markets.find(m => (m?.slug || m?.market_slug) === expectedSlug && _isTradablePoly5M(m));
+    if (!market) return null;
+    return {
+      ...market,
+      slug: market.slug || market.market_slug || event.slug || expectedSlug,
+      question: market.question || event.title,
+      endDate: market.endDate || market.endDateIso || event.endDate || event.end_date || null,
+      eventStartTime: market.eventStartTime || event.startTime || event.startDate || null,
+      events: market.events || [{
+        id: event.id,
+        slug: event.slug,
+        title: event.title,
+        startTime: event.startTime || event.startDate || null,
+        endDate: event.endDate || null,
+      }],
+      _eventFallback: {
+        id: event.id,
+        slug: event.slug,
+        title: event.title,
+      },
+    };
+  }
+
+  async function fetchPolymarket5MEventBySlug(slug) {
+    if (!slug) return null;
+    try {
+      const result = await apiFetch(`${POLY_GAMMA}/events?closed=false&active=true&slug=${encodeURIComponent(slug)}`);
+      const events = _extractPolyEventArray(result);
+      for (const event of events) {
+        if ((event?.slug || event?.ticker) !== slug) continue;
+        const market = _coercePolyMarketFromEvent(event, slug);
+        if (market) return { market, source: 'gamma-events-slug', fallbackJustification: POLY_5M_FALLBACK_JUSTIFICATION };
+      }
+    } catch (err) {
+      console.warn(`[PredictionMarkets] Poly5M event slug fallback failed for ${slug}:`, err?.message || err);
+    }
+    return null;
+  }
+
+  async function fetchPolymarketActiveEventsFallback() {
+    const now = Date.now();
+    if (_poly5mEventScanCache.events.length && now - _poly5mEventScanCache.fetchedAt < 15_000) {
+      return _poly5mEventScanCache;
+    }
+
+    const events = [];
+    const sources = [];
+    const errors = [];
+    await Promise.all(POLY_GAMMA_ACTIVE_EVENTS_FALLBACKS.map(async ({ tagId, source }) => {
+      try {
+        const result = await apiFetch(`${POLY_GAMMA}/events?closed=false&active=true&tag_id=${tagId}&limit=100`);
+        const batch = _extractPolyEventArray(result);
+        if (batch.length) {
+          events.push(...batch);
+          sources.push(source);
+        }
+      } catch (err) {
+        errors.push(`${source}: ${err?.message || err}`);
+      }
+    }));
+
+    const seen = new Set();
+    const deduped = events.filter(event => {
+      const key = event?.id || event?.slug || event?.ticker || event?.title;
+      if (!key) return true;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+
+    _poly5mEventScanCache = {
+      fetchedAt: now,
+      events: deduped,
+      source: sources.join(',') || 'gamma-events-scan',
+      error: errors.join(' | '),
+    };
+    return _poly5mEventScanCache;
+  }
+
+  async function fetchPolymarket5MActiveEventFallback(slug) {
+    if (!slug) return null;
+    const scan = await fetchPolymarketActiveEventsFallback();
+    for (const event of scan.events) {
+      if ((event?.slug || event?.ticker) !== slug) continue;
+      const market = _coercePolyMarketFromEvent(event, slug);
+      if (market) {
+        return {
+          market,
+          source: scan.source || 'gamma-events-scan',
+          fallbackJustification: POLY_5M_FALLBACK_JUSTIFICATION,
+        };
+      }
+    }
+    return null;
+  }
+
+  async function fetchPolymarket5MMarketCandidate(sym, slug) {
+    try {
+      const result = await apiFetch(`${POLY_GAMMA}/markets?slug=${encodeURIComponent(slug)}`);
+      const m = _extractPolyMarketArray(result).find(mk => (mk?.slug || mk?.market_slug) === slug && _isTradablePoly5M(mk));
+      if (m) return { market: m, source: 'gamma-markets-slug', fallbackJustification: null };
+    } catch (err) {
+      console.warn(`[PredictionMarkets] Poly5M market slug fetch failed for ${sym} ${slug}:`, err?.message || err);
+    }
+
+    const eventHit = await fetchPolymarket5MEventBySlug(slug);
+    if (eventHit) return eventHit;
+
+    const activeEventHit = await fetchPolymarket5MActiveEventFallback(slug);
+    if (activeEventHit) return activeEventHit;
+
+    return null;
+  }
+
+  function _publishPolymarketClobTick(sym, market, payload) {
+    try {
+      window.DataLogger?.logPolymarket?.([{
+        sym,
+        type: 'poly5m-clob-tick',
+        market: market?.conditionId || market?.condition_id || null,
+        slug: market?.slug || market?.market_slug || null,
+        payload,
+      }]);
+    } catch (_) {
+      // Data logging must never block or destabilize market ingestion.
+    }
+  }
+
+  async function fetchPolymarketClobMarketSnapshot(sym, market, timeoutMs = 900) {
+    const tokenIds = _polyClobTokenIds(market);
+    if (!tokenIds.length || typeof WebSocket === 'undefined') return null;
+    const conditionId = market.conditionId || market.condition_id || market.market || market.id || tokenIds.join(':');
+    const cacheKey = `${conditionId}:${tokenIds.join(',')}`;
+    const cached = _poly5mClobSnapshotCache[cacheKey];
+    if (cached?.inFlight) return cached.inFlight;
+    if (cached?.value && Date.now() - cached.fetchedAt < 2_000) return cached.value;
+
+    const upIndex = _polyOutcomeIndex(market, 'up', 0);
+    const downIndex = upIndex === 0 ? 1 : 0;
+    const upAssetId = tokenIds[upIndex] || tokenIds[0];
+    const downAssetId = tokenIds[downIndex] || tokenIds[1] || null;
+
+    // Check if we already have the snapshot in-memory (from active streaming)
+    const immediateSnap = _polyClobWS.getSnapshotValue(upAssetId, downAssetId, conditionId);
+    if (immediateSnap && (immediateSnap.bestBid != null || immediateSnap.bestAsk != null || immediateSnap.upProbability != null)) {
+      const val = { ...immediateSnap };
+      _poly5mClobSnapshotCache[cacheKey] = { value: val, fetchedAt: Date.now() };
+      return val;
+    }
+
+    const promise = new Promise(resolve => {
+      // Ensure shared WebSocket is connected
+      _polyClobWS.connect();
+      
+      // Subscribe to target token IDs
+      _polyClobWS.subscribe(tokenIds, sym, market);
+
+      const req = {
+        resolve,
+        tokenIds,
+        upAssetId,
+        downAssetId,
+        conditionId,
+        sym,
+        market,
+        timeoutId: null
+      };
+
+      req.timeoutId = setTimeout(() => {
+        // Remove from pending on timeout
+        const reqs = _polyClobWS.pendingRequests.get(cacheKey) || [];
+        const idx = reqs.indexOf(req);
+        if (idx >= 0) {
+          reqs.splice(idx, 1);
+          if (reqs.length === 0) {
+            _polyClobWS.pendingRequests.delete(cacheKey);
+          }
+        }
+        // Resolve with the best data we currently have
+        const finalSnap = _polyClobWS.getSnapshotValue(upAssetId, downAssetId, conditionId);
+        _poly5mClobSnapshotCache[cacheKey] = { value: finalSnap, fetchedAt: Date.now() };
+        resolve(finalSnap);
+      }, timeoutMs);
+
+      if (!_polyClobWS.pendingRequests.has(cacheKey)) {
+        _polyClobWS.pendingRequests.set(cacheKey, []);
+      }
+      _polyClobWS.pendingRequests.get(cacheKey).push(req);
+    });
+
+    _poly5mClobSnapshotCache[cacheKey] = { inFlight: promise, fetchedAt: Date.now(), value: cached?.value || null };
+    return promise;
+  }
+
   function _isTradablePoly5M(m, nowMs = Date.now()) {
     if (!m) return false;
     if (m.active === false || m.closed === true || m.archived === true) return false;
@@ -773,36 +1127,454 @@
 
   let _poly5mCache = {};
   let _poly5mPriceToBeatCache = {};
-  let _poly5mRtdsOpenCache = {};
+  const _poly5mPriceToBeatLocks = new Map();
+  let _poly5mEventScanCache = { fetchedAt: 0, events: [], source: '', error: '' };
+  let _poly5mClobSnapshotCache = {};
 
-  function _formatPolyPriceToBeat(value) {
+  let _polyClobWS = {
+    socket: null,
+    status: 'CLOSED', // CLOSED, CONNECTING, OPEN
+    activeSubs: new Set(),
+    lastSeen: new Map(),
+    assetToMarket: new Map(),
+    pendingRequests: new Map(), // key -> Array of requests
+    books: {}, // assetId -> { bestBid, bestAsk, ts }
+    reconnectTimer: null,
+    reconnectMs: 1000,
+    pingTimer: null,
+
+    connect() {
+      if (typeof WebSocket === 'undefined') return;
+      if (this.status !== 'CLOSED') return;
+      this.status = 'CONNECTING';
+
+      try {
+        const socket = new WebSocket(POLY_CLOB_MARKET_WS);
+        this.socket = socket;
+
+        socket.onopen = () => {
+          this.status = 'OPEN';
+          this.reconnectMs = 1000;
+          if (this.reconnectTimer) {
+            clearTimeout(this.reconnectTimer);
+            this.reconnectTimer = null;
+          }
+          this.startHeartbeat();
+
+          // Resubscribe to existing active subscriptions
+          if (this.activeSubs.size > 0) {
+            const ids = Array.from(this.activeSubs);
+            try {
+              socket.send(JSON.stringify({ assets_ids: ids, type: 'market' }));
+            } catch (_) {}
+          }
+
+          // Trigger subscriptions for any waiting pending requests
+          for (const [key, reqs] of Array.from(this.pendingRequests.entries())) {
+            const first = reqs[0];
+            if (first) {
+              this.subscribe(first.tokenIds, first.sym, first.market);
+            }
+          }
+        };
+
+        socket.onmessage = (event) => {
+          let msg = null;
+          try { msg = JSON.parse(String(event.data || '')); } catch (_) { return; }
+          const rows = Array.isArray(msg) ? msg : [msg];
+          
+          for (const row of rows) {
+            const ts = Number(row?.timestamp);
+            if (Array.isArray(row?.price_changes)) {
+              for (const change of row.price_changes) {
+                const assetId = String(change?.asset_id || '');
+                this.consumeBook(
+                  assetId,
+                  Number(change?.best_bid),
+                  Number(change?.best_ask),
+                  ts
+                );
+                const mapping = this.assetToMarket.get(assetId);
+                if (mapping) {
+                  _publishPolymarketClobTick(mapping.sym, mapping.market, change);
+                }
+              }
+            } else {
+              const assetId = String(row?.asset_id || '');
+              if (assetId) {
+                this.consumeBook(
+                  assetId,
+                  _bestBidAskFromBookRows(row?.bids, 'bid'),
+                  _bestBidAskFromBookRows(row?.asks, 'ask'),
+                  ts
+                );
+                const mapping = this.assetToMarket.get(assetId);
+                if (mapping) {
+                  _publishPolymarketClobTick(mapping.sym, mapping.market, row);
+                }
+              }
+            }
+          }
+
+          this.checkPending();
+        };
+
+        socket.onerror = (err) => {
+          console.warn('[PredictionMarkets] Polymarket CLOB WS error:', err?.message || err);
+        };
+
+        socket.onclose = () => {
+          this.handleClose();
+        };
+
+      } catch (err) {
+        console.warn('[PredictionMarkets] Polymarket CLOB WS connect exception:', err?.message || err);
+        this.handleClose();
+      }
+    },
+
+    handleClose() {
+      this.status = 'CLOSED';
+      this.socket = null;
+      this.stopHeartbeat();
+      this.activeSubs.clear();
+
+      if (!this.reconnectTimer) {
+        this.reconnectTimer = setTimeout(() => {
+          this.reconnectTimer = null;
+          this.connect();
+        }, this.reconnectMs);
+        this.reconnectMs = Math.min(this.reconnectMs * 1.5, 10000);
+      }
+    },
+
+    startHeartbeat() {
+      this.stopHeartbeat();
+      this.pingTimer = setInterval(() => {
+        if (this.socket && this.status === 'OPEN') {
+          try {
+            this.socket.send(JSON.stringify({ type: 'ping' }));
+          } catch (_) {}
+        }
+      }, 30000);
+    },
+
+    stopHeartbeat() {
+      if (this.pingTimer) {
+        clearInterval(this.pingTimer);
+        this.pingTimer = null;
+      }
+    },
+
+    subscribe(tokenIds, sym, market) {
+      const now = Date.now();
+      tokenIds.forEach(id => {
+        this.lastSeen.set(id, now);
+        if (sym && market) {
+          this.assetToMarket.set(id, { sym, market });
+        }
+      });
+
+      const newIds = tokenIds.filter(id => !this.activeSubs.has(id));
+      if (newIds.length > 0) {
+        newIds.forEach(id => this.activeSubs.add(id));
+        if (this.socket && this.status === 'OPEN') {
+          try {
+            this.socket.send(JSON.stringify({ assets_ids: newIds, type: 'market' }));
+          } catch (err) {
+            console.warn('[PredictionMarkets] Subscribe send failed:', err?.message || err);
+          }
+        }
+      }
+
+      this.cleanupStaleSubs();
+    },
+
+    unsubscribe(tokenIds) {
+      const activeToUnsub = tokenIds.filter(id => this.activeSubs.has(id));
+      if (activeToUnsub.length > 0) {
+        activeToUnsub.forEach(id => {
+          this.activeSubs.delete(id);
+          this.assetToMarket.delete(id);
+          this.lastSeen.delete(id);
+        });
+        if (this.socket && this.status === 'OPEN') {
+          try {
+            this.socket.send(JSON.stringify({ assets_ids: activeToUnsub, operation: 'unsubscribe' }));
+          } catch (err) {
+            console.warn('[PredictionMarkets] Unsubscribe send failed:', err?.message || err);
+          }
+        }
+      }
+    },
+
+    cleanupStaleSubs() {
+      const now = Date.now();
+      const staleIds = [];
+      for (const id of this.activeSubs) {
+        const last = this.lastSeen.get(id) || 0;
+        if (now - last > 120_000) { // 2 minutes stale
+          staleIds.push(id);
+        }
+      }
+      if (staleIds.length > 0) {
+        this.unsubscribe(staleIds);
+      }
+    },
+
+    consumeBook(assetId, bid, ask, ts) {
+      if (!assetId) return;
+      const prev = this.books[assetId] || {};
+      this.books[assetId] = {
+        bestBid: Number.isFinite(bid) ? bid : prev.bestBid,
+        bestAsk: Number.isFinite(ask) ? ask : prev.bestAsk,
+        ts: Number.isFinite(ts) ? ts : prev.ts,
+      };
+    },
+
+    getSnapshotValue(upAssetId, downAssetId, conditionId) {
+      const upBook = this.books[upAssetId] || {};
+      const downBook = downAssetId ? this.books[downAssetId] || {} : {};
+      const upBid = Number(upBook.bestBid);
+      const upAsk = Number(upBook.bestAsk);
+      let upMid = null;
+      if (Number.isFinite(upBid) && Number.isFinite(upAsk)) upMid = (upBid + upAsk) / 2;
+      else if (Number.isFinite(upBid) && Number.isFinite(downBook.bestAsk)) upMid = (upBid + (1 - Number(downBook.bestAsk))) / 2;
+      else if (Number.isFinite(upAsk) && Number.isFinite(downBook.bestBid)) upMid = (upAsk + (1 - Number(downBook.bestBid))) / 2;
+      else if (Number.isFinite(upBid)) upMid = upBid;
+      else if (Number.isFinite(upAsk)) upMid = upAsk;
+      if (!Number.isFinite(upMid) || upMid <= 0 || upMid >= 1) upMid = null;
+      return {
+        upAssetId,
+        downAssetId,
+        conditionId,
+        bestBid: Number.isFinite(upBid) ? upBid : null,
+        bestAsk: Number.isFinite(upAsk) ? upAsk : null,
+        upProbability: upMid,
+        downBestBid: Number.isFinite(Number(downBook.bestBid)) ? Number(downBook.bestBid) : null,
+        downBestAsk: Number.isFinite(Number(downBook.bestAsk)) ? Number(downBook.bestAsk) : null,
+        ts: Number(upBook.ts || downBook.ts || Date.now()) || Date.now(),
+        source: 'polymarket-clob-ws',
+      };
+    },
+
+    checkPending() {
+      const entries = Array.from(this.pendingRequests.entries());
+      for (const [key, reqs] of entries) {
+        const first = reqs[0];
+        if (!first) continue;
+        const snap = this.getSnapshotValue(first.upAssetId, first.downAssetId, first.conditionId);
+        if (snap && (snap.bestBid != null || snap.bestAsk != null || snap.upProbability != null)) {
+          this.resolveRequest(key, snap);
+        }
+      }
+    },
+
+    resolveRequest(cacheKey, val) {
+      const reqs = this.pendingRequests.get(cacheKey);
+      if (reqs) {
+        this.pendingRequests.delete(cacheKey);
+        _poly5mClobSnapshotCache[cacheKey] = { value: val, fetchedAt: Date.now() };
+        for (const req of reqs) {
+          clearTimeout(req.timeoutId);
+          req.resolve(val);
+        }
+      }
+    }
+  };
+  // Rotate whenever PTB validation semantics change so a previously accepted
+  // benchmark cannot survive in localStorage and poison later sessions.
+  const POLY5M_PTB_LOCK_VERSION = 5;
+  const POLY5M_PTB_TRUSTED_SOURCES = new Set([
+    'polymarket-event-page',
+  ]);
+
+  function _formatPolyPriceToBeat(value, symbol = '') {
     const n = Number(value);
     if (!Number.isFinite(n) || n <= 0) return null;
+    if (String(symbol).toUpperCase() === 'BTC') {
+      return `$${Math.round(n).toLocaleString()}`;
+    }
     if (n >= 1000) return `$${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
     if (n >= 1) return `$${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 })}`;
     return `$${n.toLocaleString(undefined, { minimumFractionDigits: 4, maximumFractionDigits: 8 })}`;
+  }
+
+  function _lockPolymarketPriceToBeat(slug, value, source) {
+    const price = toPositiveFiniteNumber(value);
+    if (!slug || price == null || !POLY5M_PTB_TRUSTED_SOURCES.has(source)) return null;
+    const existing = _poly5mPriceToBeatLocks.get(slug);
+    if (existing) {
+      if (Math.abs(existing.price - price) > Math.max(0.000001, existing.price * 1e-8)) {
+        console.warn(`[Poly5M-PTB] Ignored mid-contract change for ${slug}: $${existing.price} -> $${price} (${source || 'unknown'})`);
+      }
+      return existing;
+    }
+    const locked = Object.freeze({
+      version: POLY5M_PTB_LOCK_VERSION,
+      price,
+      source,
+      lockedAt: Date.now(),
+    });
+    _poly5mPriceToBeatLocks.set(slug, locked);
+    try { localStorage.setItem(`poly5m:ptb:v${POLY5M_PTB_LOCK_VERSION}:${slug}`, JSON.stringify(locked)); } catch (err) {
+      console.warn(`[Poly5M-PTB] Could not persist immutable lock for ${slug}:`, err?.message || err);
+    }
+    return locked;
+  }
+
+  function _getPolymarketPriceToBeatLock(slug) {
+    if (!slug) return null;
+    const memoryLock = _poly5mPriceToBeatLocks.get(slug);
+    if (memoryLock) return memoryLock;
+    try {
+      const storageKey = `poly5m:ptb:v${POLY5M_PTB_LOCK_VERSION}:${slug}`;
+      const stored = JSON.parse(localStorage.getItem(storageKey) || 'null');
+      const price = toPositiveFiniteNumber(stored?.price);
+      if (stored?.version !== POLY5M_PTB_LOCK_VERSION || price == null || !POLY5M_PTB_TRUSTED_SOURCES.has(stored?.source)) {
+        localStorage.removeItem(storageKey);
+        return null;
+      }
+      const lock = Object.freeze({
+        version: POLY5M_PTB_LOCK_VERSION,
+        price,
+        source: stored.source,
+        lockedAt: Number(stored.lockedAt) || 0,
+      });
+      _poly5mPriceToBeatLocks.set(slug, lock);
+      return lock;
+    } catch (err) {
+      console.warn(`[Poly5M-PTB] Could not restore immutable lock for ${slug}:`, err?.message || err);
+      return null;
+    }
   }
 
   function _parsePolymarketPriceToBeat(html, slug) {
     if (!html || !slug) return null;
     let idx = html.indexOf(`"slug":"${slug}"`);
     if (idx === -1) idx = html.indexOf(`"ticker":"${slug}"`);
-    if (idx === -1) return null;
-    const chunk = html.substring(idx, idx + 4000);
-    const nextObjIdx = chunk.indexOf('{"id"');
-    const validChunk = nextObjIdx !== -1 ? chunk.substring(0, nextObjIdx) : chunk;
-    const match = validChunk.match(/"priceToBeat":\s*([0-9.]+)/);
-    const n = match ? Number(match[1]) : NaN;
-    if (Number.isFinite(n) && n > 0) return n;
+    if (idx !== -1) {
+      const chunk = html.substring(idx, idx + 4000);
+      const nextObjIdx = chunk.indexOf('{"id"');
+      const validChunk = nextObjIdx !== -1 ? chunk.substring(0, nextObjIdx) : chunk;
+      const ptbMatch = validChunk.match(/"priceToBeat":\s*([0-9.]+)/);
+      const ptb = ptbMatch ? Number(ptbMatch[1]) : NaN;
+      if (Number.isFinite(ptb) && ptb > 0) return ptb;
+    }
+
+    const slugMatch = slug.match(/^([a-z0-9-]+)-updown-5m-(\d+)$/i);
+    if (!slugMatch) return null;
+    const querySymbols = {
+      btc: 'BTC', bitcoin: 'BTC',
+      eth: 'ETH', ethereum: 'ETH',
+      sol: 'SOL', solana: 'SOL',
+      doge: 'DOGE', dogecoin: 'DOGE',
+      xrp: 'XRP', ripplexrp: 'XRP',
+      hype: 'HYPE', hyperliquid: 'HYPE',
+      bnb: 'BNB', binancecoin: 'BNB'
+    };
+    const querySymbol = querySymbols[slugMatch[1].toLowerCase()];
+    const startSec = Number(slugMatch[2]);
+    if (!querySymbol || !Number.isFinite(startSec)) return null;
+
+    const startIso = new Date(startSec * 1000).toISOString().replace('.000Z', 'Z');
+    const endIso = new Date((startSec + 300) * 1000).toISOString().replace('.000Z', 'Z');
+
+    // Attempt to extract the dehydratedState JSON from HTML
+    let stateJson = null;
+    const nextDataMatch = html.match(/<script id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/);
+    if (nextDataMatch) {
+      try {
+        const nextData = JSON.parse(nextDataMatch[1]);
+        stateJson = nextData.props?.pageProps?.dehydratedState;
+      } catch (e) {
+        console.warn(`[Poly5M-PTB] Failed to parse __NEXT_DATA__ for ${slug}:`, e.message);
+      }
+    }
+
+    if (!stateJson) {
+      const dqIdx = html.indexOf('"dehydratedState"');
+      if (dqIdx !== -1) {
+        const startScript = html.lastIndexOf('<script', dqIdx);
+        const endScript = html.indexOf('</script>', dqIdx);
+        if (startScript !== -1 && endScript !== -1) {
+          const scriptText = html.substring(startScript, endScript + 9);
+          const jsonStart = scriptText.indexOf('{');
+          const jsonEnd = scriptText.lastIndexOf('}') + 1;
+          if (jsonStart !== -1 && jsonEnd !== -1) {
+            try {
+              const parsed = JSON.parse(scriptText.substring(jsonStart, jsonEnd));
+              stateJson = parsed.props?.pageProps?.dehydratedState || parsed.dehydratedState || parsed;
+            } catch (e) {
+              console.warn(`[Poly5M-PTB] Failed to parse dehydratedState script for ${slug}:`, e.message);
+            }
+          }
+        }
+      }
+    }
+
+    if (stateJson && Array.isArray(stateJson.queries)) {
+      const normalizedStartIso = startIso.replace('.000Z', 'Z');
+      const normalizedEndIso = endIso.replace('.000Z', 'Z');
+      const normalizeIso = value => typeof value === 'string' ? value.replace('.000Z', 'Z') : '';
+
+      // Prefer the contract's exact Chainlink opening-price query. Symbol-only
+      // matching is unsafe because the page can hydrate adjacent 5m windows.
+      const openingPriceQuery = stateJson.queries.find(q => {
+        const key = q.queryKey;
+        return Array.isArray(key)
+          && key[0] === 'crypto-prices'
+          && key[1] === 'price'
+          && key[2] === querySymbol
+          && normalizeIso(key[3]) === normalizedStartIso
+          && key[4] === 'fiveminute'
+          && normalizeIso(key[5]) === normalizedEndIso;
+      });
+      const exactOpenPrice = toPositiveFiniteNumber(openingPriceQuery?.state?.data?.openPrice);
+      if (exactOpenPrice != null) return exactOpenPrice;
+
+      // During the first moments of a window, the opening query may not yet be
+      // populated. The immediately preceding Chainlink close is the identical
+      // boundary, but accept it only when both query and row timestamps match.
+      const pastResultsQuery = stateJson.queries.find(q => {
+        const key = q.queryKey;
+        return Array.isArray(key)
+          && key[0] === 'past-results'
+          && key[1] === querySymbol
+          && key[2] === 'fiveminute'
+          && normalizeIso(key[3]) === normalizedStartIso;
+      });
+      const pastResults = pastResultsQuery?.state?.data?.data?.results
+        || pastResultsQuery?.state?.data?.results;
+      const boundaryResult = Array.isArray(pastResults)
+        ? pastResults.find(result => normalizeIso(result?.endTime) === normalizedStartIso)
+        : null;
+      const exactBoundaryClose = toPositiveFiniteNumber(boundaryResult?.closePrice);
+      if (exactBoundaryClose != null) return exactBoundaryClose;
+    }
+
+    // Legacy page fallback: retain exact full query-key matching. Never use a
+    // symbol-only or page-global price because future windows share this HTML.
+    const queryKey = JSON.stringify(['crypto-prices', 'price', querySymbol, startIso, 'fiveminute', endIso]);
+    const queryKeyIndex = html.indexOf(`"queryKey":${queryKey}`);
+    if (queryKeyIndex !== -1) {
+      // The state and data for this query key are located AFTER the queryKey in the JSON string.
+      const chunk = html.substring(queryKeyIndex, queryKeyIndex + 3000);
+      const nextQueryStart = chunk.indexOf('{"queryKey":', 20);
+      const validChunk = nextQueryStart !== -1 ? chunk.substring(0, nextQueryStart) : chunk;
+      
+      const openMatches = [...validChunk.matchAll(/"openPrice":\s*([0-9]+(?:\.[0-9]+)?)/g)];
+      const op = openMatches.length ? Number(openMatches[0][1]) : NaN; // The first match after the key belongs to this query
+      if (Number.isFinite(op) && op > 0) return op;
+    }
+
     return null;
   }
-
-  // (Approximate Binance fetch removed - prices must come from Polymarket or Polycool oracles)
 
   async function fetchPolymarketPriceToBeat(slug) {
     if (!slug) return null;
     const cached = _poly5mPriceToBeatCache[slug];
-    if (cached && (cached.value != null || Date.now() - cached.fetchedAt < 45_000)) return cached.value;
+    if (cached && (cached.value != null || Date.now() - cached.fetchedAt < 3_000)) return cached.value;
     try {
       const html = await textFetch(`https://polymarket.com/event/${encodeURIComponent(slug)}`);
       const value = _parsePolymarketPriceToBeat(html, slug);
@@ -815,79 +1587,6 @@
     }
   }
 
-  function _selectOpeningChainlinkTick(rows, startMs) {
-    if (!Array.isArray(rows) || !Number.isFinite(startMs)) return null;
-    let best = null;
-    for (const row of rows) {
-      const ts = Number(row?.timestamp);
-      const value = Number(row?.value);
-      if (!Number.isFinite(ts) || !Number.isFinite(value) || value <= 0) continue;
-      if (ts >= startMs && ts <= startMs + 10_000 && (!best || ts < best.ts)) {
-        best = { ts, value };
-      }
-    }
-    return best;
-  }
-
-  async function fetchPolymarketRtdsPriceToBeat(sym, startMs, timeoutMs = 1800) {
-    const chainlinkSymbol = POLY_CHAINLINK_SYMBOLS[sym];
-    if (!chainlinkSymbol || !Number.isFinite(startMs) || typeof WebSocket === 'undefined') return null;
-
-    const cacheKey = `${sym}:${startMs}`;
-    const cached = _poly5mRtdsOpenCache[cacheKey];
-    if (cached && (cached.value != null || Date.now() - cached.fetchedAt < 30_000)) return cached.value;
-
-    return new Promise(resolve => {
-      let settled = false;
-      let socket = null;
-      const finish = (value) => {
-        if (settled) return;
-        settled = true;
-        _poly5mRtdsOpenCache[cacheKey] = { value, fetchedAt: Date.now() };
-        try { if (socket) socket.close(); } catch (_) { }
-        resolve(value);
-      };
-
-      const timerId = setTimeout(() => finish(null), timeoutMs);
-      try {
-        socket = new WebSocket('wss://ws-live-data.polymarket.com');
-        socket.onopen = () => {
-          socket.send(JSON.stringify({
-            action: 'subscribe',
-            subscriptions: [{
-              topic: 'crypto_prices_chainlink',
-              type: '*',
-              filters: JSON.stringify({ symbol: chainlinkSymbol }),
-            }],
-          }));
-        };
-        socket.onmessage = (event) => {
-          let msg = null;
-          try { msg = JSON.parse(String(event.data || '')); } catch (_) { return; }
-          const payload = msg?.payload || {};
-          const rows = Array.isArray(payload.data)
-            ? payload.data
-            : [{ timestamp: payload.timestamp ?? msg.timestamp, value: payload.value }];
-          const openingTick = _selectOpeningChainlinkTick(rows, startMs);
-          if (!openingTick) return;
-          clearTimeout(timerId);
-          finish(openingTick.value);
-        };
-        socket.onerror = () => {
-          clearTimeout(timerId);
-          finish(null);
-        };
-        socket.onclose = () => {
-          clearTimeout(timerId);
-          finish(null);
-        };
-      } catch (_) {
-        clearTimeout(timerId);
-        finish(null);
-      }
-    });
-  }
-
   async function fetchPolymarket5MBySlug(sym) {
     const coinSlugPrefix = POLY_5M_COIN_SLUGS[sym];
     if (!coinSlugPrefix) return null;
@@ -895,84 +1594,217 @@
     const nowSec = Math.floor(Date.now() / 1000);
     const windowTs = nowSec - (nowSec % 300);
     const cached = _poly5mCache[sym];
-    if (cached && cached.windowTs === windowTs && Date.now() - cached.fetchedAt < 20_000) {
+    if (cached && cached.windowTs === windowTs && Date.now() - cached.fetchedAt < 15_000) {
       return cached.data;
     }
+    const candidates = [
+      windowTs,
+      windowTs + 300,
+      windowTs + 600,
+      windowTs + 900,
+      windowTs + 1200,
+      windowTs + 1500,
+      windowTs - 300,
+    ];
 
-    // Current, next, and prior windows cover provider rollover skew without broad market scans.
-    const candidates = [windowTs, windowTs + 300, windowTs - 300];
-    for (const ts of candidates) {
+    const results = await Promise.all(candidates.map(async (ts) => {
       const slug = `${coinSlugPrefix}-updown-5m-${ts}`;
       try {
-        const result = await apiFetch(`${POLY_GAMMA}/markets?slug=${encodeURIComponent(slug)}`);
-        const m = _extractPolyMarketArray(result).find(mk => _isTradablePoly5M(mk));
-        if (!m) continue;
+        const hit = await fetchPolymarket5MMarketCandidate(sym, slug);
+        const m = hit?.market;
+        if (!m) return null;
         const upProb = _parseUpProb(m);
-        if (upProb === null) continue;
+        if (upProb === null) return null;
+        const isActiveWindow = ts <= windowTs;
+        const clobSnapshot = isActiveWindow
+          ? await fetchPolymarketClobMarketSnapshot(sym, m)
+          : null;
+        const clobProb = Number(clobSnapshot?.upProbability);
+        const liveUpProb = Number.isFinite(clobProb) && clobProb >= 0.01 && clobProb <= 0.99 ? clobProb : upProb;
         const title = m.question || m.title || `${sym} Up or Down 5M`;
         const endDate = m.endDate || m.end_date_iso || m.end_date || null;
-        const startDate = m.eventStartTime || m.events?.[0]?.startTime || null;
+        const startDate = new Date(ts * 1000).toISOString();
         const volume = parseFloat(m.volume24hr || m.volumeNum || m.volume || 0) || 0;
         const marketSlug = m.slug || slug;
-        let priceToBeatSource = 'polymarket-title';
+        const isFuture = ts > windowTs;
+        let priceToBeatSource = null;
         let priceToBeatNum = null;
 
-        if (title) {
-          const match = title.match(/\$([0-9,.]+)/);
-          if (match) {
-            priceToBeatNum = parseFloat(match[1].replace(/,/g, ''));
+        if (!isFuture) {
+          const lockedPriceToBeat = _getPolymarketPriceToBeatLock(marketSlug);
+          if (lockedPriceToBeat) {
+            priceToBeatNum = lockedPriceToBeat.price;
+            priceToBeatSource = lockedPriceToBeat.source;
+          } else {
+            priceToBeatNum = await fetchPolymarketPriceToBeat(marketSlug);
+            if (Number.isFinite(priceToBeatNum)) priceToBeatSource = 'polymarket-event-page';
+          }
+
+          if (priceToBeatNum != null) {
+            const locked = _lockPolymarketPriceToBeat(marketSlug, priceToBeatNum, priceToBeatSource);
+            priceToBeatNum = locked?.price ?? null;
+            priceToBeatSource = locked?.source ?? null;
           }
         }
 
-        if (priceToBeatNum == null) {
-          priceToBeatSource = 'polymarket-eventMetadata';
-          priceToBeatNum = await fetchPolymarketPriceToBeat(marketSlug);
+        // A five-minute contract is unavailable until its exact Polymarket
+        // benchmark exists. But we can queue/expose future candidates without a PTB yet.
+        // Also, do NOT discard the current active window (ts === windowTs) if the PTB is not yet loaded;
+        // we want to pull/promote it immediately.
+        if (priceToBeatNum == null && !isFuture && ts !== windowTs) return null;
+
+        if (ts === windowTs || priceToBeatNum != null) {
+          console.log(`[Poly5M-PTB] ${sym} ${marketSlug} → $${priceToBeatNum ?? 'pending'} (source: ${priceToBeatSource ?? 'waiting-for-open'})`);
         }
-        
-        const startMs = startDate ? new Date(startDate).getTime() : ts * 1000;
-        if (priceToBeatNum == null) {
-          priceToBeatNum = await fetchPolymarketRtdsPriceToBeat(sym, startMs);
-          priceToBeatSource = priceToBeatNum != null ? 'polymarket-rtds-chainlink-open' : null;
-        }
-        const priceToBeat = _formatPolyPriceToBeat(priceToBeatNum);
-        const data = {
-          probability: upProb,
+
+        const chainlinkCurrentPriceNum = null;
+        const chainlinkCurrentPriceTs = null;
+        const pythCurrent = await getFreshPythLazerPrice(sym);
+        const currentPriceNum = pythCurrent?.price ?? null;
+        const currentPriceTs = pythCurrent?.timestamp ?? null;
+        const currentPriceSource = pythCurrent?.source || null;
+        const oracleBasisNum = null;
+        const currentPriceJustification = pythCurrent
+          ? 'Pyth Lazer real-time price compared with the immutable Polymarket contract PTB; settlement remains Chainlink.'
+          : 'Pyth Lazer real-time price is unavailable or stale; the contract PTB remains locked.';
+        const priceToBeat = _formatPolyPriceToBeat(priceToBeatNum, sym);
+        const hasLiveComparison = currentPriceNum != null && Number.isFinite(priceToBeatNum) && priceToBeatNum > 0;
+        const priceDeltaNum = hasLiveComparison ? currentPriceNum - priceToBeatNum : null;
+        const priceDeltaPct = hasLiveComparison ? priceDeltaNum / priceToBeatNum : null;
+        const liveDirection = hasLiveComparison
+          ? (priceDeltaNum >= 0 ? 'UP' : 'DOWN')
+          : null;
+        const hasSettlementComparison = chainlinkCurrentPriceNum != null && Number.isFinite(priceToBeatNum) && priceToBeatNum > 0;
+        const settlementPriceDeltaNum = hasSettlementComparison ? chainlinkCurrentPriceNum - priceToBeatNum : null;
+        const settlementLiveDirection = hasSettlementComparison
+          ? (settlementPriceDeltaNum >= 0 ? 'UP' : 'DOWN')
+          : null;
+
+        return {
+          ts,
+          m,
+          hit,
+          liveUpProb,
+          upProb,
+          clobProb,
           volume,
           title,
-          slug: marketSlug,
-          closeTime: endDate,
+          marketSlug,
           endDate,
           startDate,
-          bestBid: parseFloat(m.bestBid || m.best_bid || 0) || null,
-          bestAsk: parseFloat(m.bestAsk || m.best_ask || 0) || null,
-          liquidity: parseFloat(m.liquidityNum || m.liquidity || 0) || 0,
-          targetPrice: priceToBeat,
-          targetPriceNum: priceToBeatNum,
-          targetPriceApprox: priceToBeatSource === 'polymarket-rtds-chainlink-open',
           priceToBeat,
           priceToBeatNum,
           priceToBeatSource,
-          markets: [{
-            question: title,
-            yes: upProb,
-            vol24h: volume,
-            endDate,
-            slug: marketSlug,
-            targetPrice: priceToBeat,
-            targetPriceNum: priceToBeatNum,
-          }],
-          _source: 'poly5m-slug',
-          _windowTs: ts,
+          currentPriceNum,
+          currentPriceTs,
+          currentPriceSource,
+          currentPriceJustification,
+          pythCurrent,
+          chainlinkCurrentPriceNum,
+          chainlinkCurrentPriceTs,
+          oracleBasisNum,
+          priceDeltaNum,
+          priceDeltaPct,
+          liveDirection,
+          settlementPriceDeltaNum,
+          settlementLiveDirection,
+          hasLiveComparison,
+          clobSnapshot
         };
-        _poly5mCache[sym] = { data, windowTs, fetchedAt: Date.now() };
-        return data;
       } catch (err) {
         console.warn(`[PredictionMarkets] Poly5M slug fetch failed for ${sym} ${slug}:`, err?.message || err);
+        return null;
       }
+    }));
+
+    const validResults = results.filter(r => r !== null);
+    if (validResults.length === 0) {
+      _poly5mCache[sym] = { data: null, windowTs, fetchedAt: Date.now() };
+      return null;
     }
 
-    _poly5mCache[sym] = { data: null, windowTs, fetchedAt: Date.now() };
-    return null;
+    const primary = validResults.find(r => r.ts === windowTs) || null;
+
+    if (!primary) {
+      if (cached?.windowTs === windowTs && cached.data?._windowTs === windowTs) {
+        cached.fetchedAt = Date.now();
+        return cached.data;
+      }
+      return null;
+    }
+
+    const markets = validResults.sort((a, b) => a.ts - b.ts).map(r => ({
+      question: r.title,
+      yes: r.liveUpProb,
+      gammaYes: r.upProb,
+      clobYes: Number.isFinite(r.clobProb) ? r.clobProb : null,
+      vol24h: r.volume,
+      endDate: r.endDate,
+      slug: r.marketSlug,
+      targetPrice: r.priceToBeat,
+      targetPriceNum: r.priceToBeatNum,
+      priceToBeatSource: r.priceToBeatSource,
+      currentPriceNum: r.currentPriceNum,
+      currentPriceSource: r.currentPriceSource,
+      chainlinkCurrentPriceNum: r.chainlinkCurrentPriceNum,
+      oracleBasisNum: r.oracleBasisNum,
+      priceDeltaNum: r.priceDeltaNum,
+      liveDirection: r.liveDirection,
+      settlementLiveDirection: r.settlementLiveDirection,
+      discoverySource: r.hit.source || 'gamma-markets-slug',
+      ts: r.ts,
+      isFuture: r.ts > windowTs,
+    }));
+
+    const data = {
+      probability: primary.liveUpProb,
+      gammaProbability: primary.upProb,
+      clobProbability: Number.isFinite(primary.clobProb) ? primary.clobProb : null,
+      volume: primary.volume,
+      title: primary.title,
+      slug: primary.marketSlug,
+      closeTime: primary.endDate,
+      endDate: primary.endDate,
+      startDate: primary.startDate,
+      bestBid: primary.clobSnapshot?.bestBid ?? (parseFloat(primary.m.bestBid || primary.m.best_bid || 0) || null),
+      bestAsk: primary.clobSnapshot?.bestAsk ?? (parseFloat(primary.m.bestAsk || primary.m.best_ask || 0) || null),
+      liquidity: parseFloat(primary.m.liquidityNum || primary.m.liquidity || 0) || 0,
+      targetPrice: primary.priceToBeat,
+      targetPriceNum: primary.priceToBeatNum,
+      targetPriceApprox: false,
+      priceToBeat: primary.priceToBeat,
+      priceToBeatNum: primary.priceToBeatNum,
+      priceToBeatSource: primary.priceToBeatSource,
+      currentPrice: _formatPolyPriceToBeat(primary.currentPriceNum),
+      currentPriceNum: primary.currentPriceNum,
+      currentPriceTs: primary.currentPriceTs,
+      currentPriceSource: primary.currentPriceSource,
+      currentPriceAgeMs: primary.pythCurrent?.ageMs ?? null,
+      currentPriceJustification: primary.currentPriceJustification,
+      chainlinkCurrentPriceNum: primary.chainlinkCurrentPriceNum,
+      chainlinkCurrentPriceTs: primary.chainlinkCurrentPriceTs,
+      oracleBasisNum: primary.oracleBasisNum,
+      settlementPriceDeltaNum: primary.settlementPriceDeltaNum,
+      settlementLiveDirection: primary.settlementLiveDirection,
+      priceDelta: primary.priceDeltaNum != null ? _formatPolyPriceToBeat(Math.abs(primary.priceDeltaNum)) : null,
+      priceDeltaNum: primary.priceDeltaNum,
+      priceDeltaPct: primary.priceDeltaPct,
+      liveDirection: primary.liveDirection,
+      liveSignal: primary.liveDirection,
+      liveState: primary.hasLiveComparison ? (primary.priceDeltaNum >= 0 ? 'above' : 'below') : 'unknown',
+      clobConditionId: primary.clobSnapshot?.conditionId || primary.m.conditionId || primary.m.condition_id || null,
+      clobTokenIds: _polyClobTokenIds(primary.m),
+      clobUpAssetId: primary.clobSnapshot?.upAssetId || null,
+      clobDownAssetId: primary.clobSnapshot?.downAssetId || null,
+      clobSnapshotTs: primary.clobSnapshot?.ts || null,
+      discoverySource: primary.hit.source || 'gamma-markets-slug',
+      fallbackJustification: primary.hit.fallbackJustification || null,
+      markets,
+      _source: primary.hit.source === 'gamma-markets-slug' ? 'poly5m-slug' : `poly5m-${primary.hit.source || 'fallback'}`,
+      _windowTs: primary.ts,
+    };
+    _poly5mCache[sym] = { data, windowTs, fetchedAt: Date.now() };
+    return data;
   }
 
   function matchesPolymarketCoin(m, sym) {
@@ -983,7 +1815,7 @@
     return patterns.some(re => re.test(text));
   }
 
-  function polymarketSentiment(markets, sym) {
+function polymarketSentiment(markets, sym) {
     const hits = markets.filter(m => matchesPolymarketCoin(m, sym));
     if (!hits.length) return null;
 
@@ -1088,7 +1920,8 @@
 
   async function _doFetch() {
     _polyCycleCount++;
-    const fetchPoly5M = _polyCycleCount === 1 || _polyCycleCount % 2 === 0;
+    const fetchPoly5M = true;
+    const fetchKalshi5MNow = (_polyCycleCount === 1 || _polyCycleCount % 2 === 0);
 
     const [kalshi15m, polyMarkets] = await Promise.all([
       withTimeout(fetchKalshi15M(), FETCH_TIMEOUT_MS, 'Kalshi 15M fetch').catch(err => {
@@ -1105,6 +1938,21 @@
       window.DataLogger?.logPolymarket(polyMarkets);
     }
 
+    if (fetchKalshi5MNow) {
+      const k5m = await withTimeout(fetchKalshi5M(), FETCH_TIMEOUT_MS, 'Kalshi 5M fetch')
+        .catch(err => {
+          console.warn('[PredictionMarkets] Kalshi 5M fetch failed:', err?.message || err);
+          return {};
+        });
+      if (k5m && Object.keys(k5m).length > 0) {
+        for (const [sym, k5Data] of Object.entries(k5m)) {
+          if (k5Data) {
+            _k5mCache[sym] = { ...(_k5mCache[sym] || {}), ...k5Data };
+          }
+        }
+      }
+    }
+
     if (fetchPoly5M) {
       const poly5mResults = {};
       await Promise.all(Object.keys(POLY_5M_COIN_SLUGS).map(async sym => {
@@ -1119,6 +1967,11 @@
         if (!poly5m) continue;
         _k5mCache[sym] = { ...(_k5mCache[sym] || {}), _poly5m: poly5m };
       }
+      window.DataLogger?.logPolymarket5M({
+        fetchedAt: Date.now(),
+        source: 'deterministic-slug-clob',
+        contracts: poly5mResults,
+      });
     }
 
     // --- Network Health Reporting ---
@@ -1133,25 +1986,32 @@
       window.NetworkHealth.update('Kalshi', kalshiStatus);
 
       // Polymarket
+      const hasPolyMarkets = Array.isArray(polyMarkets) && polyMarkets.length > 0;
       const polyStatus = {
-        status: polyMarkets && polyMarkets.length > 0 ? 'healthy' : 'down',
+        status: hasPolyMarkets ? 'healthy' : 'degraded',
         lastFetch: Date.now(),
-        fallback: false,
-        reason: polyMarkets && polyMarkets.length > 0 ? '' : 'No Polymarket data',
+        fallback: !hasPolyMarkets,
+        transient: !hasPolyMarkets,
+        reason: hasPolyMarkets ? `${polyMarkets.length} markets` : (_polyLastError || 'No Polymarket data'),
+        bucket: hasPolyMarkets ? 'unknown' : 'provider/api',
+        bucketReason: hasPolyMarkets ? '' : (_polyLastError || 'optional Polymarket data unavailable'),
       };
       window.NetworkHealth.update('Polymarket', polyStatus);
 
       
 
       // ProxyOrchestrator (if present)
-      let proxyStatus = { status: 'unknown', lastFetch: Date.now(), fallback: false, reason: '' };
-      if (typeof window._proxyOrchestrator !== 'undefined') {
-        proxyStatus.status = 'healthy';
-      } else {
-        proxyStatus.status = 'down';
-        proxyStatus.reason = 'Not initialized';
+      if (typeof window._proxyOrchestrator === 'undefined') {
+        window.NetworkHealth.update('ProxyOrchestrator', {
+          status: 'degraded',
+          lastFetch: Date.now(),
+          fallback: true,
+          transient: true,
+          reason: 'Not initialized',
+          bucket: 'app/logic',
+          bucketReason: 'ProxyOrchestrator not initialized',
+        });
       }
-      window.NetworkHealth.update('ProxyOrchestrator', proxyStatus);
     }
     // Debug: log what we got from Kalshi 15M
     const k15Coins = Object.entries(kalshi15m).filter(([sym, data]) => data !== null).map(([sym]) => sym);
@@ -1168,7 +2028,14 @@
       const k5raw = _k5mCache[sym] ?? null;
       const poly5mSlug = k5raw?._poly5m ?? null;
       const poly = Array.isArray(_polyCache) ? polymarketSentiment(_polyCache, sym) : null;
-      const poly5m = poly5mSlug ?? (Array.isArray(_polyCache) ? polymarket5mSentiment(_polyCache, sym) : null);
+      const poly5m = poly5mSlug || null;
+
+      let k5 = null;
+      if (k5raw) {
+        k5 = { ...k5raw };
+        delete k5._poly5m;
+        if (Object.keys(k5).length === 0) k5 = null;
+      }
       
       const sources = [];
       if (k15?.probability != null) sources.push({ name: 'Kalshi15M', prob: k15.probability, vol: k15.volume || 1 });
@@ -1188,7 +2055,7 @@
         combinedProb: combinedProb !== null ? parseFloat(combinedProb.toFixed(4)) : null,
         sources,
         kalshi15m: k15,
-        kalshi5m: null,
+        kalshi5m: k5,
         poly5m,
         poly5mSlug,
         poly5mMkts: poly5m?.markets || [],
@@ -1255,7 +2122,7 @@
           ...cache[sym],
           poly5m,
           poly5mSlug: poly5m,
-          poly5mMkts: [],
+          poly5mMkts: poly5m.markets || [],
           sources: [
             ...(cache[sym].sources || []).filter(s => s.name !== 'Poly5M'),
             { name: 'Poly5M', prob: poly5m.probability, vol: poly5m.volume || 1 },
@@ -1299,6 +2166,99 @@
         });
         if (nearClose) fetchAll();
       }, 10_000);
+
+      // High-precision clock for 5m boundaries to handle instant rollover, settlement, and pre-fetching
+      let lastBoundarySec = 0;
+      let prefetchTriggered = false;
+      setInterval(() => {
+        if (document.hidden) return;
+        const nowMs = Date.now();
+        const nowSec = Math.floor(nowMs / 1000);
+        const secInPeriod = nowSec % 300;
+
+        // 1. Pre-fetch trigger: 10 seconds before the 5-minute boundary
+        if (secInPeriod >= 290 && !prefetchTriggered) {
+          prefetchTriggered = true;
+          console.info(`[BoundaryClock] ⏱ 10s to 5m boundary. Triggering pre-fetch of future 5M contracts.`);
+          fetchAll().catch(() => {});
+        }
+
+        // Reset prefetch trigger when we are in a new period
+        if (secInPeriod < 290) {
+          prefetchTriggered = false;
+        }
+
+        // 2. Rollover trigger: Exactly at the boundary
+        const currentBoundary = nowSec - secInPeriod;
+        if (currentBoundary > lastBoundarySec && lastBoundarySec > 0) {
+          lastBoundarySec = currentBoundary;
+          console.info(`[BoundaryClock] 🏁 5-minute boundary rollover hit! Forcing instant local rollover & network refresh.`);
+          
+          let touched = false;
+          Object.keys(POLY_5M_COIN_SLUGS).forEach(sym => {
+            const coin = cache[sym];
+            if (coin && coin.poly5mMkts && coin.poly5mMkts.length) {
+              const nextMkt = coin.poly5mMkts.find(m => m.ts === currentBoundary);
+              if (nextMkt) {
+                const updatedPoly5m = {
+                  probability: nextMkt.yes,
+                  gammaProbability: nextMkt.gammaYes,
+                  clobProbability: nextMkt.clobYes,
+                  volume: nextMkt.vol24h,
+                  title: nextMkt.question,
+                  slug: nextMkt.slug,
+                  closeTime: nextMkt.endDate,
+                  endDate: nextMkt.endDate,
+                  startDate: new Date(currentBoundary * 1000).toISOString(),
+                  bestBid: null,
+                  bestAsk: null,
+                  liquidity: 0,
+                  targetPrice: nextMkt.targetPrice,
+                  targetPriceNum: nextMkt.targetPriceNum,
+                  priceToBeat: nextMkt.targetPrice,
+                  priceToBeatNum: nextMkt.targetPriceNum,
+                  priceToBeatSource: nextMkt.priceToBeatSource,
+                  currentPrice: null,
+                  currentPriceNum: null,
+                  currentPriceTs: null,
+                  currentPriceSource: null,
+                  currentPriceAgeMs: null,
+                  currentPriceJustification: 'Local rollover: fetching fresh prices and benchmark…',
+                  markets: coin.poly5mMkts.map(m => ({
+                    ...m,
+                    isFuture: m.ts > currentBoundary
+                  })),
+                  _source: 'local-rollover',
+                  _windowTs: currentBoundary
+                };
+                
+                cache[sym] = {
+                  ...coin,
+                  poly5m: updatedPoly5m,
+                  poly5mSlug: updatedPoly5m,
+                  poly5mMkts: updatedPoly5m.markets,
+                  sources: [
+                    ...(coin.sources || []).filter(s => s.name !== 'Poly5M'),
+                    { name: 'Poly5M', prob: updatedPoly5m.probability, vol: updatedPoly5m.volume || 1 }
+                  ]
+                };
+                touched = true;
+              }
+            }
+            _poly5mCache[sym] = null;
+          });
+
+          if (touched) {
+            window.dispatchEvent(new CustomEvent('predictionmarketsready', { detail: cache }));
+          }
+
+          // Trigger background fetch to get actual PTB and live pricing
+          refreshPoly5M('boundary-clock').catch(() => {});
+          fetchAll().catch(() => {});
+        } else if (lastBoundarySec === 0) {
+          lastBoundarySec = currentBoundary;
+        }
+      }, 1000);
     },
     getAll() { return cache; },
     getCoin(sym) { return cache[sym] ?? null; },
@@ -1334,4 +2294,3 @@
   };
 
 })();
-

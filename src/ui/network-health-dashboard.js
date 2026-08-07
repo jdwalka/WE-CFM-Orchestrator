@@ -18,6 +18,8 @@
     dash.style.boxShadow = '0 2px 12px #0008';
     dash.style.padding = '14px 18px 10px 18px';
     dash.style.minWidth = '280px';
+    dash.style.maxHeight = 'min(78vh, 760px)';
+    dash.style.overflow = 'hidden';
     dash.style.fontFamily = 'JetBrains Mono, monospace';
     dash.style.fontSize = '14px';
     dash.style.color = '#e0e6f0';
@@ -26,10 +28,16 @@
     dash.innerHTML = `
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
             <div style="font-weight:600;font-size:15px;letter-spacing:0.5px;">Network Health</div>
-            <button id="network-health-min-btn" class="hud-icon-btn" type="button" title="Minimize"
-                style="padding:2px 6px;border-radius:6px;font-size:12px;color:#aab2c0;background:transparent;border:1px solid #333;cursor:pointer;">▼</button>
+            <div style="display:flex;align-items:center;gap:6px;">
+                <button id="network-health-reconnect-btn" class="hud-icon-btn" type="button" title="Reconnect all feeds"
+                    style="padding:2px 8px;border-radius:6px;font-size:11px;color:#8ab4f8;background:transparent;border:1px solid #334;cursor:pointer;">↻</button>
+                <button id="network-health-min-btn" class="hud-icon-btn" type="button" title="Minimize"
+                    style="padding:2px 6px;border-radius:6px;font-size:12px;color:#aab2c0;background:transparent;border:1px solid #333;cursor:pointer;">▼</button>
+            </div>
         </div>
         <div id="network-health-body">
+            <div id="network-health-recovery" style="display:none;margin-bottom:8px;"></div>
+            <div id="network-health-summary" style="font-size:12px;color:#9aa6b2;margin-bottom:8px;"></div>
             <div id="network-health-alert" style="display:none;margin-bottom:8px;"></div>
             <div id="network-health-buckets" style="font-size:12px;color:#9aa6b2;margin-bottom:6px;"></div>
             <div id="network-health-list"></div>
@@ -55,6 +63,9 @@
         const btn = document.getElementById('network-health-min-btn');
         if (!body || !btn) return;
         body.style.display = minimized ? 'none' : '';
+        body.style.overflowY = minimized ? 'hidden' : 'auto';
+        body.style.overflowX = 'hidden';
+        body.style.maxHeight = minimized ? '0' : 'min(68vh, 660px)';
         dash.style.padding = minimized ? '10px 14px' : '14px 18px 10px 18px';
         dash.style.minWidth = minimized ? '220px' : '280px';
         btn.textContent = minimized ? '▲' : '▼';
@@ -70,17 +81,83 @@
     }
 
     document.getElementById('network-health-min-btn')?.addEventListener('click', () => {
+        const wasMinimized = minimized;
         minimized = !minimized;
         persistMinimizedState();
         applyMinimizedState();
+        if (wasMinimized && !minimized) {
+            try { window.NetworkHealth?.syncLiveProbe?.(); } catch (_) { }
+            try { window.ExchangeWS?.warmOptionalWsRoutes?.('dashboard-expand'); } catch (_) { }
+            scheduleRender(true);
+        }
+    });
+
+    document.getElementById('network-health-reconnect-btn')?.addEventListener('click', () => {
+        const btn = document.getElementById('network-health-reconnect-btn');
+        if (btn) {
+            btn.disabled = true;
+            btn.textContent = '…';
+        }
+        const done = () => {
+            if (btn) {
+                btn.disabled = false;
+                btn.textContent = '↻';
+            }
+        };
+        const run = window.NetworkRecovery?.run?.('dashboard-reconnect');
+        if (run && typeof run.then === 'function') run.finally(done);
+        else done();
     });
     applyMinimizedState();
 
+    const STATUS_ORDER = { down: 0, recovering: 1, degraded: 2, unknown: 3, healthy: 4 };
+
     function statusColor(status) {
         if (status === 'healthy') return '#3ecf8e';
+        if (status === 'recovering') return '#8ab4f8';
         if (status === 'degraded') return '#ffd166';
         if (status === 'down') return '#ff5e5e';
         return '#888';
+    }
+
+    function statusLabel(status) {
+        if (status === 'recovering') return 'RECONNECT';
+        return String(status || 'unknown').toUpperCase();
+    }
+
+    function providerRank(provider, row) {
+        const critical = window.NetworkHealth?.isCriticalProvider?.(provider);
+        const severity = STATUS_ORDER[row?.status] ?? 3;
+        return (critical ? 0 : 100) + severity;
+    }
+
+    function renderSummary(summary, recovery) {
+        const el = document.getElementById('network-health-summary');
+        if (!el || !summary) return;
+        const criticalLine = `${summary.criticalHealthy}/${summary.criticalTotal} critical live`;
+        const parts = [
+            `<span style="color:#3ecf8e;">${summary.healthy} healthy</span>`,
+            summary.recovering ? `<span style="color:#8ab4f8;">${summary.recovering} reconnecting</span>` : '',
+            summary.degraded ? `<span style="color:#ffd166;">${summary.degraded} degraded</span>` : '',
+            summary.down ? `<span style="color:#ff5e5e;">${summary.down} down</span>` : '',
+            summary.unknown ? `<span style="color:#888;">${summary.unknown} idle</span>` : '',
+        ].filter(Boolean).join(' · ');
+        el.innerHTML = `${parts}<div style="margin-top:3px;color:#c7d2fe;">${criticalLine}${recovery?.active && recovery.phase ? ` · phase ${escapeHtml(recovery.phase)}` : ''}</div>`;
+    }
+
+    function renderRecoveryBanner(recovery) {
+        const el = document.getElementById('network-health-recovery');
+        if (!el) return;
+        if (!recovery?.active) {
+            el.style.display = 'none';
+            el.innerHTML = '';
+            return;
+        }
+        el.style.display = '';
+        el.innerHTML = `<div style="background:rgba(138,180,248,0.12);border:1px solid rgba(138,180,248,0.35);color:#dbeafe;padding:7px 10px;border-radius:6px;font-size:12px;">
+            Reconnecting feeds${recovery.phase ? ` · <span style="color:#8ab4f8;">${escapeHtml(recovery.phase)}</span>` : ''}
+            ${recovery.reason ? `<span style="color:#888;"> (${escapeHtml(recovery.reason)})</span>` : ''}
+        </div>`;
     }
 
     function formatAgo(ts) {
@@ -145,6 +222,7 @@
                 docker: 'unknown',
                 redpanda: 'unknown',
                 nodes: 0,
+                nodesDown: [],
                 topics: [],
                 notifications: [],
             };
@@ -152,8 +230,13 @@
             try {
                 const brokers = await fetchJsonWithTimeout('http://127.0.0.1:9644/v1/brokers', 2500);
                 out.docker = 'healthy';
-                out.redpanda = 'healthy';
-                out.nodes = Array.isArray(brokers) ? brokers.length : 0;
+                const brokerList = Array.isArray(brokers) ? brokers : [];
+                out.nodes = brokerList.filter(broker => broker?.is_alive !== false && broker?.membership_status === 'active').length;
+                out.nodesDown = brokerList
+                    .filter(broker => broker?.is_alive === false || broker?.membership_status !== 'active')
+                    .map(broker => broker?.node_id)
+                    .filter(nodeId => Number.isFinite(nodeId));
+                out.redpanda = out.nodesDown.length ? 'degraded' : 'healthy';
                 out.notifications.push({
                     ts: Date.now(),
                     level: 'success',
@@ -298,8 +381,12 @@
             + `<div style="margin-top:4px;border-top:1px dotted #3a3f4a;padding-top:4px;">${domainRows}${wsDiagRows}</div>`;
     }
 
-    function render() {
+    function renderCore() {
         const state = window.NetworkHealth?.getAll?.() || {};
+        const summary = window.NetworkHealth?.getSummary?.() || {};
+        const recovery = window.NetworkHealth?.getRecoveryState?.() || {};
+        renderSummary(summary, recovery);
+        renderRecoveryBanner(recovery);
         const bucketCounts = window.NetworkHealth?.getBucketCounters?.() || {};
         const bucketEl = document.getElementById('network-health-buckets');
         if (bucketEl) {
@@ -309,7 +396,21 @@
                 `<span>Network/Transport: ${bucketCounts['network/transport'] || 0}</span> · ` +
                 `<span>Provider/API: ${bucketCounts['provider/api'] || 0}</span>`;
         }
-        const list = Object.entries(state).map(([provider, v]) => {
+        const sorted = Object.entries(state)
+            .filter(([provider]) => {
+                const hostKey = String(provider || '').toLowerCase();
+                if (!hostKey.includes('.')) return true;
+                const canonical = window.NetworkHealth?.HOST_CANONICAL?.[hostKey];
+                if (!canonical) return true;
+                const canonicalRow = state[canonical];
+                return !canonicalRow || Number(canonicalRow.lastFetch || 0) < Number(state[provider]?.lastFetch || 0);
+            })
+            .sort(([providerA, rowA], [providerB, rowB]) => {
+            const rankDiff = providerRank(providerA, rowA) - providerRank(providerB, rowB);
+            if (rankDiff !== 0) return rankDiff;
+            return String(providerA).localeCompare(String(providerB));
+        });
+        const list = sorted.map(([provider, v]) => {
             const retryAt = Number(v.retryAt || v.cooldownUntil || 0);
             const cooldownMs = retryAt > Date.now() ? retryAt - Date.now() : 0;
             const retryLabel = cooldownMs > 0 ? `Retry ${formatMs(cooldownMs)}` : '';
@@ -318,43 +419,99 @@
                 .map((x) => String(x || '').trim())
                 .filter(Boolean)
                 .filter((x, idx, arr) => arr.findIndex((y) => y.toLowerCase() === x.toLowerCase()) === idx);
-            const reason = v.status === 'degraded' || v.status === 'down'
+            const reason = v.status === 'degraded' || v.status === 'down' || v.status === 'recovering' || (v.status === 'unknown' && v.reason)
                 ? reasonParts.join(' · ')
                 : '';
+            const critical = window.NetworkHealth?.isCriticalProvider?.(provider);
+            const optional = v.optional && !critical;
+            const pulse = v.status === 'recovering' ? 'animation:nh-pulse 1.4s ease-in-out infinite;' : '';
+            const tag = critical
+                ? '<span style="font-size:10px;color:#c7d2fe;margin-left:4px;">CORE</span>'
+                : (optional ? '<span style="font-size:10px;color:#666;margin-left:4px;">OPT</span>' : '');
             return `<div style="display:flex;align-items:center;margin-bottom:4px;">
-        <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${statusColor(v.status)};margin-right:8px;"></span>
-        <span style="font-weight:500;width:110px;display:inline-block;">${provider}</span>
-        <span style="color:#aaa;font-size:12px;width:80px;display:inline-block;">${formatAgo(v.lastFetch)}</span>
-        <span style="font-size:12px;color:${v.fallback ? '#ffd166' : '#aaa'};margin-left:6px;">${v.fallback ? 'Fallback' : ''}</span>
-        <span style="font-size:12px;color:#8ab4f8;margin-left:6px;">${retryLabel}</span>
-        <span style="font-size:12px;color:#ff5e5e;margin-left:6px;">${bucketLabel}${reason ? ` ${reason}` : ''}</span>
+        <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${statusColor(v.status)};margin-right:8px;${pulse}"></span>
+        <span style="font-weight:500;width:110px;display:inline-block;">${provider}${tag}</span>
+        <span style="color:#666;font-size:10px;width:58px;display:inline-block;">${statusLabel(v.status)}</span>
+        <span style="color:#aaa;font-size:12px;width:72px;display:inline-block;">${formatAgo(v.lastFetch)}</span>
+        <span style="font-size:12px;color:${v.fallback ? '#ffd166' : '#aaa'};margin-left:4px;">${v.fallback ? 'Fallback' : ''}</span>
+        <span style="font-size:12px;color:#8ab4f8;margin-left:4px;">${retryLabel}</span>
+        <span style="font-size:12px;color:${v.status === 'recovering' ? '#8ab4f8' : '#ff5e5e'};margin-left:4px;">${bucketLabel}${reason ? ` ${escapeHtml(reason)}` : ''}</span>
       </div>`;
         }).join('');
-        document.getElementById('network-health-list').innerHTML = list;
+        document.getElementById('network-health-list').innerHTML = list || '<span style="color:#888;">No provider activity yet</span>';
         document.getElementById('network-health-lastupdate').textContent = 'Updated ' + formatAgo(Date.now());
         renderTransport();
-        renderOrbital();
 
         const alertDiv = document.getElementById('network-health-alert');
         let alertMsg = '';
         if (window.NetworkHealth?.failureCounters) {
             for (const [provider, fc] of Object.entries(window.NetworkHealth.failureCounters)) {
-                if (fc.alertActive) {
-                    alertMsg += `<div style="background:#ff5e5e;color:#fff;padding:7px 12px;border-radius:6px;font-weight:600;margin-bottom:2px;">
-                        ${provider} is DOWN (${fc.count} cycles): ${state[provider]?.reason || ''}
+                if (!fc.alertActive) continue;
+                if (recovery.active && !window.NetworkHealth?.isCriticalProvider?.(provider)) continue;
+                alertMsg += `<div style="background:#ff5e5e;color:#fff;padding:7px 12px;border-radius:6px;font-weight:600;margin-bottom:2px;">
+                        ${provider} is DOWN (${fc.count} cycles): ${escapeHtml(state[provider]?.reason || '')}
                     </div>`;
-                }
             }
         }
         alertDiv.innerHTML = alertMsg;
         alertDiv.style.display = alertMsg ? '' : 'none';
     }
 
+    let orbitalRenderInFlight = false;
+    let lastOrbitalRenderAt = 0;
+    const ORBITAL_RENDER_MS = 30000;
+    const DASHBOARD_RENDER_MS = 4000;
+
+    async function renderOrbitalSafe() {
+        if (orbitalRenderInFlight) return;
+        orbitalRenderInFlight = true;
+        lastOrbitalRenderAt = Date.now();
+        try {
+            await renderOrbital();
+        } catch (err) {
+            console.warn('[NetworkHealthDashboard] orbital render failed:', err?.message || err);
+        } finally {
+            orbitalRenderInFlight = false;
+        }
+    }
+
+    let renderQueued = false;
+    function scheduleRender(forceOrbital = false) {
+        if (renderQueued) return;
+        renderQueued = true;
+        requestAnimationFrame(() => {
+            renderQueued = false;
+            try {
+                renderCore();
+            } catch (err) {
+                console.warn('[NetworkHealthDashboard] render failed:', err?.message || err);
+            }
+            const orbitalDue = forceOrbital || (Date.now() - lastOrbitalRenderAt >= ORBITAL_RENDER_MS);
+            if (orbitalDue) void renderOrbitalSafe();
+        });
+    }
+
+    function render() {
+        scheduleRender(false);
+    }
+
+    if (!document.getElementById('network-health-pulse-style')) {
+        const style = document.createElement('style');
+        style.id = 'network-health-pulse-style';
+        style.textContent = '@keyframes nh-pulse { 0%,100% { opacity:1; transform:scale(1); } 50% { opacity:0.45; transform:scale(0.85); } }';
+        document.head.appendChild(style);
+    }
+
     window.addEventListener('network-health-update', render);
     window.addEventListener('network-health-alert', render);
     window.addEventListener('network-transport-update', render);
-    setInterval(render, 2000);
-    setTimeout(render, 100);
+    window.addEventListener('network-recovery-start', render);
+    window.addEventListener('network-recovery-phase', render);
+    window.addEventListener('network-recovery-end', render);
+    window.addEventListener('network-recovery-complete', render);
+    setInterval(() => scheduleRender(false), DASHBOARD_RENDER_MS);
+    setInterval(() => scheduleRender(true), ORBITAL_RENDER_MS);
+    setTimeout(() => scheduleRender(true), 250);
 
         async function renderOrbital() {
         const el = document.getElementById('orbital-matrix-stats');
@@ -374,8 +531,9 @@
                     status = {
                         ...status,
                         docker: probed.docker || status.docker,
-                        redpanda: probed.redpanda || status.redpanda,
+                        redpanda: status.redpanda === 'degraded' ? 'degraded' : (probed.redpanda || status.redpanda),
                         nodes: Number.isFinite(probed.nodes) && probed.nodes > 0 ? probed.nodes : status.nodes,
+                        nodesDown: Array.isArray(status.nodesDown) && status.nodesDown.length ? status.nodesDown : (probed.nodesDown || []),
                         topics: Array.isArray(probed.topics) && probed.topics.length ? probed.topics : (status.topics || []),
                         notifications: [...(probed.notifications || []), ...(Array.isArray(status.notifications) ? status.notifications : [])].slice(0, 8),
                     };
@@ -385,6 +543,7 @@
             const dockerStatus = status.docker === 'healthy' ? '<span style="color:#3ecf8e;">Docker UP</span>' : '<span style="color:#ff5e5e;">Docker DOWN</span>';
             const topicsCount = Array.isArray(status.topics) ? status.topics.length : 0;
             const nodeCount = Number.isFinite(status.nodes) ? status.nodes : 0;
+            const nodesDown = Array.isArray(status.nodesDown) ? status.nodesDown : [];
             const bridge = status.bridge || {};
             const activity = status.activity || {};
             const totalMessages = Number(activity.totalMessages || bridge.totalMessages || 0);
@@ -407,10 +566,12 @@
                 <div style="display:flex;align-items:center;margin-bottom:4px;">
                     <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${dotColor};margin-right:8px;"></span>
                     <span style="font-weight:600;color:#e0e6f0;">Redpanda Cluster</span>
+                    ${!bridge.connected ? '<button id="orbital-restart-btn" type="button" title="Restart orbital pipeline" style="margin-left:8px;padding:2px 7px;border:1px solid #8ab4f8;background:#171c24;color:#8ab4f8;font-size:10px;cursor:pointer;">Restart</button>' : ''}
                     <span style="margin-left:auto;color:#aaa;">${nodeCount} Nodes</span>
                 </div>
                 <div style="color:#9aa6b2;margin-left:18px;">
                     <div>Status: <span style="color:${dotColor};">${status.redpanda?.toUpperCase() || 'OFFLINE'}</span> &middot; ${dockerStatus}</div>
+                    ${nodesDown.length ? `<div style="color:#ffd166;">Nodes down: ${nodesDown.map(escapeHtml).join(', ')}</div>` : ''}
                     <div>Active Topics: <span style="color:#8ab4f8;">${topicsCount}</span></div>
                     <div style="font-size:10px;color:#666;margin-top:2px;">${(status.topics || []).map(escapeHtml).join(', ') || 'no active topics'}</div>
                     <div style="margin-top:5px;">${bridgeState} &middot; Messages: <span style="color:#8ab4f8;">${totalMessages}</span>${activeOrbitals.length ? ` &middot; Active orbitals: <span style="color:#e0e6f0;">${activeOrbitals.map(escapeHtml).join(', ')}</span>` : ''}</div>
@@ -422,6 +583,24 @@
                     </div>
                 </div>
             `;
+
+            const restartButton = document.getElementById('orbital-restart-btn');
+            if (restartButton) {
+                restartButton.addEventListener('click', async () => {
+                    restartButton.disabled = true;
+                    restartButton.textContent = 'Starting...';
+                    const result = window._orbitalBroadcaster?.restartOrbitalSystem
+                        ? await window._orbitalBroadcaster.restartOrbitalSystem()
+                        : await window.electron?.invoke?.('orbital:restart');
+                    if (!result?.success) {
+                        restartButton.disabled = false;
+                        restartButton.textContent = 'Retry';
+                        restartButton.title = result?.error || 'Orbital restart failed';
+                        return;
+                    }
+                    setTimeout(() => scheduleRender(true), 500);
+                });
+            }
         } catch (err) {
             const message = err?.message || String(err || 'unknown error');
             el.innerHTML = `<span style="color:#ff5e5e;">Failed to poll orbital status: ${escapeHtml(message)}</span>`;

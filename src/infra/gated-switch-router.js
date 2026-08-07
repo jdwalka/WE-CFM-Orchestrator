@@ -262,6 +262,47 @@ function setupIpcHandlers() {
       return { success: false, error: err.message };
     }
   });
+
+  // Send Telegram Message Handler
+  ipcMain.handle('telegram:send-message', async (event, { chat, text, parseMode = 'html' }) => {
+    let targetChat = chat || process.env.TELEGRAM_CHANNEL_TO_LISTEN || '8338462147';
+    if (/^\d+$/.test(targetChat)) {
+      if (targetChat.length === 10) {
+        targetChat = '-100' + targetChat;
+      } else {
+        targetChat = Number(targetChat);
+      }
+    } else if (/^-\d+$/.test(targetChat)) {
+      targetChat = Number(targetChat);
+    }
+
+    const botToken = process.env.TELEGRAM_BOT_TOKEN;
+    if (botToken) {
+      try {
+        const axios = require('axios');
+        const response = await axios.post(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+          chat_id: targetChat,
+          text: text,
+          parse_mode: parseMode === 'html' ? 'HTML' : 'Markdown'
+        });
+        return { success: true, messageId: response.data?.result?.message_id };
+      } catch (err) {
+        console.error('[Telegram Bot] Failed to send message:', err.response?.data || err.message);
+      }
+    }
+
+    if (!telegramClient || !telegramClient.connected) {
+      return { success: false, error: 'Telegram not connected' };
+    }
+
+    try {
+      const result = await telegramClient.sendMessage(targetChat, { message: text, parseMode: parseMode });
+      return { success: true, messageId: result.id };
+    } catch (err) {
+      console.error('[Telegram Userbot] Failed to send message:', err.message);
+      return { success: false, error: err.message };
+    }
+  });
 }
 
 // Initialise on load

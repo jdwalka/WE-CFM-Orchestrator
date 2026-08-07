@@ -58,23 +58,17 @@
   const BFNX_BASE = 'https://api-pub.bitfinex.com/v2';
   // BNB removed — not listed on Bitfinex. SOL corrected (tSOLUST was a typo → tSOLUSD).
   const BFNX_SYMS = { BTC: 'tBTCUSD', ETH: 'tETHUSD', SOL: 'tSOLUSD', XRP: 'tXRPUSD', DOGE: 'tDOGEUSD' };
+  const CDC_TRANSIENT_STATUS = new Set([429, 502, 503, 504]);
   let SHORT_HORIZON_MINUTES = [1, 5, 10, 15];
   let DEFAULT_SHORT_HORIZON_MIN = 15;  // Primary target: next 15-min candle session (Kalshi contracts)
   const STATIC_HORIZONS = [1, 5, 10, 15];
 
-  // Helper to dynamically calculate minutes until the next :00, :15, :30, :45 mark
-  function getKalshiNextBoundaryMinutes() {
-    const now = new Date();
-    const minutes = now.getMinutes();
-    const seconds = now.getSeconds();
-    const currentFractionalMinute = minutes + (seconds / 60);
-    let nextBoundary = Math.ceil(currentFractionalMinute / 15) * 15;
-    if (nextBoundary === currentFractionalMinute) nextBoundary += 15;
-    let remaining = Math.round(nextBoundary - currentFractionalMinute);
-    return Math.max(1, Math.min(15, remaining));
-  }
-  // Model-first policy: prediction markets are verification context, not a directional driver.
-  const KALSHI_VERIFY_ONLY = true;
+  const {
+    KALSHI_VERIFY_ONLY,
+    getKalshiNextBoundaryMinutes,
+    calculateKalshiSentiment,
+    getKalshi15mSettlementContext,
+  } = window.PredictionKalshiLogic;
   const SHORT_HORIZON_WEIGHTS = { 1: 0.25, 5: 0.45, 10: 0.75, 15: 2.40 };
   const SHORT_HORIZON_FILTERS = {
     h1: { entryThreshold: 0.16, minAgreement: 0.62 },  // ★ RAISED: Filter out noise at 1min (was 0.08)
@@ -102,11 +96,8 @@
   const TIDE_REQUEST_TIMEOUT_MS = 6500;
   const TIDE_STATUS_TTL_MS = 60 * 1000;
   const TIDE_DISABLED_RETRY_MS = 5 * 60 * 1000;
-  const LIVE_BOOK_TTL_MS = 2500;
-  const LIVE_BOOK_REPRICE_MIN_MS = 2500;
-  const LIVE_BOOK_CLOSE_REPRICE_MIN_MS = 1200;
-  const LIVE_BOOK_REPRICE_MIN_ABS_IMBALANCE = 0.18;
-  const LIVE_BOOK_REPRICE_DELTA = 0.06;
+  const PREDICTION_FIRST_PASS_TIMEOUT_MS = 6500;
+  const GECKO_MARKET_SOFT_TIMEOUT_MS = 2500;
   const GECKO_MIN_GAP_MS = 60_000; // hard-backoff: max ~1 req/min
   const GECKO_RATE_LIMIT_PAUSE_MS = 5 * 60_000;
   const GECKO_AUTH_PAUSE_MS = 5 * 60_000;
@@ -114,7 +105,44 @@
   let inferenceCooldownReason = '';
   let tideDisabledUntilTs = 0;
   let tideDisabledReason = '';
-  const _liveMicroState = {};
+  const {
+    configure: configurePredictionMicrostructure,
+    getFreshLiveBook,
+    resolveFreshOrderBook,
+    updateLiveOrderBook,
+    shouldRepriceForLiveBook,
+    rescoreLiveMicrostructure,
+    analyzeBook,
+    detectWallAbsorption,
+    classifyBookLiquidity,
+    getLiveMicrostructure,
+  } = window.PredictionMicrostructure;
+
+  configurePredictionMicrostructure({
+    getCandleCache(sym) {
+      return candleCache[String(sym || '').toUpperCase()] || null;
+    },
+    getPredictionCoins() {
+      return Array.isArray(window.PREDICTION_COINS)
+        ? window.PREDICTION_COINS
+        : (typeof PREDICTION_COINS !== 'undefined' ? PREDICTION_COINS : []);
+    },
+    getPredictions() {
+      return window._predictions || {};
+    },
+    getBacktests() {
+      return window._backtests || {};
+    },
+    setPrediction(sym, prediction) {
+      window._predictions[String(sym || '').toUpperCase()] = prediction;
+    },
+    computePrediction(coin, backtest) {
+      return computePrediction(coin, backtest);
+    },
+    preservePredictionOverlay(previousPrediction, nextPrediction) {
+      return preservePredictionOverlay(previousPrediction, nextPrediction);
+    },
+  });
 
   // ── Backtest localStorage cache (cold-start / refresh acceleration) ───────
   // Bump cache key to force recomputation after h1/h5 horizon-candle fix.
@@ -150,47 +178,6 @@
   })();
   const ENABLE_MDT_SCORE_MULT = true; // set false to instantly revert to pre-MDT formula
 
-  // Fear & Greed Index cache (5-minute TTL)
-  let _fngCache = { value: null, ts: 0 };
-
-  async function fetchAnalyticsWithRoute(url, timeoutMs = 4500) {
-    const torOptIn = !!window.__TOR_ANALYTICS_OPT_IN__;
-    const router = window.TORRouter;
-    if (torOptIn && router && typeof router.routeAPI === 'function') {
-      try {
-        return await router.routeAPI(url, {
-          routeClass: 'analytics',
-          timeout: timeoutMs,
-        });
-      } catch (_) {
-        // Fall through to direct path.
-      }
-    }
-    return fetchWithTimeout(url, timeoutMs);
-  }
-
-  async function fetchFearGreed() {
-    const now = Date.now();
-    if (now - _fngCache.ts < 300000) return _fngCache.value;
-    // Throttle on attempt (not only success) so transient outages don't spam requests.
-    _fngCache.ts = now;
-    try {
-      // Non-critical indicator; keep timeout moderate to avoid noisy false negatives on slow routes.
-      const res = await fetchAnalyticsWithRoute('https://api.alternative.me/fng/?limit=1', 15000);
-      if (!res.ok) {
-        console.warn(`[FNG] HTTP ${res.status} after 15s - using cached value`);
-        return _fngCache.value;
-      }
-      const data = await res.json();
-      _fngCache.value = parseInt(data.data[0].value, 10);
-      console.info(`[FNG] Updated: ${_fngCache.value}`);
-    } catch (e) {
-      console.warn(`[FNG] Timeout/error after 15s: ${e.message} - using cached value`);
-      /* use cached value */
-    }
-    return _fngCache.value;
-  }
-
   // ================================================================
   // COMPOSITE_WEIGHTS — Global base weights
   // Empirically derived from 30-day Python backtest (h-subshell ±5, 7 coins × 4 horizons).
@@ -201,310 +188,246 @@
   // (63–70% WR for BTC/ETH). Weights now reflect empirical reality.
   // ================================================================
   const COMPOSITE_WEIGHTS = {
-    // ── Synced with backtest-runner.js (2026-04-28) ───────────────────────────
-    // ── Updated 2026-05-04: Increased microstructure weights (short-horizon boost)
-    // Trend / directional
-    supertrend: 0.10,
-    hma: 0.07,
-    vwma: 0.06,
-    ema: 0.05,
-    sma: 0.03,
-    macd: 0.07,
-    persistence: 0.07,
-    // Mean-reversion / oscillators
-    bands: 0.05,
-    keltner: 0.05,
-    williamsR: 0.07,
-    rsi: 0.06,
-    cci: 0.05,
-    stochrsi: 0.04,
-    // Volume / flow
-    volume: 0.12,
-    obv: 0.07,
-    cmf: 0.07,
-    mfi: 0.07,
-    // Structure / trend quality
-    structure: 0.10,
-    ichimoku: 0.05,
-    adx: 0.04,
-    fisher: 0.04,
-    // Live-only microstructure (INCREASED for h1/h5 edge)
-    book: 0.25,  // was 0.13 — 92% increase for order flow signal at short horizons
-    flow: 0.22,  // was 0.12 — 83% increase for trade flow signal
-    toxicity: 0.06,
-    spoof: 0.07,
-    iceberg: 0.08,
-    orderBookImbalance: 0.18, // weighted 10/20-level live depth
-    imbalanceVelocity: 0.12,  // rolling 15m book-pressure acceleration
-    liquidityDepth: 0.08,     // live depth quality/risk context
-    liquidityVacuum: 0.12,
-    fundingRate: 0.10,
-    mktSentiment: 0.18,  // was 0.11 — 64% increase for macro context
-    fearGreed: 0.12,  // Fear & Greed Index macro overlay
-    cmcMacro: 0.08,  // ★ CoinMarketCap Pro: BTC dominance + global volume flux (added 2026-05-06)
-  };
+     supertrend: 0.1,
+     hma: 0.07,
+     vwma: 0.06,
+     ema: 0.05,
+     sma: 0.03,
+     macd: 0.07,
+     persistence: 0.07,
+     bands: 0.05,
+     keltner: 0.05,
+     williamsR: 0.07,
+     rsi: 0.06,
+     cci: 0.05,
+     stochrsi: 0.04,
+     volume: 0.12,
+     obv: 0.07,
+     cmf: 0.07,
+     mfi: 0.07,
+     structure: 0.1,
+     ichimoku: 0.05,
+     adx: 0.04,
+     fisher: 0.04,
+     book: 0.25,
+     flow: 0.22,
+     toxicity: 0.06,
+     spoof: 0.07,
+     iceberg: 0.08,
+     orderBookImbalance: 0.18,
+     imbalanceVelocity: 0.12,
+     liquidityDepth: 0.08,
+     liquidityVacuum: 0.12,
+     fundingRate: 0.1,
+     mktSentiment: 0.18,
+     fearGreed: 0.12,
+     cmcMacro: 0.08,
+   };
 
-  // Regime-adaptive weight multipliers — applied after static weights based on live market regime
-  const REGIME_WEIGHT_MULTS = {
-    trending_smooth: { ema: 1.5, hma: 1.4, vwap: 1.3, obv: 1.2, bands: 0.7, williamsR: 0.7, momentum: 0.5 },
-    trending_volatile: { volume: 1.5, flow: 1.4, book: 1.3, macd: 1.2, ema: 1.1, bands: 0.8, momentum: 2.0 },
-    ranging: { bands: 1.6, williamsR: 1.5, cci: 1.4, rsi: 1.3, stochrsi: 1.3, ema: 0.7, hma: 0.6, momentum: 0.1 },
-    choppy: { book: 0.4, flow: 0.4, macd: 0.5, ema: 0.6, bands: 0.6, momentum: 0.3 },
-    neutral: {},
-  };
-
-  const ONLINE_WEIGHT_BOUNDS = {
-    minMult: 0.6,
-    maxMult: 1.4,
-    minPruneMult: 0.15,
-    maxStep: 0.06,
-  };
-  const ONLINE_WEIGHT_STATE = {};
-
-  function _coinKey(sym) {
-    return String(sym || 'GLOBAL').toUpperCase();
-  }
-
-  function _ensureOnlineState(sym) {
-    const key = _coinKey(sym);
-    if (!ONLINE_WEIGHT_STATE[key]) {
-      ONLINE_WEIGHT_STATE[key] = {
-        updatedAt: Date.now(),
-        signals: {},
-      };
-    }
-    return ONLINE_WEIGHT_STATE[key];
-  }
-
-  function _ensureOnlineSignalState(sym, signal) {
-    const state = _ensureOnlineState(sym);
-    const skey = String(signal || '').trim();
-    if (!skey) return null;
-    if (!state.signals[skey]) {
-      state.signals[skey] = {
-        mult: 1,
-        pruneMult: 1,
-        samples: 0,
-        wins: 0,
-        losses: 0,
-        updatedAt: Date.now(),
-      };
-    }
-    return state.signals[skey];
-  }
-
-  function _clampOnlineStep(delta) {
-    return clamp(delta, -ONLINE_WEIGHT_BOUNDS.maxStep, ONLINE_WEIGHT_BOUNDS.maxStep);
-  }
-
-  function applyOnlineWeightOverlay(sym, baseWeights) {
-    const state = ONLINE_WEIGHT_STATE[_coinKey(sym)];
-    if (!state || !state.signals) return { ...baseWeights };
-    const out = { ...baseWeights };
-    Object.keys(out).forEach((signal) => {
-      const st = state.signals[signal];
-      if (!st) return;
-      const mult = clamp(Number(st.mult) || 1, ONLINE_WEIGHT_BOUNDS.minMult, ONLINE_WEIGHT_BOUNDS.maxMult);
-      const pruneMult = clamp(Number(st.pruneMult) || 1, ONLINE_WEIGHT_BOUNDS.minPruneMult, 1);
-      out[signal] = out[signal] * mult * pruneMult;
-    });
-    return out;
-  }
-
-  const CLOSE_WINDOW_GUARD_SECS = 10;
-
-  /**
-   * Applies regime-based multipliers to a copy of baseWeights.
-   * Only keys present in both objects are modified; others are unchanged.
-   */
-  function applyRegimeMults(baseWeights, regimeKey) {
-    const mults = REGIME_WEIGHT_MULTS[regimeKey] || {};
-    const result = { ...baseWeights };
-    for (const [k, m] of Object.entries(mults)) {
-      if (result[k] !== undefined) result[k] = result[k] * m;
-    }
-    return result;
-  }
-
-  // ── Outer Orbital — coin-specific; activated via PER_COIN_INDICATOR_BIAS ──
-  const OUTER_ORBITAL_WEIGHTS = {
-    momentum: 0.05,  // SOL/BNB only — globally 25–39% WR (contrarian everywhere else)
-    vwap: 0.05,  // BNB inner (5× bias); 33–43% WR globally (contrarian)
-  };
+  const {
+    REGIME_WEIGHT_MULTS,
+    ONLINE_WEIGHT_BOUNDS,
+    OUTER_ORBITAL_WEIGHTS,
+    _coinKey,
+    _ensureOnlineState,
+    _ensureOnlineSignalState,
+    _clampOnlineStep,
+    applyOnlineWeightOverlay,
+    applyRegimeMults,
+  } = window.PredictionRegimeWeights;
 
   // ================================================================
   // PER_COIN_INDICATOR_BIAS — Data-driven from 7-day h15 backtest per-indicator accuracy
   // Updated 2026-04-29. Each value = multiplier on COMPOSITE_WEIGHTS for that coin.
   // Best/Worst indicators per coin sourced directly from backtest-runner.js diagnostic output.
   const PER_COIN_INDICATOR_BIAS = {
-    BTC: { // outcome-retuned 2026-05-20 from 258 windows
- // outcome-retuned 2026-05-20 from 106 windows
-      // h15 best: stochrsi 64%, vwma 62%, volume 60%
-      // h15 worst: momentum 32%, obv 36%, hma 37%
-      // ──── TUNED 2026-05-04 HOTFIX2: REGIME-AWARE MOMENTUM (was killed at 0.05, causing DOWN-bias) ──
-      // FIX: Restore momentum to 0.25 + let regime multipliers gate it
-      //      trending_volatile: 2.0x (catch dumps/rallies), ranging: 0.1x (suppress noise)
-      //      This allows early dump detection (May 4 case) while maintaining ranging accuracy
-      stochrsi: 0.05,   // retained: still >55% in 4-day retune
-      vwma: 0.05,   // reduced: sub-50% in 4-day BTC retune
-      volume: 1.2,   // reduced: sub-50% in 4-day BTC retune
-      // Keep proven mean-reversion core — bands/williamsR/keltner boosted 2026-05-05 (Pyth oracle accuracy)
-      bands: 0.25, williamsR: 2.453, structure: 1.598, fisher: 1.342, keltner: 1.95, cci: 1.287,
-      cmf: 0.85, rsi: 0.92, macd: 0.538, persistence: 0.662, ema: 0.431, ichimoku: 0.261, adx: 0.265,
-      vwap: 0.176, sma: 0.143,
-      // ★ FIX: Restore momentum for trending detection (gated by regime multipliers)
-      momentum: 0.188,  // reduced: <50% in 4-day BTC retune
-      obv: 1.27,  // reduced: <50% in 4-day BTC retune
-      hma: 1.30, // reduced: <50% in 4-day BTC retune
-      mfi: 1.52,
-      supertrend: 1.37,
-      // Pyth oracle aggregate prices → F&G strongly correlated with BTC macro moves
-      fearGreed: 1.2,
-      // ★ BOOST MICROSTRUCTURE FOR h1/h5 RECOVERY ★
-      book: 0.295,  // NEW: Order book imbalance
-      flow: 0.275,  // NEW: Trade flow signal
-    },
-    ETH: { // outcome-retuned 2026-05-20 from 286 windows
- // outcome-retuned 2026-05-20 from 119 windows
-      // h15 best: rsi 82%, stochrsi 56%, williamsR 55%
-      // h15 worst: mfi 38%, momentum 43%, hma 45%
-      // ──── TUNED 2026-05-04 HOTFIX2: REGIME-AWARE MOMENTUM (was killed at 0.01, causing DOWN-bias) ──
-      // FIX: Restore momentum to 0.20 + let regime multipliers gate it
-      //      trending_volatile: 2.0x (catch dumps), ranging: 0.1x (suppress noise)
-      // CRITICAL: rsi 82% at h15 but only 37% at h1/h5 (MASSIVE OVERFITTING)
-      // Solution: Reduce RSI weight dramatically for short horizons
-      rsi: 0.01,   // reduced: 39% in 4-day ETH retune
-      stochrsi: 1.087,   // mild boost: ~53% in 4-day ETH retune
-      williamsR: 1.923,  // boosted: strongest consistent ETH feature
-      bands: 2.045,   // boosted: strong ETH performer in recent window
-      structure: 1.451, keltner: 1.857, cci: 0.929, fisher: 1.686, cmf: 0.607,
-      volume: 0.726, persistence: 0.01, obv: 1.055, macd: 0.837,
-      ema: 0.01, sma: 1.132, adx: 0.112, ichimoku: 0.053, vwap: 0.852, vwma: 0.484, supertrend: 0.01,
-      // ★ FIX: Restore momentum for trending detection (gated by regime multipliers)
-      momentum: 0.304,  // retained mild positive edge in 4-day ETH retune
-      mfi: 0.843, // reduced: weak in 4-day ETH retune
-      hma: 0.412,  // reduced: weak in 4-day ETH retune
-      // ETH moderately correlated with F&G (less than BTC)
-      fearGreed: 1.062,
-    },
-    SOL: { // outcome-retuned 2026-05-20 from 299 windows
- // outcome-retuned 2026-05-20 from 122 windows
-      // ── FIXED 2026-05-06: Remove maxScore cap + lower h1/h5 thresholds ──────────────
-      // Root cause: maxScore: 0.55 was killing 60-70% of high-confidence h15 mean-reversion signals
-      // Solution: Remove maxScore entirely, lower h1/h5 thresholds from 0.43 → 0.30 (match ETH/XRP)
-      bands: 1.2,    // ← REDUCED FROM 3.5 (prevent saturation, oscillations)
-      fisher: 1.836,    // ← REDUCED FROM 2.8
-      williamsR: 0.30,    // ← REDUCED FROM 4.5 (keep strong but prevent 0.65+ scores)
-      cci: 0.51,    // ← REDUCED FROM 3.5
-      hma: 1.43,    // 41% WR gate is broken on h1/h5
-      structure: 2.5,
-      keltner: 1.54,    // ← REDUCED FROM 2.8
-      obv: 1.5,    // volume-direction breakout confirmation
-      macd: 0.928, ichimoku: 1.38, adx: 0.05,
-      vwma: 0.169, volume: 1.91, sma: 0.084,
-      vwap: 2.0,
-      rsi: 1.5,   // 29% WR is inversely useful, but engine has no rsiInvert flag
-      persistence: 0.022,
-      ema: 1.5,
-      cmf: 0.073,
-      supertrend: 0.013, // outcome-retuned 2026-05-08 (180 windows)
-      momentum: 0.072,
-      mfi: 1.2,
-      stochrsi: 0.046,
-      book: 0.489,
-      flow: 0.468,
-      // SOL correlates with broad crypto sentiment; F&G matters
-      fearGreed: 1.0,
-    },
-    XRP: { // outcome-retuned 2026-05-20 from 301 windows
- // outcome-retuned 2026-05-20 from 123 windows
-      // h15 best: structure 72%, volume 66%, vwap 65%, fisher 69-70% (h1/h10)
-      // h15 worst: momentum 28%, vwma 31%, hma 31%
-      // ──── TUNED 2026-05-04: Reduce h15-specific weights, boost h1/h5 performers ──
-      structure: 1.03,   // ★ REDUCED FROM 5.0 (72% at h15 but meaningless at h1/h5 - needs multiple candles)
-      volume: 1.5,   // ★ REDUCED FROM 4.5 (66% at h15 but volume spikes = noise at h1/h5)
-      vwap: 3.5,   // ★ REDUCED: Pyth oracle prices less exchange-anchored; keep strong but not dominant
-      fisher: 2.8,   // ★ BOOST 2026-05-05: precise oracle prices → cleaner price extremes detection
-      rsi: 3.5,   // ★ INCREASED FROM 2.0 (80-100% at h1/h10 - massive underweight!)
-      obv: 1.5,   // volume direction confirm
-      williamsR: 1.226,   // moderate keep
-      bands: 0.831, supertrend: 0.31, cci: 0.553, cmf: 0.592, keltner: 0.476,
-      macd: 0.356, stochrsi: 0.821, persistence: 0.091, ema: 0.128, adx: 0.169, ichimoku: 0.154,
-      sma: 0.013,
-      mfi: 0.145,
-      // Kill confirmed worst performers
-      momentum: 0.046,
-      vwma: 0.021,
-      hma: 0.108,
-      // XRP is news/regulatory driven; F&G less predictive
-      fearGreed: 0.7,
-    },
-    HYPE: {
-      // h15 best: williamsR 79%, fisher 77%, cci 75%, bands 78% (h1/h5)
-      // h15 worst: momentum 28%, hma 35%, macd 37%
-      // SURPRISE: HYPE is pure mean-reversion at h15 — NOT volume/momentum
-      williamsR: 6.5,  // ★ 79% best — prior 0.4 was disastrously wrong
-      fisher: 5.0,  // ★ 77% best — extreme price detection
-      cci: 4.5,  // ★ 75% best — was 0.5
-      bands: 3.0,  // ★ 78% best at h1/h5 — complementary
-      keltner: 2.0,  // ATR-based bands — follows bands signal
-      rsi: 1.5,  // oscillator — complements williamsR
-      stochrsi: 1.2,  // overbought/oversold confirmation
-      structure: 0.8,  // minor support/resistance
-      obv: 0.5, persistence: 0.4, vwap: 0.3, ema: 0.3,
-      cmf: 0.3, adx: 0.3, ichimoku: 0.2, sma: 0.0, vwma: 0.2, supertrend: 0.1,
-      // Kill confirmed worst performers
-      momentum: 0.05,  // 28% worst — was 1.5
-      hma: 0.05,  // 35% worst — was 1.2
-      macd: 0.1,   // 37% worst — was 1.2
-      // Demote previously assumed dominant but unproven at h15
-      volume: 0.3,   // was 4.5 — not in h15 best list
-      mfi: 0.3,   // was 3.5 — not in h15 best list
-      // HYPE is highly speculative; F&G is a strong macro driver
-      fearGreed: 1.8,
-    },
-    DOGE: { // outcome-retuned 2026-05-21 from 305 windows
-      // h15 best: obv 68%, volume 61%, cmf 60%
-      // h15 worst: stochrsi 36%, momentum 42%, vwma 43%
-      obv: 4.5,  // ★ 68% best — was 0.3 (massive correction)
-      volume: 3.5,  // ★ 61% best
-      cmf: 3.0,  // ★ 60% best — was 0.5 (major correction)
-      bands: 2.5,  // proven extreme mean-reversion
-      mfi: 2.0,  // keep — was proven in original
-      structure: 1.8, fisher: 1.8, keltner: 1.212, cci: 1.012, williamsR: 0.824,
-      rsi: 0.5, persistence: 0.252, ema: 0.277, macd: 0.181, ichimoku: 0.177, adx: 0.105,
-      hma: 0.296, sma: 0.0, supertrend: 0.197, vwap: 0.102,
-      // Kill confirmed worst performers
-      stochrsi: 0.068,  // 36% worst — was 1.7
-      momentum: 0.052,  // 42% worst — was 0.25
-      vwma: 0.029,  // 43% worst — was 1.5
-      // DOGE re-enabled 2026-05-05 via Pyth Lazer ID 10; meme coin = maximum F&G sensitivity
-      fearGreed: 2.0,
-    },
-    BNB: { // outcome-retuned 2026-05-21 from 268 windows
-      // h15 best: sma 92%, mfi 91%, ema 86% (NOTE: only 14 signals — high noise)
-      // h15 worst: structure 0%, keltner 17%, williamsR 29%
-      // Use data cautiously given tiny sample; align with original research where consistent
-      sma: 5.0,  // ★ 92% best — was 0.0 (!!!)
-      mfi: 4.5,  // ★ 91% best — confirmed across prior research too
-      ema: 4.0,  // ★ 86% best — confirmed
-      vwap: 3.5,  // 64% from prior research — consistent trend
-      hma: 3.0,  // 60% from prior research
-      vwma: 2.5,  // 63% from prior research
-      volume: 3.5,  // 80% from prior research
-      momentum: 2.0, persistence: 2.0, macd: 1.5, ichimoku: 2.0, supertrend: 2.0,
-      cmf: 1.5, obv: 0.5, fisher: 0.831, cci: 0.34, adx: 0.505,
-      // Kill confirmed worst (and consistent with prior research)
-      structure: 0.065,  // 0% worst — certain kill
-      keltner: 0.093,  // 17% worst
-      williamsR: 0.089,  // 29% worst — consistent with prior research
-      bands: 0.093,  // prior research: 30-43% — confirmed bad
-      rsi: 0.071,  // prior research: 34-43% — confirmed bad
-      stochrsi: 0.089,  // aligned with kill-mean-reversion theme
-      // BNB ecosystem-driven; F&G less predictive than for BTC/DOGE
-      fearGreed: 0.8,
-    },
-  };
+     BTC: {
+       stochrsi: 0.061,
+       vwma: 0.053,
+       volume: 1.2,
+       bands: 0.262,
+       williamsR: 2.453,
+       structure: 1.598,
+       fisher: 1.356,
+       keltner: 1.95,
+       cci: 1.287,
+       cmf: 0.85,
+       rsi: 0.92,
+       macd: 0.538,
+       persistence: 0.671,
+       ema: 0.437,
+       ichimoku: 0.264,
+       adx: 0.277,
+       vwap: 0.182,
+       sma: 0.145,
+       momentum: 0.194,
+       obv: 1.256,
+       hma: 1.3,
+       mfi: 1.52,
+       supertrend: 1.398,
+       fearGreed: 1.2,
+       book: 0.304,
+       flow: 0.284,
+     },
+     ETH: {
+       rsi: 0.018,
+       stochrsi: 1.101,
+       williamsR: 1.923,
+       bands: 2.045,
+       structure: 1.466,
+       keltner: 1.857,
+       cci: 0.942,
+       fisher: 1.686,
+       cmf: 0.607,
+       volume: 0.726,
+       persistence: 0.01,
+       obv: 1.055,
+       macd: 0.847,
+       ema: 0.011,
+       sma: 1.132,
+       adx: 0.12,
+       ichimoku: 0.047,
+       vwap: 0.852,
+       vwma: 0.484,
+       supertrend: 0.01,
+       momentum: 0.309,
+       mfi: 0.843,
+       hma: 0.415,
+       fearGreed: 1.062,
+     },
+     SOL: {
+       bands: 1.2,
+       fisher: 1.836,
+       williamsR: 0.31,
+       cci: 0.52,
+       hma: 1.43,
+       structure: 2.5,
+       keltner: 1.54,
+       obv: 1.477,
+       macd: 0.918,
+       ichimoku: 1.38,
+       adx: 0.054,
+       vwma: 0.17,
+       volume: 1.91,
+       sma: 0.08,
+       vwap: 2,
+       rsi: 1.5,
+       persistence: 0.017,
+       ema: 1.5,
+       cmf: 0.071,
+       supertrend: 0.02,
+       momentum: 0.077,
+       mfi: 1.2,
+       stochrsi: 0.055,
+       book: 0.489,
+       flow: 0.468,
+       fearGreed: 1,
+     },
+     XRP: {
+       structure: 1.03,
+       volume: 1.5,
+       vwap: 3.5,
+       fisher: 2.8,
+       rsi: 3.5,
+       obv: 1.5,
+       williamsR: 1.239,
+       bands: 0.841,
+       supertrend: 0.323,
+       cci: 0.562,
+       cmf: 0.592,
+       keltner: 0.485,
+       macd: 0.362,
+       stochrsi: 0.831,
+       persistence: 0.093,
+       ema: 0.134,
+       adx: 0.177,
+       ichimoku: 0.154,
+       sma: 0.016,
+       mfi: 0.152,
+       momentum: 0.054,
+       vwma: 0.026,
+       hma: 0.113,
+       fearGreed: 0.7,
+     },
+     HYPE: {
+       williamsR: 6.5,
+       fisher: 5,
+       cci: 4.5,
+       bands: 3,
+       keltner: 2,
+       rsi: 1.5,
+       stochrsi: 1.2,
+       structure: 0.8,
+       obv: 0.5,
+       persistence: 0.4,
+       vwap: 0.3,
+       ema: 0.3,
+       cmf: 0.3,
+       adx: 0.3,
+       ichimoku: 0.2,
+       sma: 0,
+       vwma: 0.2,
+       supertrend: 0.1,
+       momentum: 0.05,
+       hma: 0.05,
+       macd: 0.1,
+       volume: 0.3,
+       mfi: 0.3,
+       fearGreed: 1.8,
+     },
+     DOGE: {
+       obv: 4.5,
+       volume: 3.5,
+       cmf: 3,
+       bands: 2.5,
+       mfi: 2,
+       structure: 1.8,
+       fisher: 1.8,
+       keltner: 1.212,
+       cci: 1.012,
+       williamsR: 0.824,
+       rsi: 0.5,
+       persistence: 0.252,
+       ema: 0.277,
+       macd: 0.181,
+       ichimoku: 0.177,
+       adx: 0.105,
+       hma: 0.296,
+       sma: 0,
+       supertrend: 0.197,
+       vwap: 0.102,
+       stochrsi: 0.068,
+       momentum: 0.052,
+       vwma: 0.029,
+       fearGreed: 2,
+     },
+     BNB: {
+       sma: 5,
+       mfi: 4.5,
+       ema: 4,
+       vwap: 3.5,
+       hma: 3,
+       vwma: 2.5,
+       volume: 3.5,
+       momentum: 2,
+       persistence: 2,
+       macd: 1.5,
+       ichimoku: 2,
+       supertrend: 2,
+       cmf: 1.5,
+       obv: 0.5,
+       fisher: 0.831,
+       cci: 0.34,
+       adx: 0.505,
+       structure: 0.065,
+       keltner: 0.093,
+       williamsR: 0.089,
+       bands: 0.093,
+       rsi: 0.071,
+       stochrsi: 0.089,
+       fearGreed: 0.8,
+     },
+   };
 
   // Expose for adaptive retuner (live mutations propagate to next prediction run)
   window.PER_COIN_INDICATOR_BIAS = PER_COIN_INDICATOR_BIAS;
@@ -520,206 +443,36 @@
   // REGIME-ADAPTIVE CONFIDENCE THRESHOLDS
   // Applied when market regime is classified via statistical analysis
   // ================================================================
-  const REGIME_CONFIDENCE_MAP = {
-    'trend': 0.58,           // Trending markets: lower threshold (momentum driving confidence)
-    'mean_reversion': 0.62,  // Mean-reversion zones: higher threshold (need strong mean reversion signal)
-    'chop': 0.72,            // Choppy/indecisive: highest threshold (filter noise)
-  };
+  const {
+    REGIME_CONFIDENCE_MAP,
+    SIGNAL_GATE,
+    SIGNAL_GATE_OVERRIDES,
+    evaluateSignalGate,
+  } = window.PredictionSignalGates;
 
-  // ================================================================
-  // PATCH1.10 — SIGNAL QUALITY GATE
-  // Minimum thresholds a live prediction must pass before being
-  // considered a conclusive directional call in the UI.
-  // Signals below threshold are labelled LOW CONVICTION or BLOCKED.
-  // ================================================================
-  const SIGNAL_GATE = {
-    // Hard gate — signal must pass ALL of these to be directional
-    minConfidence: 42,    // % confidence
-    minAgreement: 0.56,  // indicator agreement ratio (was 0.54)
-    maxConflict: 0.38,
-    minAbsScore: 0.22,  // was 0.10 — now scaled for post-amplification composite
-    minReliability: 0.42,
+  // ── Kalshi routing helpers (execution guard, rationale builder, stats utils)
+  const {
+    getSecsToKalshiClose,
+    normalCDF,
+    buildRationale,
+    buildExecutionGuard,
+  } = window.PREDICTIONS_KALSHI_ROUTING;
 
-    // Soft gate — signal is flagged LOW CONVICTION if below either
-    medConfidence: 58,
-    medAgreement: 0.64,  // was 0.62
-    medAbsScore: 0.38,  // was 0.20 — scaled for post-amplification
-    medReliability: 0.52,
-  };
+  // ── Exchange data fetchers — provided by data-fetchers.js scaffold ─────────
+  const {
+    fetchWithTimeout, fetchAnalyticsWithRoute, fetchFearGreed,
+    fetchCDCCandles, fetchCDCBook, fetchCDCTrades,
+    fetchGeckoJSON, fetchGeckoCandles, fetchGeckoTicker, fetchGeckoMaxHistory,
+    fetchBINCandles, fetchBINBook, fetchBINTrades,
+    fetchMEXCCandles, fetchMEXCBook, fetchMEXCTrades,
+    fetchBybitCandles, fetchBybitBook, fetchBybitTrades,
+    fetchKucoinCandles, fetchKucoinBook, fetchKucoinTrades,
+    fetchBitfinexCandles, fetchBitfinexBook, fetchBitfinexTrades,
+    fetchCBExchCandles, fetchCBExchBook, fetchCBExchTrades,
+    fetchKrakenCandles, fetchKrakenBook, fetchKrakenTrades,
+    anchoredPoolCandles, bucketCandles,
+  } = window.PREDICTIONS_DATA_FETCHERS;
 
-  // Per-coin gate overrides — derived from 30-day walk-forward optimization (2026-04-27).
-  // BTC/ETH/XRP: optimizer consensus thresholds; SOL: high gate (h10/h15 only viable);
-  // BNB: re-enabled 2026-04-27. Old model inverted (20% WR) with trend weights — completely
-  //      overhauled. New bias: momentum/vwap/volume dominant, mean-reversion killers suppressed.
-  //      Gate raised to 0.55 (very tight); re-run backtest before trusting live signals.
-  const SIGNAL_GATE_OVERRIDES = {
-    BTC: { minAbsScore: 0.55, minAgreement: 0.70, minConfidence: 75, medAbsScore: 0.65, medAgreement: 0.75 },
-    ETH: { minAbsScore: 0.50, minAgreement: 0.68, minConfidence: 75, medAbsScore: 0.60, medAgreement: 0.72 },
-    XRP: { minAbsScore: 0.50, minAgreement: 0.65, minConfidence: 75, medAbsScore: 0.60, medAgreement: 0.70 },
-    SOL: { minAbsScore: 0.60, minAgreement: 0.75, minConfidence: 80, medAbsScore: 0.70, medAgreement: 0.80 },
-    BNB: { minAbsScore: 0.65, minAgreement: 0.80, minConfidence: 85, medAbsScore: 0.75, medAgreement: 0.85 },
-    DOGE: { minAbsScore: 0.50, minAgreement: 0.70, minConfidence: 75, medAbsScore: 0.60, medAgreement: 0.75 },
-    HYPE: { minAbsScore: 0.40, minAgreement: 0.65, minConfidence: 75, medAbsScore: 0.50, medAgreement: 0.70 },
-  };
-
-  /**
-   * evaluateSignalGate(pred, coin, regime)
-   * Returns quality assessment for a live prediction.
-   *
-   * quality: 'high'    — passes all soft thresholds, strong conviction signal
-   *          'medium'  — passes hard gate but below soft thresholds (low conviction)
-   *          'blocked' — fails hard gate (noisy/conflicted, do not show directional)
-   *
-   * gated: true when quality === 'blocked' (signal should show HOLD in UI)
-   *
-   * ★ SAFETY PATCH 2026-05-14: Added close-window guard (skip final close seconds of 15m candle)
-   * ★ REGIME-ADAPTIVE THRESHOLDS: Confidence adjusted based on market regime
-   */
-  function evaluateSignalGate(pred, coin, regime) {
-    if (!pred || pred.signal === 'neutral' || !Number.isFinite(pred.score)) {
-      return { passed: true, gated: false, quality: 'medium', label: 'NEUTRAL', reasons: [] };
-    }
-
-    // ★ SAFETY PATCH: Close-window guard — skip trading in final close seconds before h15 expiry
-    const now = Date.now();
-    const secsSinceEpoch = (now % 900_000); // ms within any 15-min slot
-    const secsIntoWindow = (secsSinceEpoch / 1000);
-    const secsUntilClose = (900 - secsIntoWindow); // seconds until next 15m close
-    if (pred.horizon === 15 && secsUntilClose < CLOSE_WINDOW_GUARD_SECS) {
-      return {
-        passed: false,
-        gated: true,
-        quality: 'blocked',
-        label: '⏱️ CLOSE-WINDOW GUARD',
-        reasons: [`Too close to 15m candle close (skip final ${CLOSE_WINDOW_GUARD_SECS}s)`]
-      };
-    }
-
-    const conf = pred.confidence ?? 0;
-    const absScore = Math.abs(pred.score ?? 0);
-    const agreement = pred.diagnostics?.agreement ?? 0.5;
-    const conflict = pred.diagnostics?.conflict ?? 0;
-    const reliability = pred.backtest?.summary?.reliability ?? 0;
-    const routedAction = pred.diagnostics?.routedAction ?? '';
-    const quantRegime = pred.diagnostics?.quantRegime || null;
-    const reasons = [];
-    const confidence_adjustments = {};
-
-    // Apply coin-specific gate if available
-    // If adaptive tuner is running, use its current gates
-    let gateOverride = SIGNAL_GATE_OVERRIDES[coin] || {};
-    if (window._adaptiveTuner) {
-      try {
-        const adaptiveGates = window._adaptiveTuner.getCurrentGates();
-        if (adaptiveGates && typeof adaptiveGates[coin] === 'number' && SIGNAL_GATE_OVERRIDES[coin]) {
-          gateOverride = { ...SIGNAL_GATE_OVERRIDES[coin] };
-          gateOverride.minAbsScore = adaptiveGates[coin];
-        }
-      } catch (err) {
-        // Fallback to baseline if adaptive tuner has issues
-        console.warn(`[predictions] Adaptive tuning error for ${coin}:`, err.message);
-      }
-    }
-    const gate = Object.assign({}, SIGNAL_GATE, gateOverride);
-
-    // ★ REGIME-ADAPTIVE CONFIDENCE ADJUSTMENT
-    let adaptive_confidence = conf;
-    let regime_state = regime?.regime_state || 'chop';
-    let regime_confidence_floor = REGIME_CONFIDENCE_MAP[regime_state] || 0.58;
-
-    if (regime && regime.regime_state) {
-      regime_state = regime.regime_state;
-      regime_confidence_floor = REGIME_CONFIDENCE_MAP[regime_state];
-      confidence_adjustments.regime_state = regime_state;
-      confidence_adjustments.base_confidence = conf;
-      confidence_adjustments.regime_floor = regime_confidence_floor;
-
-      // Variance ratio reinforcement: if VR > 1.1 && trending signal → reduce confidence (already trending hard)
-      if (regime.variance_ratio > 1.1 && pred.signal === 'up') {
-        adaptive_confidence -= 2;  // -2% adjustment
-        confidence_adjustments.vr_trending_adjustment = -2;
-      } else if (regime.variance_ratio > 1.1 && pred.signal === 'down') {
-        adaptive_confidence -= 2;
-        confidence_adjustments.vr_trending_adjustment = -2;
-      }
-
-      // Entropy penalty: if entropy > 0.65 → add confidence buffer (noise detected, need stronger signal)
-      if (regime.entropy_score > 0.65) {
-        adaptive_confidence += 4;  // +4% adjustment
-        confidence_adjustments.entropy_noise_adjustment = +4;
-      }
-
-      confidence_adjustments.final_adaptive_confidence = Math.max(regime_confidence_floor, adaptive_confidence);
-    }
-
-    // ★ REVERSAL-ARM GATE EXCEPTION: Lower confidence floor for high-conviction reversals
-    const reversalFlags = pred.diagnostics?.reversalFlags || [];
-    const isExhaustedMove = Math.abs(pred.score ?? 0) >= 0.55;
-    const hasMomentumDivergence = (pred.diagnostics?.momentumQuality ?? 0) >= 0.62;
-    const qualifiesReversalArm = reversalFlags.filter(f => f.severity >= 2).length >= 2 && isExhaustedMove && hasMomentumDivergence;
-    
-    if (qualifiesReversalArm) {
-      gate.minConfidence = 58; // Reversal-arm threshold: lower than normal 70% to allow early reversal entries
-      gate.minAbsScore = 0.26;
-      gate.minAgreement = 0.48;
-      gate.maxConflict = 0.46;
-      confidence_adjustments.reversal_arm_applied = true;
-    }
-
-    // Use regime-based confidence floor if applicable
-    let effective_confidence_floor = gate.minConfidence;
-    if (regime && regime.regime_state) {
-      effective_confidence_floor = Math.max(gate.minConfidence, REGIME_CONFIDENCE_MAP[regime.regime_state]);
-    }
-
-    // Hard-gate failures
-    if (routedAction === 'invalidated') {
-      return { passed: false, gated: true, quality: 'blocked', label: '⛔ INVALIDATED', reasons: ['Signal invalidated by router'] };
-    }
-    if (adaptive_confidence < effective_confidence_floor) reasons.push('Low confidence (' + Math.round(adaptive_confidence) + '%, floor: ' + Math.round(effective_confidence_floor) + '%)');
-    if (absScore < gate.minAbsScore) reasons.push('Weak score (' + absScore.toFixed(2) + ')');
-    if (agreement < gate.minAgreement) reasons.push('Low agreement (' + Math.round(agreement * 100) + '%)');
-    if (conflict >= gate.maxConflict) reasons.push('High conflict (' + Math.round(conflict * 100) + '%)');
-    if (reliability > 0 && reliability < gate.minReliability) reasons.push('Weak backtest (' + Math.round(reliability * 100) + '%)');
-    if (regime_state === 'chop' && adaptive_confidence < (gate.medConfidence + 4) && agreement < gate.medAgreement && !qualifiesReversalArm) {
-      reasons.push('Choppy quant regime guard');
-    }
-
-    // Store regime diagnostics in prediction object for telemetry
-    if (!pred.diagnostics) pred.diagnostics = {};
-    pred.diagnostics.regime = {
-      h_exponent: regime?.h_exponent || 0,
-      variance_ratio: regime?.variance_ratio || 1.0,
-      entropy_score: regime?.entropy_score || 0.5,
-      regime_state: regime_state,
-      adaptive_confidence: Math.round(adaptive_confidence),
-      confidence_adjustments: confidence_adjustments
-    };
-
-    if (reasons.length > 0) {
-      return { passed: false, gated: true, quality: 'blocked', label: '⛔ HOLD', reasons };
-    }
-
-    // Soft-gate check (medium conviction)
-    const softFails = [];
-    if (adaptive_confidence < gate.medConfidence) softFails.push('Conf ' + Math.round(adaptive_confidence) + '%');
-    if (agreement < gate.medAgreement) softFails.push('Agr ' + Math.round(agreement * 100) + '%');
-    if (absScore < gate.medAbsScore) softFails.push('Score ' + absScore.toFixed(2));
-    if (reliability > 0 && reliability < gate.medReliability) softFails.push('Rel ' + Math.round(reliability * 100) + '%');
-
-    if (softFails.length >= 2) {
-      return { passed: true, gated: false, quality: 'medium', label: '⚡ LOW CONV', reasons: softFails };
-    }
-
-    return { passed: true, gated: false, quality: 'high', label: '✅ STRONG', reasons: [] };
-  }
-
-  // ================================================================
-  // PATCH1.10 — SIGNAL QUALITY GATE
-  // Minimum thresholds a live prediction must pass before being
-  // considered a conclusive directional call in the UI.
-  // Signals below threshold are labelled LOW CONVICTION or BLOCKED.
-  // ================================================================
   const CORE_SIGNAL_KEYS = ['hma', 'vwma', 'rsi', 'ema', 'sma', 'obv', 'volume', 'momentum', 'bands', 'persistence', 'structure', 'macd', 'stochrsi', 'adx', 'ichimoku', 'williamsR', 'mfi', 'vwap', 'supertrend', 'cci', 'cmf', 'fisher', 'keltner'];
   const MICRO_SIGNAL_KEYS = ['book', 'flow', 'toxicity', 'spoof', 'iceberg', 'orderBookImbalance', 'imbalanceVelocity', 'liquidityDepth', 'liquidityVacuum', 'fundingRate'];
   const SIGNAL_LABELS = {
@@ -755,12 +508,11 @@
   const BACKTEST_THRESHOLD_GRID = [0.08, 0.10, 0.12, 0.16, 0.20];
   const BACKTEST_AGREEMENT_GRID = [0.50, 0.54, 0.58];
   const BACKTEST_FILTER_OVERRIDES = {
-    // Retuned 2026-05-08 via 60-day walk-forward OOS calibration.
-    // These medians reduced overfitting drift and normalized trigger frequency at h15.
-    BTC: { h1: { entryThreshold: 0.34, minAgreement: 0.56 }, h5: { entryThreshold: 0.34, minAgreement: 0.56 }, h10: { entryThreshold: 0.35, minAgreement: 0.57 }, h15: { entryThreshold: 0.38, minAgreement: 0.58 } },
-    ETH: { h1: { entryThreshold: 0.36, minAgreement: 0.58 }, h5: { entryThreshold: 0.36, minAgreement: 0.58 }, h10: { entryThreshold: 0.35, minAgreement: 0.58 }, h15: { entryThreshold: 0.34, minAgreement: 0.58 } },
-    XRP: { h1: { entryThreshold: 0.30, minAgreement: 0.58 }, h5: { entryThreshold: 0.30, minAgreement: 0.58 }, h10: { entryThreshold: 0.30, minAgreement: 0.54 }, h15: { entryThreshold: 0.35, minAgreement: 0.54 } },
-    SOL: { h1: { entryThreshold: 0.35, minAgreement: 0.54 }, h5: { entryThreshold: 0.35, minAgreement: 0.54 }, h10: { entryThreshold: 0.35, minAgreement: 0.54 }, h15: { entryThreshold: 0.35, minAgreement: 0.54 } },
+    // Retuned 2026-06-22 via walk-forward OOS calibration.
+    BTC: { h1: { entryThreshold: 0.30, minAgreement: 0.54 }, h5: { entryThreshold: 0.30, minAgreement: 0.54 }, h10: { entryThreshold: 0.25, minAgreement: 0.58 }, h15: { entryThreshold: 0.25, minAgreement: 0.58 } },
+    ETH: { h1: { entryThreshold: 0.25, minAgreement: 0.50 }, h5: { entryThreshold: 0.25, minAgreement: 0.50 }, h10: { entryThreshold: 0.25, minAgreement: 0.50 }, h15: { entryThreshold: 0.25, minAgreement: 0.54 } },
+    XRP: { h1: { entryThreshold: 0.30, minAgreement: 0.58 }, h5: { entryThreshold: 0.30, minAgreement: 0.58 }, h10: { entryThreshold: 0.30, minAgreement: 0.58 }, h15: { entryThreshold: 0.30, minAgreement: 0.54 } },
+    SOL: { h1: { entryThreshold: 0.35, minAgreement: 0.50 }, h5: { entryThreshold: 0.35, minAgreement: 0.50 }, h10: { entryThreshold: 0.28, minAgreement: 0.54 }, h15: { entryThreshold: 0.30, minAgreement: 0.54 } },
     BNB: { h1: { entryThreshold: 0.50, minAgreement: 0.72 }, h5: { entryThreshold: 0.50, minAgreement: 0.72 }, h10: { entryThreshold: 0.50, minAgreement: 0.72 }, h15: { entryThreshold: 0.50, minAgreement: 0.72 } },
     DOGE: { h1: { entryThreshold: 0.28, minAgreement: 0.58 }, h5: { entryThreshold: 0.32, minAgreement: 0.60 }, h10: { entryThreshold: 0.35, minAgreement: 0.62 }, h15: { entryThreshold: 0.38, minAgreement: 0.66 } },
     HYPE: { h1: { entryThreshold: 0.20, minAgreement: 0.56 }, h5: { entryThreshold: 0.25, minAgreement: 0.60 }, h10: { entryThreshold: 0.30, minAgreement: 0.62 }, h15: { entryThreshold: 0.33, minAgreement: 0.64 } },
@@ -892,758 +644,20 @@
     };
   }
 
-  // ================================================================
-  // DATA FETCHING
-  // ================================================================
-
-  function normCandle(c) {
-    if (Array.isArray(c)) return { t: c[0], o: +c[1], h: +c[2], l: +c[3], c: +c[4], v: +c[5] };
-    return { t: c.t, o: +(c.o || 0), h: +(c.h || 0), l: +(c.l || 0), c: +(c.c || 0), v: +(c.v || 0) };
-  }
-
   function wait(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
   }
 
-  async function fetchWithTimeout(url, timeoutMs = 4000, options = {}) {
-    const {
-      schedulerLane = null,
-      schedulerProvider = null,
-      schedulerDelayMs = 0,
-      schedulerDedupeKey = null,
-      schedulerPriorityBoost = 0,
-      ...fetchOptions
-    } = options || {};
-
-    const runFetch = async () => {
-      const fetchImpl = (window.throttledFetch ?? fetch).bind(window);
-      if (typeof AbortController === 'undefined') {
-        return fetchImpl(url, fetchOptions);
-      }
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => {
-        try {
-          controller.abort(new DOMException(`Predictions fetch timed out after ${timeoutMs}ms`, 'TimeoutError'));
-        } catch (_) {
-          try { controller.abort(); } catch (_) { }
-        }
-      }, timeoutMs);
-      try {
-        return await fetchImpl(url, { ...fetchOptions, signal: controller.signal });
-      } finally {
-        clearTimeout(timeoutId);
-      }
-    };
-
-    const scheduler = window._signalScheduler;
-    if (!scheduler) return runFetch();
-
-    return scheduler.schedule(runFetch, {
-      lane: schedulerLane || scheduler.inferLaneFromUrl?.(url, 'momentum') || 'momentum',
-      provider: schedulerProvider || scheduler.inferProviderFromUrl?.(url) || 'default',
-      delayMs: schedulerDelayMs,
-      priorityBoost: schedulerPriorityBoost,
-      dedupeKey: schedulerDedupeKey || `${String(fetchOptions.method || 'GET').toUpperCase()}:${url}`,
-      tag: `pred:${url}`,
-    }).then(res => (res && typeof res.clone === 'function') ? res.clone() : res);
-  }
-
-  function randomBetween(min, max) {
-    return Math.floor(min + Math.random() * Math.max(1, max - min + 1));
-  }
-
-  async function waitExchangeJitter(minGapMs = 90) {
-    const jitterMs = randomBetween(40, 180);
-    const sinceLast = Date.now() - lastExchangeRequestAt;
-    const waitMs = Math.max(jitterMs, minGapMs - sinceLast);
-    if (waitMs > 0) await wait(waitMs);
-    lastExchangeRequestAt = Date.now();
-  }
-
-  // Track Gecko throttling/auth failures so a bad key or quota outage does not
-  // keep the hot prediction loop retrying and logging every cycle.
-  let geckoConsecutive429s = 0;
-  let geckoCircuitBreakerUntil = 0;
-  let geckoAuthFailureUntil = 0;
-  let geckoLastAuthWarnTs = 0;
-
-  function parseRetryAfterMs(headerValue) {
-    if (!headerValue) return 0;
-    const seconds = Number(headerValue);
-    if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000;
-    const dateMs = Date.parse(headerValue);
-    return Number.isFinite(dateMs) ? Math.max(0, dateMs - Date.now()) : 0;
-  }
-
-  async function fetchGeckoJSON(path, options = {}) {
-    const { minGapMs = GECKO_MIN_GAP_MS, retries = 0, retry429 = false } = options;
-    const backoffMs = [1500, 3500, 20000];
-
-    const run = async (attempt = 0) => {
-      const nowCircuit = Date.now();
-      if (nowCircuit < geckoAuthFailureUntil) {
-        throw new Error(`Gecko auth circuit open (${Math.ceil((geckoAuthFailureUntil - nowCircuit) / 60000)}m remaining)`);
-      }
-      if (nowCircuit < geckoCircuitBreakerUntil) {
-        throw new Error(`Gecko rate-limit circuit open (${Math.ceil((geckoCircuitBreakerUntil - nowCircuit) / 1000)}s remaining)`);
-      }
-
-      const now = Date.now();
-      const waitMs = Math.max(0, minGapMs - (now - lastGeckoRequestAt));
-      if (waitMs > 0) await wait(waitMs);
-      lastGeckoRequestAt = Date.now();
-      const rawUrl = `${GECKO_BASE}${path}`;
-      const url = typeof window.coinGeckoUrl === 'function' ? window.coinGeckoUrl(rawUrl) : rawUrl;
-      const baseFetchOptions = { headers: { Accept: 'application/json' } };
-      const fetchOptions = typeof window.withCoinGeckoAuth === 'function'
-        ? window.withCoinGeckoAuth(url, baseFetchOptions)
-        : baseFetchOptions;
-      const res = await fetchWithTimeout(url, 15000, fetchOptions);
-
-      if (res.status === 429) {
-        geckoConsecutive429s++;
-        const retryAfterMs = parseRetryAfterMs(res.headers?.get?.('retry-after'));
-        const pauseMs = Math.max(
-          retryAfterMs,
-          Math.min(15 * 60_000, GECKO_RATE_LIMIT_PAUSE_MS * Math.max(1, geckoConsecutive429s))
-        );
-        geckoCircuitBreakerUntil = Date.now() + pauseMs;
-        console.warn(`[Gecko] 429 rate limit; pausing CoinGecko for ${Math.ceil(pauseMs / 1000)}s (consecutive=${geckoConsecutive429s})`);
-        if (retry429 && attempt < retries) {
-          const backoff = Math.max(pauseMs, backoffMs[Math.min(attempt, backoffMs.length - 1)]);
-          await wait(backoff);
-          return run(attempt + 1);
-        }
-        throw new Error('Gecko 429 rate limited');
-      }
-
-      // Success: reset consecutive 429 counter
-      if (res.ok) geckoConsecutive429s = 0;
-
-      // Handle 401 auth errors
-      if (res.status === 401 || res.status === 403) {
-        geckoConsecutive429s = 0;
-        geckoAuthFailureUntil = Date.now() + GECKO_AUTH_PAUSE_MS;
-        if ((Date.now() - geckoLastAuthWarnTs) > 60_000) {
-          geckoLastAuthWarnTs = Date.now();
-          console.warn(`[Gecko] ${res.status} auth/API rejection; pausing CoinGecko fallback for ${Math.round(GECKO_AUTH_PAUSE_MS / 60000)}m`);
-        }
-        throw new Error(`Gecko auth circuit open (HTTP ${res.status})`);
-      }
-
-      if (!res.ok) throw new Error(`Gecko ${res.status}`);
-      return res.json();
-    };
-
-    const queued = geckoRequestQueue.then(() => run());
-    geckoRequestQueue = queued.catch(() => { });
-    return queued;
-  }
-
-  function geckoBucketMs(tf) {
-    switch (tf) {
-      case '15m': return 15 * 60 * 1000;
-      case '1h': return 60 * 60 * 1000;
-      default: return 5 * 60 * 1000;
-    }
-  }
-
-  function bucketGeckoSeries(prices, volumes, bucketMs) {
-    const buckets = new Map();
-    prices.forEach((point, idx) => {
-      const ts = Number(point[0]);
-      const price = Number(point[1]);
-      const vol = Number(volumes[idx]?.[1] || 0);
-      if (!Number.isFinite(ts) || !Number.isFinite(price)) return;
-      const bucketStart = Math.floor(ts / bucketMs) * bucketMs;
-      const bucket = buckets.get(bucketStart) || { t: bucketStart, o: price, h: price, l: price, c: price, v: 0 };
-      bucket.h = Math.max(bucket.h, price);
-      bucket.l = Math.min(bucket.l, price);
-      bucket.c = price;
-      bucket.v += Number.isFinite(vol) ? vol : 0;
-      buckets.set(bucketStart, bucket);
+  function withSoftTimeout(promise, timeoutMs, fallbackValue) {
+    let timer = null;
+    return Promise.race([
+      Promise.resolve(promise),
+      new Promise(resolve => {
+        timer = setTimeout(() => resolve(fallbackValue), Math.max(1, Number(timeoutMs) || 1));
+      }),
+    ]).finally(() => {
+      if (timer) clearTimeout(timer);
     });
-    return Array.from(buckets.values()).sort((a, b) => a.t - b.t);
-  }
-
-  function bucketCandles(candles, bucketMs) {
-    const buckets = new Map();
-    (candles || []).forEach(candle => {
-      const ts = Number(candle?.t);
-      if (!Number.isFinite(ts)) return;
-      const bucketStart = Math.floor(ts / bucketMs) * bucketMs;
-      const bucket = buckets.get(bucketStart) || { t: bucketStart, o: Number(candle.o), h: Number(candle.h), l: Number(candle.l), c: Number(candle.c), v: 0 };
-      bucket.h = Math.max(bucket.h, Number(candle.h));
-      bucket.l = Math.min(bucket.l, Number(candle.l));
-      bucket.c = Number(candle.c);
-      bucket.v += Number(candle.v || 0);
-      buckets.set(bucketStart, bucket);
-    });
-    return Array.from(buckets.values()).sort((a, b) => a.t - b.t);
-  }
-
-  function poolMinuteCandles(...seriesList) {
-    const buckets = new Map();
-    seriesList.filter(Array.isArray).forEach(series => {
-      series.forEach(candle => {
-        const ts = Number(candle?.t);
-        const close = Number(candle?.c);
-        // Skip candles with non-finite timestamp or zero/near-zero price
-        // (protects against exchanges returning bad candles that pass individual filters)
-        if (!Number.isFinite(ts) || !Number.isFinite(close) || close <= 0) return;
-        const bucket = buckets.get(ts) || { t: ts, o: [], h: [], l: [], c: [], v: [] };
-        bucket.o.push(Number(candle.o || close));
-        bucket.h.push(Number(candle.h || close));
-        bucket.l.push(Number(candle.l || close));
-        bucket.c.push(close);
-        bucket.v.push(Number(candle.v || 0));
-        buckets.set(ts, bucket);
-      });
-    });
-    return Array.from(buckets.values()).sort((a, b) => a.t - b.t).map(bucket => ({
-      t: bucket.t,
-      o: median(bucket.o),
-      h: Math.max(...bucket.h),
-      l: Math.min(...bucket.l),
-      c: median(bucket.c),
-      v: average(bucket.v),
-    }));
-  }
-
-  async function fetchCDCCandles(instrument, tf, count = 300) {
-    const apiInstr = instrument.replace(/([A-Z]+)(USD[T]?)$/, '$1_$2');
-    await waitExchangeJitter();
-    const res = await fetchWithTimeout(`${CDC_BASE}/get-candlestick?instrument_name=${apiInstr}&timeframe=${tf}&count=${count}`, 25000);
-    if (!res.ok) throw new Error(`CDC ${res.status}`);
-    const json = await res.json();
-    if (json.code !== 0) throw new Error(`CDC code ${json.code}`);
-    return json.result.data.map(normCandle).sort((a, b) => a.t - b.t);
-  }
-
-  async function fetchCDCBook(instrument) {
-    const apiInstr = instrument.replace(/([A-Z]+)(USD[T]?)$/, '$1_$2');
-    await waitExchangeJitter();
-    const res = await fetchWithTimeout(`${CDC_BASE}/get-book?instrument_name=${apiInstr}&depth=20`, 20000);
-    if (!res.ok) return null;
-    const json = await res.json();
-    if (json.code !== 0) return null;
-    const bookData = json.result?.data?.[0];
-    if (!bookData) return null;
-    return {
-      bids: (bookData.bids || []).map(level => ({ price: Number(level[0]), qty: Number(level[1]) })).filter(l => Number.isFinite(l.price) && l.qty > 0),
-      asks: (bookData.asks || []).map(level => ({ price: Number(level[0]), qty: Number(level[1]) })).filter(l => Number.isFinite(l.price) && l.qty > 0),
-      source: 'crypto.com',
-      timestamp: Date.now(),
-    };
-  }
-
-  async function fetchCDCTrades(instrument) {
-    const apiInstr = instrument.replace(/([A-Z]+)(USD[T]?)$/, '$1_$2');
-    await waitExchangeJitter();
-    const res = await fetchWithTimeout(`${CDC_BASE.replace('/v1/', '/v2/')}/get-trades?instrument_name=${apiInstr}&count=100`, 20000);
-    if (!res.ok) return [];
-    const json = await res.json();
-    if (json.code !== 0) return [];
-    // CDC payload keys: q=quantity, p=price, s=side(BUY/SELL), m=maker_side(B/S=seller aggressor), d=tradeId, t=timestamp
-    return (json.result.data || []).map(t => {
-      const qty = parseFloat(t.q || t.qty || 0);
-      const makerRaw = (t.m || '').toUpperCase();
-      const sideRaw = (t.s || t.side || '').toUpperCase();
-      const side = makerRaw
-        ? (makerRaw === 'S' ? 'buy' : 'sell')   // seller=maker → buyer is aggressor
-        : (sideRaw === 'BUY' || sideRaw === 'B' ? 'buy' : 'sell');
-      return { qty, side, px: parseFloat(t.p || t.px || 0), t: Number(t.t || t.d || Date.now()) };
-    }).filter(t => t.qty > 0);
-  }
-
-  function mexcSymbolForCoin(coin) {
-    return MEXC_SYMS[coin.sym] || null;
-  }
-
-  function mexcInterval(tf) {
-    switch (tf) {
-      case '1m': return '1m';
-      case '5m': return '5m';
-      case '15m': return '15m';
-      case '1h': return '1h';
-      default: return tf;
-    }
-  }
-
-  async function fetchMEXCCandles(coin, tf = '5m', limit = 300) {
-    const symbol = mexcSymbolForCoin(coin);
-    if (!symbol) return [];
-    await waitExchangeJitter();
-    const res = await fetchWithTimeout(`${MEXC_BASE}/klines?symbol=${symbol}&interval=${mexcInterval(tf)}&limit=${limit}`, 20000);
-    if (!res.ok) return [];
-    const json = await res.json();
-    if (!Array.isArray(json)) return [];
-    return json.map(row => ({
-      t: Number(row[0]),
-      o: Number(row[1]),
-      h: Number(row[2]),
-      l: Number(row[3]),
-      c: Number(row[4]),
-      v: Number(row[5]),
-    })).filter(c => Number.isFinite(c.t) && Number.isFinite(c.c));
-  }
-
-  async function fetchMEXCBook(coin) {
-    const symbol = mexcSymbolForCoin(coin);
-    if (!symbol) return null;
-    await waitExchangeJitter();
-    const res = await fetchWithTimeout(`${MEXC_BASE}/depth?symbol=${symbol}&limit=20`, 7000);
-    if (!res.ok) return null;
-    const json = await res.json();
-    if (!Array.isArray(json?.bids) || !Array.isArray(json?.asks)) return null;
-    return {
-      bids: json.bids.map(level => ({ price: Number(level[0]), qty: Number(level[1]) })).filter(level => Number.isFinite(level.price) && Number.isFinite(level.qty)),
-      asks: json.asks.map(level => ({ price: Number(level[0]), qty: Number(level[1]) })).filter(level => Number.isFinite(level.price) && Number.isFinite(level.qty)),
-      source: 'mexc',
-      timestamp: Date.now(),
-    };
-  }
-
-  async function fetchMEXCTrades(coin, limit = 100) {
-    const symbol = mexcSymbolForCoin(coin);
-    if (!symbol) return [];
-    await waitExchangeJitter();
-    const res = await fetchWithTimeout(`${MEXC_BASE}/trades?symbol=${symbol}&limit=${limit}`, 7000);
-    if (!res.ok) return [];
-    const json = await res.json();
-    if (!Array.isArray(json)) return [];
-    return json.map(trade => ({
-      px: Number(trade.price),
-      qty: Number(trade.qty),
-      side: trade.isBuyerMaker ? 'sell' : 'buy',
-      t: Number(trade.time || trade.id || Date.now()),
-    })).filter(trade => Number.isFinite(trade.qty) && trade.qty > 0);
-  }
-
-  // ---------------------------------------------------------------
-  // ByBit Exchange (public — no auth required)
-  // ---------------------------------------------------------------
-
-  function bybitInterval(tf) {
-    switch (tf) {
-      case '1m': return '1';
-      case '5m': return '5';
-      case '15m': return '15';
-      case '1h': return '60';
-      default: return '5';
-    }
-  }
-
-  async function fetchBybitCandles(sym, tf = '5m', limit = 200) {
-    const symbol = BYBIT_SYMS[sym];
-    if (!symbol) return [];
-    await waitExchangeJitter();
-    const res = await fetchWithTimeout(getBybitUrl(`/market/kline?category=spot&symbol=${symbol}&interval=${bybitInterval(tf)}&limit=${limit}`), 20000);
-    if (!res.ok) return fetchBINCandles(sym, tf === '1m' ? '1m' : tf === '5m' ? '5m' : '15m', limit);
-    const json = await res.json();
-    if (json.retCode !== 0 || !Array.isArray(json.result?.list)) return fetchBINCandles(sym, tf === '1m' ? '1m' : tf === '5m' ? '5m' : '15m', limit);
-    const candles = json.result.list.map(row => ({
-      t: Number(row[0]),
-      o: Number(row[1]),
-      h: Number(row[2]),
-      l: Number(row[3]),
-      c: Number(row[4]),
-      v: Number(row[5]),
-    })).filter(c => Number.isFinite(c.t) && Number.isFinite(c.c)).sort((a, b) => a.t - b.t);
-    return candles.length ? candles : [];
-  }
-
-  async function fetchBybitBook(sym) {
-    const symbol = BYBIT_SYMS[sym];
-    if (!symbol) return null;
-    await waitExchangeJitter();
-    const res = await fetchWithTimeout(getBybitUrl(`/market/orderbook?category=spot&symbol=${symbol}&limit=20`), 7000);
-    if (!res.ok) return fetchBINBook(sym);
-    const json = await res.json();
-    if (json.retCode !== 0 || !json.result) return fetchBINBook(sym);
-    const bids = (json.result.b || []).map(l => ({ price: Number(l[0]), qty: Number(l[1]) })).filter(l => Number.isFinite(l.price) && l.qty > 0);
-    const asks = (json.result.a || []).map(l => ({ price: Number(l[0]), qty: Number(l[1]) })).filter(l => Number.isFinite(l.price) && l.qty > 0);
-    if (!bids.length && !asks.length) return null;
-    return { bids, asks, source: 'bybit', timestamp: Date.now() };
-  }
-
-  async function fetchBybitTrades(sym, limit = 100) {
-    const symbol = BYBIT_SYMS[sym];
-    if (!symbol) return [];
-    await waitExchangeJitter();
-    const res = await fetchWithTimeout(getBybitUrl(`/market/recent-trade?category=spot&symbol=${symbol}&limit=${limit}`), 7000);
-    if (!res.ok) return fetchBINTrades(sym, limit);
-    const json = await res.json();
-    if (json.retCode !== 0 || !Array.isArray(json.result?.list)) return fetchBINTrades(sym, limit);
-    const trades = json.result.list.map(t => ({
-      px: Number(t.price),
-      qty: Number(t.size),
-      side: t.side === 'Buy' ? 'buy' : 'sell',
-      t: Number(t.time),
-    })).filter(t => Number.isFinite(t.qty) && t.qty > 0);
-    return trades.length ? trades : [];
-  }
-
-  // ---------------------------------------------------------------
-  // KuCoin Exchange (public — no auth required)
-  // ---------------------------------------------------------------
-
-  function kucoinType(tf) {
-    switch (tf) {
-      case '1m': return '1min';
-      case '5m': return '5min';
-      case '15m': return '15min';
-      case '1h': return '1hour';
-      default: return '5min';
-    }
-  }
-
-  async function fetchKucoinCandles(sym, tf = '5m', limit = 200) {
-    const symbol = KUCOIN_SYMS[sym];
-    if (!symbol) return [];
-    await waitExchangeJitter();
-    const bucketSec = tf === '1m' ? 60 : tf === '5m' ? 300 : tf === '15m' ? 900 : 3600;
-    const endAt = Math.floor(Date.now() / 1000);
-    const startAt = endAt - limit * bucketSec;
-    const res = await fetchWithTimeout(`${KUCOIN_BASE}/market/candles?type=${kucoinType(tf)}&symbol=${symbol}&startAt=${startAt}&endAt=${endAt}`, 20000);
-    if (!res.ok) return [];
-    const json = await res.json();
-    if (json.code !== '200000' || !Array.isArray(json.data)) return [];
-    return json.data.map(row => ({
-      t: Number(row[0]) * 1000,
-      o: Number(row[1]),
-      c: Number(row[2]),
-      h: Number(row[3]),
-      l: Number(row[4]),
-      v: Number(row[5]),
-    })).filter(c => Number.isFinite(c.t) && Number.isFinite(c.c)).sort((a, b) => a.t - b.t);
-  }
-
-  async function fetchKucoinBook(sym) {
-    const symbol = KUCOIN_SYMS[sym];
-    if (!symbol) return null;
-    await waitExchangeJitter();
-    const res = await fetchWithTimeout(`${KUCOIN_BASE}/market/orderbook/level2_20?symbol=${symbol}`, 7000);
-    if (!res.ok) return null;
-    const json = await res.json();
-    if (json.code !== '200000' || !json.data) return null;
-    const bids = (json.data.bids || []).map(l => ({ price: Number(l[0]), qty: Number(l[1]) })).filter(l => Number.isFinite(l.price) && l.qty > 0);
-    const asks = (json.data.asks || []).map(l => ({ price: Number(l[0]), qty: Number(l[1]) })).filter(l => Number.isFinite(l.price) && l.qty > 0);
-    if (!bids.length && !asks.length) return null;
-    return { bids, asks, source: 'kucoin', timestamp: Date.now() };
-  }
-
-  async function fetchKucoinTrades(sym, limit = 100) {
-    const symbol = KUCOIN_SYMS[sym];
-    if (!symbol) return [];
-    await waitExchangeJitter();
-    const res = await fetchWithTimeout(`${KUCOIN_BASE}/market/histories?symbol=${symbol}`, 7000);
-    if (!res.ok) return [];
-    const json = await res.json();
-    if (json.code !== '200000' || !Array.isArray(json.data)) return [];
-    return json.data.slice(0, limit).map(t => ({
-      px: Number(t.price),
-      qty: Number(t.size),
-      side: t.side === 'buy' ? 'buy' : 'sell',
-      t: Math.floor(Number(t.time) / 1e6),
-    })).filter(t => Number.isFinite(t.qty) && t.qty > 0);
-  }
-
-  // ---------------------------------------------------------------
-  // Bitfinex (public — no auth required)
-  // ---------------------------------------------------------------
-
-  function bfnxTimeframe(tf) {
-    switch (tf) {
-      case '1m': return '1m';
-      case '5m': return '5m';
-      case '15m': return '15m';
-      case '1h': return '1h';
-      default: return '5m';
-    }
-  }
-
-  async function fetchBitfinexCandles(sym, tf = '5m', limit = 200) {
-    const symbol = BFNX_SYMS[sym];
-    if (!symbol) return [];
-    await waitExchangeJitter();
-    const res = await fetchWithTimeout(`${BFNX_BASE}/candles/trade:${bfnxTimeframe(tf)}:${symbol}/hist?limit=${limit}&sort=1`, 20000);
-    if (!res.ok) return [];
-    const json = await res.json();
-    if (!Array.isArray(json)) return [];
-    // Bitfinex: [mts, open, close, high, low, volume]
-    return json.map(row => ({
-      t: Number(row[0]),
-      o: Number(row[1]),
-      c: Number(row[2]),
-      h: Number(row[3]),
-      l: Number(row[4]),
-      v: Number(row[5]),
-    })).filter(c => Number.isFinite(c.t) && Number.isFinite(c.c));
-  }
-
-  async function fetchBitfinexBook(sym) {
-    const symbol = BFNX_SYMS[sym];
-    if (!symbol) return null;
-    await waitExchangeJitter();
-    const res = await fetchWithTimeout(`${BFNX_BASE}/book/${symbol}/P0?len=25`, 7000);
-    if (!res.ok) return null;
-    const json = await res.json();
-    if (!Array.isArray(json)) return null;
-    const bids = json.filter(l => Number(l[2]) > 0).map(l => ({ price: Number(l[0]), qty: Number(l[2]) }));
-    const asks = json.filter(l => Number(l[2]) < 0).map(l => ({ price: Number(l[0]), qty: Math.abs(Number(l[2])) }));
-    if (!bids.length && !asks.length) return null;
-    return { bids, asks, source: 'bitfinex', timestamp: Date.now() };
-  }
-
-  async function fetchBitfinexTrades(sym, limit = 100) {
-    const symbol = BFNX_SYMS[sym];
-    if (!symbol) return [];
-    await waitExchangeJitter();
-    const res = await fetchWithTimeout(`${BFNX_BASE}/trades/${symbol}/hist?limit=${limit}&sort=-1`, 7000);
-    if (!res.ok) return [];
-    const json = await res.json();
-    if (!Array.isArray(json)) return [];
-    // [id, mts, amount, price] — amount>0 = buy, amount<0 = sell
-    return json.map(t => ({
-      px: Number(t[3]),
-      qty: Math.abs(Number(t[2])),
-      side: Number(t[2]) > 0 ? 'buy' : 'sell',
-      t: Number(t[1]),
-    })).filter(t => Number.isFinite(t.qty) && t.qty > 0);
-  }
-
-  async function fetchGeckoCandles(geckoId, tf = '5m') {
-    try {
-      const days = tf === '1h' ? 7 : 1;
-      const bucketMs = geckoBucketMs(tf);
-      const json = await fetchGeckoJSON(`/coins/${geckoId}/market_chart?vs_currency=usd&days=${days}`);
-      const prices = Array.isArray(json.prices) ? json.prices : [];
-      const volumes = Array.isArray(json.total_volumes) ? json.total_volumes : [];
-      return bucketGeckoSeries(prices, volumes, bucketMs);
-    } catch (e) {
-      if (/Gecko auth circuit|Gecko rate-limit circuit|401 Unauthorized/i.test(String(e.message || e))) return [];
-      console.warn(`[Gecko] market_chart failed for ${geckoId}:`, e.message);
-      if (e.message.includes('429')) {
-        console.warn(`[Gecko] Rate limited (429) for ${geckoId}, skipping candles fallback`);
-      }
-      return [];  // Return empty candles instead of failing
-    }
-  }
-
-  async function fetchGeckoTicker(geckoId) {
-    try {
-      const json = await fetchGeckoJSON(`/simple/price?ids=${geckoId}&vs_currencies=usd&include_24hr_change=true&include_24hr_vol=true`);
-      return json[geckoId];
-    } catch (e) {
-      if (/Gecko auth circuit|Gecko rate-limit circuit|401 Unauthorized/i.test(String(e.message || e))) return null;
-      console.warn(`[Gecko] simple/price failed for ${geckoId}:`, e.message);
-      if (e.message.includes('429')) {
-        console.warn(`[Gecko] Rate limited (429) for ${geckoId}, skipping ticker fallback`);
-      }
-      return null;
-    }
-  }
-
-  async function fetchGeckoMaxHistory(geckoId) {
-    try {
-      const days = '365'; // Hardcoded for Demo tier per CoinGecko specs
-      const json = await fetchGeckoJSON(`/coins/${geckoId}/market_chart?vs_currency=usd&days=${days}`);
-      const prices = Array.isArray(json.prices) ? json.prices : [];
-      const volumes = Array.isArray(json.total_volumes) ? json.total_volumes : [];
-      return bucketGeckoSeries(prices, volumes, 24 * 60 * 60 * 1000);
-    } catch (e) {
-      if (/Gecko auth circuit|Gecko rate-limit circuit|401 Unauthorized/i.test(String(e.message || e))) return [];
-      console.warn(`[Gecko] market_chart history failed for ${geckoId}:`, e.message);
-      if (e.message.includes('429')) {
-        console.warn(`[Gecko] Rate limited (429) for ${geckoId}, skipping history fallback`);
-      }
-      return [];  // Return empty history instead of failing
-    }
-  }
-
-  async function fetchBINCandles(sym, interval = '1m', limit = 180) {
-    const binSym = BIN_SYMS[sym];
-    if (!binSym) return [];
-    await waitExchangeJitter();
-    const res = await fetchWithTimeout(`${BIN_BASE}/klines?symbol=${binSym}&interval=${interval}&limit=${limit}`, 20000);
-    if (!res.ok) return [];
-    const json = await res.json();
-    if (!Array.isArray(json)) return [];
-    return json.map(row => ({
-      t: Number(row[0]),
-      o: Number(row[1]),
-      h: Number(row[2]),
-      l: Number(row[3]),
-      c: Number(row[4]),
-      v: Number(row[5]),
-    })).filter(c => Number.isFinite(c.t) && Number.isFinite(c.c));
-  }
-
-  async function fetchBINBook(sym) {
-    const binSym = BIN_SYMS[sym];
-    if (!binSym) return null;
-    await waitExchangeJitter();
-    const res = await fetchWithTimeout(`${BIN_BASE}/depth?symbol=${binSym}&limit=20`, 7000);
-    if (!res.ok) return null;
-    const json = await res.json();
-    if (!Array.isArray(json?.bids) || !Array.isArray(json?.asks)) return null;
-    const bids = json.bids.map(l => ({ price: Number(l[0]), qty: Number(l[1]) })).filter(l => Number.isFinite(l.price) && l.qty > 0);
-    const asks = json.asks.map(l => ({ price: Number(l[0]), qty: Number(l[1]) })).filter(l => Number.isFinite(l.price) && l.qty > 0);
-    if (!bids.length && !asks.length) return null;
-    return { bids, asks, source: 'binance', timestamp: Date.now() };
-  }
-
-  async function fetchBINTrades(sym, limit = 100) {
-    const binSym = BIN_SYMS[sym];
-    if (!binSym) return [];
-    await waitExchangeJitter();
-    const res = await fetchWithTimeout(`${BIN_BASE}/trades?symbol=${binSym}&limit=${limit}`, 7000);
-    if (!res.ok) return [];
-    const json = await res.json();
-    if (!Array.isArray(json)) return [];
-    return json.map(t => ({
-      px: Number(t.price),
-      qty: Number(t.qty),
-      // isBuyerMaker=false → taker was buyer (aggressive buy)
-      side: t.isBuyerMaker ? 'sell' : 'buy',
-      t: Number(t.time),
-    })).filter(t => Number.isFinite(t.qty) && t.qty > 0);
-  }
-
-  // ---------------------------------------------------------------
-  // Coinbase Exchange (public — no auth required)
-  // Used as primary anchor for all 1/5/15m predictions
-  // ---------------------------------------------------------------
-
-  async function fetchCBExchCandles(sym, granularitySec = 300, limit = 300) {
-    const productId = CB_EXCH_SYMS[sym];
-    if (!productId) return [];
-    await waitExchangeJitter();
-    const endSec = Math.floor(Date.now() / 1000);
-    const startSec = endSec - limit * granularitySec;
-    const res = await fetchWithTimeout(
-      `${CB_EXCH_BASE}/products/${productId}/candles?granularity=${granularitySec}&start=${startSec}&end=${endSec}`,
-      25000
-    );
-    if (!res.ok) return [];
-    const json = await res.json();
-    if (!Array.isArray(json)) return [];
-    // CB returns [time_sec, low, high, open, close, volume] newest-first
-    return json.map(row => ({
-      t: Number(row[0]) * 1000,
-      l: Number(row[1]),
-      h: Number(row[2]),
-      o: Number(row[3]),
-      c: Number(row[4]),
-      v: Number(row[5]),
-    })).filter(c => Number.isFinite(c.t) && Number.isFinite(c.c)).sort((a, b) => a.t - b.t);
-  }
-
-  async function fetchCBExchBook(sym) {
-    const productId = CB_EXCH_SYMS[sym];
-    if (!productId) return null;
-    await waitExchangeJitter();
-    const res = await fetchWithTimeout(`${CB_EXCH_BASE}/products/${productId}/book?level=2`, 20000);
-    if (!res.ok) return null;
-    const json = await res.json();
-    if (!Array.isArray(json?.bids) || !Array.isArray(json?.asks)) return null;
-    return {
-      bids: json.bids.slice(0, 20).map(level => ({ price: Number(level[0]), qty: Number(level[1]) })).filter(l => Number.isFinite(l.price) && l.qty > 0),
-      asks: json.asks.slice(0, 20).map(level => ({ price: Number(level[0]), qty: Number(level[1]) })).filter(l => Number.isFinite(l.price) && l.qty > 0),
-      source: 'coinbase',
-      timestamp: Date.now(),
-    };
-  }
-
-  async function fetchCBExchTrades(sym, limit = 100) {
-    const productId = CB_EXCH_SYMS[sym];
-    if (!productId) return [];
-    await waitExchangeJitter();
-    const res = await fetchWithTimeout(`${CB_EXCH_BASE}/products/${productId}/trades?limit=${limit}`, 20000);
-    if (!res.ok) return [];
-    const json = await res.json();
-    if (!Array.isArray(json)) return [];
-    return json.map(trade => ({
-      qty: Number(trade.size),
-      side: trade.side === 'buy' ? 'buy' : 'sell',
-      px: Number(trade.price),
-      t: trade.time ? new Date(trade.time).getTime() : Date.now(),
-    })).filter(t => Number.isFinite(t.qty) && t.qty > 0);
-  }
-
-  // ---------------------------------------------------------------
-  // Kraken (public REST — no auth required)
-  // HYPE not listed on Kraken; all other PREDICTION_COINS supported
-  // ---------------------------------------------------------------
-  const KRAKEN_BASE = 'https://api.kraken.com/0/public';
-  const KRAKEN_SYMS = { BTC: 'XBTUSD', ETH: 'ETHUSD', SOL: 'SOLUSD', XRP: 'XRPUSD', DOGE: 'XDGUSD', BNB: 'BNBUSD' };
-
-  function krakenInterval(tf) {
-    return tf === '1m' ? 1 : tf === '5m' ? 5 : tf === '15m' ? 15 : 5;
-  }
-
-  async function fetchKrakenCandles(sym, tf = '5m', limit = 300) {
-    const pair = KRAKEN_SYMS[sym];
-    if (!pair) return [];
-    await waitExchangeJitter();
-    const res = await fetchWithTimeout(`${KRAKEN_BASE}/OHLC?pair=${pair}&interval=${krakenInterval(tf)}`, 25000);
-    if (!res.ok) return [];
-    const json = await res.json();
-    if (json.error?.length) return [];
-    const rows = Object.values(json.result || {}).find(v => Array.isArray(v));
-    if (!rows) return [];
-    // Kraken OHLC: [time_sec, open, high, low, close, vwap, vol, count]
-    return rows.slice(-limit).map(row => ({
-      t: Number(row[0]) * 1000,
-      o: Number(row[1]),
-      h: Number(row[2]),
-      l: Number(row[3]),
-      c: Number(row[4]),
-      v: Number(row[6]),
-    })).filter(c => Number.isFinite(c.t) && Number.isFinite(c.c) && c.c > 0);
-  }
-
-  async function fetchKrakenBook(sym) {
-    const pair = KRAKEN_SYMS[sym];
-    if (!pair) return null;
-    await waitExchangeJitter();
-    const res = await fetchWithTimeout(`${KRAKEN_BASE}/Depth?pair=${pair}&count=25`, 20000);
-    if (!res.ok) return null;
-    const json = await res.json();
-    if (json.error?.length) return null;
-    const book = Object.values(json.result || {})[0];
-    if (!book) return null;
-    return {
-      bids: (book.bids || []).map(l => ({ price: Number(l[0]), qty: Number(l[1]) })).filter(l => l.qty > 0),
-      asks: (book.asks || []).map(l => ({ price: Number(l[0]), qty: Number(l[1]) })).filter(l => l.qty > 0),
-      source: 'kraken',
-      timestamp: Date.now(),
-    };
-  }
-
-  async function fetchKrakenTrades(sym, limit = 100) {
-    const pair = KRAKEN_SYMS[sym];
-    if (!pair) return [];
-    await waitExchangeJitter();
-    const res = await fetchWithTimeout(`${KRAKEN_BASE}/Trades?pair=${pair}`, 20000);
-    if (!res.ok) return [];
-    const json = await res.json();
-    if (json.error?.length) return [];
-    const rows = Object.values(json.result || {}).find(v => Array.isArray(v));
-    if (!rows) return [];
-    // Kraken trade: [price, volume, time_float, "b"/"s", ...]
-    return rows.slice(-limit).map(t => ({
-      px: Number(t[0]),
-      qty: Number(t[1]),
-      side: t[3] === 'b' ? 'buy' : 'sell',
-      t: Math.round(Number(t[2]) * 1000),
-    })).filter(t => Number.isFinite(t.qty) && t.qty > 0);
-  }
-
-  // Equal-weight pool across all exchanges — no single exchange is anchored
-  function anchoredPoolCandles(cbSeries, ...fallbackSeries) {
-    return poolMinuteCandles(...[cbSeries, ...fallbackSeries].filter(s => s?.length));
   }
 
   // ── Phase 1: fast initial load (Coinbase + Binance, ~1-3 s) ─────────────────
@@ -1657,11 +671,16 @@
         && (Date.now() - (existing.ts || 0) < LIVE_DATA_TTL_MS);
       if (hasFreshLiveData) return;
       const hasLongHistory = Array.isArray(existing.longHistory) && existing.longHistory.length >= 90 && (Date.now() - (existing.longHistoryTs || 0) < 12 * 60 * 60 * 1000);
+      const retainedLongHistory = hasLongHistory ? existing.longHistory : (existing.longHistory || []);
 
       if (GECKO_ONLY.has(coin.sym)) {
         // HYPE / BNB: prioritize Coinbase + Binance, keep Gecko as low-rate fallback.
-        const [market, bin1m, bin5m, bin15m, cb1m, cb5m, cb15m, cbBook, longHistory] = await Promise.all([
-          fetchGeckoJSON(`/coins/${coin.geckoId}/market_chart?vs_currency=usd&days=1`).catch(() => null),
+        const [market, bin1m, bin5m, bin15m, cb1m, cb5m, cb15m, cbBook] = await Promise.all([
+          withSoftTimeout(
+            fetchGeckoJSON(`/coins/${coin.geckoId}/market_chart?vs_currency=usd&days=1`).catch(() => null),
+            GECKO_MARKET_SOFT_TIMEOUT_MS,
+            null
+          ),
           fetchBINCandles(coin.sym, '1m', 180).catch(() => []),
           fetchBINCandles(coin.sym, '5m', 300).catch(() => []),
           fetchBINCandles(coin.sym, '15m', 300).catch(() => []),
@@ -1669,7 +688,6 @@
           fetchCBExchCandles(coin.sym, 300, 300).catch(() => []),
           fetchCBExchCandles(coin.sym, 900, 300).catch(() => []),
           fetchCBExchBook(coin.sym).catch(() => null),
-          hasLongHistory ? Promise.resolve(existing.longHistory) : fetchGeckoMaxHistory(coin.geckoId).catch(() => existing.longHistory || []),
         ]);
         const prices = Array.isArray(market?.prices) ? market.prices : [];
         const volumes = Array.isArray(market?.total_volumes) ? market.total_volumes : [];
@@ -1700,15 +718,16 @@
         candleCache[coin.sym] = {
           candles, candles15m, candles1m, ticker, book, trades: [],
           source: sourceParts.filter(Boolean).join(' + '),
-          ts: Date.now(), longHistory,
-          longHistoryTs: longHistory?.length ? Date.now() : (existing.longHistoryTs || 0),
+          ts: Date.now(),
+          longHistory: retainedLongHistory,
+          longHistoryTs: retainedLongHistory?.length ? (existing.longHistoryTs || Date.now()) : 0,
           _cb1m: cb1m, _cb5m: cb5m, _cb15m: cb15m,
           _bin1m: bin1m, _bin5m: bin5m, _bin15m: bin15m,
           _gecko5m: gecko5m, _gecko15m: gecko15m,
         };
       } else {
         // BTC / ETH / SOL / XRP / DOGE: Coinbase + Binance only
-        const [bin1m, bin5m, bin15m, cb1m, cb5m, cb15m, cbBook, cbTrades, longHistory] = await Promise.all([
+        const [bin1m, bin5m, bin15m, cb1m, cb5m, cb15m, cbBook, cbTrades] = await Promise.all([
           fetchBINCandles(coin.sym, '1m', 180).catch(() => []),
           fetchBINCandles(coin.sym, '5m', 300).catch(() => []),
           fetchBINCandles(coin.sym, '15m', 300).catch(() => []),
@@ -1717,7 +736,6 @@
           fetchCBExchCandles(coin.sym, 900, 300).catch(() => []),
           fetchCBExchBook(coin.sym).catch(() => null),
           fetchCBExchTrades(coin.sym).catch(() => []),
-          hasLongHistory ? Promise.resolve(existing.longHistory) : fetchGeckoMaxHistory(coin.geckoId).catch(() => existing.longHistory || []),
         ]);
         const ws15m_b = window.CandleWS ? window.CandleWS.getClosedBuckets15m(coin.sym) : [];
         const ws1m = window.CandleWS ? window.CandleWS.getClosedBuckets1m(coin.sym) : [];
@@ -1740,8 +758,8 @@
           book: cbBook, trades: cbTrades,
           source: sourceParts.join(' + '),
           ts: Date.now(),
-          longHistory: longHistory || [],
-          longHistoryTs: longHistory?.length ? Date.now() : (existing.longHistoryTs || 0),
+          longHistory: retainedLongHistory,
+          longHistoryTs: retainedLongHistory?.length ? (existing.longHistoryTs || Date.now()) : 0,
           _cb1m: cb1m, _cb5m: cb5m, _cb15m: cb15m,
           _bin1m: bin1m, _bin5m: bin5m, _bin15m: bin15m,
         };
@@ -1765,7 +783,8 @@
       const bin15m = existing._bin15m || [];
 
       if (GECKO_ONLY.has(coin.sym)) {
-        const [mexc1m, mexc5m, mexc15m, mexcBook, bybit1m, bybit5m, bybit15m, bybitBook, kucoin1m, kucoin5m, kucoin15m, kucoinBook, bfnx1m, bfnx5m, bfnx15m, bfnxBook, krk1m, krk5m, krk15m, krkBook] = await Promise.all([
+        const hasLongHistory = Array.isArray(existing.longHistory) && existing.longHistory.length >= 90 && (Date.now() - (existing.longHistoryTs || 0) < 12 * 60 * 60 * 1000);
+        const [mexc1m, mexc5m, mexc15m, mexcBook, bybit1m, bybit5m, bybit15m, bybitBook, kucoin1m, kucoin5m, kucoin15m, kucoinBook, bfnx1m, bfnx5m, bfnx15m, bfnxBook, krk1m, krk5m, krk15m, krkBook, longHistory] = await Promise.all([
           fetchMEXCCandles(coin, '1m', 180).catch(() => []),
           fetchMEXCCandles(coin, '5m', 300).catch(() => []),
           fetchMEXCCandles(coin, '15m', 300).catch(() => []),
@@ -1786,6 +805,7 @@
           fetchKrakenCandles(coin.sym, '5m', 300).catch(() => []),
           fetchKrakenCandles(coin.sym, '15m', 300).catch(() => []),
           fetchKrakenBook(coin.sym).catch(() => null),
+          hasLongHistory ? Promise.resolve(existing.longHistory) : fetchGeckoMaxHistory(coin.geckoId).catch(() => existing.longHistory || []),
         ]);
         const gecko5m = existing._gecko5m || [];
         const gecko15m = existing._gecko15m || [];
@@ -1806,7 +826,10 @@
         if (krk5m.length || krk1m.length) srcBase.push('kraken');
         candleCache[coin.sym] = {
           ...existing, candles, candles15m, candles1m, book,
-          source: [...new Set(srcBase)].filter(Boolean).join(' + '), ts: Date.now()
+          source: [...new Set(srcBase)].filter(Boolean).join(' + '),
+          ts: Date.now(),
+          longHistory: longHistory || existing.longHistory || [],
+          longHistoryTs: longHistory?.length ? Date.now() : (existing.longHistoryTs || 0),
         };
       } else {
         const hasLongHistory = Array.isArray(existing.longHistory) && existing.longHistory.length >= 90 && (Date.now() - (existing.longHistoryTs || 0) < 12 * 60 * 60 * 1000);
@@ -2384,142 +1407,6 @@
     return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
   }
 
-  function normalizeBookLevel(level) {
-    if (!level) return null;
-    const price = Array.isArray(level)
-      ? Number(level[0])
-      : Number(level.price ?? level.px ?? level.p ?? level[0]);
-    const qty = Array.isArray(level)
-      ? Number(level[1])
-      : Number(level.qty ?? level.size ?? level.sz ?? level.q ?? level[1]);
-    if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(qty) || qty <= 0) return null;
-    return { price, qty };
-  }
-
-  function normalizeBookForModel(book, source = null) {
-    if (!book || !Array.isArray(book.bids) || !Array.isArray(book.asks)) return null;
-    const bids = book.bids.map(normalizeBookLevel).filter(Boolean).sort((a, b) => b.price - a.price);
-    const asks = book.asks.map(normalizeBookLevel).filter(Boolean).sort((a, b) => a.price - b.price);
-    if (!bids.length || !asks.length) return null;
-    const bestBid = bids[0].price;
-    const bestAsk = asks[0].price;
-    const mid = Number.isFinite(Number(book.mid)) && Number(book.mid) > 0
-      ? Number(book.mid)
-      : (bestBid + bestAsk) / 2;
-    const spread = Number.isFinite(Number(book.spread)) ? Number(book.spread) : (bestAsk - bestBid);
-    return {
-      bids,
-      asks,
-      mid,
-      spread,
-      spreadPct: Number.isFinite(Number(book.spreadPct))
-        ? Number(book.spreadPct)
-        : (mid > 0 ? (spread / mid) * 100 : 0),
-      source: source || book.source || 'book',
-      timestamp: Number(book.timestamp || book.ts || Date.now()),
-      balance: book.balance || book.depthMetrics || null,
-    };
-  }
-
-  function getFreshLiveBook(sym, ttlMs = LIVE_BOOK_TTL_MS) {
-    const st = _liveMicroState[sym];
-    if (st?.book && Date.now() - (st.book.timestamp || 0) <= ttlMs) return st.book;
-    const obBook = window.OB?.getFreshBook?.(sym, ttlMs)
-      || ((window.OB?.books?.[sym] && Date.now() - (window.OB.books[sym].timestamp || 0) <= ttlMs)
-        ? window.OB.books[sym]
-        : null);
-    const normalized = normalizeBookForModel(obBook, obBook?.source || 'orderbook-ws');
-    if (normalized) {
-      updateLiveOrderBook(sym, normalized, { source: normalized.source, silent: true });
-      return normalized;
-    }
-    return null;
-  }
-
-  function resolveFreshOrderBook(sym, fallbackBook) {
-    const liveBook = getFreshLiveBook(sym);
-    if (liveBook) return liveBook;
-    return normalizeBookForModel(fallbackBook, fallbackBook?.source || 'rest-book');
-  }
-
-  function updateLiveOrderBook(sym, rawBook, meta = {}) {
-    const key = String(sym || '').toUpperCase();
-    if (!key) return null;
-    const book = normalizeBookForModel(rawBook, meta.source || rawBook?.source || 'orderbook-ws');
-    if (!book) return null;
-    const analysis = analyzeBook(book);
-    const state = _liveMicroState[key] || {};
-    _liveMicroState[key] = {
-      ...state,
-      book,
-      balance: meta.balance || book.balance || state.balance || null,
-      lastUpdateTs: Date.now(),
-      lastImbalance: analysis.imbalance,
-      lastLabel: analysis.label,
-    };
-    if (candleCache[key]) candleCache[key]._liveBook = book;
-    if (!meta.silent) {
-      try {
-        window.dispatchEvent(new CustomEvent('prediction:live-book', {
-          detail: { sym: key, book, analysis }
-        }));
-      } catch (_) { }
-    }
-    return { book, analysis };
-  }
-
-  function getSecsToKalshiClose(sym) {
-    const close = window.PredictionMarkets?.getCoin?.(sym)?.kalshi15m?.closeTime;
-    if (!close) return null;
-    const ms = new Date(close).getTime() - Date.now();
-    return Number.isFinite(ms) ? ms / 1000 : null;
-  }
-
-  function shouldRepriceForLiveBook(sym, analysis, opts = {}) {
-    const state = _liveMicroState[sym] || {};
-    const now = Date.now();
-    const secsLeft = getSecsToKalshiClose(sym);
-    const closeValueWindow = Number.isFinite(secsLeft) && secsLeft <= 210 && secsLeft >= 45;
-    const minGap = closeValueWindow ? LIVE_BOOK_CLOSE_REPRICE_MIN_MS : LIVE_BOOK_REPRICE_MIN_MS;
-    const absImb = Math.abs(Number(analysis?.imbalance || 0));
-    const delta = Math.abs((Number(analysis?.imbalance || 0)) - (Number(state.lastRepriceImbalance || 0)));
-    if (opts.force) return true;
-    if (now - (state.lastRepriceTs || 0) < minGap && delta < LIVE_BOOK_REPRICE_DELTA) return false;
-    return closeValueWindow || absImb >= LIVE_BOOK_REPRICE_MIN_ABS_IMBALANCE || delta >= LIVE_BOOK_REPRICE_DELTA;
-  }
-
-  function rescoreLiveMicrostructure(sym, opts = {}) {
-    const key = String(sym || '').toUpperCase();
-    const configuredCoins = Array.isArray(window.PREDICTION_COINS)
-      ? window.PREDICTION_COINS
-      : (typeof PREDICTION_COINS !== 'undefined' ? PREDICTION_COINS : []);
-    const coin = configuredCoins.find(c => c?.sym === key);
-    const cache = candleCache[key];
-    if (!coin || !cache?.candles15m?.length) return null;
-    const book = resolveFreshOrderBook(key, cache.book);
-    if (!book) return null;
-    const analysis = analyzeBook(book);
-    if (!shouldRepriceForLiveBook(key, analysis, opts)) return null;
-    const prediction = preservePredictionOverlay(
-      window._predictions[key],
-      computePrediction(coin, window._backtests[key] || null)
-    );
-    window._predictions[key] = prediction;
-    const state = _liveMicroState[key] || {};
-    _liveMicroState[key] = {
-      ...state,
-      lastRepriceTs: Date.now(),
-      lastRepriceImbalance: analysis.imbalance,
-      lastRepriceReason: opts.reason || 'live-book',
-    };
-    try {
-      window.dispatchEvent(new CustomEvent('predictions:microstructure-updated', {
-        detail: { sym: key, prediction, bookAnalysis: analysis, reason: opts.reason || 'live-book' }
-      }));
-    } catch (_) { }
-    return prediction;
-  }
-
   function horizonKey(horizonMin) {
     const exact = STATIC_HORIZONS.find(min => min === horizonMin);
     if (exact) return `h${exact}`;
@@ -2920,34 +1807,6 @@
   // MICROSTRUCTURE ANALYSIS
   // ================================================================
 
-  function analyzeBook(book) {
-    const normalized = normalizeBookForModel(book, book?.source || 'book');
-    if (!normalized) return { imbalance: 0, bidTotal: 0, askTotal: 0, bidWall: 0, askWall: 0, spread: 0, label: 'No data', source: book?.source || null, timestamp: book?.timestamp || null };
-    const bidTotal = normalized.bids.reduce((s, b) => s + parseFloat(b.qty), 0);
-    const askTotal = normalized.asks.reduce((s, a) => s + parseFloat(a.qty), 0);
-    const total = bidTotal + askTotal || 1;
-    const rawImbalance = (bidTotal - askTotal) / total; // -1 to 1
-    const weightedImbalance = normalized.balance?.weighted?.blendImbalance;
-    const imbalance = Number.isFinite(Number(weightedImbalance)) ? Number(weightedImbalance) : rawImbalance;
-    const bestBid = parseFloat(normalized.bids[0]?.price || 0);
-    const bestAsk = parseFloat(normalized.asks[0]?.price || 0);
-    const spread = bestAsk > 0 ? ((bestAsk - bestBid) / bestBid) * 100 : 0;
-
-    // Detect walls (single level > 30% of total side)
-    const bidMax = Math.max(...normalized.bids.map(b => parseFloat(b.qty)));
-    const askMax = Math.max(...normalized.asks.map(a => parseFloat(a.qty)));
-    const bidWall = bidMax / (bidTotal || 1);
-    const askWall = askMax / (askTotal || 1);
-
-    let label = 'Balanced';
-    if (imbalance > 0.3) label = 'Bid Heavy — Support Below';
-    else if (imbalance < -0.3) label = 'Ask Heavy — Resistance Above';
-    if (bidWall > 0.4) label += ' (bid wall)';
-    if (askWall > 0.4) label += ' (ask wall)';
-
-    return { imbalance, rawImbalance, bidTotal, askTotal, bidWall, askWall, spread, label, source: normalized.source, timestamp: normalized.timestamp, balance: normalized.balance };
-  }
-
   function analyzeTradeFlow(trades) {
     if (!trades || trades.length === 0) return { buyRatio: 50, sellRatio: 50, aggressor: 'neutral', bigTrades: 0, label: 'No data' };
     let buyVol = 0, sellVol = 0, bigTrades = 0;
@@ -3081,84 +1940,21 @@
   // PREDICTION COMPUTATION
   // ================================================================
 
-  // Normal CDF approximation (Abramowitz & Stegun 26.2.17, max error 7.5e-8)
-  // Used to compute P(price ≥ kalshiRef) — model-implied YES probability.
-  // The Kalshi contract resolves YES if close price MEETS OR EXCEEDS the reference.
-  function normalCDF(z) {
-    const t = 1 / (1 + 0.2316419 * Math.abs(z));
-    const poly = t * (0.319381530 + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429))));
-    const pdf = Math.exp(-0.5 * z * z) / Math.sqrt(2 * Math.PI);
-    const p = 1 - pdf * poly;
-    return z >= 0 ? p : 1 - p;
-  }
-
-
-  // ── PATCH1.11: Wall Absorption Detector ─────────────────────────────────
-  // Detects bid/ask wall events on 1m candles: large wick in one direction
-  // that recovers, or same price level tested 2+ times with recoveries.
-  // These events cause momentum/OBV to fire in the wick direction (wrong).
-  // The correct bias is OPPOSITE to the wick (wall absorbed supply/demand).
-  function detectWallAbsorption(candles1m) {
-    if (!candles1m || candles1m.length < 6) return { detected: false, dir: 0, strength: 0 };
-    const c = candles1m.slice(-16);
-    let rangeSum = 0;
-    for (let i = 0; i < c.length; i++) rangeSum += (c[i].h - c[i].l);
-    const avgRange = rangeSum / c.length || 0.0001;
-
-    let wallDetected = false, wallDir = 0, wallStrength = 0;
-
-    // Pass 1: wick-body ratio on last 6 candles
-    for (let i = Math.max(1, c.length - 6); i < c.length; i++) {
-      const bar = c[i];
-      const body = Math.abs(bar.c - bar.o);
-      const range = bar.h - bar.l || 0.0001;
-      const lowerWick = Math.min(bar.o, bar.c) - bar.l;
-      const upperWick = bar.h - Math.max(bar.o, bar.c);
-      if (range < avgRange * 1.1) continue;
-      // Bid wall (lower wick absorption)
-      if (lowerWick >= body * 2 && lowerWick >= avgRange * 1.4 && (lowerWick / range) > 0.38) {
-        const strength = Math.min(1, (lowerWick / range) * 1.6);
-        if (strength > wallStrength) { wallDetected = true; wallDir = 1; wallStrength = strength; }
-      }
-      // Ask wall (upper wick absorption)
-      if (upperWick >= body * 2 && upperWick >= avgRange * 1.4 && (upperWick / range) > 0.38) {
-        const strength = Math.min(1, (upperWick / range) * 1.6);
-        if (strength > wallStrength) { wallDetected = true; wallDir = -1; wallStrength = strength; }
-      }
-    }
-
-    // Pass 2: same-level retest (2+ tests of same support/resistance in last 10 bars)
-    if (!wallDetected && c.length >= 8) {
-      const last10 = c.slice(-10);
-      const lows = last10.map(b => b.l);
-      const highs = last10.map(b => b.h);
-      const minLow = Math.min(...lows);
-      const maxHigh = Math.max(...highs);
-      const bidTests = lows.filter(l => Math.abs(l - minLow) / (minLow || 1) < 0.0006).length;
-      const askTests = highs.filter(h => Math.abs(h - maxHigh) / (maxHigh || 1) < 0.0006).length;
-      const lastBar = c[c.length - 1];
-      if (bidTests >= 2 && lastBar.c >= lastBar.o) {
-        wallDetected = true; wallDir = 1; wallStrength = Math.min(0.75, bidTests * 0.28);
-      } else if (askTests >= 2 && lastBar.c <= lastBar.o) {
-        wallDetected = true; wallDir = -1; wallStrength = Math.min(0.75, askTests * 0.28);
-      }
-    }
-    return { detected: wallDetected, dir: wallDir, strength: wallStrength };
-  }
+  // Normal CDF: imported from window.PREDICTIONS_KALSHI_ROUTING
 
   // ── SMC: Smart Money Concepts Helpers ─────────────────────────────────────
   function detectLiquidityPools(candles) {
     const pools = { highs: [], lows: [] };
     const n = candles.length;
     if (n < 20) return pools;
-    
+
     const pivots = { highs: [], lows: [] };
     for (let i = 2; i < n - 2; i++) {
       const c = candles[i];
-      if (c.h > candles[i-1].h && c.h > candles[i-2].h && c.h > candles[i+1].h && c.h > candles[i+2].h) {
+      if (c.h > candles[i - 1].h && c.h > candles[i - 2].h && c.h > candles[i + 1].h && c.h > candles[i + 2].h) {
         pivots.highs.push({ price: c.h, index: i });
       }
-      if (c.l < candles[i-1].l && c.l < candles[i-2].l && c.l < candles[i+1].l && c.l < candles[i+2].l) {
+      if (c.l < candles[i - 1].l && c.l < candles[i - 2].l && c.l < candles[i + 1].l && c.l < candles[i + 2].l) {
         pivots.lows.push({ price: c.l, index: i });
       }
     }
@@ -3213,9 +2009,9 @@
     const n = candles.length;
     if (n < 5) return fvgs;
     for (let i = n - 5; i < n - 1; i++) {
-      const c1 = candles[i-1];
+      const c1 = candles[i - 1];
       const c2 = candles[i];
-      const c3 = candles[i+1];
+      const c3 = candles[i + 1];
       if (!c1 || !c2 || !c3) continue;
 
       if (c1.h < c3.l && c2.c > c2.o) {
@@ -3936,59 +2732,6 @@
    * sigVec = array of { name, value, weight } signal contributions.
    * Returns rationale object with lines[], dirLabel, conviction, preLocked flag.
    */
-  function buildRationale(sigVec, regime, kalshiProb, coin) {
-    // Find top 3 contributing signals by weighted magnitude
-    const sorted = [...sigVec]
-      .filter(s => Math.abs(s.value) > 0.1)
-      .sort((a, b) => Math.abs(b.value * b.weight) - Math.abs(a.value * a.weight));
-
-    const top3 = sorted.slice(0, 3);
-    const direction = sigVec.reduce((s, x) => s + x.value * x.weight, 0);
-    const dirLabel = direction > 0.05 ? 'UP' : direction < -0.05 ? 'DOWN' : 'FLAT';
-
-    const lines = [];
-
-    // Regime line
-    lines.push(`Regime: ${regime.label}`);
-
-    // Top signals
-    if (top3.length > 0) {
-      lines.push(`Key drivers: ${top3.map(s => {
-        const dir = s.value > 0 ? '▲' : '▼';
-        return `${dir}${s.name}`;
-      }).join(', ')}`);
-    }
-
-    // Kalshi alignment
-    if (kalshiProb !== null && kalshiProb !== undefined) {
-      const kalshiDir = kalshiProb > 0.52 ? 'YES (UP)' : kalshiProb < 0.48 ? 'NO (DOWN)' : 'NEUTRAL';
-      const aligned = (dirLabel === 'UP' && kalshiProb > 0.52) || (dirLabel === 'DOWN' && kalshiProb < 0.48);
-      lines.push(`Kalshi ${(kalshiProb * 100).toFixed(0)}% ${kalshiDir} — ${aligned ? '✓ ALIGNED with model' : '⚡ DIVERGES from model'}`);
-    }
-
-    // Regime-adjusted conviction
-    const conviction = Math.min(1, Math.abs(direction) * regime.confidence * 2);
-    const convLabel = conviction > 0.6 ? 'HIGH' : conviction > 0.35 ? 'MODERATE' : 'LOW';
-
-    lines.push(`Conviction: ${convLabel} (${(conviction * 100).toFixed(0)}%)`);
-
-    // Pre-prediction lock — if conviction HIGH, lock in direction early
-    const preLocked = conviction > 0.55 && regime.confidence > 0.6;
-    if (preLocked) {
-      lines.push(`⚡ PRE-LOCKED ${dirLabel} — ${top3[0]?.name || 'model'} + ${regime.emaCross} EMA + ${regime.bookBias}`);
-    }
-
-    return {
-      lines,
-      dirLabel,
-      conviction,
-      convLabel,
-      preLocked,
-      regimeKey: regime.regime,
-      summary: lines.join(' | ')
-    };
-  }
-
   function buildSignalModel(candles, book, trades, options = {}) {
     if (!candles || candles.length < 20) return null;
 
@@ -4224,14 +2967,10 @@
     }
 
     // --- Prediction Market Sentiment (Kalshi + Polymarket) ---
-    const mktData = options.sym ? (window.PredictionMarkets?.getCoin(options.sym) ?? null) : null;
-    let mktSig = 0;
-    if (mktData && mktData.combinedProb !== null) {
-      const p = mktData.combinedProb;
-      if (p > 0.62) mktSig = Math.min(1, (p - 0.62) / 0.38);
-      else if (p < 0.38) mktSig = -Math.min(1, (0.38 - p) / 0.38);
-    }
-    const mktModelSig = KALSHI_VERIFY_ONLY ? 0 : mktSig;
+    const kalshiSentiment = calculateKalshiSentiment(options.sym);
+    const mktData = kalshiSentiment.marketData;
+    const mktSig = kalshiSentiment.signal;
+    const mktModelSig = kalshiSentiment.modelSignal;
 
     // Supertrend
     const stR = calcSupertrend(candles, 10, 3.0);
@@ -4456,7 +3195,7 @@
       const fvg = smcFVGs.find(f => f.dir === sweep.dir && f.index > sweep.index);
       if (fvg) {
         let aggressive = false;
-        if (sweep.dir === 1 && kalshiProb < 0.35) aggressive = true; 
+        if (sweep.dir === 1 && kalshiProb < 0.35) aggressive = true;
         if (sweep.dir === -1 && kalshiProb > 0.65) aggressive = true;
 
         const lastC = candles[candles.length - 1];
@@ -4593,11 +3332,23 @@
 
     // Log consensus (only if meaningful)
     if ((bullCount >= 2 || bearCount >= 2) && Math.abs(liveRealtimeMomentum) > 0.05) {
-      predictionDebugLog(`consensus:${options.sym}`, 'log', () => `[CONSENSUS] ${options.sym}: direction=${consensusDirection > 0 ? 'BULL' : 'BEAR'} conf=${(consensusConfidence*100).toFixed(0)}% (${bullCount+bearCount} signals), mom=${momSig.toFixed(2)}`, 20000);
+      predictionDebugLog(`consensus:${options.sym}`, 'log', () => `[CONSENSUS] ${options.sym}: direction=${consensusDirection > 0 ? 'BULL' : 'BEAR'} conf=${(consensusConfidence * 100).toFixed(0)}% (${bullCount + bearCount} signals), mom=${momSig.toFixed(2)}`, 20000);
     }
 
     // REMOVED PHASE INVERSION: A 45% loss rate is a 55% win rate. Flipping the score turned a winning edge into a losing one!
-    const score = clamp(consensusComposite * 1.6 * adxGate * divergenceSuppression * (ENABLE_MDT_SCORE_MULT ? mdtScoreMult : 1) * _sessMult * (tapeVelocity.scoreBoostMult || 1), -1, 1);
+    let score = clamp(consensusComposite * 1.6 * adxGate * divergenceSuppression * (ENABLE_MDT_SCORE_MULT ? mdtScoreMult : 1) * _sessMult * (tapeVelocity.scoreBoostMult || 1), -1, 1);
+
+    // Edge Committee overlay — selective voting by top-performing indicators (when config loaded)
+    let edgeCommitteeVote = null;
+    if (window.EdgeCommittee?.applyScoreGate) {
+      try {
+        const gated = window.EdgeCommittee.applyScoreGate(score, signalVector, options.sym);
+        score = gated.score;
+        edgeCommitteeVote = gated.vote || null;
+      } catch (err) {
+        console.warn('[EdgeCommittee] applyScoreGate failed:', err?.message || err);
+      }
+    }
     const agreement = summarizeAgreement(Object.fromEntries(modelActiveKeys.map(key => [key, signalVector[key]])));
     const coreAgreement = summarizeAgreement(Object.fromEntries(CORE_SIGNAL_KEYS.map(key => [key, signalVector[key]])));
 
@@ -4636,7 +3387,7 @@
         poly: mktData?.poly ?? null,
         combined: mktData?.combinedProb ?? null,
         signal: mktSig,
-        label: mktSig > 0.3 ? 'Markets say UP' : mktSig < -0.3 ? 'Markets say DOWN' : 'Markets neutral',
+        label: kalshiSentiment.label,
       },
       tapeVelocity: {
         state: tapeVelocity.state,
@@ -4696,9 +3447,9 @@
         adjustedComposite: consensusComposite,
         adjustment: consensusAdjustment,
         label: consensusDirection > 0
-          ? `Consensus BULL (${(consensusConfidence*100).toFixed(0)}% confidence)`
+          ? `Consensus BULL (${(consensusConfidence * 100).toFixed(0)}% confidence)`
           : consensusDirection < 0
-            ? `Consensus BEAR (${(consensusConfidence*100).toFixed(0)}% confidence)`
+            ? `Consensus BEAR (${(consensusConfidence * 100).toFixed(0)}% confidence)`
             : 'No consensus (conflict)',
       },
     };
@@ -4758,14 +3509,53 @@
       projections: SHORT_HORIZON_MINUTES.reduce((acc, horizonMin) => {
         const targetScale = horizonMin / 60;
         const rangeScale = Math.max(0.12, Math.sqrt(horizonMin / 15) * 0.5) * projectionRangeExpansionMult;
-        
+
         // Use model score for projection target so UI targets match verdict direction
         const expectedMovePct = Math.max(Math.abs(mom / 100), (atr / lastPrice) * 0.4);
         const modelDrift = score * expectedMovePct;
-        
+
         const target = lastPrice * (1 + modelDrift * targetScale * projectionTargetDriftMult);
         const entry = projectionKey(horizonMin);
         acc[entry] = { horizonMin, target, high: target + atr * rangeScale, low: target - atr * rangeScale };
+
+        // For the 5-min horizon, align target to the current 5-min Polymarket contract
+        if (horizonMin === 5) {
+          const coinKey = String(options.sym || '').toUpperCase();
+          const p5m = window.PredictionMarkets?.getCoin(coinKey)?.poly5m ?? null;
+          const polyRef = p5m?.targetPriceNum ?? null;
+          const polyYes = p5m?.probability ?? null;
+          if (polyRef !== null && polyRef > 0) {
+            const sigma = (atr * rangeScale) || (lastPrice * 0.0017 * projectionRangeExpansionMult);
+            const z = (target - polyRef) / sigma;
+            const pAbove = normalCDF(z);
+            const modelYesPct = Math.round(pAbove * 100);
+            const polyYesPct = polyYes !== null ? Math.round(polyYes * 100) : null;
+            const divergence = polyYesPct !== null ? Math.abs(modelYesPct - polyYesPct) : null;
+            const gapPct = ((polyRef - lastPrice) / lastPrice) * 100;
+
+            const yesDir = 'UP';
+            const noDir = 'DOWN';
+            const cdfImpliedDir = modelYesPct >= 50 ? yesDir : noDir;
+            const dirConflict = dir !== 'FLAT' && cdfImpliedDir !== dir;
+
+            acc[entry].polyAlign = {
+              ref: polyRef,
+              gapPct,
+              modelYesPct,
+              polyYesPct,
+              divergence,
+              strikeDir: 'above',
+              closeTimeMs: p5m?.closeTime ? new Date(p5m.closeTime).getTime() : null,
+              dirConflict,
+              cdfImpliedDir,
+              status: divergence === null ? 'no-market'
+                : divergence <= 12 ? 'aligned'
+                  : divergence <= 25 ? 'soft-split'
+                    : 'divergent',
+            };
+          }
+        }
+
         // For the 15-min horizon, align target to the NEXT 15-min candle session
         if (horizonMin === 15) {
           const ns = getNextCandleSession();
@@ -4787,16 +3577,16 @@
           // YES resolves if closePrice ≥ targetPriceNum (meet or exceed).
           // Compute model-implied P(closePrice ≥ ref) using normal CDF over
           // our projected price distribution (mean = target, sigma = ATR-range).
-          const k15m = window.PredictionMarkets?.getCoin(options.sym)?.kalshi15m ?? null;
-          const kalshiRef = k15m?.targetPriceNum ?? null;   // null while "TBD"
-          const kalshiYes = k15m?.probability ?? null;   // market's YES price (0–1)
-          const kalshiStDir = k15m?.strikeDir ?? 'above'; // 'above'|'below'
-          const isBelowK = kalshiStDir === 'below';
-
-          // Use RTI price for settlement comparison (Kalshi settles on CME CF RTI, not Binance pool)
-          const rtiData = window._rtiPrices?.[options.sym] ?? null;
-          const rtiPrice = rtiData?.price ?? null;   // RTI approximation from 4 constituent exchanges
-          const settlementPrice = rtiPrice ?? lastPrice; // fallback to candle price if RTI unavailable
+          const {
+            k15m,
+            kalshiRef,
+            kalshiYes,
+            kalshiStDir,
+            isBelowK,
+            rtiData,
+            rtiPrice,
+            settlementPrice,
+          } = getKalshi15mSettlementContext(options.sym, lastPrice);
 
           if (kalshiRef !== null && kalshiRef > 0) {
             // sigma: one-sigma price move over 15 min based on ATR
@@ -4888,6 +3678,7 @@
         microScore: clamp(microComposite, -1, 1),
         consensusComposite,
         consensusAdjustment,
+        edgeCommittee: edgeCommitteeVote,
         liveMomentumDivergence,
         liveRealtimeMomentum,
         coreAgreement: coreAgreement.agreement,
@@ -5009,9 +3800,17 @@
     // ── PER-HORIZON SCORES ─────────────────────────────────────────────────────
     // 5m contract: needs high quality AND last 5 candles net-aligned
     const last5Net = last5.reduce((s, c) => s + (c.c - c.o), 0);
-    const last5Aligned = Math.sign(last5Net) === driftDir;
+    const driftDir5 = last5Net > 0 ? 1 : last5Net < 0 ? -1 : 0;
+    let streak5 = 0;
+    for (let i = window.length - 1; i >= 0; i--) {
+      if (Math.sign(window[i].c - window[i].o) === driftDir5) streak5++;
+      else break;
+    }
+    const last5Aligned = driftDir5 === driftDir;
     const h1Score = hardGated && last5Aligned ? clamp(score * 1.12, -1, 1) : 0;
-    const h5Score = gated && last5Aligned ? clamp(score * (hardGated ? 1.06 : 0.88), -1, 1) : score * 0.16;
+    const h5Score = gated && last5Aligned
+      ? clamp(score * (hardGated ? 1.06 : 0.88), -1, 1)
+      : (driftDir5 !== 0 ? clamp(driftDir5 * momentumQuality * (streak5 >= 2 ? 0.64 : 0.22), -1, 1) : 0);
     const h10Score = gated ? clamp(score * 0.90, -1, 1) : score * 0.26;
     // 15m contract: most forgiving — even medium drift matters; missed quiet ETH drifts end here
     const h15Score = medQuality ? clamp(score * 0.88, -1, 1) : score * 0.38;
@@ -5055,6 +3854,10 @@
         driftDir,
         momentumQuality,
         qualityLabel,
+        // 5m specific indicators
+        driftDir5,
+        streak5,
+        last5Aligned,
       },
     };
   }
@@ -5938,15 +4741,15 @@
         ? cache.candles1m  // Use raw 1-minute candles for h1/h5
         : cache.candles;   // Use 5-minute candles for h10+
       if (!candles || candles.length < 30) return;
-      
+
       const barMinutes = inferBarMinutes(candles) || 5;
       const horizonBars = Math.max(1, Math.round(horizonMin / barMinutes));
-      
+
       // Limit backtest steps to prevent UI freeze
       const maxBacktestSteps = 250;
       const minStartIndex = Math.max(26, horizonBars + 10);
       const startIndex = Math.max(minStartIndex, candles.length - horizonBars - maxBacktestSteps);
-      
+
       const observations = [];
       const history = [];
 
@@ -6293,17 +5096,6 @@
     return (packet.strength || 0) * (packet.trust || 0) * (packet.relevance || 0) * (packet.freshness || 0);
   }
 
-  function classifyBookLiquidity(book) {
-    if (!book) return { state: 'unknown', score: 0.5, label: 'Book unavailable' };
-    if (book.spread >= 0.18 || (book.bidTotal + book.askTotal) < 1) {
-      return { state: 'thin', score: 0.25, label: 'Thin book / wide spread' };
-    }
-    if (book.spread <= 0.04 && Math.abs(book.imbalance || 0) < 0.2) {
-      return { state: 'balanced', score: 0.85, label: 'Tight balanced book' };
-    }
-    return { state: 'normal', score: 0.65, label: 'Normal book depth' };
-  }
-
   function buildSignalRouterContext(coin, model, fastTiming, backtest, cache) {
     const sourceFreshness = clamp(1 - ((Date.now() - (cache?.ts || Date.now())) / 90000), 0.25, 1);
     const sourceLabel = cache?.source || '';
@@ -6550,18 +5342,75 @@
 
     if (derivCache[context.coin.sym]) {
       const deriv = derivCache[context.coin.sym];
+      const hasLive = deriv.source === 'derivatives-feed';
+      // Direction: prefer the live composite pressure (liq imbalance + funding + OI) when meaningful,
+      // else fall back to the funding-sign rule (crowded shorts = bullish, crowded longs = bearish).
+      const liveDir = hasLive && Math.abs(deriv.pressure || 0) > 0.15 ? Math.sign(deriv.pressure) : 0;
+      const fundDir = deriv.funding < -0.08 ? 1 : deriv.funding > 0.08 ? -1 : 0;
+      const direction = liveDir || fundDir;
+      const fundStrength = clamp(Math.abs(deriv.funding || 0) / 0.35, 0, 1);
+      const liqStrength = hasLive
+        ? clamp(Math.abs(deriv.liqImbalance || 0) * (Math.min(deriv.liqTotalUsd || 0, 5e6) / 5e6), 0, 1)
+        : 0;
+      const strength = Math.max(fundStrength, liqStrength, hasLive ? clamp(Math.abs(deriv.pressure || 0), 0, 1) : 0);
+      const detailBits = [`funding ${deriv.funding?.toFixed?.(3) ?? deriv.funding}%`];
+      if (hasLive && deriv.oiDeltaPct != null) detailBits.push(`OIΔ ${deriv.oiDeltaPct >= 0 ? '+' : ''}${deriv.oiDeltaPct.toFixed(1)}%`);
+      if (hasLive && (deriv.liqTotalUsd || 0) > 100_000) detailBits.push(`liq $${(deriv.liqTotalUsd / 1e6).toFixed(2)}M ${deriv.liqImbalance >= 0 ? 'short' : 'long'}`);
       packets.push(applyRouterProfile({
         family: 'derivatives',
         category: 'derivatives',
         role: 'driver',
         label: 'Perp positioning',
-        detail: `${deriv.market || deriv.exchange || 'perps'} funding ${deriv.funding?.toFixed?.(3) || deriv.funding}%`,
-        direction: deriv.funding < -0.08 ? 1 : deriv.funding > 0.08 ? -1 : 0,
-        strength: clamp(Math.abs(deriv.funding || 0) / 0.35, 0, 1),
+        detail: `${deriv.market || deriv.exchange || 'perps'} ${detailBits.join(' · ')}`,
+        direction,
+        strength,
         freshness: sourceFreshness,
-        trust: derivativeTrust,
+        trust: hasLive ? Math.min(0.82, derivativeTrust + 0.12) : derivativeTrust,
         relevance: 0.68,
       }, routerProfile));
+    }
+
+    // ★ Options skew (Deribit, BTC/ETH only): 25Δ risk reversal = directional vol demand.
+    // Positive RR = calls bid (bullish skew); negative = puts bid (bearish). Gated at ≥1.5 vol pts.
+    if (typeof window !== 'undefined' && window.OptionsGammaFeed?.get) {
+      const opt = window.OptionsGammaFeed.get(context.coin.sym);
+      if (opt && opt.available && Number.isFinite(opt.riskReversal25) && Math.abs(opt.riskReversal25) >= 1.5) {
+        const rr = opt.riskReversal25;
+        const pinTxt = (opt.pinDistPct != null) ? `, pin ${opt.pinDistPct >= 0 ? '+' : ''}${opt.pinDistPct.toFixed(2)}%` : '';
+        packets.push(applyRouterProfile({
+          family: 'options-skew',
+          category: 'derivatives',
+          role: 'driver',
+          label: 'Options skew',
+          detail: `${opt.skewLabel} (25Δ RR ${rr >= 0 ? '+' : ''}${rr.toFixed(1)}v${pinTxt})`,
+          direction: rr > 0 ? 1 : -1,
+          strength: clamp(Math.abs(rr) / 8, 0, 1),
+          freshness: 0.7,
+          trust: 0.6,
+          relevance: 0.5,
+        }, routerProfile));
+      }
+    }
+
+    // ★ Prediction-market cross-venue divergence (Kalshi YES vs Polymarket YES).
+    // Relative-value edge: fade the venue that is richer on YES. gapPp>0 → Kalshi richer → fade up.
+    if (typeof window !== 'undefined' && window.PredictionMarketEdge?.get) {
+      const edge = window.PredictionMarketEdge.get(context.coin.sym);
+      const dv = edge?.divergence;
+      if (dv && dv.actionable && Number.isFinite(dv.gapPp)) {
+        packets.push(applyRouterProfile({
+          family: 'pm-divergence',
+          category: 'prediction-market',
+          role: 'driver',
+          label: 'Cross-venue divergence',
+          detail: `Kalshi ${(dv.kalshiYes * 100).toFixed(0)}% vs Poly ${(dv.polyYes * 100).toFixed(0)}% (${dv.gapPp >= 0 ? '+' : ''}${dv.gapPp.toFixed(1)}pp)`,
+          direction: dv.gapPp > 0 ? -1 : 1,
+          strength: clamp(Math.abs(dv.gapPp) / 15, 0, 1),
+          freshness: 0.85,
+          trust: 0.55,
+          relevance: 0.5,
+        }, routerProfile));
+      }
     }
 
     if (backtest?.summary) {
@@ -6864,34 +5713,59 @@
     }
   }
 
-  function buildExecutionGuard(model, cache) {
-    const closeTimeMs = model?.projections?.p15?.kalshiAlign?.closeTimeMs;
-    if (!Number.isFinite(closeTimeMs)) return null;
-    const now = Date.now();
-    const msToClose = closeTimeMs - now;
-    const dataAgeMs = Math.max(0, now - (cache?.ts || now));
-    const staleData = dataAgeMs > 45_000;
-    const hardLate = msToClose <= 18_000;
-    const cautionLate = msToClose <= 40_000;
-    const blocked = hardLate || (cautionLate && staleData);
-    return {
-      blocked,
-      hardLate,
-      cautionLate,
-      staleData,
-      msToClose,
-      dataAgeMs,
-      reason: blocked
-        ? (hardLate ? 'late-entry-window' : 'stale-data-near-close')
-        : (cautionLate ? 'late-window-caution' : null),
-    };
+  function buildHyperShortAnchors(coin, ctx = {}) {
+    const sym = coin?.sym;
+    const price = ctx.price ?? ctx.livePrice;
+    let score = ctx.score;
+    let confidence = ctx.confidence;
+    const diag = { temporal: null, graph: null, narrative: null };
+
+    if (window.MultiAssetGraph?.update && price) {
+      window.MultiAssetGraph.update(sym, price);
+    }
+
+    if (window.TemporalFusionLite?.applyToScore) {
+      const fusion = window.TemporalFusionLite.applyToScore(score, {
+        score,
+        fastTiming: ctx.fastTiming,
+        msToClose: ctx.msToClose,
+        atrPct: ctx.atrPct,
+        volatility: ctx.volatility,
+        blend: 0.36,
+      });
+      diag.temporal = fusion;
+      score = fusion.score;
+    }
+
+    if (window.MultiAssetGraph?.applyToScore && sym !== window.MultiAssetGraph?.ANCHOR) {
+      const graph = window.MultiAssetGraph.applyToScore(score, sym, 0.11);
+      diag.graph = graph;
+      score = graph.score;
+    }
+
+    if (window.NarrativeVelocity?.applyToScore) {
+      const narrative = window.NarrativeVelocity.applyToScore(score, sym, { weight: 0.07 });
+      diag.narrative = narrative;
+      score = narrative.score;
+    }
+
+    if (diag.temporal || diag.graph || diag.narrative) {
+      const boosts = [
+        diag.temporal?.conflict ? -4 : 0,
+        diag.graph?.adjusted ? 2 : 0,
+        diag.narrative?.adjusted ? 2 : 0,
+      ];
+      confidence = Math.round(clamp(confidence + boosts.reduce((s, v) => s + v, 0), 0, 95));
+    }
+
+    return { score: clamp(score, -1, 1), confidence, diagnostics: diag };
   }
 
   function computePrediction(coin, backtest = null) {
     const computedTs = Date.now();
     const cache = candleCache[coin.sym];
     if (!cache) return { error: 'Insufficient data' };
-    
+
     let candles15m = cache.candles15m || [];
     if (candles15m.length < 8 && cache.candles && cache.candles.length >= 24) {
       candles15m = bucketCandles(cache.candles, 15 * 60 * 1000);
@@ -6979,6 +5853,30 @@
       }
     }
 
+    // Hyper-short anchors: temporal fusion + BTC spillover graph + narrative velocity
+    let hyperShortDiag = null;
+    if (window.TemporalFusionLite || window.MultiAssetGraph || window.NarrativeVelocity) {
+      try {
+        const anchorOut = buildHyperShortAnchors(coin, {
+          score: normalizedScore,
+          confidence: normalizedConfidence,
+          price: liveTimingGuard?.livePrice || timed.price,
+          fastTiming,
+          msToClose: executionGuard?.msToClose,
+          atrPct: timed.volatility?.atrPct ?? 0,
+          volatility: timed.volatility,
+        });
+        hyperShortDiag = anchorOut.diagnostics;
+        normalizedScore = anchorOut.score;
+        normalizedConfidence = anchorOut.confidence;
+        normalizedSignal = resolvedRouterAction === 'invalidated'
+          ? 'neutral'
+          : signalFromScore(normalizedScore);
+      } catch (anchorErr) {
+        console.warn('[HyperShortAnchors] fusion failed:', anchorErr?.message || anchorErr);
+      }
+    }
+
     const result = {
       sym: coin.sym,
       name: coin.name,
@@ -7027,6 +5925,7 @@
         cfmOverrideReason: cfmEnrich?.overrideReason || null,
         cfmEarlyExit: cfmEnrich?.earlyExit || null,
         // QFT Proprietary System
+        hyperShortAnchors: hyperShortDiag,
         qft: qftResult,
       },
       backtest,
@@ -7122,6 +6021,113 @@
       }
     }
 
+    // RL stack overlay — mispricing hunt + contrarian plays (after kalshiAlign available)
+    if (window.TradingRLAgent?.applyToScore) {
+      try {
+        const kalshiAlign = result.projections?.p15?.kalshiAlign ?? null;
+        const probVel = window.PredictionMarkets?.getProbVelocity?.(coin.sym);
+        const rlCtx = {
+          signalVector: result.diagnostics?.components || timed.components || {},
+          score: result.score,
+          agreement: result.diagnostics?.agreement ?? 0.5,
+          conflict: result.diagnostics?.conflict ?? 0,
+          tapeVelocity: result.diagnostics?.tapeVelocity || timed.diagnostics?.tapeVelocity,
+          probVelocity: probVel?.trend ?? probVel?.velocity ?? probVel ?? 0,
+          atrPct: result.volatility?.atrPct ?? 0,
+          kalshiAlign,
+          imbalanceVelocity: result.diagnostics?.liveBook?.imbalanceVelocity ?? 0,
+          liveBook: result.diagnostics?.liveBook ?? null,
+          spreadPct: effectiveBook?.spreadPct ?? timed.indicators?.book?.spreadPct ?? 0,
+          toxicity: timed.indicators?.toxicity?.meta?.score ?? timed.diagnostics?.toxicity ?? 0,
+        };
+        const rlOut = window.TradingRLAgent.applyToScore(result.score, rlCtx);
+        if (rlOut?.decision && rlOut.decision.action !== 'pass') {
+          result.score = rlOut.score;
+          result.signal = signalFromScore(result.score);
+          result.diagnostics = {
+            ...(result.diagnostics || {}),
+            rlStack: {
+              action: rlOut.decision.action,
+              confidence: rlOut.decision.confidence,
+              rapidMove: rlOut.decision.rapidMove,
+              reason: rlOut.reason,
+              mispricing: rlOut.decision.mispricing || null,
+              rlActionId: rlOut.decision.actionId,
+              sniperDecision: rlOut.decision.sniperDecision || null,
+            },
+          };
+          if (rlOut.decision.mispricing?.huntScore > 0) {
+            result.mispricing = rlOut.decision.mispricing;
+          }
+
+          // --- Live Telegram alerts for sniper actions ---
+          try {
+            window._lastSniperAlert = window._lastSniperAlert || {};
+            const lastAlert = window._lastSniperAlert[coin.sym] || {};
+            const now = Date.now();
+            const sniperDec = rlOut.decision.sniperDecision;
+            const currentAction = sniperDec?.action || 'SCOUT_WAIT';
+            const isHurdleGated = rlOut.reason && rlOut.reason.includes('ev_below_hurdle');
+
+            let shouldAlert = false;
+            let alertType = null;
+
+            if (currentAction === 'EXECUTE_STRIKE') {
+              if (lastAlert.action !== 'EXECUTE_STRIKE' || (now - (lastAlert.ts || 0)) > 180_000) {
+                shouldAlert = true;
+                alertType = 'STRIKE';
+              }
+            } else if (isHurdleGated) {
+              if (lastAlert.action !== 'GATE' || (now - (lastAlert.ts || 0)) > 300_000) {
+                shouldAlert = true;
+                alertType = 'GATE';
+              }
+            }
+
+            if (shouldAlert && window.electron?.telegram?.sendMessage) {
+              window._lastSniperAlert[coin.sym] = {
+                action: alertType === 'STRIKE' ? 'EXECUTE_STRIKE' : 'GATE',
+                ts: now
+              };
+
+              let alertText = '';
+              const tteMinutes = kalshiAlign?.closeTimeMs
+                ? ((kalshiAlign.closeTimeMs - now) / 60000).toFixed(1)
+                : '15.0';
+
+              if (alertType === 'STRIKE') {
+                const evPct = ((sniperDec.ev || 0) * 100).toFixed(1);
+                const hurdlePct = ((sniperDec.hurdle || 0) * 100).toFixed(1);
+                alertText = `🎯 <b>[SNIPER EXECUTE STRIKE]</b> <b>${coin.sym}</b>\n` +
+                  `Action: 🟢 <b>EXECUTE STRIKE</b>\n` +
+                  `Direction: <b>${rlOut.decision.action}</b>\n` +
+                  `Market Price: <code>${(sniperDec.p_market || 0.5).toFixed(2)}</code>\n` +
+                  `Model probability: <code>${Math.round(kalshiAlign?.modelYesPct || 50)}%</code>\n` +
+                  `Expected Value: <code>+${evPct}%</code> (Hurdle: <code>+${hurdlePct}%</code>)\n` +
+                  `Time to Expiry: <code>${tteMinutes}m</code> remaining\n` +
+                  `Spot Volatility: <code>${(rlCtx.spotVolatility || 0.05).toFixed(2)}</code>`;
+              } else if (alertType === 'GATE') {
+                alertText = `🛡️ <b>[SNIPER GATE ACTIVE]</b> <b>${coin.sym}</b>\n` +
+                  `Action: 🛑 <b>SCOUT WAIT (Gated)</b>\n` +
+                  `Blended Intent: <b>${rlOut.decision.action === 'WAIT' ? (rlCtx.score >= 0 ? 'UP' : 'DOWN') : rlOut.decision.action}</b>\n` +
+                  `Reason: <code>Expected Value below Volatility Hurdle</code>\n` +
+                  `Details: <code>${rlOut.reason}</code>\n` +
+                  `Time to Expiry: <code>${tteMinutes}m</code> remaining`;
+              }
+
+              window.electron.telegram.sendMessage(null, alertText, 'html').catch(err => {
+                console.warn('[Telegram Alert] Send failed:', err.message);
+              });
+            }
+          } catch (tgAlertErr) {
+            console.warn('[Telegram Alert] Evaluation error:', tgAlertErr.message);
+          }
+        }
+      } catch (rlErr) {
+        console.warn('[TradingRLAgent] applyToScore failed:', rlErr?.message || rlErr);
+      }
+    }
+
     return result;
   }
 
@@ -7134,24 +6140,65 @@
 
   async function fetchDerivatives() {
     if (Date.now() - derivAge < 120000) return; // cache 2 min (CoinGecko rate limit)
+
+    // ★ Primary: live DerivativesFeed — real OI delta, liquidation stream, and
+    // OI-weighted cross-venue funding. Richer + fresher than CoinGecko /derivatives.
     try {
-      const data = await fetchGeckoJSON('/derivatives').catch(() => null);
-      if (!Array.isArray(data)) return;
-      const symMap = { BTCUSDT: 'BTC', ETHUSDT: 'ETH', SOLUSDT: 'SOL', XRPUSDT: 'XRP', DOGEUSDT: 'DOGE', BNBUSDT: 'BNB' };
-      data.forEach(d => {
-        const sym = symMap[d.symbol];
-        if (!sym) return;
-        if (d.last) {
+      const live = (typeof window !== 'undefined' && window.DerivativesFeed?.getAll)
+        ? window.DerivativesFeed.getAll() : null;
+      if (live) {
+        Object.entries(live).forEach(([sym, s]) => {
+          if (!s || !s.available) return;
+          const liq = s.liquidations || {};
           derivCache[sym] = {
-            funding: parseFloat(d.funding_rate || 0),
-            oi: parseFloat(d.open_interest || 0),
-            basis: parseFloat(d.basis || 0) * 100,
-            spread: parseFloat(d.bid_ask_spread || 0),
-            exchange: d.market || '',
-            ts: Date.now(),
+            funding: Number.isFinite(s.funding) ? s.funding : 0,
+            fundingVelocity: s.fundingVelocity ?? null,
+            oi: s.oiUsd ?? 0,
+            oiDeltaPct: s.oiDeltaPct ?? null,
+            oiTrend: s.oiTrend || 'flat',
+            basis: s.basisPct ?? 0,
+            liqImbalance: liq.imbalance ?? 0,
+            liqTotalUsd: liq.totalUsd ?? 0,
+            liqLongUsd: liq.longLiqUsd ?? 0,
+            liqShortUsd: liq.shortLiqUsd ?? 0,
+            pressure: s.pressure ?? 0,
+            label: s.label || '',
+            exchange: (s.venues || []).join('+') || 'perps',
+            source: 'derivatives-feed',
+            ts: s.ts || Date.now(),
           };
+        });
+      }
+    } catch (e) {
+      console.warn('[Derivatives] live feed merge failed:', e.message);
+    }
+
+    // Fallback/supplement: CoinGecko /derivatives only for coins the live feed lacks.
+    try {
+      const COVER = ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'BNB'];
+      const needGecko = COVER.some(s => derivCache[s]?.source !== 'derivatives-feed');
+      if (needGecko) {
+        const data = await fetchGeckoJSON('/derivatives').catch(() => null);
+        if (Array.isArray(data)) {
+          const symMap = { BTCUSDT: 'BTC', ETHUSDT: 'ETH', SOLUSDT: 'SOL', XRPUSDT: 'XRP', DOGEUSDT: 'DOGE', BNBUSDT: 'BNB' };
+          data.forEach(d => {
+            const sym = symMap[d.symbol];
+            if (!sym) return;
+            if (derivCache[sym]?.source === 'derivatives-feed') return; // don't clobber richer data
+            if (d.last) {
+              derivCache[sym] = {
+                funding: parseFloat(d.funding_rate || 0),
+                oi: parseFloat(d.open_interest || 0),
+                basis: parseFloat(d.basis || 0) * 100,
+                spread: parseFloat(d.bid_ask_spread || 0),
+                exchange: d.market || '',
+                source: 'coingecko',
+                ts: Date.now(),
+              };
+            }
+          });
         }
-      });
+      }
       derivAge = Date.now();
     } catch (err) {
       console.warn('Derivatives fetch failed:', err.message);
@@ -7179,20 +6226,47 @@
     const deriv = derivCache[sym];
     if (!deriv) return null;
     const funding = deriv.funding;
-    const oi = deriv.oi;
 
+    // ★ Primary: real liquidation cascade from the live stream (imbalance + notional).
+    // imbalance ∈ [-1,+1]: +1 = pure short-liquidation (squeeze up), -1 = long-liquidation (cascade down).
+    const liqImb = deriv.liqImbalance;
+    const liqTotal = deriv.liqTotalUsd || 0;
+    if (Number.isFinite(liqImb) && liqTotal > 250_000 && Math.abs(liqImb) > 0.6) {
+      const up = liqImb > 0;
+      return {
+        type: up ? 'short_squeeze' : 'long_squeeze',
+        severity: liqTotal > 2_000_000 ? 'high' : 'medium',
+        desc: `${up ? 'Shorts' : 'Longs'} liquidating ($${(liqTotal / 1e6).toFixed(2)}M, ${(Math.abs(liqImb) * 100).toFixed(0)}% one-sided) — ${up ? 'upward' : 'downward'} cascade live.`,
+        direction: up ? 'up' : 'down',
+        source: 'liquidation-stream',
+      };
+    }
+
+    // ★ Secondary: leverage building (OI ↑) into a crowded funding extreme.
+    if (Number.isFinite(deriv.oiDeltaPct) && deriv.oiDeltaPct > 1.5 && Math.abs(funding) > 0.05) {
+      const up = funding < 0; // crowded shorts + OI build → short-squeeze risk
+      return {
+        type: up ? 'short_squeeze' : 'long_squeeze',
+        severity: 'medium',
+        desc: `OI +${deriv.oiDeltaPct.toFixed(1)}% with funding ${funding.toFixed(3)}% — leverage building, ${up ? 'short' : 'long'}-squeeze risk.`,
+        direction: up ? 'up' : 'down',
+        source: 'oi-funding',
+      };
+    }
+
+    // Fallback: original funding-threshold heuristic (used when live deriv data absent).
     if (funding < -0.5) {
       return {
         type: 'short_squeeze', severity: Math.abs(funding) > 1 ? 'high' : 'medium',
         desc: `Funding ${funding.toFixed(3)}% — shorts paying heavy. Squeeze risk if price bounces.`,
-        direction: 'up'
+        direction: 'up', source: 'funding-heuristic',
       };
     }
     if (funding > 0.3) {
       return {
         type: 'long_squeeze', severity: funding > 0.5 ? 'high' : 'medium',
         desc: `Funding +${funding.toFixed(3)}% — longs overcrowded. Liquidation cascade risk on dip.`,
-        direction: 'down'
+        direction: 'down', source: 'funding-heuristic',
       };
     }
     return null;
@@ -7205,11 +6279,7 @@
   window.PredictionEngine = {
     updateLiveOrderBook,
     rescoreLiveMicrostructure,
-    getLiveMicrostructure(sym) {
-      const key = String(sym || '').toUpperCase();
-      const state = _liveMicroState[key] || null;
-      return state ? JSON.parse(JSON.stringify(state)) : null;
-    },
+    getLiveMicrostructure,
     // Pre-warms the candle cache for all coins without scoring.
     // Call 60s before each boundary so runAll() scores from warm cache instantly.
     async warmCache() {
@@ -7351,10 +6421,10 @@
         // Per-coin 20s hard cap — inner fetches have up to 12s individual timeouts;
         // using 20s here gives them clear room to complete before runAll proceeds.
         const withCoinTimeout = (p) =>
-          Promise.race([p, new Promise(r => setTimeout(r, 20000))]);
+          Promise.race([p, new Promise(r => setTimeout(r, PREDICTION_FIRST_PASS_TIMEOUT_MS))]);
         await Promise.allSettled([
           ...PREDICTION_COINS.map(c => withCoinTimeout(loadCoinData(c))),
-          Promise.race([fetchDerivatives(), new Promise(r => setTimeout(r, 20000))]) // 8s cap
+          Promise.race([fetchDerivatives(), new Promise(r => setTimeout(r, PREDICTION_FIRST_PASS_TIMEOUT_MS))])
         ]);
         // Yield between each coin's backtest to keep the UI thread responsive
         for (const coin of PREDICTION_COINS) {

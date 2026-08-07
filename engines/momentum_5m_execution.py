@@ -136,17 +136,17 @@ trackers = {coin: CoinMomentumTracker(coin, producer=producer) for coin in COINS
 
 async def ingest_market_data():
     consumer = AIOKafkaConsumer(
-        "wecrypto-tick-stream",
+        "wecrypto.orbital.s",
         bootstrap_servers=kafka_broker,
         value_deserializer=lambda m: json.loads(m.decode('utf-8'))
     )
     await consumer.start()
     try:
-        logging.info("AIOKafkaConsumer started tracking wecrypto-tick-stream.")
+        logging.info("AIOKafkaConsumer started tracking wecrypto.orbital.s.")
         async for msg in consumer:
             data = msg.value
             asset = data.get("asset")
-            price = data.get("price")
+            price = data.get("price_usd") or data.get("price")
             if asset in trackers and price:
                 trackers[asset].add_tick(time.time(), float(price))
     except Exception as e:

@@ -33,34 +33,22 @@
 
   // ── Bucket A: Cloudflare Bot Mgmt — always needs the proxy ──────────────
   const CF_PROTECTED = new Set([
-    'api.bybit.com',
-    'api.bytick.com',   // Bybit EU/Asia mirror — automatic geo-fence failover
     'www.okx.com',
     'api-pub.bitfinex.com',
     'api.kucoin.com',
     'api.mexc.com',
     'api.crypto.com',
-    'clob.polymarket.com',
-    'gamma-api.polymarket.com',
     'api.bitvavo.com',
     'api.upbit.com',
   ]);
 
   // ── Bucket B: rate-limited public APIs — proxy for headroom ─────────────
   const RATE_LIMITED = new Set([
-    'api.coingecko.com',
-    'pro-api.coingecko.com',
     'api.dexscreener.com',
     'api.blockchair.com',
     'hypurrscan.io',
     'api.etherscan.io',
     'api.bscscan.com',
-    'api.binance.us',
-    'api.binance.com',
-    'data-api.binance.vision',
-    'fapi.binance.com',
-    'api.blockcypher.com',
-    'chain.so',
   ]);
 
   // ── Bucket C: open / first-party APIs — direct ok in Electron ───────────
@@ -74,7 +62,7 @@
     'data-api.binance.vision': 'binance-data',
     'fapi.binance.com': 'binance-f',
     'api.coingecko.com': 'coingecko',
-    'pro-api.coingecko.com': 'coingecko',
+    'pro-api.coingecko.com': 'coingecko-pro',
     'api.coinbase.com': 'coinbase',
     'api.exchange.coinbase.com': 'coinbase-ex',
     'api.kraken.com': 'kraken',
@@ -103,6 +91,18 @@
     'api.crypto.com': 'crypto-com',
     'chain.so': 'chainso',
     'api.upbit.com': 'upbit',
+    'api.bitget.com': 'bitget',
+    'open-api.bingx.com': 'bingx',
+    'api.gemini.com': 'gemini',
+    'api.whitebit.com': 'whitebit',
+    'whitebit.com': 'whitebit',
+    'www.coinw.com': 'coinw',
+    'ourbit.com': 'ourbit',
+    'www.lbank.com': 'lbank',
+    'www.bitstamp.net': 'bitstamp',
+    'api.bitso.com': 'bitso',
+    'www.bullish.com': 'bullish',
+    'www.weex.com': 'weex',
   };
 
   const _origFetch = window.fetch.bind(window);

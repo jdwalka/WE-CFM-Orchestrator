@@ -1,10 +1,11 @@
-const { startOrbitalSystem, shutdownOrbitalSystem, getOrbitalStatus } = require('../src/infra/orbital-startup-orchestrator');
+const { startOrbitalSystem, restartOrbitalSystem, shutdownOrbitalSystem, getOrbitalStatus } = require('../src/infra/orbital-startup-orchestrator');
 const { app, BrowserWindow, Menu, shell, ipcMain } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const fsp = fs.promises;
 const { spawn } = require('child_process');
 const { loadKalshiCredentials, buildKalshiWsAuthHeaders } = require('./kalshi-credentials.js');
+const { normalizeCoinbaseJwtUri } = require('../src/infra/coinbase-jwt-utils');
 
 // --- AMD AOCL & BLAS Optimizations for Downstream C++/Python Binaries ---
 // Force NumPy, PyTorch, and Custom C++ to prioritize AMD AOCL (BLIS/libflame) and avoid Intel MKL throttling on Ryzen.
@@ -27,7 +28,7 @@ process.env.OMP_DYNAMIC = 'FALSE'; // Better thread binding for AOCL
 const { exec } = require('child_process');
 try {
   // Bind to cores 0-7 (Bitmask 255 = 11111111) as an example baseline for CCX0
-  const affinityMask = 255; 
+  const affinityMask = 255;
   console.log(`[Startup] Launching PowerShell to lock CPU Affinity to mask ${affinityMask}...`);
   exec(`powershell -Command "$Process = Get-Process -Id ${process.pid}; $Process.ProcessorAffinity = ${affinityMask}"`, (err, stdout, stderr) => {
     if (err) {
@@ -50,7 +51,7 @@ if (!process.env.WECRYP_ROOT) {
     'F:\\WECRYPTO',
     'E:\\WECRYPTO'
   ];
-  
+
   for (const candidate of candidates) {
     if (fs.existsSync(path.join(candidate, 'docker-compose.yml'))) {
       process.env.WECRYP_ROOT = candidate;
@@ -58,7 +59,7 @@ if (!process.env.WECRYP_ROOT) {
       break;
     }
   }
-  
+
   if (!process.env.WECRYP_ROOT) {
     process.env.WECRYP_ROOT = path.join(__dirname, '..');
     console.warn(`[Startup] WECRYP_ROOT not found; using fallback: ${process.env.WECRYP_ROOT}`);
@@ -212,12 +213,12 @@ function readSecretScalar(raw) {
 
   for (const line of lines) {
     const kv = line.match(/^\s*([A-Za-z0-9_.-]+)\s*=\s*(.+)$/);
-    if (kv && /coingecko|coin.?gecko|gecko|^cg_|^x[-_]?cg/i.test(kv[1])) {
+    if (kv && /coingecko|coin.?gecko|gecko|^cg_|^x[-_]?cg|cmc|coinmarketcap|coin.?market.?cap/i.test(kv[1])) {
       return stripEnvValue(kv[2]);
     }
   }
 
-  const jsonKey = String(raw).match(/"(?:COINGECKO_API_KEY|COINGECKO_PRO_API_KEY|COINGECKO_DEMO_API_KEY|apiKey|key)"\s*:\s*"((?:\\.|[^"])*)"/i);
+  const jsonKey = String(raw).match(/"(?:COINGECKO_API_KEY|COINGECKO_PRO_API_KEY|COINGECKO_DEMO_API_KEY|CMC_PRO_API_KEY|CMC_API_KEY|COINMARKETCAP_API_KEY|apiKey|key)"\s*:\s*"((?:\\.|[^"])*)"/i);
   if (jsonKey) return stripEnvValue(decodeJsonStringFragment(jsonKey[1]));
 
   return stripEnvValue(lines.reduce((longest, line) => line.length > longest.length ? line : longest, ''));
@@ -268,7 +269,11 @@ function readCMCSecret() {
   return readSecretFileValue([
     'CoinMarketCapAPIKEY.txt',
     'CMC_API_KEY.txt',
-    'COINMARKETCAP_API_KEY.txt'
+    'COINMARKETCAP_API_KEY.txt',
+    'pro-api.coinmarketcap.com',
+    'pro-api.coinmarketcap.com.txt',
+    'coinmarketcap.txt',
+    'cmc.txt'
   ]);
 }
 
@@ -340,6 +345,7 @@ function loadCoinbaseCredential() {
     'CDP_API_KEY_NAME',
     'COINBASE_CDP_API_KEY_NAME',
     'COINBASE_API_KEY_NAME',
+    'COINBASE_API_KEY',
     'COINBASE_KEY_NAME',
   ]);
   const privateKey = readEnvValue([
@@ -398,26 +404,6 @@ function loadCoinbaseCredential() {
   return null;
 }
 
-function normalizeCoinbaseJwtUri(method, requestPath) {
-  if (!method || !requestPath) return '';
-  const verb = String(method).trim().toUpperCase();
-  let target = String(requestPath).trim();
-  try {
-    if (/^https?:\/\//i.test(target)) {
-      const u = new URL(target);
-      target = `${u.hostname}${u.pathname}`;
-    } else {
-      target = target.split('?')[0];
-    }
-  } catch (_) {
-    target = target.split('?')[0];
-  }
-  target = target.replace(/^\/+/, '');
-  if (/^api\/v3\//i.test(target)) target = `api.coinbase.com/${target}`;
-  if (!/^[a-z0-9.-]+\/api\/v3\//i.test(target)) target = `api.coinbase.com/${target}`;
-  return `${verb} ${target}`;
-}
-
 function resolveCoinGeckoPublicConfig() {
   const secret = readCoinGeckoSecret();
   const secretTier = inferCoinGeckoTier(secret.value, secret.path);
@@ -435,14 +421,14 @@ function resolveCoinGeckoPublicConfig() {
   const out = {};
   if (key) out.COINGECKO_API_KEY = key;
   if (tier) out.COINGECKO_API_TIER = tier;
-  
+
   const cmcSecret = readCMCSecret();
   const cmcKey = readEnvValue(['CMC_PRO_API_KEY', 'COINMARKETCAP_API_KEY', 'CMC_API_KEY']) || cmcSecret.value;
   if (cmcKey) {
     out.CMC_PRO_API_KEY = cmcKey;
     out.COINMARKETCAP_API_KEY = cmcKey;
   }
-  
+
   return out;
 }
 
@@ -481,12 +467,12 @@ if (process.env.WECRYPTO_TOR_SOCKS) {
     const https = require('https');
     const proxyUrl = process.env.WECRYPTO_TOR_SOCKS; // e.g., 'socks5://127.0.0.1:9050'
     const socksAgent = new SocksProxyAgent(proxyUrl);
-    
+
     const bypassDomains = [
       'coingecko.com',
-      'kalshi.com', 
-      'polymarket.com', 
-      'etherscan.io', 
+      'kalshi.com',
+      'polymarket.com',
+      'etherscan.io',
       'crypto.com',
       'binance.com',
       'dexscreener.com',
@@ -495,17 +481,17 @@ if (process.env.WECRYPTO_TOR_SOCKS) {
       'hyperliquid.xyz',
       'bybit.com',
       'alternative.me',
-      'alchemy.com', 
+      'alchemy.com',
       'coinmarketcap.com',
       '127.0.0.1',
       'localhost'
     ];
-    
+
     const originalHttpRequest = http.request;
     const originalHttpsRequest = https.request;
-    
+
     function patchedRequest(original) {
-      return function(...args) {
+      return function (...args) {
         let urlStr = '';
         if (typeof args[0] === 'string') {
           urlStr = args[0];
@@ -514,9 +500,9 @@ if (process.env.WECRYPTO_TOR_SOCKS) {
         } else if (args[0] && (args[0].hostname || args[0].host)) {
           urlStr = args[0].hostname || args[0].host;
         }
-        
+
         const isBypass = bypassDomains.some(d => urlStr.includes(d));
-        
+
         if (!isBypass) {
           if (typeof args[0] === 'object' && args[0] !== null && !(args[0] instanceof URL)) {
             args[0].agent = socksAgent;
@@ -526,14 +512,14 @@ if (process.env.WECRYPTO_TOR_SOCKS) {
             args.splice(1, 0, { agent: socksAgent });
           }
         }
-        
+
         return original.apply(this, args);
       };
     }
-    
+
     http.request = patchedRequest(originalHttpRequest);
     https.request = patchedRequest(originalHttpsRequest);
-    
+
     console.warn(`[SECURITY] Global SOCKS5 Tor routing enabled with API bypasses across Node.js backend: ${proxyUrl}`);
   } catch (e) {
     console.error('[SECURITY] Failed to instantiate global SOCKS proxy:', e.message);
@@ -612,10 +598,11 @@ try {
 let mainWin = null;
 let pythLazerClient = null;
 let pythLazerStatus = { connected: false, lastDataTs: 0, dataCount: 0, timeoutCount: 0 };
+let latestPythLazerTickers = {};
 let proxyHealthy = false;
 let webServiceHealth = { started: false, mode: 'stopped', protocol: 'http', port: 3443 };
-const LAZER_FEED_IDS = [1, 2, 6, 13, 14, 15]; // BTC,ETH,SOL,F13,XRP,BNB
-const LAZER_ID_MAP = { 1: 'BTCUSD', 2: 'ETHUSD', 6: 'SOLUSD', 10: 'DOGEUSD', 14: 'XRPUSD', 15: 'BNBUSD' };
+const LAZER_FEED_IDS = [1, 2, 6, 13, 14, 15]; // BTC, ETH, SOL, DOGE, XRP, BNB
+const LAZER_ID_MAP = { 1: 'BTCUSD', 2: 'ETHUSD', 6: 'SOLUSD', 13: 'DOGEUSD', 14: 'XRPUSD', 15: 'BNBUSD' };
 const PYTH_FALLBACK_TIMEOUT_MS = Number(process.env.PYTH_FALLBACK_TIMEOUT_MS || 6000);
 const PYTH_FALLBACK_GRACE_MS = Number(process.env.PYTH_FALLBACK_GRACE_MS || 2000);
 const PYTH_TIMEOUT_CONSECUTIVE_LIMIT = Number(process.env.PYTH_TIMEOUT_CONSECUTIVE_LIMIT || 3);
@@ -639,11 +626,16 @@ function configureCachePaths() {
     app.setPath('sessionData', sessionPath);
     app.commandLine.appendSwitch('disk-cache-dir', diskCacheDir);
     app.commandLine.appendSwitch('disable-gpu-shader-disk-cache');
-    
+
     // V8 Optimizations for AMD Ryzen + Windows 11 Huge Pages (Fake Quant Box configuration) + WASM SIMD
     app.commandLine.appendSwitch('js-flags', '--use-largepages=on --max-old-space-size=8192 --no-lazy --turbo-fast-api-calls --experimental-wasm-simd');
     app.commandLine.appendSwitch('enable-features', 'SharedArrayBuffer');
-    
+
+    if (process.env.WECRYPTO_TOR_SOCKS) {
+      const pacPath = require('path').join(__dirname, '..', 'proxy.pac').replace(/\\/g, '/');
+      app.commandLine.appendSwitch('proxy-pac-url', `file:///${pacPath}`);
+    }
+
     console.log(`[Startup] Cache paths configured: userData=${userDataPath} session=${sessionPath} disk=${diskCacheDir}`);
   } catch (e) {
     console.warn('[Startup] Cache path configuration skipped:', e.message);
@@ -754,6 +746,28 @@ async function startPythLazerService(win) {
 
       pythLazerClient.addMessageListener((message) => {
         if (message.type !== 'json') return;
+        // Handle server-level subscription confirmations per OpenAPI spec
+        const serverType = message.value?.type;
+        if (serverType === 'subscribed') {
+          console.log(`[PythLazer] ✅ Subscription confirmed (id=${message.value?.subscriptionId})`);
+          pythLazerStatus.connected = true;
+          return;
+        }
+        if (serverType === 'subscribedWithInvalidFeedIdsIgnored') {
+          const ignored = message.value?.ignoredInvalidFeedIds;
+          console.warn('[PythLazer] Subscribed with some invalid feeds ignored:', JSON.stringify(ignored));
+          pythLazerStatus.connected = true;
+          return;
+        }
+        if (serverType === 'subscriptionError') {
+          console.error('[PythLazer] Subscription error from server:', message.value?.error);
+          return;
+        }
+        if (serverType === 'error') {
+          console.error('[PythLazer] Server error:', message.value?.error);
+          return;
+        }
+        if (serverType !== 'streamUpdated' && serverType !== undefined) return;
         const feeds = message.value?.parsed?.priceFeeds;
         if (!feeds?.length) return;
         const now = Date.now();
@@ -785,6 +799,7 @@ async function startPythLazerService(win) {
           };
         }
         if (Object.keys(prices).length && !win.isDestroyed()) {
+          latestPythLazerTickers = prices;
           // ★ UPDATE STATUS: Track Pyth Lazer health
           pythLazerStatus.connected = true;
           pythLazerStatus.lastDataTs = now;
@@ -911,12 +926,57 @@ function logStartupHealth(tag = 'snapshot') {
 
 // ── Proxy server lifecycle ────────────────────────────────────────────────────
 let proxyProcess = null;
+let jsProxyServer = null;
 let proxyPort = 3010;
 let proxyRestartTimer = null;
 let proxyRestartAttempts = 0;
 let proxyManualStop = false;
 
 const PROXY_PORT_CASCADE = [3010, 3011, 3012, 3013, 3014, 3015, 3016, 3017, 3018, 3019, 3020];
+
+const PROXY_EXCHANGE_BASES = {
+  'binance': 'https://data-api.binance.vision',
+  'binance-f': 'https://fapi.binance.com',
+  'coingecko': 'https://api.coingecko.com',
+  'coinbase': 'https://api.coinbase.com',
+  'coinbase-ex': 'https://api.exchange.coinbase.com',
+  'kraken': 'https://api.kraken.com',
+  'bybit': 'https://api.bybit.com',
+  'okx': 'https://www.okx.com',
+  'kalshi': 'https://api.elections.kalshi.com',
+  'polymarket': 'https://gamma-api.polymarket.com',
+  'polymarket-clob': 'https://clob.polymarket.com',
+  'bitfinex': 'https://api-pub.bitfinex.com',
+  'kucoin': 'https://api.kucoin.com',
+  'mexc': 'https://api.mexc.com',
+  'hypurrscan': 'https://hypurrscan.io',
+  'dexscreener': 'https://api.dexscreener.com',
+  'mempool': 'https://mempool.space',
+  'blockchair': 'https://api.blockchair.com',
+  'etherscan': 'https://api.etherscan.io',
+  'bscscan': 'https://api.bscscan.com',
+  'blockscout-eth': 'https://eth.blockscout.com',
+  'blockscout-bsc': 'https://bsc.blockscout.com',
+  'hyperliquid': 'https://api.hyperliquid.xyz',
+  'blockcypher': 'https://api.blockcypher.com',
+  'ripple': 'https://s2.ripple.com',
+  'xrpl': 'https://xrplcluster.com',
+  'solana': 'https://api.mainnet-beta.solana.com',
+  'crypto-com': 'https://api.crypto.com',
+  'chainso': 'https://chain.so',
+  'upbit': 'https://api.upbit.com',
+  'bitget': 'https://api.bitget.com',
+  'bingx': 'https://open-api.bingx.com',
+  'gemini': 'https://api.gemini.com',
+  'whitebit': 'https://api.whitebit.com',
+  'coinw': 'https://www.coinw.com',
+  'ourbit': 'https://ourbit.com',
+  'lbank': 'https://www.lbank.com',
+  'bitstamp': 'https://www.bitstamp.net',
+  'bitso': 'https://api.bitso.com',
+  'bullish': 'https://www.bullish.com',
+  'weex': 'https://www.weex.com',
+};
 
 // Find the first port in the cascade that isn't already occupied
 function findFreePort(ports) {
@@ -936,40 +996,126 @@ function findFreePort(ports) {
 
 // Embed full exchange config so we can write a tailored config.toml at runtime
 function buildProxyConfig(port) {
+  const mapRows = Object.entries(PROXY_EXCHANGE_BASES)
+    .map(([k, v]) => `${k.padEnd(15)} = "${v}"`)
+    .join('\n');
   return `[server]
 host         = "127.0.0.1"
 port         = ${port}
 timeout_secs = 12
 [exchanges]
-binance         = "https://data-api.binance.vision"
-binance-f       = "https://fapi.binance.com"
-coingecko       = "https://api.coingecko.com"
-coinbase        = "https://api.coinbase.com"
-coinbase-ex     = "https://api.exchange.coinbase.com"
-kraken          = "https://api.kraken.com"
-bybit           = "https://api.bybit.com"
-okx             = "https://www.okx.com"
-kalshi          = "https://api.elections.kalshi.com"
-polymarket      = "https://gamma-api.polymarket.com"
-polymarket-clob = "https://clob.polymarket.com"
-bitfinex        = "https://api-pub.bitfinex.com"
-kucoin          = "https://api.kucoin.com"
-mexc            = "https://api.mexc.com"
-hypurrscan      = "https://hypurrscan.io"
-dexscreener     = "https://api.dexscreener.com"
-mempool         = "https://mempool.space"
-blockchair      = "https://api.blockchair.com"
-etherscan       = "https://api.etherscan.io"
-bscscan         = "https://api.bscscan.com"
-blockscout-eth  = "https://eth.blockscout.com"
-blockscout-bsc  = "https://bsc.blockscout.com"
-hyperliquid     = "https://api.hyperliquid.xyz"
-blockcypher     = "https://api.blockcypher.com"
-ripple          = "https://s2.ripple.com"
-xrpl            = "https://xrplcluster.com"
-solana          = "https://api.mainnet-beta.solana.com"
-crypto-com      = "https://api.crypto.com"
+${mapRows}
 `;
+}
+
+function moduleFileExists(crateRoot, name) {
+  const a = path.join(crateRoot, 'src', `${name}.rs`);
+  const b = path.join(crateRoot, 'src', name, 'mod.rs');
+  return fs.existsSync(a) || fs.existsSync(b);
+}
+
+async function startJsProxyFallback(port) {
+  const http = require('http');
+  if (jsProxyServer && jsProxyServer.listening) {
+    return;
+  }
+  const hopByHop = new Set(['connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'te', 'trailers', 'transfer-encoding', 'upgrade', 'host', 'content-length']);
+
+  const readBody = (req) => new Promise(resolve => {
+    const chunks = [];
+    req.on('data', chunk => chunks.push(chunk));
+    req.on('end', () => resolve(Buffer.concat(chunks)));
+    req.on('error', () => resolve(Buffer.alloc(0)));
+  });
+
+  const writeCors = (res) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS,HEAD');
+    res.setHeader('Access-Control-Allow-Headers', '*');
+  };
+
+  const forward = async (targetUrl, req, res) => {
+    const method = String(req.method || 'GET').toUpperCase();
+    const headers = {};
+    for (const [k, v] of Object.entries(req.headers || {})) {
+      if (!hopByHop.has(String(k).toLowerCase())) headers[k] = v;
+    }
+    const body = (method === 'GET' || method === 'HEAD') ? undefined : await readBody(req);
+
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 12000);
+    try {
+      const up = await fetch(targetUrl, { method, headers, body, signal: ctrl.signal, redirect: 'follow' });
+      clearTimeout(t);
+
+      res.statusCode = up.status;
+      for (const [k, v] of up.headers.entries()) {
+        if (!hopByHop.has(String(k).toLowerCase())) res.setHeader(k, v);
+      }
+      writeCors(res);
+      const buf = Buffer.from(await up.arrayBuffer());
+      res.end(buf);
+    } catch (e) {
+      clearTimeout(t);
+      writeCors(res);
+      res.statusCode = 502;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ error: 'proxy-forward-failed', message: e?.message || 'unknown error' }));
+    }
+  };
+
+  jsProxyServer = http.createServer(async (req, res) => {
+    writeCors(res);
+    if (req.method === 'OPTIONS') {
+      res.statusCode = 204;
+      return res.end();
+    }
+
+    const host = req.headers.host || `127.0.0.1:${port}`;
+    const u = new URL(req.url || '/', `http://${host}`);
+    const p = u.pathname;
+
+    if (p === '/health') {
+      res.statusCode = 200;
+      res.setHeader('Content-Type', 'text/plain');
+      return res.end('OK');
+    }
+    if (p === '/port') {
+      res.statusCode = 200;
+      res.setHeader('Content-Type', 'application/json');
+      return res.end(JSON.stringify({ port }));
+    }
+    if (p === '/proxy') {
+      const target = u.searchParams.get('url');
+      if (!target || !/^https?:\/\//i.test(target)) {
+        res.statusCode = 400;
+        res.setHeader('Content-Type', 'application/json');
+        return res.end(JSON.stringify({ error: 'missing-or-invalid-url' }));
+      }
+      return forward(target, req, res);
+    }
+
+    const parts = p.split('/').filter(Boolean);
+    const exchange = parts.shift();
+    if (!exchange || !PROXY_EXCHANGE_BASES[exchange]) {
+      res.statusCode = 404;
+      res.setHeader('Content-Type', 'application/json');
+      return res.end(JSON.stringify({ error: `unknown exchange '${exchange || ''}'` }));
+    }
+
+    const tail = parts.join('/');
+    const base = PROXY_EXCHANGE_BASES[exchange].replace(/\/$/, '');
+    const target = `${base}/${tail}${u.search}`;
+    return forward(target, req, res);
+  });
+
+  await new Promise((resolve, reject) => {
+    jsProxyServer.once('error', reject);
+    jsProxyServer.listen(port, '127.0.0.1', resolve);
+  });
+  proxyPort = port;
+  proxyHealthy = true;
+  console.log(`[proxy-js] fallback proxy listening on http://127.0.0.1:${port}`);
 }
 
 async function startProxy() {
@@ -993,23 +1139,30 @@ async function startProxy() {
   ];
 
   const exePath = candidates.find(p => fs.existsSync(p));
-  if (!exePath) {
-    console.error('[proxy] CRITICAL: we-crypto-proxy.exe not found. Searched:', candidates);
-    console.warn('[proxy] Falling back to direct API access (NO proxy routing)');
-    console.warn('[proxy] Remediation:');
-    console.warn('[proxy] 1) Dev mode: place we-crypto-proxy.exe at project root (same level as package.json)');
-    console.warn('[proxy] 2) Packaged mode: ensure build.files includes we-crypto-proxy.exe and it is unpacked to resources/app.asar.unpacked');
-    console.warn('[proxy] 3) Validate from terminal: Test-Path .\\we-crypto-proxy.exe');
+  const projectRoot = path.join(__dirname, '..');
+  const cargoProjectDir = path.join(projectRoot, 'proxy');
+  const cargoTomlPath = path.join(cargoProjectDir, 'Cargo.toml');
+  const canUseCargoFallback = !app.isPackaged
+    && fs.existsSync(cargoTomlPath)
+    && ['cache', 'codec', 'grades', 'proxy', 'utils'].every(name => moduleFileExists(cargoProjectDir, name));
+  const shouldUseJsFallback = !exePath && !canUseCargoFallback;
+  if (shouldUseJsFallback) {
+    console.warn('[proxy] native executable/source unavailable; starting JS fallback proxy.');
+    await startJsProxyFallback(proxyPort);
     return;
   }
-  console.log(`[proxy] found executable at: ${exePath}`);
+  if (exePath) {
+    console.log(`[proxy] found executable at: ${exePath}`);
+  } else {
+    console.warn('[proxy] executable missing in dev mode; falling back to `cargo run --bin we-crypto-proxy`.');
+  }
 
   // Pick a free port then write config.toml
   const chosenPort = await findFreePort(PROXY_PORT_CASCADE);
   proxyPort = chosenPort;
 
   // If exe is in asar (read-only), write config to temp dir; otherwise beside exe
-  let proxyDir = path.dirname(exePath);
+  let proxyDir = exePath ? path.dirname(exePath) : cargoProjectDir;
   if (proxyDir.includes('app.asar')) {
     proxyDir = path.join(process.env.TEMP || path.join(app.getPath('appData'), 'WECRYPTO'), 'proxy-config');
     fs.mkdirSync(proxyDir, { recursive: true });
@@ -1023,11 +1176,26 @@ async function startProxy() {
     console.warn('[proxy] could not write config.toml:', e.message);
   }
 
-  proxyProcess = spawn(exePath, [], {
-    detached: false,
-    stdio: ['ignore', 'pipe', 'pipe'],
-    cwd: proxyDir,
-  });
+  const spawnEnv = {
+    ...process.env,
+    ...(process.env.WECRYPTO_TOR_SOCKS ? { ALL_PROXY: process.env.WECRYPTO_TOR_SOCKS } : {})
+  };
+
+  if (exePath) {
+    proxyProcess = spawn(exePath, [], {
+      detached: false,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      cwd: proxyDir,
+      env: spawnEnv,
+    });
+  } else {
+    proxyProcess = spawn('cargo', ['run', '--bin', 'we-crypto-proxy'], {
+      detached: false,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      cwd: cargoProjectDir,
+      env: spawnEnv,
+    });
+  }
   proxyProcess.stdout.on('data', chunk => console.log('[proxy]', chunk.toString().trim()));
   proxyProcess.stderr?.on('data', chunk => console.warn('[proxy:stderr]', chunk.toString().trim()));
   proxyProcess.on('error', e => console.error('[proxy] start error:', e.message));
@@ -1043,7 +1211,7 @@ async function startProxy() {
     proxyRestartTimer = setTimeout(async () => {
       try {
         console.warn(`[proxy] restarting after unexpected exit (attempt ${proxyRestartAttempts}, delay ${delayMs}ms)`);
-        // Proxy startup handled by orchestrator
+        await startProxy();
         await waitForProxy(5000, 150);
       } catch (e) {
         console.error('[proxy] restart failed:', e?.message || e);
@@ -1063,6 +1231,10 @@ function stopProxy() {
   if (proxyProcess && !proxyProcess.killed) {
     try { proxyProcess.kill(); } catch (_) { }
     proxyProcess = null;
+  }
+  if (jsProxyServer) {
+    try { jsProxyServer.close(); } catch (_) { }
+    jsProxyServer = null;
   }
 }
 
@@ -1104,11 +1276,18 @@ function waitForProxy(maxMs = 5000, pollMs = 150) {
   });
 }
 
+// ── IPC: Polycool WebApp handler ──────────────────────────────────────────
+ipcMain.handle('open-polycool', async () => {
+  createPolycoolWindow();
+  return { success: true };
+});
+
 // ── IPC: proxy port discovery ─────────────────────────────────────────────
 ipcMain.handle('proxy:port', () => proxyPort);
 
 // ── IPC: Pyth Lazer handlers ──────────────────────────────────────────────
 ipcMain.handle('pyth:getStatus', () => pythLazerStatus);
+ipcMain.handle('pyth:getLatestTickers', () => latestPythLazerTickers);
 
 ipcMain.handle('pyth:getCandles', async (_, { symbol, resolution, from, to }) => {
   try {
@@ -1243,6 +1422,35 @@ ipcMain.handle('kalshi:wsAuthHeaders', async () => {
 // ── IPC: public runtime env for renderer-only API keys ─────────────────────
 ipcMain.handle('env:getPublicConfig', async () => resolveCoinGeckoPublicConfig());
 
+// ── IPC: ASI1 mini narrative velocity (renderer-safe) ───────────────────────
+ipcMain.handle('asi1:mini-narrative', async (_event, args = {}) => {
+  try {
+    const Asi1Client = require('../src/infra/asi1-client');
+    if (!Asi1Client.hasAsi1Credentials()) {
+      return { velocity: 0, narrative: 'asi1-not-configured' };
+    }
+    const prompt = String(args.prompt || 'Reply JSON only: {"velocity":0,"narrative":"flat"}');
+    const result = await Asi1Client.chatCompletion(
+      [{ role: 'user', content: prompt }],
+      {
+        model: args.model || 'asi1-mini',
+        max_tokens: 120,
+        temperature: 0.1,
+        timeoutMs: 12000,
+        response_format: { type: 'json_object' },
+      },
+    );
+    const raw = String(result.content || '').trim();
+    try {
+      return JSON.parse(raw);
+    } catch (_) {
+      return { velocity: 0, narrative: raw.slice(0, 80) };
+    }
+  } catch (err) {
+    return { velocity: 0, narrative: err?.message || 'asi1-error' };
+  }
+});
+
 // ── IPC: Coinbase Authentication ───────────────────────────────────────────
 ipcMain.handle('coinbase:generate-jwt', async (_, options = {}) => {
   try {
@@ -1261,31 +1469,31 @@ ipcMain.handle('coinbase:generate-jwt', async (_, options = {}) => {
       nonce: crypto.randomBytes(16).toString('hex'),
       typ: 'JWT'
     };
-    
+
     const payload = {
       iss: 'cdp',
       nbf: Math.floor(Date.now() / 1000) - 30, // subtract 30s to prevent 401s if system clock is fast
       exp: Math.floor(Date.now() / 1000) + 120,
       sub: keyData.name
     };
-    
+
     if (options.requestMethod && options.requestPath) {
       payload.uri = normalizeCoinbaseJwtUri(options.requestMethod, options.requestPath);
     }
-    
+
     const b64u = (str) => Buffer.from(str).toString('base64').replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
-    
+
     const encodedHeader = b64u(JSON.stringify(header));
     const encodedPayload = b64u(JSON.stringify(payload));
     const token = `${encodedHeader}.${encodedPayload}`;
-    
+
     const sign = crypto.createSign('SHA256');
     sign.update(token);
     sign.end();
-    
+
     const signatureRaw = sign.sign({ key: keyData.privateKey, dsaEncoding: 'ieee-p1363' });
     const encodedSignature = signatureRaw.toString('base64').replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
-    
+
     return { success: true, jwt: `${token}.${encodedSignature}`, source: keyData.source };
   } catch (e) {
     console.error('[Coinbase] JWT Generation failed:', e);
@@ -1307,12 +1515,126 @@ ipcMain.handle('data:appendLine', async (_, filePath, line) => {
   } catch (e) { return false; }
 });
 
+ipcMain.handle('data:appendLineDetailed', async (_, filePath, line) => {
+  try {
+    await fsp.mkdir(path.dirname(filePath), { recursive: true });
+    await fsp.appendFile(filePath, line + '\n', 'utf8');
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, code: error?.code || null, error: error?.message || String(error) };
+  }
+});
+
 ipcMain.handle('data:writeFile', async (_, filePath, content) => {
   try {
     await fsp.mkdir(path.dirname(filePath), { recursive: true });
     await fsp.writeFile(filePath, content, 'utf8');
     return true;
   } catch (e) { return false; }
+});
+
+ipcMain.handle('data:writeFileDetailed', async (_, filePath, content) => {
+  try {
+    await fsp.mkdir(path.dirname(filePath), { recursive: true });
+    await fsp.writeFile(filePath, content, 'utf8');
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, code: error?.code || null, error: error?.message || String(error) };
+  }
+});
+
+ipcMain.handle('data:syncFileIncremental', async (_, request) => {
+  const sourcePath = String(request?.sourcePath || '');
+  const targetPath = String(request?.targetPath || '');
+  const statePath = String(request?.statePath || '');
+  if (!sourcePath || !targetPath || !statePath) {
+    return { ok: false, code: 'EINVAL', error: 'sourcePath, targetPath, and statePath are required' };
+  }
+
+  try {
+    const sourceStat = await fsp.stat(sourcePath);
+    let targetStat = null;
+    let syncState = null;
+    try { targetStat = await fsp.stat(targetPath); } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+    }
+    try { syncState = JSON.parse(await fsp.readFile(statePath, 'utf8')); } catch (_) { syncState = null; }
+
+    const stateMatchesTarget = !!(
+      syncState
+      && syncState.sourcePath === sourcePath
+      && syncState.targetPath === targetPath
+      && Number.isSafeInteger(syncState.sourceOffset)
+      && syncState.sourceOffset >= 0
+      && syncState.sourceOffset <= sourceStat.size
+      && targetStat
+      && syncState.targetSize === targetStat.size
+      && syncState.targetSize === syncState.sourceOffset
+    );
+
+    await fsp.mkdir(path.dirname(targetPath), { recursive: true });
+    let sourceOffset = stateMatchesTarget ? syncState.sourceOffset : 0;
+    let bytesCopied = 0;
+    let repaired = false;
+
+    if (!stateMatchesTarget) {
+      await fsp.copyFile(sourcePath, targetPath);
+      sourceOffset = sourceStat.size;
+      bytesCopied = sourceStat.size;
+      repaired = true;
+    } else if (sourceOffset < sourceStat.size) {
+      const sourceHandle = await fsp.open(sourcePath, 'r');
+      const targetHandle = await fsp.open(targetPath, 'a');
+      try {
+        const buffer = Buffer.allocUnsafe(1024 * 1024);
+        while (sourceOffset < sourceStat.size) {
+          const requestedBytes = Math.min(buffer.length, sourceStat.size - sourceOffset);
+          const { bytesRead } = await sourceHandle.read(buffer, 0, requestedBytes, sourceOffset);
+          if (!bytesRead) break;
+          let bufferOffset = 0;
+          while (bufferOffset < bytesRead) {
+            const { bytesWritten } = await targetHandle.write(
+              buffer,
+              bufferOffset,
+              bytesRead - bufferOffset
+            );
+            if (!bytesWritten) {
+              const writeError = new Error(`zero-byte write while syncing ${targetPath}`);
+              writeError.code = 'EIO';
+              throw writeError;
+            }
+            bufferOffset += bytesWritten;
+          }
+          sourceOffset += bytesRead;
+          bytesCopied += bytesRead;
+        }
+      } finally {
+        await Promise.allSettled([sourceHandle.close(), targetHandle.close()]);
+      }
+    }
+
+    const finalTargetStat = await fsp.stat(targetPath);
+    const expectedTargetSize = sourceOffset;
+    await fsp.mkdir(path.dirname(statePath), { recursive: true });
+    await fsp.writeFile(statePath, JSON.stringify({
+      sourcePath,
+      targetPath,
+      sourceOffset,
+      targetSize: expectedTargetSize,
+      syncedAt: Date.now(),
+    }), 'utf8');
+
+    return {
+      ok: true,
+      bytesCopied,
+      sourceOffset,
+      targetSize: expectedTargetSize,
+      observedTargetSize: finalTargetStat.size,
+      repaired,
+    };
+  } catch (error) {
+    return { ok: false, code: error?.code || null, error: error?.message || String(error) };
+  }
 });
 
 ipcMain.handle('data:readFile', async (_, filePath) => {
@@ -2034,18 +2356,18 @@ ipcMain.handle('storage:writeContractCache', async (_event, payload = [], option
   }
 });
 
-  // ── IPC: Enumerate all available storage roots (local, network, cloud) ──────
-  ipcMain.handle('storage:getGoogleDriveTargets', async () => {
-    return {
-      targets: [
-        { root: 'H:\\My Drive', type: 'cloud', name: 'Google Drive Main' },
-        { root: 'I:\\My Drive', type: 'cloud', name: 'Google Drive Fallback' },
-        { root: 'G:\\My Drive', type: 'cloud', name: 'Google Drive Legacy' }
-      ]
-    };
-  });
+// ── IPC: Enumerate all available storage roots (local, network, cloud) ──────
+ipcMain.handle('storage:getGoogleDriveTargets', async () => {
+  return {
+    targets: [
+      { root: 'H:\\My Drive', type: 'cloud', name: 'Google Drive Main' },
+      { root: 'I:\\My Drive', type: 'cloud', name: 'Google Drive Fallback' },
+      { root: 'G:\\My Drive', type: 'cloud', name: 'Google Drive Legacy' }
+    ]
+  };
+});
 
-  let storageDrivesCache = { ts: 0, value: null };
+let storageDrivesCache = { ts: 0, value: null };
 ipcMain.handle('storage:getDrives', async (_event, options = {}) => {
   const now = Date.now();
   if (!options?.force && storageDrivesCache.value && (now - storageDrivesCache.ts) < 60000) {
@@ -2395,7 +2717,7 @@ ipcMain.handle('firebase:status', async () => {
 // Orbital broadcaster: renderer fires-and-forgets after each processInterval().
 ipcMain.on('orbital:push', (_event, orbitalResult) => {
   if (!OrbitalBroadcaster || !orbitalResult) return;
-  try { OrbitalBroadcaster.push(orbitalResult); } catch (_) {}
+  try { OrbitalBroadcaster.push(orbitalResult); } catch (_) { }
 });
 
 ipcMain.on('orbital:pushTick', (_event, tick) => {
@@ -2427,6 +2749,16 @@ ipcMain.handle('orbital:status', async () => {
     return getOrbitalStatus();
   }
   return { ready: false, services: {} };
+});
+
+ipcMain.handle('orbital:restart', async () => {
+  try {
+    const workspacePath = process.env.WECRYP_ROOT || path.join(__dirname, '..');
+    await restartOrbitalSystem(workspacePath);
+    return { success: true, status: await getOrbitalStatus() };
+  } catch (error) {
+    return { success: false, error: error?.message || String(error) };
+  }
 });
 
 ipcMain.handle('firebase:startupCheck', async (_event, options = {}) => {
@@ -2484,6 +2816,13 @@ ipcMain.handle('llm:envStatus', async () => {
 
   const compatibleKey = process.env.LLM_API_KEY || process.env.OPENAI_API_KEY || process.env.OPENAI_KEY || '';
   const googleKey = process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY || '';
+  const asi1Diag = (() => {
+    try {
+      return require('../src/infra/asi1-client').getDiagnostics();
+    } catch (_) {
+      return { configured: false, keysConfigured: 0 };
+    }
+  })();
   const model = process.env.LLM_MODEL || process.env.OPENAI_MODEL || process.env.GOOGLE_MODEL || process.env.GEMINI_MODEL || null;
   const apiUrl = process.env.LLM_API_URL || process.env.OPENAI_BASE_URL || null;
   const provider = process.env.LLM_PROVIDER || 'auto';
@@ -2496,6 +2835,10 @@ ipcMain.handle('llm:envStatus', async () => {
       selectedApiUrl: apiUrl,
       hasCompatibleKey: !!compatibleKey,
       hasGoogleKey: !!googleKey,
+      hasAsi1Key: !!asi1Diag.configured,
+      asi1KeysConfigured: asi1Diag.keysConfigured || 0,
+      asi1KeyEnvNames: asi1Diag.keyEnvNames || [],
+      asi1BaseUrl: asi1Diag.baseUrl || null,
       hasDotenvPathOverride: !!process.env.LLM_ENV_PATH,
       envPathOverride: process.env.LLM_ENV_PATH || null,
       assistantLoaded: !!LLMSignalAssistant,
@@ -2570,6 +2913,32 @@ ipcMain.on('web:broadcast-update', (event, { type, data }) => {
   broadcastUpdate(type, data);
 });
 
+function createPolycoolWindow(url = 'https://polycool.app') {
+  const win = new BrowserWindow({
+    width: 1280,
+    height: 800,
+    minWidth: 1024,
+    minHeight: 600,
+    backgroundColor: '#0b1020',
+    title: 'Polycool WebApp',
+    autoHideMenuBar: true,
+    show: true,
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: true
+    }
+  });
+
+  win.loadURL(url);
+
+  win.on('closed', () => {
+    if (process.argv.includes('--polycool')) {
+      app.quit();
+    }
+  });
+}
+
 function createWindow() {
   const win = mainWin = new BrowserWindow({
     width: 1440,
@@ -2610,7 +2979,7 @@ function createWindow() {
     try {
       const rendererPid = win.webContents.getOSProcessId();
       if (rendererPid) {
-        const affinityMask = 255; 
+        const affinityMask = 255;
         console.log(`[Startup] Launching PowerShell to lock Renderer (Floating Orchestrator) Affinity (PID ${rendererPid}) to mask ${affinityMask}...`);
         const { exec } = require('child_process');
         exec(`powershell -Command "$Process = Get-Process -Id ${rendererPid}; $Process.ProcessorAffinity = ${affinityMask}"`, (err) => {
@@ -2618,7 +2987,7 @@ function createWindow() {
           else console.log(`[Startup] Renderer Affinity successfully locked for PID ${rendererPid}.`);
         });
       }
-    } catch(err) {
+    } catch (err) {
       console.warn('[Startup] Could not determine Renderer PID for affinity binding:', err);
     }
   });
@@ -2664,23 +3033,31 @@ function createWindow() {
 }
 
 app.whenReady().then(async () => {
+  if (process.argv.includes('--polycool')) {
+    createPolycoolWindow();
+    return;
+  }
 
-
-  // Proxy startup handled by orchestrator
+  await startProxy();
   await startKalshiWorker({ bootTimeoutMs: 12000, pollMs: 150 });
-  
+
   // --- Orbital Matrix (Redpanda Orchestration + Ingestion & Sync) ---
   (async () => {
-    try {
-      const workspacePath = process.env.WECRYP_ROOT || path.join(__dirname, '..');
-      await startOrbitalSystem(workspacePath);
-      console.log('[Main] Orbital Matrix architecture online.');
-    } catch (err) {
-      console.error('[Main] Orbital Matrix failed to start:', err.message);
-      // Non-fatal: app continues, but orbital services are unavailable
+    const workspacePath = process.env.WECRYP_ROOT || path.join(__dirname, '..');
+    const maxAttempts = 3;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      try {
+        await startOrbitalSystem(workspacePath);
+        console.log('[Main] Orbital Matrix architecture online.');
+        return;
+      } catch (err) {
+        console.error(`[Main] Orbital Matrix start attempt ${attempt}/${maxAttempts} failed:`, err.message);
+        if (attempt < maxAttempts) await new Promise(resolve => setTimeout(resolve, 10_000));
+      }
     }
+    console.error('[Main] Orbital Matrix unavailable after automatic retries. Use the dashboard restart control.');
   })();
-  
+
   Menu.setApplicationMenu(null);
   await waitForProxy();   // give proxy ~3s to bind before renderer fires fetchAll
 
@@ -2743,17 +3120,21 @@ app.whenReady().then(async () => {
 });
 
 app.on('window-all-closed', async () => {
+  if (process.argv.includes('--polycool')) {
+    app.quit();
+    return;
+  }
   // Proxy stop handled by orchestrator
   stopKalshiWorker();
-  if (pythLazerClient) { try { await Promise.all(pythLazerClient.map(c => c.shutdown())); } catch (_) { } pythLazerClient = null; }
-  
-  // Gracefully shutdown Orbital System (Docker Compose, Redpanda, ingestor, processor)
+  if (pythLazerClient) { try { await pythLazerClient.shutdown(); } catch (_) { } pythLazerClient = null; }
+
+  // Stop app-owned workers but preserve the persistent Redpanda cluster.
   try {
-    await shutdownOrbitalSystem();
+    await shutdownOrbitalSystem(true, { stopDocker: false });
   } catch (err) {
     console.warn('[Main] Error during orbital shutdown:', err.message);
   }
-  
+
   if (process.platform !== 'darwin') {
     app.quit();
   }
@@ -2762,7 +3143,7 @@ app.on('window-all-closed', async () => {
 // Graceful shutdown on app quit (safety net)
 app.on('before-quit', async (event) => {
   try {
-    await shutdownOrbitalSystem();
+    await shutdownOrbitalSystem(true, { stopDocker: false });
   } catch (err) {
     console.warn('[Main] Error during orbital shutdown in before-quit:', err.message);
   }

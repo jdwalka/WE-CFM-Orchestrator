@@ -710,6 +710,9 @@
         if (payload?.markets) return payload;
         if (Array.isArray(payload)) return { markets: payload };
       }
+      if (ipc && ipc.status === 429) {
+        throw new Error('IPC HTTP 429');
+      }
     }
 
     const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;

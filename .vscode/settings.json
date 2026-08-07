@@ -36,5 +36,18 @@
         "**/.hg": false,
         "**/.svn": false,
         "**/Thumbs.db": false
+    },
+    "google.cloud.project": "wecrypto",
+    "[javascript]": {
+        "editor.defaultFormatter": "vscode.typescript-language-features"
+    },
+    "[dockerfile]": {
+        "editor.defaultFormatter": "ms-azuretools.vscode-containers"
+    },
+    "[dockercompose]": {
+        "editor.defaultFormatter": "redhat.vscode-yaml"
+    },
+    "[markdown]": {
+        "editor.defaultFormatter": "yzhang.markdown-all-in-one"
     }
 }

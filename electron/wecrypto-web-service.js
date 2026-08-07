@@ -450,6 +450,62 @@ function startWebService() {
   }
 
   // Web UI
+  // Edge sync endpoints. Read by tools/edge-weight-sync.js on a co-located
+  // VPS via WireGuard. Restricted to loopback by default; when an edge token
+  // is set in WECRYPTO_EDGE_BEARER_TOKEN, requests must present it via the
+  // Authorization: Bearer header. We do not expose these on the public web
+  // port — the brain binds 127.0.0.1 and the edge reaches us over the tunnel.
+  const EDGE_BEARER = String(process.env.WECRYPTO_EDGE_BEARER_TOKEN || '').trim();
+  function isEdgeAuthorized(req) {
+    if (!EDGE_BEARER) return isLoopbackRequest(req);
+    const auth = String(req.headers['authorization'] || '');
+    if (!auth.startsWith('Bearer ')) return false;
+    return auth.slice(7).trim() === EDGE_BEARER;
+  }
+  function edgeReadSigProb() {
+    const state = global.WECRYPTO_STATE || {};
+    const predictions = state.predictions || {};
+    const out = {};
+    for (const sym of Object.keys(predictions)) {
+      const p = predictions[sym];
+      const c = Number(p?.confidence);
+      if (Number.isFinite(c)) out[sym.toUpperCase()] = c;
+    }
+    return out;
+  }
+  function edgeReadSpin() {
+    const state = global.WECRYPTO_STATE || {};
+    const signals = state.signals || {};
+    const out = {};
+    for (const sym of Object.keys(signals)) {
+      const s = signals[sym];
+      const spin = Number(s?.spin ?? s?.blendedSpin ?? s?.h);
+      if (Number.isFinite(spin)) out[sym.toUpperCase()] = spin;
+    }
+    return out;
+  }
+  function edgeReadWeights() {
+    const state = global.WECRYPTO_STATE || {};
+    const w = state.dqnWeights || state.modelWeights || null;
+    if (!w) return { version: 0, weights_b64: '', ts: Date.now() };
+    if (typeof w === 'string') return { version: 0, weights_b64: w, ts: Date.now() };
+    if (w.weights_b64) return { version: Number(w.version || 0), weights_b64: String(w.weights_b64), ts: Number(w.ts || Date.now()) };
+    if (w.buffer) return { version: Number(w.version || 0), weights_b64: Buffer.from(w.buffer).toString('base64'), ts: Number(w.ts || Date.now()) };
+    return { version: 0, weights_b64: '', ts: Date.now() };
+  }
+  app.get('/api/edge/weights', (req, res) => {
+    if (!isEdgeAuthorized(req)) return res.status(403).json({ success: false, error: 'edge_unauthorized' });
+    res.json({ success: true, ...edgeReadWeights() });
+  });
+  app.get('/api/edge/sig-prob', (req, res) => {
+    if (!isEdgeAuthorized(req)) return res.status(403).json({ success: false, error: 'edge_unauthorized' });
+    res.json({ success: true, sig_prob: edgeReadSigProb(), ts: Date.now() });
+  });
+  app.get('/api/edge/spin', (req, res) => {
+    if (!isEdgeAuthorized(req)) return res.status(403).json({ success: false, error: 'edge_unauthorized' });
+    res.json({ success: true, spin: edgeReadSpin(), ts: Date.now() });
+  });
+
   app.get('/', (req, res) => {
     res.send(getWebUIHTML());
   });

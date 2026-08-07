@@ -51,12 +51,12 @@ class PythLazerWebSocketHandler {
         "wss://pyth-lazer-1.dourolabs.app/v1/stream",
         "wss://pyth-lazer-2.dourolabs.app/v1/stream",
       ];
-      this.client = await Promise.all(endpoints.map(url => PythLazerClient.create({
+      this.client = await PythLazerClient.create({
         token: LAZER_TOKEN,
-        webSocketPoolConfig: { urls: [url] }
-      })));
+        webSocketPoolConfig: { urls: endpoints }
+      });
 
-      console.log("[PythLazerWS] ✅ Clients created, subscribing to price feeds...");
+      console.log("[PythLazerWS] ✅ Client created, subscribing to price feeds...");
 
       // --- Network Health Reporting ---
       if (typeof window !== 'undefined' && window.NetworkHealth) {
@@ -69,59 +69,53 @@ class PythLazerWebSocketHandler {
       }
 
       // Subscribe to all price feeds with enhanced properties
-      this.client.forEach(c => {
-        c.subscribe({
-          type: "subscribe",
-          subscriptionId: this.subscriptionId,
-          priceFeedIds: SUBSCRIPTION_PRICE_FEED_IDS,
-          properties: [
-            "price",
-            "marketSession",
-            "fundingRateInterval",
-            "feedUpdateTimestamp",
-            "confidence",
-            "fundingRate",
-            "bestAskPrice",
-            "publisherCount",
-            "bestBidPrice",
-            "exponent",
-            "fundingTimestamp",
-          ],
-          formats: ["solana", "leUnsigned", "leEcdsa", "evm"], // Multiple encoding formats
-          channel: "real_time", // Real-time updates (no 200ms throttle)
-          deliveryFormat: "json",
-          jsonBinaryEncoding: "hex",
-          parsed: true,
-          ignoreInvalidFeeds: true,
-        });
+      this.client.subscribe({
+        type: "subscribe",
+        subscriptionId: this.subscriptionId,
+        priceFeedIds: SUBSCRIPTION_PRICE_FEED_IDS,
+        properties: [
+          "price",
+          "marketSession",
+          "fundingRateInterval",
+          "feedUpdateTimestamp",
+          "confidence",
+          "fundingRate",
+          "bestAskPrice",
+          "publisherCount",
+          "bestBidPrice",
+          "exponent",
+          "fundingTimestamp",
+        ],
+        formats: ["solana", "leUnsigned", "leEcdsa", "evm"], // Multiple encoding formats
+        channel: "real_time", // Real-time updates (no 200ms throttle)
+        deliveryFormat: "json",
+        jsonBinaryEncoding: "hex",
+        parsed: true,
+        ignoreInvalidFeeds: true,
       });
 
       console.log(`[PythLazerWS] Subscribed to price feeds: ${SUBSCRIPTION_PRICE_FEED_IDS.join(',')} (real-time)`);
 
       // Listen for price updates
-      this.client.forEach(c => {
-        c.addMessageListener((message) => {
-          if (message.type === "json") {
-            this.handlePriceUpdate(message.value);
-          }
-        });
+      this.client.addMessageListener((message) => {
+        if (message.type === "json") {
+          this.handlePriceUpdate(message.value);
+        }
       });
 
       // Handle connection failures
-      this.client.forEach(c => {
-        c.addAllConnectionsDownListener(() => {
-          console.error("[PythLazerWS] ⚠️ A WebSocket connection went down, reconnecting...");
-          // If all 3 go down, we consider it disconnected.
-          // SDK handles reconnection automatically
-          if (typeof window !== 'undefined' && window.NetworkHealth) {
-            window.NetworkHealth.update('Pyth', {
-              status: 'down',
-              lastFetch: Date.now(),
-              fallback: true,
-              reason: 'Connection down',
-            });
-          }
-        });
+      this.client.addAllConnectionsDownListener(() => {
+        console.error("[PythLazerWS] ⚠️ A WebSocket connection went down, reconnecting...");
+        // If all 3 go down, we consider it disconnected.
+        // SDK handles reconnection automatically
+        if (typeof window !== 'undefined' && window.NetworkHealth) {
+          window.NetworkHealth.update('Pyth', {
+            status: 'down',
+            lastFetch: Date.now(),
+            fallback: true,
+            reason: 'Connection down',
+          });
+        }
       });
 
       this.connected = true;
@@ -200,9 +194,7 @@ class PythLazerWebSocketHandler {
 
   async disconnect() {
     if (this.client) {
-      this.client.forEach(c => {
-        try { c.close(); } catch (e) {}
-      });
+      try { this.client.close(); } catch (e) {}
     }
     this.connected = false;
   }

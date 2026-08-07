@@ -71,7 +71,7 @@ if (
     bitfinex: { reqs_per_second: 10, reqs_per_minute: 600, burst: 25, backoff_start: 1500, backoff_max: 25000 },
     cryptocom: { reqs_per_second: 10, reqs_per_minute: 600, burst: 25, backoff_start: 1400, backoff_max: 25000 },
     pyth: { reqs_per_second: 20, burst: 50, backoff_start: 1000, backoff_max: 20000 },
-    coingecko: { reqs_per_minute: 500, burst: 10, backoff_start: 3000, backoff_max: 90000 },
+    coingecko: { reqs_per_minute: 20, burst: 10, backoff_start: 3000, backoff_max: 90000 },
     blockchainraw: { reqs_per_second: 10, reqs_per_minute: 500, burst: 20, backoff_start: 1000, backoff_max: 20000 },
     default: { reqs_per_second: 5, reqs_per_minute: 240, burst: 10, backoff_start: 1500, backoff_max: 30000 },
   };
@@ -200,6 +200,20 @@ if (
     },
   };
 
+  // ── DYNAMIC RATE LIMITS MAPPING ─────────────────────────────────
+  Object.keys(PROVIDER_TIMING_AUDIT).forEach((key) => {
+    const audit = PROVIDER_TIMING_AUDIT[key];
+    const limits = RATE_LIMITS[key] || {};
+    if (audit.minRps && audit.maxRps) {
+      limits.reqs_per_minute = Math.floor(((audit.minRps + audit.maxRps) / 2) * 60);
+      limits.backoff_start = Math.max(1000, Math.round(audit.maxIntervalMs * (audit.maxRps / audit.minRps)));
+    } else if (audit.minRpm && audit.maxRpm) {
+      limits.reqs_per_minute = Math.floor((audit.minRpm + audit.maxRpm) / 2);
+      limits.backoff_start = Math.max(1000, Math.round(audit.maxIntervalMs * (audit.maxRpm / audit.minRpm)));
+    }
+    RATE_LIMITS[key] = limits;
+  });
+
   // ── FALLBACK CHAINS ─────────────────────────────────────────────
   const FALLBACK_CHAINS = {
     'kalshi-markets': ['kalshi', 'cache'],
@@ -222,6 +236,7 @@ if (
     'settlement': 3600000,          // 1h for settlement (never changes)
     'fear-greed': 3600000,          // 1h for macro sentiment
     'global-metrics': 300000,       // 5min for global metrics
+    'coingecko': 120000,            // 2min for CoinGecko
   };
 
   // ── METRICS COLLECTION ────────────────────────────────────────
@@ -352,7 +367,12 @@ if (
     recordFailure(status = 'network') {
       const now = Date.now();
       this.lastRequestTime = now;
-      this.failures++;
+      // Immediate circuit break on gateway errors
+      if (status === 502 || status === 503 || status === '502' || status === '503') {
+        this.failures = Math.max(this.failures, this.CIRCUIT_BREAK_THRESHOLD);
+      } else {
+        this.failures++;
+      }
       this.failureHistory.push(now);
 
       // Prune old failures outside window
@@ -1064,6 +1084,10 @@ if (
      * Main fetch interface: Unified logic with all layers
      */
     async fetch(url, options = {}) {
+      const pPort = window.__PROXY_PORT__ || 3010;
+      // ---- BACKEND PROXY ROUTING DISABLED ----
+      // All these are now natively routed through Tor via Chromium PAC script.
+
       const {
         endpoint: endpointOpt = null,
         cacheType = 'market-data',
@@ -1207,7 +1231,16 @@ if (
             let res;
             try {
               const isGecko = endpoint === 'coingecko' || /coingecko/i.test(String(url));
-              const headers = { Accept: 'application/json', ...(requestOptions.headers || {}) };
+              const headers = { Accept: 'application/json' };
+              if (requestOptions.headers) {
+                if (typeof Headers !== 'undefined' && requestOptions.headers instanceof Headers) {
+                  for (const [k, v] of requestOptions.headers.entries()) headers[k] = v;
+                } else if (typeof requestOptions.headers.entries === 'function') {
+                  for (const [k, v] of requestOptions.headers.entries()) headers[k] = v;
+                } else {
+                  Object.assign(headers, requestOptions.headers);
+                }
+              }
               if (endpoint === 'binance' || /binance/i.test(String(url))) {
                 const binanceKey = window.resolveRuntimeKey('BINANCE_API_KEY');
                 if (binanceKey) headers['X-MBX-APIKEY'] = binanceKey;

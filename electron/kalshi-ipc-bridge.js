@@ -15,6 +15,7 @@ const crypto = require('crypto');
 const { resolveKalshiCredentialFile } = require('./kalshi-credentials.js');
 
 const workerToken = crypto.randomUUID();
+process.env.KALSHI_WORKER_TOKEN = workerToken;
 
 // Kalshi worker state
 let kalshiWorker = null;

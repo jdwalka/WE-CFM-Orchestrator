@@ -301,6 +301,7 @@
   <script src="../src/feeds/exchange-ws.js"></script>
   <script src="../src/feeds/candle-ws.js"></script>
   <script src="../src/feeds/rti-feed.js"></script>
+  <script src="../src/orbital/quantum-state.js"></script>
   <script src="../src/orbital/shell-router.js"></script>
   <script src="../src/orbital/signal-router-cfm.js"></script>
   <script src="../src/orbital/temporal-edge.js"></script>
@@ -330,6 +331,10 @@
   <script src="../src/feeds/panel-data-monitor.js" defer></script>
   <script src="../src/feeds/holder-metrics.js" defer></script>
   <script src="../src/feeds/cex-flow.js" defer></script>
+  <!-- Derivatives + options + prediction-market edge feeds (additive dataset inputs) -->
+  <script src="../src/feeds/derivatives-feed.js" defer></script>
+  <script src="../src/feeds/options-gamma-feed.js" defer></script>
+  <script src="../src/kalshi/prediction-market-edge.js" defer></script>
   <!-- Adaptive Walk-Forward Tuning Modules (Phase 6) -->
   <script src="../src/core/adaptive-tuner.js" defer></script>
   <script src="../src/kalshi/historical-settlement-fetcher.js" defer></script>
@@ -354,7 +359,29 @@
   <script src="../src/quant/regime-classifier.js" defer></script>
   <script src="../src/core/market-microstructure-signals.js" defer></script>
   <script src="../src/core/rl_loop.js" defer></script>
+  <!-- ML / RL stack: DQN + MCTS + CFR + mispricing hunter -->
+  <script src="../src/ml/neural-net.js" defer></script>
+  <script src="../src/ml/feature-encoder.js" defer></script>
+  <script src="../src/ml/deep-q-agent.js" defer></script>
+  <script src="../src/ml/mcts.js" defer></script>
+  <script src="../src/ml/cfr-agent.js" defer></script>
+  <script src="../src/ml/mispricing-hunter.js" defer></script>
+  <script src="../src/ml/multi-asset-graph.js" defer></script>
+  <script src="../src/ml/temporal-fusion-lite.js" defer></script>
+  <script src="../src/ml/narrative-velocity.js" defer></script>
+  <script src="../src/ml/trading-rl-agent.js" defer></script>
   <script src="../src/core/qft-engine.js" defer></script>
+
+  <script src="../src/core/predictions/shared-state.js" defer></script>
+  <script src="../src/core/predictions/data-fetchers.js" defer></script>
+  <script src="../src/core/predictions/edge-committee-core.js" defer></script>
+  <script src="../src/core/predictions/edge-committee-config.js" defer></script>
+  <script src="../src/core/predictions/regime-weights.js" defer></script>
+  <script src="../src/core/predictions/kalshi-logic.js" defer></script>
+  <script src="../src/core/predictions/microstructure.js" defer></script>
+  <script src="../src/core/predictions/signal-gates.js" defer></script>
+  <script src="../src/core/predictions/signal-aggregation.js" defer></script>
+  <script src="../src/core/predictions/kalshi-routing.js" defer></script>
   <script src="../src/core/predictions.js" defer></script>
   <script src="../src/core/validator-15m.js" defer></script>
   <script src="../src/feeds/orderbook.js" defer></script>
@@ -371,8 +398,21 @@
 
   <!-- Network Health Core + Dashboard (MUST load before app.js) -->
   <script src="../src/core/network-health.js"></script>
+  <script src="../src/core/network-recovery.js"></script>
   <script src="../src/ui/network-health-dashboard.js"></script>
-  <script src="../src/core/app.js" defer></script>
+  <!-- App shell modules (must load before app-core.js destructures window.APP_*) -->
+  <script src="../src/core/app/observability.js" defer></script>
+  <script src="../src/core/app/kalshi-polling.js" defer></script>
+  <script src="../src/core/app/orderbook-hud.js" defer></script>
+  <script src="../src/core/app/ui-components.js" defer></script>
+  <script src="../src/core/app-core.js" defer></script>
+  <script src="../src/core/app-state.js" defer></script>
+  <script src="../src/core/audio-notifications.js" defer></script>
+  <script src="../src/core/forensics-logger.js" defer></script>
+  <script src="../src/core/feeds/feed-adapters.js" defer></script>
+  <script src="../src/core/ui/render-layer.js" defer></script>
+  <script src="../src/quant/quant-layer.js" defer></script>
+  <script src="../src/core/app-init.js" defer></script>
   <script>
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', () => {

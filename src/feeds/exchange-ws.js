@@ -32,8 +32,11 @@ const PROVIDER_BREAKER_CONFIG = {
   const RECONNECT_MAX_MS = 120000;
   const RECONNECT_JITTER_RATIO = 0.35;
   const WS_STARTUP_STAGGER_MS = 900;
-  const OPTIONAL_WS_POOL_TICK_MS = 5000;
-  const OPTIONAL_WS_POOL_DEFAULT_DWELL_MS = 25000;
+  const OPTIONAL_WS_POOL_TICK_MS = 3000;
+  const OPTIONAL_WS_POOL_DEFAULT_DWELL_MS = 35000;
+  const OPTIONAL_REST_PROBE_MIN_INTERVAL_MS = 45_000;
+  const OPTIONAL_REST_PROBE_TIMEOUT_MS = 4500;
+  const OPTIONAL_REST_PROBE_BATCH = 3;
 
   const STORE = {}; // provider -> sym -> snapshot
   const MEMPOOL = { btcUnconfirmed: 0, btcValue: 0, lastTxTs: 0 };
@@ -44,6 +47,22 @@ const PROVIDER_BREAKER_CONFIG = {
     'wss://stream.binance.com:9443',
   ];
   const OPTIONAL_WS_POOL = { timer: null, roster: [] };
+  const OPTIONAL_REST_STATUS = {};
+  const OPTIONAL_REST_ENDPOINTS = {
+    UPBIT: 'https://api.upbit.com/v1/market/all',
+    BITGET: 'https://api.bitget.com/api/v2/spot/public/symbols',
+    BINGX: 'https://open-api.bingx.com/openApi/swap/v2/quote/contracts',
+    BITVAVO: 'https://api.bitvavo.com/v2/markets',
+    GEMINI: 'https://api.gemini.com/v1/symbols',
+    COINW: 'https://www.coinw.com',
+    LBANK: 'https://www.lbank.com',
+    BITSTAMP: 'https://www.bitstamp.net',
+    BITSO: 'https://api.bitso.com/v3/available_books/',
+    BULLISH: 'https://www.bullish.com',
+    WHITEBIT: 'https://api.whitebit.com/api/v4/public/markets',
+    OURBIT: 'https://ourbit.com',
+    WEEX: 'https://www.weex.com',
+  };
 
   function flagEnabled(value) {
     if (typeof value === 'boolean') return value;
@@ -328,6 +347,69 @@ const PROVIDER_BREAKER_CONFIG = {
     return Number.isFinite(n) ? n : null;
   }
 
+  async function probeOptionalRestRoute(name, force = false) {
+    const provider = String(name || '').toUpperCase();
+    if (!provider || !OPTIONAL_REST_ENDPOINTS[provider]) return null;
+    const prev = OPTIONAL_REST_STATUS[provider] || {};
+    const tsNow = now();
+    if (!force && prev.ts && (tsNow - prev.ts) < OPTIONAL_REST_PROBE_MIN_INTERVAL_MS) return prev;
+    const endpoint = OPTIONAL_REST_ENDPOINTS[provider];
+    const started = now();
+    const attempts = [];
+    if (typeof window.proxyFetch === 'function') {
+      attempts.push({ fn: window.proxyFetch.bind(window), via: 'proxy', noCors: false });
+    }
+    attempts.push({ fn: fetch, via: 'direct', noCors: true });
+
+    let lastError = '';
+    for (const attempt of attempts) {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(new Error('rest-probe-timeout')), OPTIONAL_REST_PROBE_TIMEOUT_MS);
+      try {
+        const res = await attempt.fn(endpoint, {
+          method: 'GET',
+          mode: attempt.noCors ? 'no-cors' : 'cors',
+          cache: 'no-store',
+          signal: ctrl.signal,
+          headers: attempt.noCors ? undefined : { Accept: 'application/json,*/*' },
+        });
+        const latencyMs = Math.max(1, now() - started);
+        const statusOk = attempt.noCors ? true : (typeof res?.ok === 'boolean' ? res.ok : res?.status < 400);
+        if (!statusOk) {
+          lastError = `HTTP ${res?.status || 'error'}`;
+          continue;
+        }
+        OPTIONAL_REST_STATUS[provider] = {
+          ok: true,
+          ts: now(),
+          latencyMs,
+          endpoint,
+          via: attempt.via,
+          status: typeof res?.status === 'number' ? res.status : null,
+          type: String(res?.type || 'basic'),
+          error: '',
+        };
+        return OPTIONAL_REST_STATUS[provider];
+      } catch (err) {
+        lastError = String(err?.message || err || 'rest-probe-failed');
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+
+    OPTIONAL_REST_STATUS[provider] = {
+      ok: false,
+      ts: now(),
+      latencyMs: Math.max(1, now() - started),
+      endpoint,
+      via: attempts.length > 1 ? 'proxy,direct' : 'direct',
+      status: null,
+      type: 'error',
+      error: lastError || 'rest-probe-failed',
+    };
+    return OPTIONAL_REST_STATUS[provider];
+  }
+
   function trimTrades(snap, refTs) {
     const cutoff = refTs - TRADE_WINDOW_MS;
     if (!snap.trades.length) return;
@@ -477,7 +559,7 @@ const PROVIDER_BREAKER_CONFIG = {
 
   function optionalPoolMaxActive() {
     const configured = Number(runtimeFlag('WECRYPTO_OPTIONAL_WS_POOL_MAX_ACTIVE'));
-    return Number.isFinite(configured) && configured > 0 ? Math.min(6, Math.floor(configured)) : 3;
+    return Number.isFinite(configured) && configured > 0 ? Math.min(12, Math.floor(configured)) : 8;
   }
 
   function closeProvider(name) {
@@ -526,6 +608,19 @@ const PROVIDER_BREAKER_CONFIG = {
       .filter(cfg => nowTs >= Number(cfg.nextDue || 0))
       .sort((a, b) => Number(a.nextDue || 0) - Number(b.nextDue || 0));
 
+    const probeCandidates = roster
+      .filter(cfg => !providerPoolRunning(cfg.name))
+      .filter(cfg => !isProviderExplicitlyOff(cfg.name))
+      .sort((a, b) => {
+        const aTs = OPTIONAL_REST_STATUS[cfgName(a)]?.ts || 0;
+        const bTs = OPTIONAL_REST_STATUS[cfgName(b)]?.ts || 0;
+        return aTs - bTs;
+      })
+      .slice(0, OPTIONAL_REST_PROBE_BATCH);
+    for (const probeCandidate of probeCandidates) {
+      void probeOptionalRestRoute(cfgName(probeCandidate));
+    }
+
     for (const cfg of due) {
       if (activeCount >= maxActive) break;
       const dwellMs = Number(cfg.dwellMs || OPTIONAL_WS_POOL_DEFAULT_DWELL_MS);
@@ -548,6 +643,24 @@ const PROVIDER_BREAKER_CONFIG = {
     }));
     OPTIONAL_WS_POOL.timer = setInterval(optionalPoolTick, OPTIONAL_WS_POOL_TICK_MS);
     setTimeout(optionalPoolTick, Math.max(0, Number(initialDelayMs) || 0));
+  }
+
+  function warmOptionalWsRoutes(reason = 'manual') {
+    const roster = OPTIONAL_WS_POOL.roster || [];
+    if (!roster.length) return;
+    const nowTs = now();
+    // Force a route sweep: bring every optional provider due immediately.
+    for (const cfg of roster) {
+      cfg.nextDue = nowTs;
+      cfg.activeUntil = 0;
+      cfg.lastWarmReason = reason;
+      void probeOptionalRestRoute(cfg.name, true);
+    }
+    optionalPoolTick();
+  }
+
+  function cfgName(cfg) {
+    return String(cfg?.name || '').toUpperCase();
   }
 
   function stopOptionalWsPool() {
@@ -1885,8 +1998,10 @@ const PROVIDER_BREAKER_CONFIG = {
           nextDue: cfg.nextDue || 0,
           activeUntil: cfg.activeUntil || 0,
           lastStart: cfg.lastStart || 0,
+          restProbe: OPTIONAL_REST_STATUS[cfgName(cfg)] || null,
         })),
       },
+      optionalRest: { ...OPTIONAL_REST_STATUS },
       sse: { active: SSE.active, lastError: SSE.lastError },
       providers: Object.keys(STORE),
       qualityGates: getQualityGates(),
@@ -1898,6 +2013,8 @@ const PROVIDER_BREAKER_CONFIG = {
     PROVIDERS,
     start,
     stop,
+    gracefulReconnect: start,
+    warmOptionalWsRoutes,
     getTicker,
     getMarketStructure,
     getAll,
