@@ -1703,41 +1703,33 @@
     const startSec = Number(slugMatch[2]);
     if (!querySymbol || !Number.isFinite(startSec)) return null;
 
-    // Instant match for active 5m open window in Next.js streaming HTML:
-    // The open active window uniquely contains "openPrice":N,"closePrice":null
-    const openNullMatch = html.match(/\\"openPrice\\":\s*([0-9]+(?:\.[0-9]+)?)\s*,\s*\\"closePrice\\":\s*null/i)
-      || html.match(/openPrice[^\d]*([0-9.]+)[^}]*closePrice[^\w]*null/i);
-    if (openNullMatch) {
-      const op = Number(openNullMatch[1]);
-      if (Number.isFinite(op) && op > 0) return op;
-    }
+    const startIso = new Date(startSec * 1000).toISOString().split('.')[0] + 'Z';
+    const endIso = new Date((startSec + 300) * 1000).toISOString().split('.')[0] + 'Z';
 
-    const startIso = new Date(startSec * 1000).toISOString().replace('.000Z', 'Z');
-    const endIso = new Date((startSec + 300) * 1000).toISOString().replace('.000Z', 'Z');
+    // Polymarket migrated event pages to Next.js RSC streaming (self.__next_f): React-Query
+    // dehydrated state contains multiple queries (15m, 1h, 5m). We MUST anchor on the exact
+    // crypto-prices query key for this specific coin + startIso timestamp to avoid picking up
+    // an adjacent window's openPrice (which causes the PTB to be off by a few cents).
+    const needles = [
+      `crypto-prices","price","${querySymbol}","${startIso}"`,
+      `crypto-prices\\",\\"price\\",\\"${querySymbol}\\",\\"${startIso}\\"`,
+      `"${querySymbol}","${startIso}","fiveminute"`,
+      `\\"${querySymbol}\\",\\"${startIso}\\",\\"fiveminute\\"`
+    ];
 
-    // Polymarket migrated event pages to Next.js RSC streaming (self.__next_f): there is no
-    // __NEXT_DATA__ block and the React-Query state is an *escaped* JSON string
-    // (\"openPrice\":, \"queryKey\":). The unescaped parsers below therefore match nothing and
-    // the PTB stays null -> renderer shows "$0"/"Waiting for baseline". Verified empirically:
-    // the live page contains the open price only as \"openPrice\":N,\"closePrice\":null.
-    // Anchor on the escaped exact-window query key so we can never pick an adjacent window;
-    // each event page is single-coin, so there is no cross-symbol ambiguity.
-    const escKey = `\\"crypto-prices\\",\\"price\\",\\"${querySymbol}\\",\\"${startIso}\\",\\"fiveminute\\",\\"${endIso}\\"`;
-    if (html.includes(escKey)) {
-      // Active (open) window: uniquely the crypto-prices query whose closePrice is null.
-      const openNull = html.match(/\\"openPrice\\":\s*([0-9]+(?:\.[0-9]+)?)\s*,\s*\\"closePrice\\":\s*null/);
-      if (openNull) {
-        const op = Number(openNull[1]);
-        if (Number.isFinite(op) && op > 0) return op;
-      }
-      // Window already closed at scrape time: state (with openPrice) precedes its queryKey in
-      // the dehydrated entry, so take the nearest openPrice immediately before the matched key.
-      const keyIdx = html.indexOf(escKey);
-      const before = html.slice(Math.max(0, keyIdx - 800), keyIdx);
-      const anchored = [...before.matchAll(/\\"openPrice\\":\s*([0-9]+(?:\.[0-9]+)?)/g)];
-      if (anchored.length) {
-        const op = Number(anchored[anchored.length - 1][1]);
-        if (Number.isFinite(op) && op > 0) return op;
+    for (const needle of needles) {
+      const keyIdx = html.indexOf(needle);
+      if (keyIdx !== -1) {
+        const before = html.slice(Math.max(0, keyIdx - 1000), keyIdx);
+        const matches = [
+          ...before.matchAll(/\\"openPrice\\":\s*([0-9.]+)/g),
+          ...before.matchAll(/"openPrice":\s*([0-9.]+)/g),
+          ...before.matchAll(/openPrice[^\d]*([0-9.]+)/g)
+        ];
+        if (matches.length > 0) {
+          const op = Number(matches[matches.length - 1][1]);
+          if (Number.isFinite(op) && op > 0) return op;
+        }
       }
     }
 
