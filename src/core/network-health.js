@@ -660,7 +660,8 @@
             const status = predictionMarkets.getStatus() || {};
             const poly = status.polymarket || {};
             const marketCount = Number(poly.marketCount || 0);
-            const hasData = !!poly.hasData || marketCount > 0;
+            const poly5mCount = Number(poly.poly5mCount || 0);
+            const hasData = !!poly.hasData || marketCount > 0 || poly5mCount > 0;
             const lastFetch = Number(poly.lastFetch || 0);
             const source = poly.source ? ` via ${poly.source}` : '';
             const age = lastFetch ? Math.max(0, now - lastFetch) : null;

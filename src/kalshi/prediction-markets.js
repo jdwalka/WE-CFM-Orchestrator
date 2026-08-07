@@ -2745,4 +2745,8 @@ function polymarketSentiment(markets, sym) {
     };
   }
 
+  if (typeof window !== 'undefined' && window.PredictionMarkets && typeof window.PredictionMarkets.start === 'function') {
+    try { window.PredictionMarkets.start(); } catch (_) {}
+  }
+
 })();
