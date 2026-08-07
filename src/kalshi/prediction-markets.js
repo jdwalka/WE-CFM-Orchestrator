@@ -1595,8 +1595,13 @@
   // priceToBeat (event page or gamma metadata) may ever be displayed as the PTB.
   // A live Chainlink/Pyth price sampled near window-open is NOT the contract PTB
   // and must never be substituted (that produced the "averaged" mismatch vs polycool).
-  const POLY5M_PTB_LOCK_VERSION = 6;
+  // v7: added the official Polymarket crypto-price microservice as a trusted source
+  // (openPrice exact, prevClose provisional) and allowed an exact openPrice to upgrade
+  // a provisional lock exactly once.
+  const POLY5M_PTB_LOCK_VERSION = 7;
   const POLY5M_PTB_TRUSTED_SOURCES = new Set([
+    'polymarket-official-api-openPrice',
+    'polymarket-official-api-prevClose',
     'polymarket-event-page',
     'gamma-market',
     'gamma-event-metadata',
@@ -1619,10 +1624,13 @@
     if (!slug || price == null || !POLY5M_PTB_TRUSTED_SOURCES.has(source)) return null;
     const existing = _poly5mPriceToBeatLocks.get(slug);
     if (existing) {
-      // PTB locks are 100% strictly immutable once established.
-      // Once set at boundary open (e.g. pyth-boundary-open or polymarket-event-page),
-      // never allow any subsequent scrape or HTML update to shift or offset the lock.
-      return existing;
+      // Allow exact official microservice openPrice or HTML openPrice to upgrade a provisional prevClose fallback
+      const isOfficialOpenUpgrade = source === 'polymarket-official-api-openPrice' || source === 'polymarket-event-page';
+      const wasProvisional = existing.source === 'polymarket-official-api-prevClose' || existing.source === 'pyth-boundary-open';
+      if (!isOfficialOpenUpgrade || !wasProvisional) {
+        return existing;
+      }
+      console.info(`[Poly5M-PTB] Upgrading PTB lock for ${slug} from provisional ${existing.source} ($${existing.price}) to exact official openPrice $${price}`);
     }
     const locked = Object.freeze({
       version: POLY5M_PTB_LOCK_VERSION,
@@ -1853,14 +1861,17 @@
           // Direct official microservice query for active window
           const resCurrent = await jsonFetch(`https://polymarket.com/api/crypto/crypto-price?symbol=${sym}&eventStartTime=${encodeURIComponent(startIso)}`).catch(() => null);
           let apiPtb = toPositiveFiniteNumber(resCurrent?.openPrice);
+          let apiSource = 'polymarket-official-api-openPrice';
 
           // If current window openPrice not populated yet, query previous window closePrice (identical boundary)
           if (apiPtb == null) {
             const resPrev = await jsonFetch(`https://polymarket.com/api/crypto/crypto-price?symbol=${sym}&eventStartTime=${encodeURIComponent(prevIso)}`).catch(() => null);
             apiPtb = toPositiveFiniteNumber(resPrev?.closePrice);
+            apiSource = 'polymarket-official-api-prevClose';
           }
 
           if (apiPtb != null && apiPtb > 0) {
+            _lockPolymarketPriceToBeat(slug, apiPtb, apiSource);
             _poly5mPriceToBeatCache[slug] = { value: apiPtb, fetchedAt: Date.now() };
             return apiPtb;
           }
