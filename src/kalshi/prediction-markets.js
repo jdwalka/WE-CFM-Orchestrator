@@ -2707,4 +2707,18 @@ function polymarketSentiment(markets, sym) {
     refreshPoly5M,
   };
 
+  if (window.__WE_TEST__) {
+    window.__PredictionMarketsTestHooks = {
+      fetchPolymarket5MBySlug,
+      _coercePolyMarketFromEvent,
+      _formatPolyPriceToBeat,
+      _isTradablePoly5M,
+      _parseGenericPriceToBeat,
+      _parsePolymarketPriceToBeat,
+      _parseUpProb,
+      _selectLatestChainlinkTick,
+      _selectOpeningChainlinkTick,
+    };
+  }
+
 })();
