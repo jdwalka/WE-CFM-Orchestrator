@@ -1969,7 +1969,7 @@
 
         if (shouldResolvePTB) {
           // Check if an immutable lock already exists for this exact contract slug FIRST
-          const existingLock = _getPolymarketPriceToBeatLock(marketSlug);
+          const existingLock = _getPolymarketPriceToBeatLock(slug) || _getPolymarketPriceToBeatLock(marketSlug);
           if (existingLock) {
             priceToBeatNum = existingLock.price;
             priceToBeatSource = existingLock.source;
@@ -1977,7 +1977,7 @@
             // Only if no lock exists yet, scrape the canonical value from Polymarket
             let scraped = null;
             try {
-              scraped = await fetchPolymarketPriceToBeat(marketSlug);
+              scraped = await fetchPolymarketPriceToBeat(slug) || await fetchPolymarketPriceToBeat(marketSlug);
             } catch (_) {}
             if (Number.isFinite(scraped) && scraped > 0) {
               priceToBeatNum = scraped;
@@ -1986,10 +1986,13 @@
           }
 
           if (priceToBeatNum != null) {
-            const locked = _lockPolymarketPriceToBeat(marketSlug, priceToBeatNum, priceToBeatSource);
+            const locked = _lockPolymarketPriceToBeat(slug, priceToBeatNum, priceToBeatSource) || _lockPolymarketPriceToBeat(marketSlug, priceToBeatNum, priceToBeatSource);
             if (locked) {
               priceToBeatNum = locked.price;
               priceToBeatSource = locked.source;
+            }
+            if (marketSlug && marketSlug !== slug) {
+              _lockPolymarketPriceToBeat(marketSlug, priceToBeatNum, priceToBeatSource);
             }
           }
         }
