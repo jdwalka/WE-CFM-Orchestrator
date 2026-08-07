@@ -1703,6 +1703,15 @@
     const startSec = Number(slugMatch[2]);
     if (!querySymbol || !Number.isFinite(startSec)) return null;
 
+    // Instant match for active 5m open window in Next.js streaming HTML:
+    // The open active window uniquely contains "openPrice":N,"closePrice":null
+    const openNullMatch = html.match(/\\"openPrice\\":\s*([0-9]+(?:\.[0-9]+)?)\s*,\s*\\"closePrice\\":\s*null/i)
+      || html.match(/openPrice[^\d]*([0-9.]+)[^}]*closePrice[^\w]*null/i);
+    if (openNullMatch) {
+      const op = Number(openNullMatch[1]);
+      if (Number.isFinite(op) && op > 0) return op;
+    }
+
     const startIso = new Date(startSec * 1000).toISOString().replace('.000Z', 'Z');
     const endIso = new Date((startSec + 300) * 1000).toISOString().replace('.000Z', 'Z');
 
@@ -1861,7 +1870,7 @@
   async function fetchPolymarketPriceToBeat(slug) {
     if (!slug) return null;
     const cached = _poly5mPriceToBeatCache[slug];
-    if (cached && (cached.value != null || Date.now() - cached.fetchedAt < 3_000)) return cached.value;
+    if (cached && (cached.value != null || Date.now() - cached.fetchedAt < 500)) return cached.value;
     try {
       const html = await textFetch(`https://polymarket.com/event/${encodeURIComponent(slug)}`, {
         headers: {
@@ -1887,7 +1896,7 @@
     const nowSec = Math.floor(Date.now() / 1000);
     const windowTs = nowSec - (nowSec % 300);
     const cached = _poly5mCache[sym];
-    if (cached && cached.windowTs === windowTs && Date.now() - cached.fetchedAt < 15_000) {
+    if (cached && cached.windowTs === windowTs && Date.now() - cached.fetchedAt < (cached.data?.priceToBeatNum != null ? 15_000 : 1_000)) {
       const c = cached.data;
       if (c && Number.isFinite(c.priceToBeatNum) && c.priceToBeatNum > 0) {
         return c;
@@ -1977,9 +1986,7 @@
           fetchPolymarketRtdsSnapshot(sym, startMs).catch(() => null),
         ]);
 
-        // PTB resolution: ONLY from Polymarket sources of truth (gamma, scrape, title, locked).
-        // Never use live/realtime price (pyth or current chainlink) as the PTB for a window.
-        // The boundary snapshot (locked at exact open) or event page scrape is the authority.
+        // PTB resolution: prefer canonical value from Polymarket event page or locked boundary
         const isImmediateNext = ts === windowTs + 300;
         const shouldResolvePTB = !isFuture || isImmediateNext;
 
@@ -2012,10 +2019,27 @@
           }
         }
 
-        // A five-minute contract is unavailable until its exact Polymarket
-        // benchmark exists. But we can queue/expose future candidates without a PTB yet.
-        // Also, do NOT discard the current active window (ts === windowTs) if the PTB is not yet loaded;
-        // we want to pull/promote it immediately.
+        let chainlinkCurrentPriceNum = toPositiveFiniteNumber(cryptoWindow?.closePrice);
+        let chainlinkCurrentPriceTs = toPositiveFiniteNumber(cryptoWindow?.timestamp);
+        if (chainlinkCurrentPriceNum == null) {
+          chainlinkCurrentPriceNum = toPositiveFiniteNumber(rtds?.currentPriceNum);
+          chainlinkCurrentPriceTs = toPositiveFiniteNumber(rtds?.currentPriceTs);
+        }
+        const pythCurrent = await getFreshPythLazerPrice(sym);
+        const currentPriceNum = pythCurrent?.price ?? chainlinkCurrentPriceNum;
+        const currentPriceTs = pythCurrent?.timestamp ?? chainlinkCurrentPriceTs;
+        const currentPriceSource = pythCurrent?.source || 'polymarket-chainlink';
+
+        // Fast-path: Expedite PTB using Pyth/Chainlink spot at boundary if event page scrape is still pending
+        if (priceToBeatNum == null && (ts === windowTs || isImmediateNext)) {
+          const spotBoundary = pythCurrent?.price ?? chainlinkCurrentPriceNum ?? toPositiveFiniteNumber(cryptoWindow?.openPrice);
+          if (spotBoundary != null) {
+            priceToBeatNum = spotBoundary;
+            priceToBeatSource = isImmediateNext ? 'pyth-boundary-preview' : 'pyth-boundary-open';
+          }
+        }
+
+        // A five-minute contract is unavailable until its benchmark exists.
         if (priceToBeatNum == null && !isFuture && ts !== windowTs) return null;
 
         if (ts === windowTs || isImmediateNext || priceToBeatNum != null) {
