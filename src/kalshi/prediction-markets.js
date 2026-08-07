@@ -1622,19 +1622,9 @@
     if (!slug || price == null || !POLY5M_PTB_TRUSTED_SOURCES.has(source)) return null;
     const existing = _poly5mPriceToBeatLocks.get(slug);
     if (existing) {
-      // Allow Polymarket's own page to correct/override (it is the price of truth for the contract)
-      const isPolymarketTruth = source === 'polymarket-event-page';
-      if (!isPolymarketTruth && Math.abs(existing.price - price) > Math.max(0.000001, existing.price * 1e-8)) {
-        console.warn(`[Poly5M-PTB] Ignored mid-contract change for ${slug}: $${existing.price} -> $${price} (${source || 'unknown'})`);
-        return existing;
-      }
-      if (isPolymarketTruth && Math.abs(existing.price - price) > Math.max(0.000001, existing.price * 1e-8)) {
-        console.info(`[Poly5M-PTB] Correcting PTB for ${slug} from ${existing.source} to exact Polymarket value $${price}`);
-      }
-      if (!isPolymarketTruth) {
-        return existing;
-      }
-      // for truth source, continue to create/overwrite below
+      // PTB locks are strictly immutable once set for a contract slug.
+      // Never allow mid-contract changes from any source to avoid shifting goalposts.
+      return existing;
     }
     const locked = Object.freeze({
       version: POLY5M_PTB_LOCK_VERSION,
@@ -1983,22 +1973,20 @@
         const shouldResolvePTB = !isFuture || isImmediateNext;
 
         if (shouldResolvePTB) {
-          // Always prefer the canonical value from Polymarket itself (the price of truth for this contract)
-          let scraped = null;
-          try {
-            scraped = await fetchPolymarketPriceToBeat(marketSlug);
-          } catch (_) {}
-          if (Number.isFinite(scraped) && scraped > 0) {
-            priceToBeatNum = scraped;
-            priceToBeatSource = 'polymarket-event-page';
-          }
-
-          // Fallback to previously locked (e.g. boundary snapshot) only if no Polymarket value yet
-          if (priceToBeatNum == null) {
-            const lockedPriceToBeat = _getPolymarketPriceToBeatLock(marketSlug);
-            if (lockedPriceToBeat) {
-              priceToBeatNum = lockedPriceToBeat.price;
-              priceToBeatSource = lockedPriceToBeat.source;
+          // Check if an immutable lock already exists for this exact contract slug FIRST
+          const existingLock = _getPolymarketPriceToBeatLock(marketSlug);
+          if (existingLock) {
+            priceToBeatNum = existingLock.price;
+            priceToBeatSource = existingLock.source;
+          } else {
+            // Only if no lock exists yet, scrape the canonical value from Polymarket
+            let scraped = null;
+            try {
+              scraped = await fetchPolymarketPriceToBeat(marketSlug);
+            } catch (_) {}
+            if (Number.isFinite(scraped) && scraped > 0) {
+              priceToBeatNum = scraped;
+              priceToBeatSource = 'polymarket-event-page';
             }
           }
 
