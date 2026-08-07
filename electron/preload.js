@@ -418,6 +418,7 @@ contextBridge.exposeInMainWorld('electron', {
   },
   llm: {
     getDiagnostics: () => ipcRenderer.invoke('llm:getDiagnostics'),
+    getQueryHistory: (limit) => ipcRenderer.invoke('llm:getQueryHistory', limit),
     envStatus: () => ipcRenderer.invoke('llm:envStatus'),
   },
   telegram: {

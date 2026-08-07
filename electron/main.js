@@ -3627,6 +3627,17 @@ ipcMain.handle('llm:getDiagnostics', async () => {
   }
 });
 
+ipcMain.handle('llm:getQueryHistory', async (_event, limit = 50) => {
+  if (!LLMSignalAssistant || typeof LLMSignalAssistant.getQueryHistory !== 'function') {
+    return { success: false, queries: [], error: 'LLM query history unavailable' };
+  }
+  try {
+    return { success: true, queries: LLMSignalAssistant.getQueryHistory(limit) };
+  } catch (error) {
+    return { success: false, queries: [], error: error.message || 'Failed to fetch query history' };
+  }
+});
+
 ipcMain.handle('llm:envStatus', async () => {
   const diagnostics = (LLMSignalAssistant && typeof LLMSignalAssistant.getDiagnostics === 'function')
     ? LLMSignalAssistant.getDiagnostics()

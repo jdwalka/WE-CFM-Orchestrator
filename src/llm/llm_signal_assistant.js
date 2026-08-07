@@ -341,6 +341,9 @@ class LLMSignalAssistant {
 
     this.contextCache = new Map();      // short-lived prompt/result cache
     this.marketMemory = new Map();      // per-coin rolling recall memory
+    this.queryHistory = [];             // rolling query log across all LLM providers
+    this.queryStatsByProvider = {};     // per-provider stats (calls, latency, errors)
+    this.queryStatsByModel = {};        // per-model stats (calls, latency, errors)
     this._googleClient = null;
     this._googleClientKind = null;
     this._anthropicClient = null;
@@ -539,6 +542,69 @@ Use this recall only as context, and prioritize current market snapshot data if 
   }
 
   /**
+   * Internal query execution recorder across all providers
+   */
+  _recordQueryExecution(rec) {
+    if (!rec || typeof rec !== 'object') return;
+
+    // Rolling 200 history
+    this.queryHistory.push(rec);
+    if (this.queryHistory.length > 200) {
+      this.queryHistory.shift();
+    }
+
+    // Provider stats
+    const prov = rec.provider || 'unknown';
+    if (!this.queryStatsByProvider[prov]) {
+      this.queryStatsByProvider[prov] = {
+        calls: 0,
+        successes: 0,
+        failures: 0,
+        totalLatencyMs: 0,
+        avgLatencyMs: 0,
+        lastUsedTs: 0,
+        lastStatus: null,
+      };
+    }
+    const pStats = this.queryStatsByProvider[prov];
+    pStats.calls++;
+    if (rec.status === 'SUCCESS') pStats.successes++;
+    else pStats.failures++;
+    pStats.totalLatencyMs += (rec.latencyMs || 0);
+    pStats.avgLatencyMs = Math.round(pStats.totalLatencyMs / pStats.calls);
+    pStats.lastUsedTs = rec.ts;
+    pStats.lastStatus = rec.status;
+
+    // Model stats
+    const model = rec.model || 'unknown';
+    if (!this.queryStatsByModel[model]) {
+      this.queryStatsByModel[model] = {
+        calls: 0,
+        successes: 0,
+        failures: 0,
+        totalLatencyMs: 0,
+        avgLatencyMs: 0,
+        lastUsedTs: 0,
+      };
+    }
+    const mStats = this.queryStatsByModel[model];
+    mStats.calls++;
+    if (rec.status === 'SUCCESS') mStats.successes++;
+    else mStats.failures++;
+    mStats.totalLatencyMs += (rec.latencyMs || 0);
+    mStats.avgLatencyMs = Math.round(mStats.totalLatencyMs / mStats.calls);
+    mStats.lastUsedTs = rec.ts;
+  }
+
+  /**
+   * Public helper to retrieve recent query history
+   */
+  getQueryHistory(limit = 50) {
+    const lim = Math.max(1, Math.min(200, Number(limit) || 50));
+    return this.queryHistory.slice(-lim);
+  }
+
+  /**
    * Call the LLM API with specialized prompts.
    * With XAI_API_KEY + XAI_PRIMARY_ALL (default true): Grok is first for ALL horizons.
    * 5m PTB binaries always prefer xAI when keyed. Fallbacks: asi1 → openai → claude → gemini → openrouter.
@@ -553,19 +619,17 @@ Use this recall only as context, and prioritize current market snapshot data if 
         ? ['anthropic', 'asi1', 'openai', 'google', 'openrouter']
         : ['asi1', 'google', 'openai', 'openrouter'];
     console.log(`[LLM] is5mPtb=${is5mPtb} useXai=${useXai} model=${useXai ? XAI_MODEL : 'cascade'} path=${cascade.join('→')}`);
+
     let lastErr = null;
-    // Track which cascade entries were actually attempted vs silently skipped
-    // (no credentials configured) so a final failure log clearly distinguishes
-    // "every provider was tried and failed" from "only N of the listed
-    // providers actually had keys configured". Without this, a run where only
-    // one provider (e.g. google) has a key looks identical in the logs to a
-    // genuine cascade-exhaustion bug.
     const attempted = [];
     const skipped = [];
+    const coin = String(snapshot?.coin || 'GLOBAL');
+    const horizon = is5mPtb ? '5m-ptb' : String(snapshot?.horizon || snapshot?.horizonMinutes || '15m');
+    const promptLength = (systemPrompt || '').length + (userPrompt || '').length;
 
     for (const p of cascade) {
+      const startTime = Date.now();
       try {
-        if (p === 'xai' && XAI_API_KEY) {
         if (p === 'xai') {
           if (!XAI_API_KEY) { skipped.push(p); continue; }
           attempted.push(p);
@@ -576,12 +640,35 @@ Use this recall only as context, and prioritize current market snapshot data if 
             || (is5mPtb ? (process.env.XAI_5M_MAX_TOKENS || 1600) : XAI_MAX_TOKENS)
           );
           console.log(`[LLM] trying xai SDK (${model}) max_tokens=${maxTokens}`);
-          return await this.callXaiAPI(systemPrompt, userPrompt, { model, maxTokens });
+          const res = await this.callXaiAPI(systemPrompt, userPrompt, { model, maxTokens });
+          
+          this._recordQueryExecution({
+            id: `llm-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+            timestamp: new Date().toISOString(),
+            ts: Date.now(),
+            coin,
+            horizon,
+            provider: 'xai',
+            model,
+            status: 'SUCCESS',
+            latencyMs: Date.now() - startTime,
+            promptChars: promptLength,
+            responseChars: JSON.stringify(res || {}).length,
+            resultCall: res?.call || res?.direction || null,
+            regime: res?.regime || null,
+            confidence: res?.confidence ?? null,
+            notes: res?.suggestions?.notes?.slice(0, 180) || null,
+            attempted: [...attempted],
+            skipped: [...skipped],
+            error: null,
+          });
+          return res;
         }
-        if (p === 'asi1' && Asi1Client.hasAsi1Credentials()) {
+
         if (p === 'asi1') {
           if (!Asi1Client.hasAsi1Credentials()) { skipped.push(p); continue; }
           attempted.push(p);
+          const model = process.env.ASI1_MODEL || 'asi1';
           console.log('[LLM 5m] trying asi1');
           const result = await Asi1Client.chatCompletion(
             [
@@ -589,7 +676,7 @@ Use this recall only as context, and prioritize current market snapshot data if 
               { role: 'user', content: userPrompt },
             ],
             {
-              model: process.env.ASI1_MODEL || 'asi1',
+              model,
               temperature: 0.1,
               max_tokens: 1500,
               stream: true,
@@ -599,46 +686,132 @@ Use this recall only as context, and prioritize current market snapshot data if 
           let content = String(result.content || '').trim();
           const jsonMatch = content.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
           if (jsonMatch) content = jsonMatch[1];
-          return JSON.parse(content);
+          const parsed = JSON.parse(content);
+
+          this._recordQueryExecution({
+            id: `llm-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+            timestamp: new Date().toISOString(),
+            ts: Date.now(),
+            coin,
+            horizon,
+            provider: 'asi1',
+            model,
+            status: 'SUCCESS',
+            latencyMs: Date.now() - startTime,
+            promptChars: promptLength,
+            responseChars: content.length,
+            resultCall: parsed?.call || parsed?.direction || null,
+            regime: parsed?.regime || null,
+            confidence: parsed?.confidence ?? null,
+            notes: parsed?.suggestions?.notes?.slice(0, 180) || null,
+            attempted: [...attempted],
+            skipped: [...skipped],
+            error: null,
+          });
+          return parsed;
         }
-        if (p === 'openai' && process.env.OPENAI_API_KEY) {
+
         if (p === 'openai') {
           if (!process.env.OPENAI_API_KEY) { skipped.push(p); continue; }
           attempted.push(p);
+          const model = "gpt-4o";
           console.log('[LLM 5m] trying openai');
-          return await this.callCompatibleAPI(systemPrompt, userPrompt, {
+          const res = await this.callCompatibleAPI(systemPrompt, userPrompt, {
             url: "https://api.openai.com/v1/chat/completions",
-            model: "gpt-4o",
+            model,
             key: process.env.OPENAI_API_KEY
           });
+
+          this._recordQueryExecution({
+            id: `llm-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+            timestamp: new Date().toISOString(),
+            ts: Date.now(),
+            coin,
+            horizon,
+            provider: 'openai',
+            model,
+            status: 'SUCCESS',
+            latencyMs: Date.now() - startTime,
+            promptChars: promptLength,
+            responseChars: JSON.stringify(res || {}).length,
+            resultCall: res?.call || res?.direction || null,
+            regime: res?.regime || null,
+            confidence: res?.confidence ?? null,
+            notes: res?.suggestions?.notes?.slice(0, 180) || null,
+            attempted: [...attempted],
+            skipped: [...skipped],
+            error: null,
+          });
+          return res;
         }
-        if (p === 'anthropic' && ANTHROPIC_API_KEY) {
-          console.log('[LLM 5m] trying claude');
-          return await this.callAnthropicAPI(systemPrompt, userPrompt);
-        }
-        if (p === 'google' && GOOGLE_API_KEY) {
-          console.log('[LLM 5m] trying gemini');
-          return await this.callGoogleAPI(systemPrompt, userPrompt);
-        }
-        if (p === 'openrouter' && OPENROUTER_API_KEY) {
+
         if (p === 'anthropic') {
           if (!ANTHROPIC_API_KEY) { skipped.push(p); continue; }
           attempted.push(p);
+          const model = ANTHROPIC_MODEL;
           console.log('[LLM 5m] trying claude');
-          return await this.callAnthropicAPI(systemPrompt, userPrompt);
+          const res = await this.callAnthropicAPI(systemPrompt, userPrompt);
+
+          this._recordQueryExecution({
+            id: `llm-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+            timestamp: new Date().toISOString(),
+            ts: Date.now(),
+            coin,
+            horizon,
+            provider: 'anthropic',
+            model,
+            status: 'SUCCESS',
+            latencyMs: Date.now() - startTime,
+            promptChars: promptLength,
+            responseChars: JSON.stringify(res || {}).length,
+            resultCall: res?.call || res?.direction || null,
+            regime: res?.regime || null,
+            confidence: res?.confidence ?? null,
+            notes: res?.suggestions?.notes?.slice(0, 180) || null,
+            attempted: [...attempted],
+            skipped: [...skipped],
+            error: null,
+          });
+          return res;
         }
+
         if (p === 'google') {
           if (!GOOGLE_API_KEY) { skipped.push(p); continue; }
           attempted.push(p);
+          const model = GOOGLE_MODEL;
           console.log('[LLM 5m] trying gemini');
-          return await this.callGoogleAPI(systemPrompt, userPrompt);
+          const res = await this.callGoogleAPI(systemPrompt, userPrompt);
+
+          this._recordQueryExecution({
+            id: `llm-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+            timestamp: new Date().toISOString(),
+            ts: Date.now(),
+            coin,
+            horizon,
+            provider: 'google',
+            model,
+            status: 'SUCCESS',
+            latencyMs: Date.now() - startTime,
+            promptChars: promptLength,
+            responseChars: JSON.stringify(res || {}).length,
+            resultCall: res?.call || res?.direction || null,
+            regime: res?.regime || null,
+            confidence: res?.confidence ?? null,
+            notes: res?.suggestions?.notes?.slice(0, 180) || null,
+            attempted: [...attempted],
+            skipped: [...skipped],
+            error: null,
+          });
+          return res;
         }
+
         if (p === 'openrouter') {
           if (!OPENROUTER_API_KEY) { skipped.push(p); continue; }
           attempted.push(p);
-          return await this.callCompatibleAPI(systemPrompt, userPrompt, {
+          const model = OPENROUTER_MODEL;
+          const res = await this.callCompatibleAPI(systemPrompt, userPrompt, {
             url: "https://openrouter.ai/api/v1/chat/completions",
-            model: OPENROUTER_MODEL,
+            model,
             key: OPENROUTER_API_KEY,
             extraHeaders: {
               "HTTP-Referer": process.env.OPENROUTER_REFERER || "http://localhost:3000",
@@ -649,10 +822,52 @@ Use this recall only as context, and prioritize current market snapshot data if 
               { type: "openrouter:datetime" }
             ]
           });
+
+          this._recordQueryExecution({
+            id: `llm-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+            timestamp: new Date().toISOString(),
+            ts: Date.now(),
+            coin,
+            horizon,
+            provider: 'openrouter',
+            model,
+            status: 'SUCCESS',
+            latencyMs: Date.now() - startTime,
+            promptChars: promptLength,
+            responseChars: JSON.stringify(res || {}).length,
+            resultCall: res?.call || res?.direction || null,
+            regime: res?.regime || null,
+            confidence: res?.confidence ?? null,
+            notes: res?.suggestions?.notes?.slice(0, 180) || null,
+            attempted: [...attempted],
+            skipped: [...skipped],
+            error: null,
+          });
+          return res;
         }
       } catch (err) {
         lastErr = err;
         console.warn(`[LLMSignalAssistant] Provider ${p} failed: ${err.message}. Falling back...`);
+        this._recordQueryExecution({
+          id: `llm-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          timestamp: new Date().toISOString(),
+          ts: Date.now(),
+          coin,
+          horizon,
+          provider: p,
+          model: p === 'xai' ? XAI_MODEL : p === 'asi1' ? 'asi1' : p === 'anthropic' ? ANTHROPIC_MODEL : p === 'google' ? GOOGLE_MODEL : 'unknown',
+          status: 'FAILURE',
+          latencyMs: Date.now() - startTime,
+          promptChars: promptLength,
+          responseChars: 0,
+          resultCall: null,
+          regime: null,
+          confidence: null,
+          notes: null,
+          attempted: [...attempted],
+          skipped: [...skipped],
+          error: String(err.message || err),
+        });
       }
     }
 
@@ -1285,6 +1500,13 @@ Use this recall only as context, and prioritize current market snapshot data if 
         consecutive_failures: this.rateLimitState.consecutiveFailures,
       },
       env: this.envDiagnostics,
+      observability: {
+        totalQueries: this.queryHistory.length,
+        recentQueries: this.queryHistory.slice(-50),
+        lastQuery: this.queryHistory.length ? this.queryHistory[this.queryHistory.length - 1] : null,
+        byProvider: this.queryStatsByProvider,
+        byModel: this.queryStatsByModel,
+      },
     };
   }
 }
