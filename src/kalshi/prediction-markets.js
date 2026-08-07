@@ -2548,20 +2548,21 @@ function polymarketSentiment(markets, sym) {
         const nowSec = Math.floor(nowMs / 1000);
         const secInPeriod = nowSec % 300;
 
-        // 1. Pre-fetch trigger: 10 seconds before the 5-minute boundary
-        if (secInPeriod >= 290 && !prefetchTriggered) {
+        // 1. Pre-fetch trigger: 30 seconds before the 5-minute boundary
+        if (secInPeriod >= 270 && !prefetchTriggered) {
           prefetchTriggered = true;
-          console.info(`[BoundaryClock] ⏱ 10s to 5m boundary. Pre-fetching current + next 5M contracts for the queue boxes.`);
-          // Pre-snapshot a PTB for the upcoming window ~10s before it starts (price is almost the open).
-          // Warm the "next" window's market data so its canonical PTB loads as soon
-          // as Polymarket publishes it. We no longer pre-seed a live-price proxy — the
-          // box shows "pending" until the real polycool/Polymarket priceToBeat arrives.
+          const currentBoundary = nowSec - secInPeriod;
+          const nextBoundary = currentBoundary + 300;
+          console.info(`[BoundaryClock] ⏱ 30s to 5m boundary (${nextBoundary}). Pre-fetching & locking canonical PTB for upcoming contracts.`);
           Object.keys(POLY_5M_COIN_SLUGS).forEach(async (sym) => {
             try {
-              const nextTs = (Math.floor(Date.now() / 1000) - (Math.floor(Date.now() / 1000) % 300)) + 300;
               const prefix = POLY_5M_COIN_SLUGS[sym];
-              const nextSlug = `${prefix}-updown-5m-${nextTs}`;
-              // Warm the market data (canonical PTB resolves inside fetchPolymarket5MBySlug)
+              const nextSlug = `${prefix}-updown-5m-${nextBoundary}`;
+              const scraped = await fetchPolymarketPriceToBeat(nextSlug).catch(() => null);
+              if (Number.isFinite(scraped) && scraped > 0) {
+                _lockPolymarketPriceToBeat(nextSlug, scraped, 'polymarket-event-page');
+                console.info(`[BoundaryClock] 🎯 Pre-locked canonical PTB for upcoming ${sym} (${nextSlug}): $${scraped}`);
+              }
               await fetchPolymarket5MMarketCandidate(sym, nextSlug).catch(() => null);
             } catch (_) {}
           });
@@ -2569,7 +2570,7 @@ function polymarketSentiment(markets, sym) {
         }
 
         // Reset prefetch trigger when we are in a new period
-        if (secInPeriod < 290) {
+        if (secInPeriod < 270) {
           prefetchTriggered = false;
         }
 
@@ -2577,7 +2578,7 @@ function polymarketSentiment(markets, sym) {
         const currentBoundary = nowSec - secInPeriod;
         if (currentBoundary > lastBoundarySec && lastBoundarySec > 0) {
           lastBoundarySec = currentBoundary;
-          console.info(`[BoundaryClock] 🏁 5-minute boundary rollover hit! Forcing instant local rollover & network refresh.`);
+          console.info(`[BoundaryClock] 🏁 5-minute boundary rollover hit (${currentBoundary})! Executing instant local rollover.`);
           
           let touched = false;
           Object.keys(POLY_5M_COIN_SLUGS).forEach(sym => {
@@ -2637,19 +2638,23 @@ function polymarketSentiment(markets, sym) {
             window.dispatchEvent(new CustomEvent('predictionmarketsready', { detail: cache }));
           }
 
-          // At exact rollover, lock the PTB for the new window using ONLY the canonical
-          // Polymarket value (the price of truth that polycool.app displays).
-          // No live-price fallback: if the exact PTB isn't available yet the window stays
-          // "pending" until it loads, rather than showing a misleading Chainlink/Pyth proxy.
-          // Do this BEFORE triggering the fetch so the new active window fetch picks up the lock.
+          // At exact rollover, fire parallel instant scrapes and fallback locks
           Object.keys(POLY_5M_COIN_SLUGS).forEach(async (sym) => {
             try {
               const prefix = POLY_5M_COIN_SLUGS[sym];
               const newSlug = `${prefix}-updown-5m-${currentBoundary}`;
-              // Prefer exact value from Polymarket (the price of truth)
-              const scraped = await fetchPolymarketPriceToBeat(newSlug).catch(() => null);
-              if (Number.isFinite(scraped) && scraped > 0) {
-                _lockPolymarketPriceToBeat(newSlug, scraped, 'polymarket-event-page');
+              let existing = _getPolymarketPriceToBeatLock(newSlug);
+              if (!existing) {
+                const scraped = await fetchPolymarketPriceToBeat(newSlug).catch(() => null);
+                if (Number.isFinite(scraped) && scraped > 0) {
+                  _lockPolymarketPriceToBeat(newSlug, scraped, 'polymarket-event-page');
+                } else {
+                  // Instant spot fallback so second 0 is NEVER delayed
+                  const pyth = await getFreshPythLazerPrice(sym).catch(() => null);
+                  if (pyth && pyth.price > 0) {
+                    _lockPolymarketPriceToBeat(newSlug, pyth.price, 'pyth-boundary-open');
+                  }
+                }
               }
             } catch (e) {}
           });
