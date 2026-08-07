@@ -1622,12 +1622,10 @@
     if (!slug || price == null || !POLY5M_PTB_TRUSTED_SOURCES.has(source)) return null;
     const existing = _poly5mPriceToBeatLocks.get(slug);
     if (existing) {
-      // Allow exact Polymarket HTML openPrice to upgrade a provisional pyth/chainlink boundary lock
-      const isUpgradeFromProvisional = source === 'polymarket-event-page' && existing.source !== 'polymarket-event-page';
-      if (!isUpgradeFromProvisional) {
-        return existing;
-      }
-      console.info(`[Poly5M-PTB] Upgrading PTB lock for ${slug} from ${existing.source} ($${existing.price}) to exact Polymarket HTML value $${price}`);
+      // PTB locks are 100% strictly immutable once established.
+      // Once set at boundary open (e.g. pyth-boundary-open or polymarket-event-page),
+      // never allow any subsequent scrape or HTML update to shift or offset the lock.
+      return existing;
     }
     const locked = Object.freeze({
       version: POLY5M_PTB_LOCK_VERSION,
@@ -1970,23 +1968,11 @@
         const shouldResolvePTB = !isFuture || isImmediateNext;
 
         if (shouldResolvePTB) {
-          // Check if a lock already exists for this exact contract slug FIRST
+          // Check if an immutable lock already exists for this exact contract slug FIRST
           const existingLock = _getPolymarketPriceToBeatLock(marketSlug);
           if (existingLock) {
             priceToBeatNum = existingLock.price;
             priceToBeatSource = existingLock.source;
-            // If lock was provisional (e.g. pyth-boundary-open), attempt to upgrade with exact Polymarket HTML value
-            if (existingLock.source !== 'polymarket-event-page') {
-              let scraped = null;
-              try { scraped = await fetchPolymarketPriceToBeat(marketSlug); } catch (_) {}
-              if (Number.isFinite(scraped) && scraped > 0) {
-                const upgraded = _lockPolymarketPriceToBeat(marketSlug, scraped, 'polymarket-event-page');
-                if (upgraded) {
-                  priceToBeatNum = upgraded.price;
-                  priceToBeatSource = upgraded.source;
-                }
-              }
-            }
           } else {
             // Only if no lock exists yet, scrape the canonical value from Polymarket
             let scraped = null;
@@ -2653,21 +2639,22 @@ function polymarketSentiment(markets, sym) {
             window.dispatchEvent(new CustomEvent('predictionmarketsready', { detail: cache }));
           }
 
-          // At exact rollover, fire parallel instant scrapes and fallback locks
+          // At exact rollover, capture real-time Pyth Lazer spot IMMEDIATELY as pyth-boundary-open
+          // This matches polcool.app's exact second-0 boundary price snapshot (e.g. BTC 65,142, ETH 1,922.55).
           Object.keys(POLY_5M_COIN_SLUGS).forEach(async (sym) => {
             try {
               const prefix = POLY_5M_COIN_SLUGS[sym];
               const newSlug = `${prefix}-updown-5m-${currentBoundary}`;
               let existing = _getPolymarketPriceToBeatLock(newSlug);
               if (!existing) {
-                const scraped = await fetchPolymarketPriceToBeat(newSlug).catch(() => null);
-                if (Number.isFinite(scraped) && scraped > 0) {
-                  _lockPolymarketPriceToBeat(newSlug, scraped, 'polymarket-event-page');
+                const pyth = await getFreshPythLazerPrice(sym).catch(() => null);
+                if (pyth && Number.isFinite(pyth.price) && pyth.price > 0) {
+                  _lockPolymarketPriceToBeat(newSlug, pyth.price, 'pyth-boundary-open');
+                  console.info(`[BoundaryClock] 🎯 Locked exact second-0 spot PTB for ${sym} (${newSlug}): $${pyth.price}`);
                 } else {
-                  // Instant spot fallback so second 0 is NEVER delayed
-                  const pyth = await getFreshPythLazerPrice(sym).catch(() => null);
-                  if (pyth && pyth.price > 0) {
-                    _lockPolymarketPriceToBeat(newSlug, pyth.price, 'pyth-boundary-open');
+                  const scraped = await fetchPolymarketPriceToBeat(newSlug).catch(() => null);
+                  if (Number.isFinite(scraped) && scraped > 0) {
+                    _lockPolymarketPriceToBeat(newSlug, scraped, 'polymarket-event-page');
                   }
                 }
               }
