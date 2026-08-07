@@ -122,7 +122,7 @@
         'alchemyrpc',
     ]);
     const TRANSIENT_REASON_RE = /(abort|timed?\s*out|timeout|502|503|504|429|network\s*changed|econnreset|socket hang up|failed to fetch)/i;
-    const APP_LOGIC_RE = /(stale[-\s]*watchdog|stale[-\s]*demote|demote|hysteresis|scheduler|circuit|loop|oscillat|internal|state bug|coordination|reconnect storm|thrash|browser websocket cannot send|requires node ws|credential|crypto unavailable|signature generation)/i;
+    const APP_LOGIC_RE = /(stale[-\s]*watchdog|stale[-\s]*demote|stale-reconnect|lifecycle-reconnect|auth-config-fail|demote|hysteresis|scheduler|circuit|loop|oscillat|internal|state bug|coordination|reconnect storm|thrash|browser websocket cannot send|requires node ws|credential|crypto unavailable|signature generation|ipc-sdk|rpc\/http)/i;
     const NETWORK_TRANSPORT_RE = /(dns|tls|ssl|cert|handshake|upgrade|timeout|abort|route|network|econnreset|socket hang up|websocket|wss|readyState=3|connect failure|closed-before-open)/i;
     const PROVIDER_API_RE = /(http\s*(401|403|404|408|409|410|412|415|422|429|5\d\d)|status\s*(401|403|404|408|409|410|412|415|422|429|5\d\d)|upstream|rate limit|unauthorized|forbidden|not found)/i;
     const BUCKETS = {
@@ -301,6 +301,8 @@
         } else if (status === 'healthy') {
             failureCounters[provider].count = 0;
             failureCounters[provider].alertActive = false;
+            state[provider].bucket = BUCKETS.UNKNOWN;
+            state[provider].bucketReason = '';
         } else if (status !== 'down') {
             failureCounters[provider].alertActive = false;
         }

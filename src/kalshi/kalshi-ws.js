@@ -431,6 +431,9 @@
   function _classifyFailure(errLike) {
     const msg = _formatError(errLike).toLowerCase();
     if (msg.includes('credential') || msg.includes('kalshi-api-key') || msg.includes('crypto unavailable') || msg.includes('signature generation') || msg.includes('requires node ws') || msg.includes('browser websocket cannot send')) return 'auth-config-fail';
+    if (msg.includes('401') || msg.includes('unauthorized') || msg.includes('forbidden') || msg.includes('403')) return 'auth-config-fail';
+    if (msg.includes('stale')) return 'stale-reconnect';
+    if (msg.includes('code=1000') || msg.includes('code=1001') || msg.includes('code=1005') || msg.includes('route')) return 'lifecycle-reconnect';
     if (msg.includes('name_not_resolved') || msg.includes('enotfound') || msg.includes('eai_again') || msg.includes('dns')) return 'dns-fail';
     if (msg.includes('cert') || msg.includes('ssl') || msg.includes('tls') || msg.includes('self signed')) return 'tls-fail';
     if (msg.includes('unexpected-response') || msg.includes('handshake') || msg.includes('upgrade')) return 'handshake-fail';
@@ -443,7 +446,13 @@
   function _classifyIssueBucket(errLike, failureClass = '') {
     const msg = _formatError(errLike).toLowerCase();
     const fc = String(failureClass || '').toLowerCase();
-    if (/browser websocket cannot send|requires node ws|credential|crypto unavailable|signature generation|kalshi-api-key\.txt not found|auth-header-failed/.test(msg)) {
+    if (fc === 'stale-reconnect' || fc === 'lifecycle-reconnect' || /stale[-\s]*watchdog|demote|hysteresis|scheduler|circuit|oscillat|internal|code=1000|code=1001|code=1005/.test(msg)) {
+      return {
+        bucket: 'app/logic',
+        reason: 'internal WSS lifecycle/watchdog reconnect',
+      };
+    }
+    if (/browser websocket cannot send|requires node ws|credential|crypto unavailable|signature generation|kalshi-api-key\.txt not found|auth-header-failed|auth-config-fail/.test(msg) || fc === 'auth-config-fail') {
       return {
         bucket: 'app/logic',
         reason: 'local WebSocket auth capability/configuration issue',
@@ -453,12 +462,6 @@
       return {
         bucket: 'provider/api',
         reason: 'upstream API reject',
-      };
-    }
-    if (/stale[-\s]*watchdog|demote|hysteresis|scheduler|circuit|oscillat|internal/.test(msg)) {
-      return {
-        bucket: 'app/logic',
-        reason: 'internal WSS handling loop/state issue',
       };
     }
     if (/event:error/.test(msg) && /readystate=3/.test(msg)) {
@@ -563,6 +566,9 @@
         ? first.data
         : first;
       handlers.onMessage?.(payload, socket);
+    });
+    add('pong', (...args) => {
+      handlers.onPong?.(socket, ...args);
     });
     add('error', (...args) => {
       const first = args[0];
@@ -759,7 +765,7 @@
           });
         }
         const attemptSocket = ws;
-        _attachSocketHandlers(attemptSocket, { onOpen, onMessage, onError, onClose });
+        _attachSocketHandlers(attemptSocket, { onOpen, onMessage, onPong, onError, onClose });
 
         let settled = false;
         const settle = (ok, err) => {
@@ -908,6 +914,11 @@
     } catch (err) {
       console.error('[KalshiWS] Parse error:', err.message);
     }
+  }
+
+  function onPong() {
+    lastMessageTs = Date.now();
+    _resetStaleCounters();
   }
 
   function onError(err) {

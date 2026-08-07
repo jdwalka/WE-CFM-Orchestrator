@@ -56,6 +56,7 @@ function readPythSecretFromFile() {
 
 const { PythLazerClient } = require("@pythnetwork/pyth-lazer-sdk");
 
+let LAZER_TOKEN = process.env.PYTH_LAZER_TOKEN || process.env.PYTH_API_KEY || process.env.PYTH_API || process.env.PYTH_NEW || process.env.PYTH_NEW_API || process.env.LAZER_TOKEN || '';
 let LAZER_TOKEN = process.env.PYTH_API || process.env.PYTH_NEW || process.env.PYTH_NEW_API || process.env.PYTH_LAZER_TOKEN || process.env.PYTH_API_KEY || process.env.LAZER_TOKEN || '';
 const fromSecret = readPythSecretFromFile();
 if (fromSecret) {
@@ -66,6 +67,11 @@ if (fromSecret) {
   process.env.PYTH_LAZER_TOKEN = fromSecret;
   process.env.PYTH_API_KEY = fromSecret;
   process.env.LAZER_TOKEN = fromSecret;
+  console.log('[PythLazerWS] Using token from secrets/PYTH_API or env for realtime');
+} else if (process.env.PYTH_LAZER_TOKEN || process.env.PYTH_API_KEY || process.env.PYTH_API || process.env.PYTH_NEW || process.env.PYTH_NEW_API) {
+  LAZER_TOKEN = process.env.PYTH_LAZER_TOKEN || process.env.PYTH_API_KEY || process.env.PYTH_API || process.env.PYTH_NEW || process.env.PYTH_NEW_API || process.env.LAZER_TOKEN;
+}
+
   console.log('[PythLazerWS] Using newest key from secrets/PYTH_API for realtime');
 } else if (process.env.PYTH_API || process.env.PYTH_NEW || process.env.PYTH_NEW_API) {
   LAZER_TOKEN = process.env.PYTH_API || process.env.PYTH_NEW || process.env.PYTH_NEW_API;

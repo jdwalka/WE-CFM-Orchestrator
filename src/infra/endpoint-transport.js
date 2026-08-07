@@ -124,7 +124,7 @@
   }
   function _classifyTransportBucket(err, provider, transport) {
     const text = String(err?.message || err || '').toLowerCase();
-    if (/browser websocket cannot send|requires node ws|credential|crypto unavailable|signature generation|kalshi-api-key\.txt not found|auth-header-failed/.test(text)) {
+    if (/browser websocket cannot send|requires node ws|credential|crypto unavailable|signature generation|kalshi-api-key\.txt not found|auth-header-failed|auth-config-fail/.test(text)) {
       return {
         bucket: 'app/logic',
         bucketReason: String(err?.message || err || `${provider}:${transport} local auth capability/configuration issue`),
@@ -136,7 +136,7 @@
         bucketReason: String(err?.message || err || 'upstream API reject'),
       };
     }
-    if (/stale[-\s]*watchdog|demote|hysteresis|scheduler|circuit|oscillat|internal/.test(text)) {
+    if (/stale[-\s]*watchdog|demote|hysteresis|scheduler|circuit|oscillat|internal|reconnect|lifecycle|ipc/.test(text)) {
       return {
         bucket: 'app/logic',
         bucketReason: String(err?.message || err || `${provider}:${transport} internal handling issue`),

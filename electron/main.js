@@ -459,6 +459,7 @@ function resolveCoinGeckoPublicConfig() {
 
   // ONLY use the newest Pyth key (PYTH_NEW / PYTH_API) for all realtime feeds
   const pythSecret = readPythLazerSecret();
+  const pythKey = pythSecret.value || readEnvValue(['PYTH_NEW', 'PYTH_API', 'PYTH_NEW_API', 'LAZER_TOKEN']);
   const pythKey = pythSecret.value || readEnvValue(['PYTH_NEW', 'PYTH_API', 'PYTH_NEW_API', 'PYTH_LAZER_TOKEN', 'PYTH_API_KEY', 'LAZER_TOKEN']);
   if (pythKey) {
     out.PYTH_NEW = pythKey;
@@ -676,6 +677,8 @@ let latestPythLazerTickers = {};
 let pythRestPoller = null;
 let proxyHealthy = false;
 let webServiceHealth = { started: false, mode: 'stopped', protocol: 'http', port: 3443 };
+const LAZER_FEED_IDS = [1, 2, 6, 10, 13, 14, 15]; // BTC(1), ETH(2), SOL(6), DOGE(10), XRP(14), BNB(15) + possible 13
+const LAZER_ID_MAP = { 1: 'BTCUSD', 2: 'ETHUSD', 6: 'SOLUSD', 10: 'DOGEUSD', 13: 'DOGE13', 14: 'XRPUSD', 15: 'BNBUSD' };
 // NOTE: feed 10 (DOGE spot) is deliberately excluded. The configured PYTH_LAZER_TOKEN's grants
 // do not include it — the server rejects it with "Not entitled: feed 10 (no grant accepts this
 // feed (asset type 'crypto', instrument type 'spot'))". Because both the REST /v1/latest_price
@@ -779,6 +782,15 @@ async function startPythLazerService(win) {
     }
   }
   if (!token) {
+    token = readEnvValue(['PYTH_NEW', 'PYTH_API', 'PYTH_NEW_API', 'LAZER_TOKEN']);
+  if (!token) {
+    const s = readPythLazerSecret ? readPythLazerSecret() : { value: '' };
+    if (s.value) {
+      token = s.value;
+      console.log(`[PythLazer] Loaded key via readPythLazerSecret from ${s.path}`);
+    }
+  }
+  if (!token) {
     token = readEnvValue(['PYTH_NEW', 'PYTH_API', 'PYTH_NEW_API', 'PYTH_LAZER_TOKEN', 'PYTH_API_KEY', 'LAZER_TOKEN']);
   }
   if (!token) {
@@ -874,6 +886,15 @@ async function startPythLazerService(win) {
       let payload = JSON.stringify({ ...basePayload, priceFeedIds: LAZER_FEED_IDS });
       for (const b of bases) {
         try {
+          const r = await fetch(`${b}/v1/latest_price`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: payload,
+          });
+          console.log('[PythLazer] proxy numeric try', b, 'status', r.status);
+          if (r.ok) {
+            const j = await r.json();
+            pfeeds = j?.parsed?.priceFeeds || [];
           const r = await fetch(buildProxyLatestPriceUrl(b, LAZER_FEED_IDS));
           console.log('[PythLazer] proxy numeric try', b, 'status', r.status);
           if (r.ok) {
@@ -892,6 +913,7 @@ async function startPythLazerService(win) {
           });
           console.log('[PythLazer] direct numeric status', r.status);
           if (r.ok) {
+            pfeeds = (await r.json())?.parsed?.priceFeeds || [];
             pfeeds = extractLazerPriceFeeds(await r.json());
             if (pfeeds.length) console.log('[PythLazer] got feeds via direct numeric');
           }
@@ -900,6 +922,21 @@ async function startPythLazerService(win) {
       // Fallback to symbols if no feeds
       if (!pfeeds.length) {
         payload = JSON.stringify({ ...basePayload, symbols });
+        for (const b of bases) {
+          try {
+            const r = await fetch(`${b}/v1/latest_price`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: payload,
+            });
+            if (r.ok) {
+              const j = await r.json();
+              pfeeds = j?.parsed?.priceFeeds || [];
+              if (pfeeds.length) { console.log('[PythLazer] got feeds via proxy symbols'); break; }
+            }
+          } catch (_) {}
+        }
+        if (!pfeeds.length && token) {
         // NOTE: the proxy fallbacks only support the numeric `price_feed_ids` GET contract, not
         // symbol lookups, so this loop over `bases` is intentionally omitted here — it always
         // returned 400/405 previously. Go straight to the authenticated direct endpoint instead.
@@ -910,6 +947,7 @@ async function startPythLazerService(win) {
               headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
               body: payload,
             });
+            if (r.ok) pfeeds = (await r.json())?.parsed?.priceFeeds || [];
             if (r.ok) pfeeds = extractLazerPriceFeeds(await r.json());
           } catch (_) {}
         }
@@ -1001,6 +1039,7 @@ async function startPythLazerService(win) {
         deliveryFormat: "json",
         jsonBinaryEncoding: "hex",
         parsed: true,
+        // ignoreInvalidFeeds: true,
         // Without this flag, if ANY requested feed ID is not entitled for this token (e.g. feed 10
         // / DOGE spot), the server throws a hard subscriptionError for the WHOLE subscription. The
         // SDK's WebSocketPool re-sends the same (still-invalid) subscription on every reconnect,
@@ -1032,6 +1071,14 @@ async function startPythLazerService(win) {
           let payload = JSON.stringify({ ...basePayload, priceFeedIds: LAZER_FEED_IDS });
           for (const base of proxyBases) {
             try {
+              const r = await fetch(`${base}/v1/latest_price`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: payload,
+              });
+              if (r.ok) {
+                const j = await r.json();
+                pfeeds = j?.parsed?.priceFeeds || [];
               const r = await fetch(buildProxyLatestPriceUrl(base, LAZER_FEED_IDS));
               if (r.ok) {
                 const j = await r.json();
@@ -1052,6 +1099,74 @@ async function startPythLazerService(win) {
               });
               if (r.ok) {
                 const j = await r.json();
+                pfeeds = j?.parsed?.priceFeeds || [];
+              }
+            } catch (_) {}
+          }
+          if (!pfeeds.length) {
+            payload = JSON.stringify({ ...basePayload, symbols });
+            for (const base of proxyBases) {
+              try {
+                const r = await fetch(`${base}/v1/latest_price`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: payload,
+                });
+                if (r.ok) {
+                  const j = await r.json();
+                  pfeeds = j?.parsed?.priceFeeds || [];
+                  if (pfeeds.length) break;
+                }
+              } catch (_) {}
+            }
+          }
+
+          // Fallback to Pyth Hermes v2 REST API (100% reliable public endpoint)
+          if (!pfeeds.length) {
+            try {
+              const hUrl = 'https://hermes.pyth.network/v2/updates/price/latest?ids[]=0xe62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43&ids[]=0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace&ids[]=0xef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d&ids[]=0xec5d399846a9209f3fe5881d70aae9268c94339ff9817e8d18ff19fa05eea1c8&ids[]=0xdcef50dd0a4cd2dcc17e45df1676dcb336a11a61c69df7a0299b0150c672d25c&ids[]=0x2f95862b045670cd22bee3114c39763a4a08beeb663b145d283c31d7d1101c4f&ids[]=0x4279e31cc369bbcc2faf022b382b080e32a8e689ff20fbc530d2a603eb6cd98b';
+              const r = await fetch(hUrl);
+              if (r.ok) {
+                const j = await r.json();
+                if (j && Array.isArray(j.parsed)) {
+                  const hMap = {
+                    'e62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43': 'BTCUSD',
+                    'ff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace': 'ETHUSD',
+                    'ef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d': 'SOLUSD',
+                    'ec5d399846a9209f3fe5881d70aae9268c94339ff9817e8d18ff19fa05eea1c8': 'XRPUSD',
+                    'dcef50dd0a4cd2dcc17e45df1676dcb336a11a61c69df7a0299b0150c672d25c': 'DOGEUSD',
+                    '2f95862b045670cd22bee3114c39763a4a08beeb663b145d283c31d7d1101c4f': 'BNBUSD',
+                    '4279e31cc369bbcc2faf022b382b080e32a8e689ff20fbc530d2a603eb6cd98b': 'HYPEUSD'
+                  };
+                  const nowP = Date.now();
+                  const pmap = {};
+                  for (const f of j.parsed) {
+                    const cleanId = String(f.id).replace(/^0x/i, '').toLowerCase();
+                    const instr = hMap[cleanId];
+                    if (instr) {
+                      const px = parseFloat(f.price.price) * Math.pow(10, f.price.expo || 0);
+                      if (px > 0) {
+                        pmap[instr] = { instrument_name: instr, last: px, source: 'pyth-hermes-v2', timestamp: nowP };
+                      }
+                    }
+                  }
+                  if (Object.keys(pmap).length) {
+                    latestPythLazerTickers = pmap;
+                    pythLazerStatus.lastDataTs = nowP;
+                    pythLazerStatus.dataCount = Math.max(pythLazerStatus.dataCount || 0, 1);
+                    pythLazerStatus.connected = true;
+                    if (!win.isDestroyed()) {
+                      win.webContents.send('pyth:tickers', pmap);
+                      win.webContents.send('pyth:status', pythLazerStatus);
+                    }
+                  }
+                }
+              }
+            } catch (_) {}
+          }
+
+          if (pfeeds.length) {
+
                 pfeeds = extractLazerPriceFeeds(j);
               }
             } catch (_) {}
@@ -1928,6 +2043,15 @@ function refreshPythFromProxy() {
       // try unauth proxies first (like getProxyLatest)
       for (const proxyBase of proxies) {
         try {
+          const url = `${proxyBase}/v1/latest_price`;
+          const response = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: payload,
+          });
+          if (response.ok) {
+            const data = await response.json();
+            prices = (data.parsed?.priceFeeds || []).map(f => ({
           const url = buildProxyLatestPriceUrl(proxyBase, LAZER_FEED_IDS);
           const response = await fetch(url);
           if (response.ok) {
@@ -1954,6 +2078,7 @@ function refreshPythFromProxy() {
           });
           if (response.ok) {
             const data = await response.json();
+            prices = (data.parsed?.priceFeeds || []).map(f => ({
             prices = extractLazerPriceFeeds(data).map(f => ({
               instrument_name: LAZER_ID_MAP ? LAZER_ID_MAP[f.priceFeedId] : f.priceFeedId,
               last: Number(f.price) * Math.pow(10, f.exponent ?? -8),
@@ -1961,6 +2086,46 @@ function refreshPythFromProxy() {
           }
         } catch (_) {}
       }
+
+      // Fallback to Pyth Hermes v2 REST API (100% reliable public endpoint)
+      if (!prices.length) {
+        try {
+          const hermesIds = [
+            '0xe62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43',
+            '0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace',
+            '0xef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d',
+            '0xec5d399846a9209f3fe5881d70aae9268c94339ff9817e8d18ff19fa05eea1c8',
+            '0xdcef50dd0a4cd2dcc17e45df1676dcb336a11a61c69df7a0299b0150c672d25c',
+            '0x2f95862b045670cd22bee3114c39763a4a08beeb663b145d283c31d7d1101c4f',
+            '0x4279e31cc369bbcc2faf022b382b080e32a8e689ff20fbc530d2a603eb6cd98b'
+          ];
+          const hermesCoinMap = {
+            'e62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43': 'BTCUSD',
+            'ff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace': 'ETHUSD',
+            'ef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d': 'SOLUSD',
+            'ec5d399846a9209f3fe5881d70aae9268c94339ff9817e8d18ff19fa05eea1c8': 'XRPUSD',
+            'dcef50dd0a4cd2dcc17e45df1676dcb336a11a61c69df7a0299b0150c672d25c': 'DOGEUSD',
+            '2f95862b045670cd22bee3114c39763a4a08beeb663b145d283c31d7d1101c4f': 'BNBUSD',
+            '4279e31cc369bbcc2faf022b382b080e32a8e689ff20fbc530d2a603eb6cd98b': 'HYPEUSD'
+          };
+          const hUrl = 'https://hermes.pyth.network/v2/updates/price/latest?' + hermesIds.map(id => 'ids[]=' + id).join('&');
+          const hResp = await fetch(hUrl);
+          if (hResp.ok) {
+            const hData = await hResp.json();
+            if (hData && Array.isArray(hData.parsed)) {
+              prices = hData.parsed.map(f => {
+                const cleanId = String(f.id).replace(/^0x/i, '').toLowerCase();
+                const instr = hermesCoinMap[cleanId] || ('FEED_' + f.id);
+                const p = parseFloat(f.price.price) * Math.pow(10, f.price.expo || 0);
+                return { instrument_name: instr, last: p };
+              }).filter(p => Number.isFinite(p.last) && p.last > 0);
+            }
+          }
+        } catch (_) {}
+      }
+
+      updatePythStatusFromProxyPrices(prices);
+
       updatePythStatusFromProxyPrices(prices);
     } catch (e) {
       console.log('[PythLazer] refreshPythFromProxy err', e.message);
@@ -2041,6 +2206,7 @@ ipcMain.handle('pyth:getProxyLatest', async (_, feedIds) => {
       } catch (_) {}
     }
     if (!token) {
+      token = readEnvValue(['PYTH_API', 'PYTH_NEW', 'PYTH_NEW_API', 'LAZER_TOKEN']);
       token = readEnvValue(['PYTH_API', 'PYTH_NEW', 'PYTH_NEW_API', 'PYTH_LAZER_TOKEN', 'PYTH_API_KEY', 'LAZER_TOKEN']);
     }
     if (token) {
@@ -2066,7 +2232,47 @@ ipcMain.handle('pyth:getProxyLatest', async (_, feedIds) => {
       }
     }
 
+    // Ultimate fallback: Pyth Hermes v2 REST API (100% reliable public endpoint)
+    try {
+      const hermesIds = [
+        '0xe62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43',
+        '0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace',
+        '0xef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d',
+        '0xec5d399846a9209f3fe5881d70aae9268c94339ff9817e8d18ff19fa05eea1c8',
+        '0xdcef50dd0a4cd2dcc17e45df1676dcb336a11a61c69df7a0299b0150c672d25c',
+        '0x2f95862b045670cd22bee3114c39763a4a08beeb663b145d283c31d7d1101c4f',
+        '0x4279e31cc369bbcc2faf022b382b080e32a8e689ff20fbc530d2a603eb6cd98b'
+      ];
+      const hermesCoinMap = {
+        'e62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43': 'BTCUSD',
+        'ff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace': 'ETHUSD',
+        'ef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d': 'SOLUSD',
+        'ec5d399846a9209f3fe5881d70aae9268c94339ff9817e8d18ff19fa05eea1c8': 'XRPUSD',
+        'dcef50dd0a4cd2dcc17e45df1676dcb336a11a61c69df7a0299b0150c672d25c': 'DOGEUSD',
+        '2f95862b045670cd22bee3114c39763a4a08beeb663b145d283c31d7d1101c4f': 'BNBUSD',
+        '4279e31cc369bbcc2faf022b382b080e32a8e689ff20fbc530d2a603eb6cd98b': 'HYPEUSD'
+      };
+      const hUrl = 'https://hermes.pyth.network/v2/updates/price/latest?' + hermesIds.map(id => 'ids[]=' + id).join('&');
+      const hResp = await fetch(hUrl);
+      if (hResp.ok) {
+        const hData = await hResp.json();
+        if (hData && Array.isArray(hData.parsed)) {
+          prices = hData.parsed.map(f => {
+            const cleanId = String(f.id).replace(/^0x/i, '').toLowerCase();
+            const instr = hermesCoinMap[cleanId] || ('FEED_' + f.id);
+            const p = parseFloat(f.price.price) * Math.pow(10, f.price.expo || 0);
+            return { instrument_name: instr, last: p };
+          }).filter(p => Number.isFinite(p.last) && p.last > 0);
+          if (prices.length) {
+            updatePythStatusFromProxyPrices(prices);
+            return { success: true, prices };
+          }
+        }
+      }
+    } catch (_) {}
+
     return { success: false, error: lastError?.message || 'All proxies and REST API failed' };
+
   } catch (e) {
     console.warn('[PythLazer] getProxyLatest failed:', e.message);
     return { success: false, error: e.message };

@@ -565,6 +565,7 @@ Use this recall only as context, and prioritize current market snapshot data if 
 
     for (const p of cascade) {
       try {
+        if (p === 'xai' && XAI_API_KEY) {
         if (p === 'xai') {
           if (!XAI_API_KEY) { skipped.push(p); continue; }
           attempted.push(p);
@@ -577,6 +578,7 @@ Use this recall only as context, and prioritize current market snapshot data if 
           console.log(`[LLM] trying xai SDK (${model}) max_tokens=${maxTokens}`);
           return await this.callXaiAPI(systemPrompt, userPrompt, { model, maxTokens });
         }
+        if (p === 'asi1' && Asi1Client.hasAsi1Credentials()) {
         if (p === 'asi1') {
           if (!Asi1Client.hasAsi1Credentials()) { skipped.push(p); continue; }
           attempted.push(p);
@@ -599,6 +601,7 @@ Use this recall only as context, and prioritize current market snapshot data if 
           if (jsonMatch) content = jsonMatch[1];
           return JSON.parse(content);
         }
+        if (p === 'openai' && process.env.OPENAI_API_KEY) {
         if (p === 'openai') {
           if (!process.env.OPENAI_API_KEY) { skipped.push(p); continue; }
           attempted.push(p);
@@ -609,6 +612,15 @@ Use this recall only as context, and prioritize current market snapshot data if 
             key: process.env.OPENAI_API_KEY
           });
         }
+        if (p === 'anthropic' && ANTHROPIC_API_KEY) {
+          console.log('[LLM 5m] trying claude');
+          return await this.callAnthropicAPI(systemPrompt, userPrompt);
+        }
+        if (p === 'google' && GOOGLE_API_KEY) {
+          console.log('[LLM 5m] trying gemini');
+          return await this.callGoogleAPI(systemPrompt, userPrompt);
+        }
+        if (p === 'openrouter' && OPENROUTER_API_KEY) {
         if (p === 'anthropic') {
           if (!ANTHROPIC_API_KEY) { skipped.push(p); continue; }
           attempted.push(p);

@@ -10,6 +10,7 @@
 (function () {
   'use strict';
 
+  const PYTH_HERMES_V2 = 'https://hermes.pyth.network/v2/updates/price/latest';
   const PYTH_HERMES = 'https://hermes.pyth.network/api/latest_price_feeds';
   // Support new Pyth key from secrets/PYTH_NEW_API wired via public env or resolveRuntimeKey
   let PYTH_API_KEY = '';
@@ -37,14 +38,19 @@
   } catch (_) { }
 
   const PYTH_FEEDS = {
-    BTC:  'Crypto.Bitcoin/USD',
-    ETH:  'Crypto.Ethereum/USD',
-    SOL:  'Crypto.Solana/USD',
-    XRP:  'Crypto.Ripple/USD',
-    DOGE: 'Crypto.Dogecoin/USD',
-    BNB:  'Crypto.BinanceCoin/USD',
-    HYPE: 'Crypto.Hyperliquid/USD',
+    BTC:  '0xe62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43',
+    ETH:  '0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace',
+    SOL:  '0xef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d',
+    XRP:  '0xec5d399846a9209f3fe5881d70aae9268c94339ff9817e8d18ff19fa05eea1c8',
+    DOGE: '0xdcef50dd0a4cd2dcc17e45df1676dcb336a11a61c69df7a0299b0150c672d25c',
+    BNB:  '0x2f95862b045670cd22bee3114c39763a4a08beeb663b145d283c31d7d1101c4f',
+    HYPE: '0x4279e31cc369bbcc2faf022b382b080e32a8e689ff20fbc530d2a603eb6cd98b',
   };
+
+  const FEED_ID_TO_COIN = {};
+  for (const [coin, idHex] of Object.entries(PYTH_FEEDS)) {
+    FEED_ID_TO_COIN[idHex.replace(/^0x/i, '').toLowerCase()] = coin;
+  }
 
   // Poll interval: 5 seconds (faster than CMC for settlement verification)
   const POLL_INTERVAL_MS = 5000;
@@ -74,6 +80,11 @@
         }
       }, 7000);
 
+      const feedIds = Object.values(PYTH_FEEDS);
+      let url = `${PYTH_HERMES_V2}?${feedIds.map(id => 'ids[]=' + encodeURIComponent(id)).join('&')}`;
+      const headers = {};
+      if (PYTH_API_KEY) {
+        url += '&api_key=' + encodeURIComponent(PYTH_API_KEY);
       let url = PYTH_HERMES;
       const headers = {};
       if (PYTH_API_KEY) {
@@ -90,51 +101,64 @@
       }
 
       const data = await resp.json();
-      if (!data.data || !Array.isArray(data.data.symbols)) {
-        console.warn(`[PythClient] Unexpected Hermes response structure`);
+      if (!data || !Array.isArray(data.parsed)) {
+        console.warn(`[PythClient] Unexpected Hermes v2 response structure`);
         return false;
       }
 
       // Parse symbol feed data
       const updated = {};
-      data.data.symbols.forEach(sym => {
-        if (!sym.id || !sym.price) return;
-
-        // Match against PYTH_FEEDS mapping
-        for (const [coin, expectedId] of Object.entries(PYTH_FEEDS)) {
-          if (sym.id.toLowerCase().includes(expectedId.toLowerCase()) || 
-              sym.id.toLowerCase() === expectedId.toLowerCase()) {
-            const price = scalePythPrice(sym.price.price, sym.price.expo);
-            if (price != null) {
-              updated[coin] = {
-                price,
-                expo: sym.price.expo || 0,
-                conf: sym.price.conf || 0,
-                publishTime: sym.price.publish_time || null,
-              };
-            }
-            break;
+      data.parsed.forEach(f => {
+        if (!f || !f.id || !f.price) return;
+        const cleanId = String(f.id).replace(/^0x/i, '').toLowerCase();
+        const coin = FEED_ID_TO_COIN[cleanId];
+        if (coin) {
+          const price = scalePythPrice(f.price.price, f.price.expo);
+          if (price != null) {
+            updated[coin] = price;
+            window._pythPythMetadata[coin] = {
+              price,
+              expo: f.price.expo || 0,
+              conf: f.price.conf || 0,
+              publishTime: f.price.publish_time ? f.price.publish_time * 1000 : null,
+            };
           }
         }
       });
 
       // Update global store
-      const prevCount = Object.keys(window._pythPrices).length;
       Object.assign(window._pythPrices, updated);
       
       if (Object.keys(updated).length > 0) {
         _lastPollTs = Date.now();
+        console.log(`[PythClient] ✅ Updated ${Object.keys(updated).length} prices via Hermes v2 (total: ${Object.keys(window._pythPrices).length})`);
         console.log(`[PythClient] ✅ Updated ${Object.keys(updated).length} prices (total: ${Object.keys(window._pythPrices).length})`);
         if (typeof window !== 'undefined') {
           try {
             window.dispatchEvent(new CustomEvent('pyth:tick', { detail: updated }));
           } catch (_) {}
+          if (window.NetworkHealth && typeof window.NetworkHealth.update === 'function') {
+            window.NetworkHealth.update('Pyth', {
+              status: 'healthy',
+              lastFetch: Date.now(),
+              fallback: false,
+              reason: '',
+            });
+          }
         }
       }
 
       return true;
     } catch (err) {
       console.warn(`[PythClient] Fetch failed:`, err.message);
+      if (typeof window !== 'undefined' && window.NetworkHealth && typeof window.NetworkHealth.update === 'function') {
+        window.NetworkHealth.update('Pyth', {
+          status: 'degraded',
+          lastFetch: Date.now(),
+          fallback: true,
+          reason: err.message,
+        });
+      }
       return false;
     }
   }

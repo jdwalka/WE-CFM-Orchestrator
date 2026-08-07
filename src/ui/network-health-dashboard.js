@@ -416,7 +416,7 @@
             const retryAt = Number(v.retryAt || v.cooldownUntil || 0);
             const cooldownMs = retryAt > Date.now() ? retryAt - Date.now() : 0;
             const retryLabel = cooldownMs > 0 ? `Retry ${formatMs(cooldownMs)}` : '';
-            const bucketLabel = v.bucket && v.bucket !== 'unknown' ? ` [${v.bucket}]` : '';
+            const bucketLabel = v.status !== 'healthy' && v.bucket && v.bucket !== 'unknown' ? ` [${v.bucket}]` : '';
             const reasonParts = [v.reason, v.bucketReason]
                 .map((x) => String(x || '').trim())
                 .filter(Boolean)

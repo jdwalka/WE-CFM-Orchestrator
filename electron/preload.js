@@ -349,6 +349,7 @@ function createWebSocketBridge(url, options = {}) {
 
   socket.on('open', () => dispatch('open'));
   socket.on('message', (data) => dispatch('message', data?.toString?.() ?? String(data ?? '')));
+  socket.on('pong', () => dispatch('pong'));
   socket.on('error', (err) => {
     err = err || {};
     dispatch('error', {
