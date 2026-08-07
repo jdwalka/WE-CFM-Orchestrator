@@ -1703,32 +1703,33 @@
     const startSec = Number(slugMatch[2]);
     if (!querySymbol || !Number.isFinite(startSec)) return null;
 
-    const startIso = new Date(startSec * 1000).toISOString().replace('.000Z', 'Z');
-    const endIso = new Date((startSec + 300) * 1000).toISOString().replace('.000Z', 'Z');
+    const startIso = new Date(startSec * 1000).toISOString().split('.')[0] + 'Z';
+    const endIso = new Date((startSec + 300) * 1000).toISOString().split('.')[0] + 'Z';
 
-    // Polymarket migrated event pages to Next.js RSC streaming (self.__next_f): there is no
-    // __NEXT_DATA__ block and the React-Query state is an *escaped* JSON string
-    // (\"openPrice\":, \"queryKey\":). The unescaped parsers below therefore match nothing and
-    // the PTB stays null -> renderer shows "$0"/"Waiting for baseline". Verified empirically:
-    // the live page contains the open price only as \"openPrice\":N,\"closePrice\":null.
-    // Anchor on the escaped exact-window query key so we can never pick an adjacent window;
-    // each event page is single-coin, so there is no cross-symbol ambiguity.
-    const escKey = `\\"crypto-prices\\",\\"price\\",\\"${querySymbol}\\",\\"${startIso}\\",\\"fiveminute\\",\\"${endIso}\\"`;
-    if (html.includes(escKey)) {
-      // Active (open) window: uniquely the crypto-prices query whose closePrice is null.
-      const openNull = html.match(/\\"openPrice\\":\s*([0-9]+(?:\.[0-9]+)?)\s*,\s*\\"closePrice\\":\s*null/);
-      if (openNull) {
-        const op = Number(openNull[1]);
-        if (Number.isFinite(op) && op > 0) return op;
-      }
-      // Window already closed at scrape time: state (with openPrice) precedes its queryKey in
-      // the dehydrated entry, so take the nearest openPrice immediately before the matched key.
-      const keyIdx = html.indexOf(escKey);
-      const before = html.slice(Math.max(0, keyIdx - 800), keyIdx);
-      const anchored = [...before.matchAll(/\\"openPrice\\":\s*([0-9]+(?:\.[0-9]+)?)/g)];
-      if (anchored.length) {
-        const op = Number(anchored[anchored.length - 1][1]);
-        if (Number.isFinite(op) && op > 0) return op;
+    // Polymarket migrated event pages to Next.js RSC streaming (self.__next_f): React-Query
+    // dehydrated state contains multiple queries (15m, 1h, 5m). We MUST anchor on the exact
+    // crypto-prices query key for this specific coin + startIso timestamp to avoid picking up
+    // an adjacent window's openPrice (which causes the PTB to be off by a few cents).
+    const needles = [
+      `crypto-prices","price","${querySymbol}","${startIso}"`,
+      `crypto-prices\\",\\"price\\",\\"${querySymbol}\\",\\"${startIso}\\"`,
+      `"${querySymbol}","${startIso}","fiveminute"`,
+      `\\"${querySymbol}\\",\\"${startIso}\\",\\"fiveminute\\"`
+    ];
+
+    for (const needle of needles) {
+      const keyIdx = html.indexOf(needle);
+      if (keyIdx !== -1) {
+        const before = html.slice(Math.max(0, keyIdx - 1000), keyIdx);
+        const matches = [
+          ...before.matchAll(/\\"openPrice\\":\s*([0-9.]+)/g),
+          ...before.matchAll(/"openPrice":\s*([0-9.]+)/g),
+          ...before.matchAll(/openPrice[^\d]*([0-9.]+)/g)
+        ];
+        if (matches.length > 0) {
+          const op = Number(matches[matches.length - 1][1]);
+          if (Number.isFinite(op) && op > 0) return op;
+        }
       }
     }
 
@@ -1861,7 +1862,7 @@
   async function fetchPolymarketPriceToBeat(slug) {
     if (!slug) return null;
     const cached = _poly5mPriceToBeatCache[slug];
-    if (cached && (cached.value != null || Date.now() - cached.fetchedAt < 3_000)) return cached.value;
+    if (cached && (cached.value != null || Date.now() - cached.fetchedAt < 500)) return cached.value;
     try {
       const html = await textFetch(`https://polymarket.com/event/${encodeURIComponent(slug)}`, {
         headers: {
@@ -1887,7 +1888,7 @@
     const nowSec = Math.floor(Date.now() / 1000);
     const windowTs = nowSec - (nowSec % 300);
     const cached = _poly5mCache[sym];
-    if (cached && cached.windowTs === windowTs && Date.now() - cached.fetchedAt < 15_000) {
+    if (cached && cached.windowTs === windowTs && Date.now() - cached.fetchedAt < (cached.data?.priceToBeatNum != null ? 15_000 : 1_000)) {
       const c = cached.data;
       if (c && Number.isFinite(c.priceToBeatNum) && c.priceToBeatNum > 0) {
         return c;
@@ -1977,9 +1978,7 @@
           fetchPolymarketRtdsSnapshot(sym, startMs).catch(() => null),
         ]);
 
-        // PTB resolution: ONLY from Polymarket sources of truth (gamma, scrape, title, locked).
-        // Never use live/realtime price (pyth or current chainlink) as the PTB for a window.
-        // The boundary snapshot (locked at exact open) or event page scrape is the authority.
+        // PTB resolution: prefer canonical value from Polymarket event page or locked boundary
         const isImmediateNext = ts === windowTs + 300;
         const shouldResolvePTB = !isFuture || isImmediateNext;
 
@@ -2012,16 +2011,6 @@
           }
         }
 
-        // A five-minute contract is unavailable until its exact Polymarket
-        // benchmark exists. But we can queue/expose future candidates without a PTB yet.
-        // Also, do NOT discard the current active window (ts === windowTs) if the PTB is not yet loaded;
-        // we want to pull/promote it immediately.
-        if (priceToBeatNum == null && !isFuture && ts !== windowTs) return null;
-
-        if (ts === windowTs || isImmediateNext || priceToBeatNum != null) {
-          console.log(`[Poly5M-PTB] ${sym} ${marketSlug} → $${priceToBeatNum ?? 'pending'} (source: ${priceToBeatSource ?? 'waiting-for-open'}) [exact-contract]`);
-        }
-
         let chainlinkCurrentPriceNum = toPositiveFiniteNumber(cryptoWindow?.closePrice);
         let chainlinkCurrentPriceTs = toPositiveFiniteNumber(cryptoWindow?.timestamp);
         if (chainlinkCurrentPriceNum == null) {
@@ -2032,6 +2021,23 @@
         const currentPriceNum = pythCurrent?.price ?? chainlinkCurrentPriceNum;
         const currentPriceTs = pythCurrent?.timestamp ?? chainlinkCurrentPriceTs;
         const currentPriceSource = pythCurrent?.source || 'polymarket-chainlink';
+
+        // Fast-path: Expedite PTB using Pyth/Chainlink spot at boundary if event page scrape is still pending
+        if (priceToBeatNum == null && (ts === windowTs || isImmediateNext)) {
+          const spotBoundary = pythCurrent?.price ?? chainlinkCurrentPriceNum ?? toPositiveFiniteNumber(cryptoWindow?.openPrice);
+          if (spotBoundary != null) {
+            priceToBeatNum = spotBoundary;
+            priceToBeatSource = isImmediateNext ? 'pyth-boundary-preview' : 'pyth-boundary-open';
+          }
+        }
+
+        // A five-minute contract is unavailable until its benchmark exists.
+        if (priceToBeatNum == null && !isFuture && ts !== windowTs) return null;
+
+        if (ts === windowTs || isImmediateNext || priceToBeatNum != null) {
+          console.log(`[Poly5M-PTB] ${sym} ${marketSlug} → $${priceToBeatNum ?? 'pending'} (source: ${priceToBeatSource ?? 'waiting-for-open'}) [exact-contract]`);
+        }
+
         const oracleBasisNum = pythCurrent && chainlinkCurrentPriceNum != null
           ? pythCurrent.price - chainlinkCurrentPriceNum
           : null;
@@ -2719,6 +2725,10 @@ function polymarketSentiment(markets, sym) {
       _selectLatestChainlinkTick,
       _selectOpeningChainlinkTick,
     };
+  }
+
+  if (typeof window !== 'undefined' && window.PredictionMarkets && typeof window.PredictionMarkets.start === 'function') {
+    try { window.PredictionMarkets.start(); } catch (_) {}
   }
 
 })();

@@ -459,7 +459,6 @@ function resolveCoinGeckoPublicConfig() {
 
   // ONLY use the newest Pyth key (PYTH_NEW / PYTH_API) for all realtime feeds
   const pythSecret = readPythLazerSecret();
-  const pythKey = pythSecret.value || readEnvValue(['PYTH_NEW', 'PYTH_API', 'PYTH_NEW_API', 'LAZER_TOKEN']);
   const pythKey = pythSecret.value || readEnvValue(['PYTH_NEW', 'PYTH_API', 'PYTH_NEW_API', 'PYTH_LAZER_TOKEN', 'PYTH_API_KEY', 'LAZER_TOKEN']);
   if (pythKey) {
     out.PYTH_NEW = pythKey;
@@ -677,8 +676,6 @@ let latestPythLazerTickers = {};
 let pythRestPoller = null;
 let proxyHealthy = false;
 let webServiceHealth = { started: false, mode: 'stopped', protocol: 'http', port: 3443 };
-const LAZER_FEED_IDS = [1, 2, 6, 10, 13, 14, 15]; // BTC(1), ETH(2), SOL(6), DOGE(10), XRP(14), BNB(15) + possible 13
-const LAZER_ID_MAP = { 1: 'BTCUSD', 2: 'ETHUSD', 6: 'SOLUSD', 10: 'DOGEUSD', 13: 'DOGE13', 14: 'XRPUSD', 15: 'BNBUSD' };
 // NOTE: feed 10 (DOGE spot) is deliberately excluded. The configured PYTH_LAZER_TOKEN's grants
 // do not include it — the server rejects it with "Not entitled: feed 10 (no grant accepts this
 // feed (asset type 'crypto', instrument type 'spot'))". Because both the REST /v1/latest_price
@@ -782,15 +779,6 @@ async function startPythLazerService(win) {
     }
   }
   if (!token) {
-    token = readEnvValue(['PYTH_NEW', 'PYTH_API', 'PYTH_NEW_API', 'LAZER_TOKEN']);
-  if (!token) {
-    const s = readPythLazerSecret ? readPythLazerSecret() : { value: '' };
-    if (s.value) {
-      token = s.value;
-      console.log(`[PythLazer] Loaded key via readPythLazerSecret from ${s.path}`);
-    }
-  }
-  if (!token) {
     token = readEnvValue(['PYTH_NEW', 'PYTH_API', 'PYTH_NEW_API', 'PYTH_LAZER_TOKEN', 'PYTH_API_KEY', 'LAZER_TOKEN']);
   }
   if (!token) {
@@ -886,15 +874,6 @@ async function startPythLazerService(win) {
       let payload = JSON.stringify({ ...basePayload, priceFeedIds: LAZER_FEED_IDS });
       for (const b of bases) {
         try {
-          const r = await fetch(`${b}/v1/latest_price`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: payload,
-          });
-          console.log('[PythLazer] proxy numeric try', b, 'status', r.status);
-          if (r.ok) {
-            const j = await r.json();
-            pfeeds = j?.parsed?.priceFeeds || [];
           const r = await fetch(buildProxyLatestPriceUrl(b, LAZER_FEED_IDS));
           console.log('[PythLazer] proxy numeric try', b, 'status', r.status);
           if (r.ok) {
@@ -913,44 +892,21 @@ async function startPythLazerService(win) {
           });
           console.log('[PythLazer] direct numeric status', r.status);
           if (r.ok) {
-            pfeeds = (await r.json())?.parsed?.priceFeeds || [];
             pfeeds = extractLazerPriceFeeds(await r.json());
             if (pfeeds.length) console.log('[PythLazer] got feeds via direct numeric');
           }
         } catch (e) { console.log('[PythLazer] direct numeric err', e.message); }
       }
       // Fallback to symbols if no feeds
-      if (!pfeeds.length) {
-        payload = JSON.stringify({ ...basePayload, symbols });
-        for (const b of bases) {
-          try {
-            const r = await fetch(`${b}/v1/latest_price`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: payload,
-            });
-            if (r.ok) {
-              const j = await r.json();
-              pfeeds = j?.parsed?.priceFeeds || [];
-              if (pfeeds.length) { console.log('[PythLazer] got feeds via proxy symbols'); break; }
-            }
-          } catch (_) {}
-        }
-        if (!pfeeds.length && token) {
-        // NOTE: the proxy fallbacks only support the numeric `price_feed_ids` GET contract, not
-        // symbol lookups, so this loop over `bases` is intentionally omitted here — it always
-        // returned 400/405 previously. Go straight to the authenticated direct endpoint instead.
-        if (token) {
-          try {
-            const r = await fetch('https://pyth-lazer.dourolabs.app/v1/latest_price', {
-              method: 'POST',
-              headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-              body: payload,
-            });
-            if (r.ok) pfeeds = (await r.json())?.parsed?.priceFeeds || [];
-            if (r.ok) pfeeds = extractLazerPriceFeeds(await r.json());
-          } catch (_) {}
-        }
+      if (!pfeeds.length && token) {
+        try {
+          const r = await fetch('https://pyth-lazer.dourolabs.app/v1/latest_price', {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+            body: payload,
+          });
+          if (r.ok) pfeeds = extractLazerPriceFeeds(await r.json());
+        } catch (_) {}
       }
       if (pfeeds.length) {
         const now0 = Date.now();
@@ -1071,14 +1027,6 @@ async function startPythLazerService(win) {
           let payload = JSON.stringify({ ...basePayload, priceFeedIds: LAZER_FEED_IDS });
           for (const base of proxyBases) {
             try {
-              const r = await fetch(`${base}/v1/latest_price`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: payload,
-              });
-              if (r.ok) {
-                const j = await r.json();
-                pfeeds = j?.parsed?.priceFeeds || [];
               const r = await fetch(buildProxyLatestPriceUrl(base, LAZER_FEED_IDS));
               if (r.ok) {
                 const j = await r.json();
@@ -1165,16 +1113,6 @@ async function startPythLazerService(win) {
             } catch (_) {}
           }
 
-          if (pfeeds.length) {
-
-                pfeeds = extractLazerPriceFeeds(j);
-              }
-            } catch (_) {}
-          }
-          // NOTE: the proxy fallbacks only support the numeric `price_feed_ids` GET contract, not
-          // symbol lookups (confirmed: they always return 400 "missing field `price_feed_ids`" for
-          // symbol-keyed requests), so there is no further symbols-based fallback here — the
-          // numeric + direct-authenticated attempts above are the only viable paths.
           if (pfeeds.length) {
             const nowP = Date.now();
             const pmap = {};
@@ -2043,15 +1981,6 @@ function refreshPythFromProxy() {
       // try unauth proxies first (like getProxyLatest)
       for (const proxyBase of proxies) {
         try {
-          const url = `${proxyBase}/v1/latest_price`;
-          const response = await fetch(url, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: payload,
-          });
-          if (response.ok) {
-            const data = await response.json();
-            prices = (data.parsed?.priceFeeds || []).map(f => ({
           const url = buildProxyLatestPriceUrl(proxyBase, LAZER_FEED_IDS);
           const response = await fetch(url);
           if (response.ok) {
@@ -2078,7 +2007,6 @@ function refreshPythFromProxy() {
           });
           if (response.ok) {
             const data = await response.json();
-            prices = (data.parsed?.priceFeeds || []).map(f => ({
             prices = extractLazerPriceFeeds(data).map(f => ({
               instrument_name: LAZER_ID_MAP ? LAZER_ID_MAP[f.priceFeedId] : f.priceFeedId,
               last: Number(f.price) * Math.pow(10, f.exponent ?? -8),
@@ -3696,6 +3624,17 @@ ipcMain.handle('llm:getDiagnostics', async () => {
     return { success: true, diagnostics: LLMSignalAssistant.getDiagnostics() };
   } catch (error) {
     return { success: false, error: error.message || 'LLM diagnostics failed' };
+  }
+});
+
+ipcMain.handle('llm:getQueryHistory', async (_event, limit = 50) => {
+  if (!LLMSignalAssistant || typeof LLMSignalAssistant.getQueryHistory !== 'function') {
+    return { success: false, queries: [], error: 'LLM query history unavailable' };
+  }
+  try {
+    return { success: true, queries: LLMSignalAssistant.getQueryHistory(limit) };
+  } catch (error) {
+    return { success: false, queries: [], error: error.message || 'Failed to fetch query history' };
   }
 });
 

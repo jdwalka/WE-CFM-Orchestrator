@@ -440,6 +440,15 @@ function _obsBuildMetrics() {
       .sort((a, b) => (b.maxDrawdown - a.maxDrawdown) || (b.maxLossStreak - a.maxLossStreak))
       .slice(0, 10);
 
+    const llmDiag = window.LLMSignalAssistant?.getDiagnostics?.() || {};
+    const llmQueries = llmDiag.observability || {
+      totalQueries: 0,
+      recentQueries: [],
+      lastQuery: null,
+      byProvider: {},
+      byModel: {},
+    };
+
     const out = {
       sampleCount: eventsSorted.length,
       regimeRows,
@@ -450,6 +459,7 @@ function _obsBuildMetrics() {
         summary: networkSummary,
         recent: recentNetwork,
       },
+      llmQueries,
       attributionRows,
       sourceContribution,
       drawdownRows,
