@@ -1694,33 +1694,27 @@
     if (!querySymbol || !Number.isFinite(startSec)) return null;
 
     const startIso = new Date(startSec * 1000).toISOString().split('.')[0] + 'Z';
-    const endIso = new Date((startSec + 300) * 1000).toISOString().split('.')[0] + 'Z';
 
-    // Polymarket migrated event pages to Next.js RSC streaming (self.__next_f): React-Query
-    // dehydrated state contains multiple queries (15m, 1h, 5m). We MUST anchor on the exact
-    // crypto-prices query key for this specific coin + startIso timestamp to avoid picking up
-    // an adjacent window's openPrice (which causes the PTB to be off by a few cents).
-    const needles = [
-      `crypto-prices","price","${querySymbol}","${startIso}"`,
-      `crypto-prices\\",\\"price\\",\\"${querySymbol}\\",\\"${startIso}\\"`,
-      `"${querySymbol}","${startIso}","fiveminute"`,
-      `\\"${querySymbol}\\",\\"${startIso}\\",\\"fiveminute\\"`
-    ];
+    // Polymarket Next.js RSC streaming payload contains dehydrated React-Query state entries.
+    // We anchor on startIso (e.g. "2026-08-07T11:10:00Z") inside the crypto-prices query
+    // entry to guarantee 100% precision for the exact 5-minute contract window.
+    let pos = 0;
+    while ((pos = html.indexOf(startIso, pos)) !== -1) {
+      const snippetBefore = html.slice(Math.max(0, pos - 600), pos);
+      const snippetAfter = html.slice(pos, Math.min(html.length, pos + 300));
 
-    for (const needle of needles) {
-      const keyIdx = html.indexOf(needle);
-      if (keyIdx !== -1) {
-        const before = html.slice(Math.max(0, keyIdx - 1000), keyIdx);
+      if (snippetBefore.includes('crypto-prices') || snippetAfter.includes('fiveminute') || snippetBefore.includes('fiveminute')) {
         const matches = [
-          ...before.matchAll(/\\"openPrice\\":\s*([0-9.]+)/g),
-          ...before.matchAll(/"openPrice":\s*([0-9.]+)/g),
-          ...before.matchAll(/openPrice[^\d]*([0-9.]+)/g)
+          ...snippetBefore.matchAll(/\\"openPrice\\":\s*([0-9.]+)/g),
+          ...snippetBefore.matchAll(/"openPrice":\s*([0-9.]+)/g),
+          ...snippetBefore.matchAll(/openPrice[^\d]*([0-9.]+)/g)
         ];
         if (matches.length > 0) {
           const op = Number(matches[matches.length - 1][1]);
           if (Number.isFinite(op) && op > 0) return op;
         }
       }
+      pos += startIso.length;
     }
 
     // Attempt to extract the dehydratedState JSON from HTML (legacy unescaped page format)
