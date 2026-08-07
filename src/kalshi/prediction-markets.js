@@ -1622,9 +1622,12 @@
     if (!slug || price == null || !POLY5M_PTB_TRUSTED_SOURCES.has(source)) return null;
     const existing = _poly5mPriceToBeatLocks.get(slug);
     if (existing) {
-      // PTB locks are strictly immutable once set for a contract slug.
-      // Never allow mid-contract changes from any source to avoid shifting goalposts.
-      return existing;
+      // Allow exact Polymarket HTML openPrice to upgrade a provisional pyth/chainlink boundary lock
+      const isUpgradeFromProvisional = source === 'polymarket-event-page' && existing.source !== 'polymarket-event-page';
+      if (!isUpgradeFromProvisional) {
+        return existing;
+      }
+      console.info(`[Poly5M-PTB] Upgrading PTB lock for ${slug} from ${existing.source} ($${existing.price}) to exact Polymarket HTML value $${price}`);
     }
     const locked = Object.freeze({
       version: POLY5M_PTB_LOCK_VERSION,
@@ -1967,11 +1970,23 @@
         const shouldResolvePTB = !isFuture || isImmediateNext;
 
         if (shouldResolvePTB) {
-          // Check if an immutable lock already exists for this exact contract slug FIRST
+          // Check if a lock already exists for this exact contract slug FIRST
           const existingLock = _getPolymarketPriceToBeatLock(marketSlug);
           if (existingLock) {
             priceToBeatNum = existingLock.price;
             priceToBeatSource = existingLock.source;
+            // If lock was provisional (e.g. pyth-boundary-open), attempt to upgrade with exact Polymarket HTML value
+            if (existingLock.source !== 'polymarket-event-page') {
+              let scraped = null;
+              try { scraped = await fetchPolymarketPriceToBeat(marketSlug); } catch (_) {}
+              if (Number.isFinite(scraped) && scraped > 0) {
+                const upgraded = _lockPolymarketPriceToBeat(marketSlug, scraped, 'polymarket-event-page');
+                if (upgraded) {
+                  priceToBeatNum = upgraded.price;
+                  priceToBeatSource = upgraded.source;
+                }
+              }
+            }
           } else {
             // Only if no lock exists yet, scrape the canonical value from Polymarket
             let scraped = null;
