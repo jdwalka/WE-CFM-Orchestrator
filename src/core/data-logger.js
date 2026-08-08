@@ -70,6 +70,8 @@
   function isPreferredGoogleDriveRoot(root) {
     // Treat any cloud drive (Google Drive, OneDrive) as preferred so it's included in discovery
     return isGoogleDriveRoot(root);
+  }
+
   function resolveLocalSpoolRoot() {
     const localAppData = normalizeRoot(window.desktopApp?.userEnv?.localAppData);
     return localAppData

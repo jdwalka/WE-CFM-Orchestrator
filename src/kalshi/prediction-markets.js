@@ -175,6 +175,17 @@
     return res.text();
   }
 
+  async function jsonFetch(url, opts = {}) {
+    const requestOpts = { ...opts, headers: { Accept: 'application/json', ...opts.headers } };
+    const text = await textFetch(url, requestOpts);
+    try {
+      return JSON.parse(text);
+    } catch (e) {
+      const snippet = String(text || '').slice(0, 200);
+      throw new Error(`jsonFetch: invalid JSON from ${url}: ${e?.message || e} — body: ${snippet}`);
+    }
+  }
+
   // ---- Rate-limit-aware Kalshi fetch helper --------------------------
   // Routes through ProxyOrchestrator for:
   //   - Per-endpoint rate limiting
