@@ -34,6 +34,22 @@
     return String(root || '').replace(/[\\/]+$/, '');
   }
 
+  // Dedupes a list of drive/mirror root paths (case-insensitive — Windows
+  // paths — and normalized), preserving first-occurrence order.
+  function uniquePaths(paths) {
+    const seen = new Set();
+    const result = [];
+    for (const p of paths || []) {
+      const normalized = normalizeRoot(p);
+      if (!normalized) continue;
+      const key = normalized.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      result.push(normalized);
+    }
+    return result;
+  }
+
   function localRootLetter() {
     const match = String(LOCAL_ROOT || '').match(/^([A-Za-z]):\\/);
     return match ? match[1].toUpperCase() : '';
@@ -137,6 +153,31 @@
 
   async function runDriveDiscovery() {
     try {
+      // Establish a reliable local write target FIRST, decoupled from the
+      // slower/optional multi-drive + Google Drive cascade below. Previously
+      // _storage.ready/writableRoots were only ever set once that whole
+      // cascade found at least one writable candidate — if every candidate
+      // (a G: drive, either Google Drive mount, etc.) happened to be
+      // unmounted or unwritable on the very first pass, it bailed out early
+      // and NOTHING was ever marked ready, including the local spool path,
+      // blocking every export/log write until the next 5-minute re-probe.
+      // The local spool root is always computable and almost always
+      // writable, so probe it first and unblock writes immediately;
+      // everything below only ever ADDS more mirror targets on top.
+      const earlyLocalRoot = resolveLocalSpoolRoot();
+      const earlyProbe = await probeStorageRoot(earlyLocalRoot).catch((e) => ({ ok: false, error: e?.message }));
+      if (earlyProbe.ok) {
+        LOCAL_ROOT = earlyLocalRoot;
+        _storage.ready = true;
+        _storage.discoveredAt = Date.now();
+        _storage.writableRoots = uniquePaths([LOCAL_ROOT, ...DRIVE_PATHS]);
+        _stats.session.storageReady = true;
+        _stats.session.storageRoots = _storage.writableRoots.length;
+        _stats.session.lastStorageDiscovery = _storage.discoveredAt;
+      } else {
+        console.warn('[DataLogger] early local spool probe failed:', earlyProbe.error || earlyProbe.code || 'unknown');
+      }
+
       const drives = window.desktopApp?.getDrives ? await window.desktopApp.getDrives() : [];
       const googleStatus = window.desktopApp?.getGoogleDriveTargets
         ? await window.desktopApp.getGoogleDriveTargets({ force: true }).catch(() => null)
@@ -208,19 +249,23 @@
       }
 
       const googleProbes = await Promise.all(GOOGLE_DRIVE_ROOTS.map(probeStorageRoot));
-      DRIVE_PATHS = googleProbes.filter(result => result.ok).map(result => result.root);
+      const googleWritable = googleProbes.filter(result => result.ok).map(result => result.root);
+      // Merge with whatever the broader multi-drive pass above already found
+      // (G:, network, cloud mirrors) instead of replacing it — both Google
+      // Drive mounts are additional mirrors, not the only mirrors.
+      DRIVE_PATHS = uniquePaths([...DRIVE_PATHS, ...googleWritable]);
       _storage.ready = true;
       _storage.discoveredAt = Date.now();
       _storage.googleRoots = [...GOOGLE_DRIVE_ROOTS];
-      _storage.googleTargets = [...DRIVE_PATHS];
-      _storage.writableRoots = [LOCAL_ROOT, ...DRIVE_PATHS];
+      _storage.googleTargets = uniquePaths(googleWritable);
+      _storage.writableRoots = uniquePaths([LOCAL_ROOT, ...DRIVE_PATHS]);
       _storage.failedRoots = googleProbes.filter(result => !result.ok);
       _stats.session.storageReady = true;
       _stats.session.storageRoots = 1 + DRIVE_PATHS.length;
       _stats.session.lastStorageDiscovery = Date.now();
 
       console.log('[DataLogger] local spool:', LOCAL_ROOT);
-      console.log('[DataLogger] writable Google My Drive targets:', DRIVE_PATHS.join(' | ') || 'none');
+      console.log('[DataLogger] writable mirror targets:', DRIVE_PATHS.join(' | ') || 'none');
       if (_storage.failedRoots.length) {
         console.warn('[DataLogger] unavailable Google My Drive targets:', _storage.failedRoots.map(result => `${result.root}: ${result.error || result.code || 'probe failed'}`).join(' | '));
       }
