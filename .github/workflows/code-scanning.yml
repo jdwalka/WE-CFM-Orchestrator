@@ -1,0 +1,38 @@
+name: "Code Scanning"
+
+on:
+  push:
+    branches: [ "main", "master", "feat/**" ]
+  pull_request:
+    branches: [ "main", "master" ]
+  schedule:
+    - cron: '31 7 * * 3'
+  workflow_dispatch:
+
+jobs:
+  code-scanning:
+    name: Security & Vulnerability Scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run Trivy Vulnerability & Security Scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          ignore-unfixed: true
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH'
+
+      - name: Upload Security Scan Results to GitHub Code Scanning
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
+          category: 'trivy-security-scan'
