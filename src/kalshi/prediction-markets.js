@@ -832,32 +832,15 @@
         break;
       }
       const sym = coins[i];
-      const series5m = KALSHI_5M_SERIES[sym] || null;
 
-      // 1. Try dedicated 5M series (e.g. KXBTC5M)
-      let data = series5m ? await fetchKalshiSeriesForSym(series5m, {
-        suppressWarnings: true,
-        bucketMs: BUCKET_MS_5M,
-        minTradableMs: MIN_TRADABLE_MS_5M,
-        strictQuarterHour: false,
-      }) : null;
-
-      // 2. Fallback: use strict 15M quarter-hour contract as 5M proxy
-      // Skip if we just got empty success for 5m or are rate-limited
-      if (!data && _rateLimitUntil <= Date.now()) {
-        const baseSeries = KALSHI_15M_SERIES[sym];
-        const d = await kalshiFetch(`${KALSHI_BASE}/markets?series_ticker=${baseSeries}&status=open&limit=${KALSHI_MARKET_LIMIT}`);
-        const m = selectKalshiContract(d?.markets || [], {
-          nowMs: Date.now(),
-          bucketMs: BUCKET_MS_15M,
-          minTradableMs: MIN_TRADABLE_MS_15M_PROXY,
-          strictQuarterHour: true,
-        });
-        if (m) {
-          data = buildKalshiContractData(m, { _proxy15m: true });
-        }
-      }
-      result[sym] = data;
+      // Kalshi has no 5-minute crypto series. Verified against their API: KXBTC5M and
+      // KXETH5M return 404 not_found, while KXBTC15M / KXETH15M return 200. The old
+      // code queried the 5M tickers on every refresh (guaranteed 404s) and then, when
+      // that failed, substituted the strict 15M quarter-hour contract as a "5M proxy" —
+      // presenting a 15-minute market as a 5-minute one. That is the same substitute-a
+      // -plausible-value mistake that made the price-to-beat wrong for months.
+      // There is no 5m Kalshi market, so report none.
+      result[sym] = null;
       if (i < coins.length - 1 && gapMs() > 0) {
         await new Promise(r => setTimeout(r, gapMs()));
       }
@@ -1620,14 +1603,15 @@
   // the bad values already persisted in localStorage under the v7 key.
   const POLY5M_PTB_LOCK_VERSION = 8;
   const POLY5M_PTB_TRUSTED_SOURCES = new Set([
-    'chainlink-onchain-boundary',
     'polymarket-event-page',
     'gamma-market',
     'gamma-event-metadata',
     'gamma-price-to-beat',
     'gamma-market-metadata',
     'gamma-market-field',
-    'polymarket-title',
+    // 'polymarket-title' removed: it regex-scrapes a $ figure out of the market title,
+    // which is a rounded strike, not the contract open (observed $625 for BNB, $38 for
+    // HYPE). A rounded number that looks plausible is worse than no number at all.
   ]);
 
   function _formatPolyPriceToBeat(value, symbol = '') {
@@ -1636,150 +1620,6 @@
     if (n >= 1000) return `$${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
     if (n >= 1) return `$${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 })}`;
     return `$${n.toLocaleString(undefined, { minimumFractionDigits: 4, maximumFractionDigits: 8 })}`;
-  }
-
-  // ── Chainlink on-chain price at the 5m boundary ─────────────────────────────
-  // These markets settle on the Chainlink BTC/USD (etc.) TWAP-30s Data Stream, which
-  // is credential-gated. The on-chain aggregator on Polygon is the same oracle family
-  // and is free to read; measured against a live Polymarket PTB it lands within ~$0.55
-  // versus ~$3 (ETH) / ~$50 (BTC) for the hourly crypto-price feed that used to be used.
-  // It is an approximation of the settlement benchmark, NOT the benchmark itself —
-  // labelled distinctly so it is never mistaken for an exact contract value.
-  // Addresses verified live against expected price ranges before being hard-coded.
-  const POLY5M_CHAINLINK_FEEDS = {
-    BTC: '0xc907E116054Ad103354f2D350FD2514433D57F6f',
-    ETH: '0xF9680D99D6C9589e2a93a78A04A279e509205945',
-    SOL: '0x10C8264C0935b3B9870013e057f330Ff3e9C56dC',
-    XRP: '0x785ba89291f676b5386652eB12b30cF361020694',
-    DOGE: '0xbaf9327b6564454F4a3364C33eFeEf032b4b4444',
-    BNB: '0x82a6c4AF830caa6c97bb504425f6A66165C2c26e',
-    // HYPE deliberately absent: no Chainlink feed on Polygon. Falls through to pending.
-  };
-  // Public Polygon RPCs rate-limit quickly (observed: 1rpc.io returns -32001 "usage
-  // limit" under modest polling), which would silently drop the PTB. Prefer the
-  // project's Alchemy key -- same resolution order as src/feeds/blockchain-scan.js --
-  // and keep the public endpoints only as last-resort fallbacks.
-  const POLY5M_PUBLIC_POLYGON_RPCS = [
-    'https://polygon-bor-rpc.publicnode.com',
-    'https://1rpc.io/matic',
-    'https://polygon.llamarpc.com',
-  ];
-  let _polygonRpcListPromise = null;
-
-  async function _poly5mPolygonRpcs() {
-    if (_polygonRpcListPromise) return _polygonRpcListPromise;
-    _polygonRpcListPromise = (async () => {
-      let key = null;
-      try {
-        key = (typeof process !== 'undefined' && process.env && process.env.ALCHEMY_API_KEY) || null;
-      } catch (e) { /* no process in renderer */ }
-      if (!key && window.electron?.readFile) {
-        try {
-          const txt = await window.electron.readFile('secrets/ALCHEMY-API-KEY.txt');
-          if (txt) key = String(txt).trim();
-        } catch (e) { /* fall through to public RPCs */ }
-      }
-      return key
-        ? [`https://polygon-mainnet.g.alchemy.com/v2/${key}`, ...POLY5M_PUBLIC_POLYGON_RPCS]
-        : POLY5M_PUBLIC_POLYGON_RPCS.slice();
-    })();
-    return _polygonRpcListPromise;
-  }
-  const _chainlinkDecimals = new Map();
-  const _chainlinkBoundaryCache = new Map(); // `${sym}:${boundarySec}` -> price
-
-  async function _polygonEthCall(to, data) {
-    let lastErr = null;
-    for (const rpc of await _poly5mPolygonRpcs()) {
-      try {
-        const res = await jsonFetch(rpc, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_call', params: [{ to, data }, 'latest'] }),
-        });
-        if (res?.error) throw new Error(JSON.stringify(res.error).slice(0, 120));
-        if (typeof res?.result === 'string') return res.result;
-        throw new Error('no result');
-      } catch (err) {
-        lastErr = err;
-      }
-    }
-    throw lastErr || new Error('all Polygon RPCs failed');
-  }
-
-  const _clWord = (hex, i) => BigInt('0x' + String(hex).replace(/^0x/, '').slice(i * 64, (i + 1) * 64));
-
-  async function _chainlinkFeedDecimals(addr) {
-    if (_chainlinkDecimals.has(addr)) return _chainlinkDecimals.get(addr);
-    const dec = Number(_clWord(await _polygonEthCall(addr, '0x313ce567'), 0));
-    const safe = Number.isFinite(dec) && dec > 0 && dec <= 30 ? dec : 8;
-    _chainlinkDecimals.set(addr, safe);
-    return safe;
-  }
-
-  // Last round whose updatedAt is at or before the window boundary — i.e. the price
-  // the oracle was reporting when the window opened.
-  async function _chainlinkPriceAtBoundary(sym, boundarySec) {
-    const addr = POLY5M_CHAINLINK_FEEDS[String(sym).toUpperCase()];
-    if (!addr || !Number.isFinite(boundarySec)) return null;
-    // A window that has not opened yet has no boundary price. Without this guard the
-    // latest round trivially satisfies updatedAt <= boundary and we would lock the
-    // current price minutes early, then hold it immutably — the exact premature-lock
-    // drift this whole path exists to avoid. Let it stay pending until the window opens.
-    if (boundarySec > Math.floor(Date.now() / 1000)) return null;
-    const cacheKey = `${sym}:${boundarySec}`;
-    if (_chainlinkBoundaryCache.has(cacheKey)) return _chainlinkBoundaryCache.get(cacheKey);
-
-    try {
-      const decimals = await _chainlinkFeedDecimals(addr);
-      const latest = await _polygonEthCall(addr, '0xfeaf968c');
-      const latestId = _clWord(latest, 0);
-      const phase = latestId >> 64n;
-      const agg = latestId & ((1n << 64n) - 1n);
-
-      const toPrice = (raw) => Number(_clWord(raw, 1)) / 10 ** decimals;
-      let after = null; // earliest round strictly after the boundary
-      let before = null; // latest round at or before the boundary
-
-      let updatedAt = Number(_clWord(latest, 3));
-      if (updatedAt > boundarySec) after = { price: toPrice(latest), t: updatedAt };
-      else before = { price: toPrice(latest), t: updatedAt };
-
-      // Walk back one round at a time until we bracket the boundary.
-      for (let i = 1; i <= 24 && !before; i++) {
-        if (agg - BigInt(i) <= 0n) return null;
-        const id = (phase << 64n) | (agg - BigInt(i));
-        const raw = await _polygonEthCall(addr, '0x9a6fc8f5' + id.toString(16).padStart(64, '0'));
-        const t = Number(_clWord(raw, 3));
-        if (t > boundarySec) after = { price: toPrice(raw), t };
-        else before = { price: toPrice(raw), t };
-      }
-      if (!before) return null;
-
-      // The feed only publishes on deviation/heartbeat (~33s), so the last round
-      // before the boundary can be badly stale and lags a trending price -- that is
-      // the systematic error (a few cents when fresh, ~a dime when 30s stale).
-      // Interpolating between the rounds either side estimates the value AT the
-      // boundary instant and removes the lag bias.
-      let price = before.price;
-      if (after && after.t > before.t) {
-        const f = (boundarySec - before.t) / (after.t - before.t);
-        price = before.price + (after.price - before.price) * f;
-      } else if (Math.floor(Date.now() / 1000) - boundarySec < 120) {
-        // No bracketing round yet. The PTB must be locked exactly once and never
-        // move, so rather than lock the biased point read we stay pending briefly
-        // and let a later refresh lock the interpolated value. After 2 minutes with
-        // no further round we accept the point read rather than show nothing.
-        return null;
-      }
-
-      if (!Number.isFinite(price) || price <= 0) return null;
-      _chainlinkBoundaryCache.set(cacheKey, price);
-      return price;
-    } catch (err) {
-      console.warn(`[Poly5M-PTB] Chainlink boundary read failed for ${sym}@${boundarySec}:`, err?.message || err);
-      return null;
-    }
   }
 
   function _lockPolymarketPriceToBeat(slug, value, source) {
@@ -1871,8 +1711,17 @@
     // payload the shape is {"startTime":"...","endTime":"...","openPrice":N}, i.e.
     // openPrice follows the timestamp -- searching only the text before it missed it.
     // Try both timestamp formats and look on both sides of the anchor.
+    // CRITICAL: anchor on "startTime":"<iso>" and never the bare timestamp. Each entry
+    // is {"startTime":...,"endTime":...,"openPrice":N} and the PREVIOUS window's endTime
+    // is identical to this window's startTime, so a bare match can land on the previous
+    // entry and return its openPrice -- one window early, which is where the residual
+    // ~10c came from.
     const startIsoMs = new Date(startSec * 1000).toISOString(); // with .000Z
-    for (const anchor of [startIsoMs, startIso]) {
+    const anchors = [];
+    for (const iso of [startIsoMs, startIso]) {
+      anchors.push(`"startTime":"${iso}"`, `\\"startTime\\":\\"${iso}\\"`);
+    }
+    for (const anchor of anchors) {
       let pos = 0;
       while ((pos = html.indexOf(anchor, pos)) !== -1) {
         const before = html.slice(Math.max(0, pos - 600), pos);
@@ -2066,13 +1915,10 @@
           console.warn(`[Poly5M-PTB] Polymarket openPrice lookup failed for ${slug}:`, e?.message || e);
         }
 
-        // FALLBACK: Chainlink on-chain price as of the window boundary.
-        const clPtb = await _chainlinkPriceAtBoundary(sym, startSec);
-        if (clPtb != null && clPtb > 0) {
-          _lockPolymarketPriceToBeat(slug, clPtb, 'chainlink-onchain-boundary');
-          _poly5mPriceToBeatCache[slug] = { value: clPtb, fetchedAt: Date.now() };
-          return clPtb;
-        }
+        // No oracle fallback by design. If Polymarket has not published openPrice then
+        // there is no tradeable contract to price, so any substitute value would be a
+        // number for a market that does not exist -- which is how every previous wrong
+        // PTB got shown. Stay pending until Polymarket publishes.
       }
     }
 
@@ -2245,15 +2091,9 @@
         if (priceToBeatNum == null && !isFuture && ts !== windowTs) return null;
 
         if (ts === windowTs || isImmediateNext || priceToBeatNum != null) {
-          // Only canonical Polymarket-published values are the contract benchmark.
-          // The Chainlink on-chain read is a close approximation (~$0.2 on ETH) of the
-          // TWAP-30s stream these markets actually settle on, and must say so — a
-          // mislabelled approximation is what got traded on before.
-          const ptbFidelity = priceToBeatNum == null
-            ? 'pending'
-            : priceToBeatSource === 'chainlink-onchain-boundary'
-              ? 'oracle-approx'
-              : 'exact-contract';
+          // Every accepted source is now a Polymarket-published contract value, so
+          // anything that locks is exact by definition. Nothing else may lock.
+          const ptbFidelity = priceToBeatNum == null ? 'pending' : 'exact-contract';
           console.log(`[Poly5M-PTB] ${sym} ${marketSlug} → $${priceToBeatNum ?? 'pending'} (source: ${priceToBeatSource ?? 'waiting-for-open'}) [${ptbFidelity}]`);
         }
 
