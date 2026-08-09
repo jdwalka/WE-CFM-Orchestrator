@@ -1026,10 +1026,17 @@ function renderMarkets5M() {
                parse or drift -- the text version could only ever lag or duplicate it. -->
           <div style="margin-top:8px;">
             <div style="background:var(--color-surface-2);border-radius:6px;padding:10px;">
+              <!-- liveactivity intentionally omitted: it drives a constant internal
+                   re-render inside a fixed-size iframe, fighting this page's own
+                   refresh cycle. It never fed the model either way -- the iframe is
+                   Polymarket's own cross-origin document, sandboxed and unreadable
+                   from here. The model already sees this window's odds/PTB/close time
+                   through pm[sym].poly5m (see _modelOdds5m above), sourced straight
+                   from prediction-markets.js, independent of what this widget shows. -->
               ${p5?.slug ? `
                 <iframe
                   title="${sym} Up or Down 5m — Polymarket"
-                  src="https://embed.polymarket.com/market?market=${encodeURIComponent(p5.slug)}&theme=dark&liveactivity=true&border=false&creator=JohnDaWalka&height=300"
+                  src="https://embed.polymarket.com/market?market=${encodeURIComponent(p5.slug)}&theme=dark&border=false&creator=JohnDaWalka&height=300"
                   style="width:100%;height:300px;border:0;border-radius:6px;display:block;"
                   frameborder="0"
                   allowtransparency="true"
