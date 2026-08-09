@@ -743,6 +743,16 @@ function configureCachePaths() {
     app.setPath('sessionData', sessionPath);
     app.commandLine.appendSwitch('disk-cache-dir', diskCacheDir);
     app.commandLine.appendSwitch('disable-gpu-shader-disk-cache');
+    // Disable Chromium's HTTP cache entirely rather than clearing it once at launch
+    // (an earlier fix did that). UI edits to locally-referenced scripts kept not
+    // showing up after a restart even though the files on disk were correct, because
+    // Chromium's network cache can persist across process restarts for file://
+    // subresource loads. A clear-on-launch works but wipes the whole cache and adds a
+    // round trip; this instead just stops caching going forward, with no effect on
+    // localStorage/IndexedDB -- the PTB locks, prediction history, and resolution logs
+    // this app actually persists live there, not in the HTTP cache, so there is no
+    // "cold start" for market data either way.
+    app.commandLine.appendSwitch('disable-http-cache');
 
     // V8 Optimizations for AMD Ryzen + Windows 11 Huge Pages (Fake Quant Box configuration) + WASM SIMD
     app.commandLine.appendSwitch('js-flags', '--use-largepages=on --max-old-space-size=8192 --no-lazy --turbo-fast-api-calls --experimental-wasm-simd');
@@ -3907,15 +3917,7 @@ function createWindow() {
     return { action: 'deny' };
   });
 
-  // Clear the disk cache before every launch. UI edits to src/core/ui/render-layer.js
-  // and other locally-referenced scripts were repeatedly not showing up after a
-  // restart even though the files on disk were correct -- Chromium's network cache
-  // can persist across process restarts for file:// subresource loads. This removes
-  // that entire class of "my change isn't showing up" confusion at the cost of one
-  // cache rebuild per launch, which is negligible for local files.
-  win.webContents.session.clearCache()
-    .catch((err) => console.warn('[Main] clearCache failed (continuing):', err?.message || err))
-    .finally(() => win.loadFile(path.join(__dirname, '../public/index.html')));
+  win.loadFile(path.join(__dirname, '../public/index.html'));
 
   win.webContents.on('console-message', (event, level, message, line, sourceId) => {
     const levelName = ['DEBUG', 'INFO', 'WARN', 'ERROR'][level] || 'LOG';
