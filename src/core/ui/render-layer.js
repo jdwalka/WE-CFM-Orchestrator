@@ -418,11 +418,32 @@ function updateMarkets5MLivePrices(prices) {
   window.updateMarkets5MLivePrices = updateMarkets5MLivePrices;
 
 function renderMarkets5M() {
-    if (_markets5mCountdown) { clearInterval(_markets5mCountdown); _markets5mCountdown = null; }
     const pm = window.PredictionMarkets?.getAll() || {};
+    const COINS_5M = ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'BNB', 'HYPE'];
+
+    // Throttle: refreshActiveView() (app-core.js) calls this on every debounced
+    // live price tick -- as often as every 250-900ms -- not just on an actual
+    // window rollover. A full innerHTML rebuild that often reads as "the whole
+    // panel keeps refreshing," even with the iframe-reuse fix in place, since
+    // every other element (text, colors, layout) still repaints each time. The
+    // underlying feeds do not change meaningfully faster than the HUD's own 2s
+    // sample rate, so skip the rebuild unless a window actually rolled over
+    // (fingerprint changed) or the panel was just freshly mounted (content still
+    // holds a different view's markup -- checked via the container's own
+    // dataset, which survives other views overwriting content.innerHTML).
+    const fingerprint = COINS_5M.map(s => `${s}:${pm[s]?.poly5m?.slug || ''}`).join('|');
+    const _now5m = Date.now();
+    const stillMounted = content?.dataset?.wecryptoView === 'markets5m';
+    if (stillMounted && fingerprint === window._markets5mLastFingerprint
+      && window._markets5mLastRenderTs && (_now5m - window._markets5mLastRenderTs) < 3000) {
+      return;
+    }
+    window._markets5mLastFingerprint = fingerprint;
+    window._markets5mLastRenderTs = _now5m;
+
+    if (_markets5mCountdown) { clearInterval(_markets5mCountdown); _markets5mCountdown = null; }
     const pred = window.PredictionEngine?.getAll() || {};
     const snipes = window.PredictionMarkets?.getSnipes?.() || [];
-    const COINS_5M = ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'BNB', 'HYPE'];
     const hasMarketData = Object.values(pm).some((coin) =>
       coin?.kalshi15m || coin?.poly != null || coin?.poly5m || coin?.kalshi5m
     );
@@ -505,6 +526,98 @@ function renderMarkets5M() {
         <div style="height:100%;width:${pct}%;background:${col};border-radius:2px;transition:width 0.4s;"></div>
       </div>`;
     }
+    // Micro-momentum / volume divergence / order book imbalance HUD content,
+    // floated on top of the embed. All three come from feeds already live in this
+    // app (window.OB, window.ExchangeWS) plus a small price ring buffer -- see
+    // src/core/ui/microstructure-hud.js. Returns only the inner content; the
+    // caller wraps it in a fixed-position, fixed-id container (p5hudwrap-${sym})
+    // so a lightweight refresh can replace just this innerHTML without touching
+    // the iframe or the rest of the panel.
+    function _renderMicroHudInner(sym) {
+      const snap = window.Microstructure?.getSnapshot?.(sym);
+      const mom = snap?.momentum;
+      const imb = snap?.imbalance;
+      const vd = snap?.volumeDivergence;
+      if (!mom && !imb && !vd) {
+        return `<div style="pointer-events:none;background:rgba(0,0,0,0.55);border-radius:4px;padding:4px 7px;font-size:9px;color:#9aa;">Microstructure warming up…</div>`;
+      }
+      const momPct = mom ? (mom.pct30 ?? mom.pct60) : null;
+      const momWindow = mom ? (mom.pct30 != null ? '30s' : '60s') : '';
+      const momColor = mom?.dir === 'UP' ? '#4ade80' : mom?.dir === 'DOWN' ? '#f87171' : '#9aa';
+      const momIcon = mom?.dir === 'UP' ? '▲' : mom?.dir === 'DOWN' ? '▼' : '–';
+      const momLine = mom && momPct != null
+        ? `${momIcon} ${(momPct * 100 >= 0 ? '+' : '')}${(momPct * 100).toFixed(2)}% <span style="opacity:.6">/${momWindow}</span>`
+        : `<span style="opacity:.6">warming up</span>`;
+
+      const imbBandLabel = { extreme_bid: 'extreme bid', strong_bid: 'strong bid', lean_bid: 'lean bid', balanced: 'balanced', lean_ask: 'lean ask', strong_ask: 'strong ask', extreme_ask: 'extreme ask' };
+      const imbColor = !imb?.band ? '#9aa' : imb.band.includes('bid') ? '#4ade80' : imb.band.includes('ask') ? '#f87171' : '#9aa';
+      const imbLine = imb?.band ? `OB ${imbBandLabel[imb.band] || imb.band}` : `<span style="opacity:.6">OB warming up</span>`;
+
+      const vdColor = vd?.label === 'BULLISH DIVERGENCE' ? '#4ade80' : vd?.label === 'BEARISH DIVERGENCE' ? '#f87171' : '#9aa';
+      const vdLine = vd ? `${vd.label === 'CONFIRMING' ? 'Vol confirming' : vd.label === 'NEUTRAL' ? 'Vol neutral' : vd.label.replace(' DIVERGENCE', ' diverg.')} (${Math.round(vd.buyPct)}% buy)` : `<span style="opacity:.6">Vol warming up</span>`;
+
+      return `
+        <div style="pointer-events:none;background:rgba(0,0,0,0.6);backdrop-filter:blur(2px);border-radius:5px;padding:5px 8px;font-size:9.5px;line-height:1.65;color:#e6e6e6;max-width:170px;">
+          <div style="color:${momColor};font-weight:700;">${momLine}</div>
+          <div style="color:${imbColor};">${imbLine}</div>
+          <div style="color:${vdColor};">${vdLine}</div>
+        </div>
+      `;
+    }
+
+    // Model + venue stat box content. Everything here is either the model's own
+    // computed odds or a value already sourced live elsewhere in this function
+    // (p5prob, live5m, displayPolyMkts) -- nothing invented. The "next window" row
+    // deliberately shows Polymarket's own odds for the upcoming contract, not a
+    // model guess: that market has often not published its PTB yet, and showing a
+    // plausible-looking number for a contract that isn't priced yet is exactly the
+    // mistake this session spent all day undoing for the price-to-beat itself.
+    function _renderModelBoxBlock(sym, p5, p5prob, live5m, displayPolyMkts) {
+      const modelOdds = _modelOdds5m(sym);
+      const edge = (modelOdds != null && Number.isFinite(p5prob)) ? (modelOdds - p5prob) : null;
+      const edgeColor = edge == null ? 'var(--color-text-faint)' : Math.abs(edge) < 0.03 ? 'var(--color-text-faint)' : (edge > 0 ? 'var(--color-green)' : 'var(--color-red)');
+      const edgeLabel = edge == null ? '' : `Δ${edge >= 0 ? '+' : ''}${Math.round(edge * 100)}pt vs venue`;
+
+      const curIdx = displayPolyMkts.findIndex(m => m.slug === p5?.slug);
+      const nextMkt = curIdx >= 0 ? displayPolyMkts[curIdx + 1] : (displayPolyMkts.length > 1 ? displayPolyMkts[1] : null);
+      const nextTimeLabel = nextMkt?.endDate ? new Date(nextMkt.endDate).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : null;
+      const nextYes = Number(nextMkt?.yes);
+      const nextHasOdds = Number.isFinite(nextYes);
+
+      return `
+        <div style="background:var(--color-surface-2);border-radius:6px;padding:8px 10px;margin-top:6px;">
+          <div style="display:flex;align-items:center;justify-content:space-between;">
+            <span style="font-size:9px;color:var(--color-text-faint);text-transform:uppercase;letter-spacing:0.05em;">Model · This Window</span>
+            ${edgeLabel ? `<span style="font-size:9px;font-weight:600;color:${edgeColor}">${edgeLabel}</span>` : ''}
+          </div>
+          ${modelOdds == null ? `
+            <div style="font-size:9px;color:var(--color-text-faint);margin-top:4px;">Run predictions</div>
+          ` : (() => {
+            const action = modelOdds >= 0.55 ? '▲ YES' : modelOdds <= 0.45 ? '▼ NO' : '◆ WAIT';
+            const actionColor = modelOdds >= 0.55 ? 'var(--color-green)' : modelOdds <= 0.45 ? 'var(--color-red)' : 'var(--color-text-faint)';
+            return `
+              <div style="display:flex;align-items:baseline;gap:6px;margin-top:3px;">
+                <span style="font-size:16px;font-weight:800;color:${actionColor}">${Math.round(modelOdds * 100)}%</span>
+                <span style="font-size:10px;font-weight:700;color:${actionColor}">${action}</span>
+              </div>
+              ${_confBar(modelOdds)}
+            `;
+          })()}
+          ${live5m ? `
+            <div style="font-size:9px;color:${live5m.dir === 'UP' ? 'var(--color-green)' : 'var(--color-red)'};margin-top:5px;">
+              ${live5m.state} PTB by <strong>${_fmtSignedPriceDelta(live5m.delta)}</strong> (${(Math.abs(live5m.deltaPct) * 100).toFixed(3)}%)
+            </div>
+          ` : ''}
+          ${nextMkt ? `
+            <div style="margin-top:6px;padding-top:6px;border-top:1px solid var(--color-border);display:flex;align-items:center;justify-content:space-between;">
+              <span style="font-size:9px;color:var(--color-text-faint);">Next${nextTimeLabel ? ' ' + nextTimeLabel : ''} (venue)</span>
+              <span style="font-size:9px;font-weight:700;color:${nextHasOdds ? (nextYes >= 0.5 ? 'var(--color-green)' : 'var(--color-red)') : 'var(--color-text-faint)'};">${nextHasOdds ? Math.round(nextYes * 100) + '% YES' : 'Not open yet'}</span>
+            </div>
+          ` : ''}
+        </div>
+      `;
+    }
+
     function _clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
     function _modelProj(sym) {
       const p = pred[sym];
@@ -1034,43 +1147,7 @@ function renderMarkets5M() {
                    through pm[sym].poly5m (see _modelOdds5m above), sourced straight
                    from prediction-markets.js, independent of what this widget shows. -->
               ${p5?.slug ? `
-                ${(() => {
-                  // Micro-momentum / volume divergence / order book imbalance HUD,
-                  // floated on top of the embed. All three come from feeds already
-                  // live in this app (window.OB, window.ExchangeWS) plus a small
-                  // price ring buffer -- see src/core/microstructure.js. pointer-events
-                  // is disabled so the overlay never blocks clicking through to the
-                  // embed underneath.
-                  const snap = window.Microstructure?.getSnapshot?.(sym);
-                  const mom = snap?.momentum;
-                  const imb = snap?.imbalance;
-                  const vd = snap?.volumeDivergence;
-                  if (!mom && !imb && !vd) {
-                    return `<div style="position:absolute;top:16px;left:16px;z-index:5;pointer-events:none;background:rgba(0,0,0,0.55);border-radius:4px;padding:4px 7px;font-size:9px;color:#9aa;">Microstructure warming up…</div>`;
-                  }
-                  const momPct = mom ? (mom.pct30 ?? mom.pct60) : null;
-                  const momWindow = mom ? (mom.pct30 != null ? '30s' : '60s') : '';
-                  const momColor = mom?.dir === 'UP' ? '#4ade80' : mom?.dir === 'DOWN' ? '#f87171' : '#9aa';
-                  const momIcon = mom?.dir === 'UP' ? '▲' : mom?.dir === 'DOWN' ? '▼' : '–';
-                  const momLine = mom && momPct != null
-                    ? `${momIcon} ${(momPct * 100 >= 0 ? '+' : '')}${(momPct * 100).toFixed(2)}% <span style="opacity:.6">/${momWindow}</span>`
-                    : `<span style="opacity:.6">warming up</span>`;
-
-                  const imbBandLabel = { extreme_bid: 'extreme bid', strong_bid: 'strong bid', lean_bid: 'lean bid', balanced: 'balanced', lean_ask: 'lean ask', strong_ask: 'strong ask', extreme_ask: 'extreme ask' };
-                  const imbColor = !imb?.band ? '#9aa' : imb.band.includes('bid') ? '#4ade80' : imb.band.includes('ask') ? '#f87171' : '#9aa';
-                  const imbLine = imb?.band ? `OB ${imbBandLabel[imb.band] || imb.band}` : `<span style="opacity:.6">OB warming up</span>`;
-
-                  const vdColor = vd?.label === 'BULLISH DIVERGENCE' ? '#4ade80' : vd?.label === 'BEARISH DIVERGENCE' ? '#f87171' : '#9aa';
-                  const vdLine = vd ? `${vd.label === 'CONFIRMING' ? 'Vol confirming' : vd.label === 'NEUTRAL' ? 'Vol neutral' : vd.label.replace(' DIVERGENCE', ' diverg.')} (${Math.round(vd.buyPct)}% buy)` : `<span style="opacity:.6">Vol warming up</span>`;
-
-                  return `
-                    <div style="position:absolute;top:16px;left:16px;z-index:5;pointer-events:none;background:rgba(0,0,0,0.6);backdrop-filter:blur(2px);border-radius:5px;padding:5px 8px;font-size:9.5px;line-height:1.65;color:#e6e6e6;max-width:170px;">
-                      <div style="color:${momColor};font-weight:700;">${momLine}</div>
-                      <div style="color:${imbColor};">${imbLine}</div>
-                      <div style="color:${vdColor};">${vdLine}</div>
-                    </div>
-                  `;
-                })()}
+                <div id="p5hudwrap-${sym}" style="position:absolute;top:16px;left:16px;z-index:5;pointer-events:none;">${_renderMicroHudInner(sym)}</div>
                 <iframe
                   id="p5emb-${sym}"
                   title="${sym} Up or Down 5m — Polymarket"
@@ -1093,51 +1170,7 @@ function renderMarkets5M() {
                  plausible-looking number for a contract that isn't priced yet is
                  exactly the mistake this session spent all day undoing for the
                  price-to-beat itself. -->
-            ${(() => {
-              const modelOdds = _modelOdds5m(sym);
-              const edge = (modelOdds != null && Number.isFinite(p5prob)) ? (modelOdds - p5prob) : null;
-              const edgeColor = edge == null ? 'var(--color-text-faint)' : Math.abs(edge) < 0.03 ? 'var(--color-text-faint)' : (edge > 0 ? 'var(--color-green)' : 'var(--color-red)');
-              const edgeLabel = edge == null ? '' : `Δ${edge >= 0 ? '+' : ''}${Math.round(edge * 100)}pt vs venue`;
-
-              const curIdx = displayPolyMkts.findIndex(m => m.slug === p5?.slug);
-              const nextMkt = curIdx >= 0 ? displayPolyMkts[curIdx + 1] : (displayPolyMkts.length > 1 ? displayPolyMkts[1] : null);
-              const nextTimeLabel = nextMkt?.endDate ? new Date(nextMkt.endDate).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : null;
-              const nextYes = Number(nextMkt?.yes);
-              const nextHasOdds = Number.isFinite(nextYes);
-
-              return `
-                <div style="background:var(--color-surface-2);border-radius:6px;padding:8px 10px;margin-top:6px;">
-                  <div style="display:flex;align-items:center;justify-content:space-between;">
-                    <span style="font-size:9px;color:var(--color-text-faint);text-transform:uppercase;letter-spacing:0.05em;">Model · This Window</span>
-                    ${edgeLabel ? `<span style="font-size:9px;font-weight:600;color:${edgeColor}">${edgeLabel}</span>` : ''}
-                  </div>
-                  ${modelOdds == null ? `
-                    <div style="font-size:9px;color:var(--color-text-faint);margin-top:4px;">Run predictions</div>
-                  ` : (() => {
-                    const action = modelOdds >= 0.55 ? '▲ YES' : modelOdds <= 0.45 ? '▼ NO' : '◆ WAIT';
-                    const actionColor = modelOdds >= 0.55 ? 'var(--color-green)' : modelOdds <= 0.45 ? 'var(--color-red)' : 'var(--color-text-faint)';
-                    return `
-                      <div style="display:flex;align-items:baseline;gap:6px;margin-top:3px;">
-                        <span style="font-size:16px;font-weight:800;color:${actionColor}">${Math.round(modelOdds * 100)}%</span>
-                        <span style="font-size:10px;font-weight:700;color:${actionColor}">${action}</span>
-                      </div>
-                      ${_confBar(modelOdds)}
-                    `;
-                  })()}
-                  ${live5m ? `
-                    <div style="font-size:9px;color:${live5m.dir === 'UP' ? 'var(--color-green)' : 'var(--color-red)'};margin-top:5px;">
-                      ${live5m.state} PTB by <strong>${_fmtSignedPriceDelta(live5m.delta)}</strong> (${(Math.abs(live5m.deltaPct) * 100).toFixed(3)}%)
-                    </div>
-                  ` : ''}
-                  ${nextMkt ? `
-                    <div style="margin-top:6px;padding-top:6px;border-top:1px solid var(--color-border);display:flex;align-items:center;justify-content:space-between;">
-                      <span style="font-size:9px;color:var(--color-text-faint);">Next${nextTimeLabel ? ' ' + nextTimeLabel : ''} (venue)</span>
-                      <span style="font-size:9px;font-weight:700;color:${nextHasOdds ? (nextYes >= 0.5 ? 'var(--color-green)' : 'var(--color-red)') : 'var(--color-text-faint)'};">${nextHasOdds ? Math.round(nextYes * 100) + '% YES' : 'Not open yet'}</span>
-                    </div>
-                  ` : ''}
-                </div>
-              `;
-            })()}
+            <div id="p5modelwrap-${sym}">${_renderModelBoxBlock(sym, p5, p5prob, live5m, displayPolyMkts)}</div>
           </div>
 
           <!-- Upcoming 5M contract queue -->
@@ -1198,19 +1231,20 @@ function renderMarkets5M() {
         YES/NO mapping follows strike type (<b>above</b> vs <b>below</b>), then resolves to UP/DOWN.
       </div>
     `;
+    content.dataset.wecryptoView = 'markets5m';
 
     // Reuse already-loaded Polymarket iframes instead of letting them reload.
-    // renderMarkets5M() rebuilds this whole panel via one innerHTML write, which is
-    // called far more often than the market data actually changes -- refreshActiveView()
-    // in app-core.js calls it on every debounced live price tick (as often as every
-    // 250-900ms), not just on a real window rollover. Recreating the iframe DOM node
-    // makes the browser reload it from Polymarket even when its src is identical,
-    // which is the blink. Right after the rebuild, for each coin whose slug (and
-    // therefore src) has not actually changed, swap the brand-new (reloading) node
-    // back out for the previous already-loaded one. This runs synchronously in the
-    // same task as the innerHTML write, before the browser paints, so the swap itself
-    // is invisible -- only a genuine window rollover (a real src change) is allowed
-    // to reload.
+    // The throttle above already stops most tick-driven calls from reaching this
+    // rebuild at all, but a real window rollover still legitimately triggers one
+    // full rebuild per coin roughly every 5 minutes -- and on that pass, any coin
+    // whose slug (and therefore src) did NOT change should still not reload.
+    // Recreating the iframe DOM node makes the browser reload it from Polymarket
+    // even when its src is identical, which is the blink. Right after the
+    // rebuild, for each coin whose slug hasn't changed, swap the brand-new
+    // (reloading) node back out for the previous already-loaded one. This runs
+    // synchronously in the same task as the innerHTML write, before the browser
+    // paints, so the swap itself is invisible -- only a genuine window rollover
+    // (a real src change) is allowed to reload.
     window._p5EmbedCache = window._p5EmbedCache || new Map();
     COINS_5M.forEach((sym) => {
       const freshFrame = document.getElementById(`p5emb-${sym}`);
