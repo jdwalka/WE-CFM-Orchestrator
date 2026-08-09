@@ -8,7 +8,7 @@
  *   ASI1_API_KEY2_FALLBACK   — uppercase alias for the same fallback
  *   ASI1_API_KEY_FALLBACK    — alias without the "2" (spelling used in WECRYP .env)
  *   ASI1_BASE_URL            — default https://api.asi1.ai/v1
- *   ASI1_MODEL               — default asi1 | asi1-mini | asi1-ultra
+ *   ASI1_MODEL               — asi1 | asi1-mini | asi1-ultra (default: asi1-ultra)
  *
  * Agent universe: use model "asi1" with x-session-id header; ASI:One discovers
  * Agentverse marketplace agents automatically (see docs.asi1.ai agentic-llm).
@@ -19,7 +19,9 @@ const ASI1_BASE_URL = (
 ).replace(/\/$/, '');
 
 const ASI1_CHAT_URL = `${ASI1_BASE_URL}/chat/completions`;
-const ASI1_DEFAULT_MODEL = process.env.ASI1_MODEL || 'asi1';
+// The only current caller (llm_signal_assistant.js) always passes an explicit
+// model, so this default only matters for direct callers of chatCompletion().
+const ASI1_DEFAULT_MODEL = process.env.ASI1_MODEL || 'asi1-ultra';
 const ASI1_HEALTH_TIMEOUT_MS = Number(process.env.ASI1_HEALTH_TIMEOUT_MS || 12000);
 const ASI1_REQUEST_TIMEOUT_MS = Number(process.env.ASI1_REQUEST_TIMEOUT_MS || 90000);
 

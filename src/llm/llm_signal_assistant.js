@@ -348,6 +348,15 @@ class LLMSignalAssistant {
     this.queryHistory = [];             // rolling query log across all LLM providers
     this.queryStatsByProvider = {};     // per-provider stats (calls, latency, errors)
     this.queryStatsByModel = {};        // per-model stats (calls, latency, errors)
+    // Circuit breaker: provider -> { until, reason }. Every provider was observed
+    // failing on account-level errors (invalid/revoked key, exhausted credits,
+    // rate/quota limit) rather than transient network issues -- those don't
+    // self-heal within a request's timeout, so retrying them on every single
+    // cascade call just pays the full round-trip+timeout cost repeatedly for a
+    // provider already known to be dead. Skip a provider immediately while its
+    // cooldown is active; it naturally retries again once the cooldown expires,
+    // so a fixed key/billing gets picked back up without a restart.
+    this._providerCooldowns = {};
     this._googleClient = null;
     this._googleClientKind = null;
     this._anthropicClient = null;
@@ -606,6 +615,42 @@ Use this recall only as context, and prioritize current market snapshot data if 
     mStats.lastUsedTs = rec.ts;
   }
 
+  // Classifies an error into a cooldown duration, or null if it looks transient
+  // (network blip, timeout) and should be retried on the very next call as
+  // usual. Status codes are read from common shapes across providers (raw
+  // fetch Response-derived errors carry "API error <code>" / "HTTP <code>" in
+  // the message; SDK errors may carry .status/.statusCode).
+  _classifyProviderError(err) {
+    const status = Number(err?.status || err?.statusCode || 0)
+      || Number(String(err?.message || '').match(/\b(40[0-9]|429)\b/)?.[1]) || 0;
+    if (status === 401 || status === 403) {
+      return { ms: 30 * 60_000, reason: `auth (${status}) -- key invalid/revoked or account permission denied` };
+    }
+    if (status === 402) {
+      return { ms: 30 * 60_000, reason: 'payment required (402) -- no credits on this account' };
+    }
+    if (status === 429) {
+      return { ms: 10 * 60_000, reason: 'rate/quota limited (429)' };
+    }
+    return null; // timeouts, network errors, 5xx -- worth retrying immediately
+  }
+
+  _recordProviderCooldown(provider, err) {
+    const cls = this._classifyProviderError(err);
+    if (!cls) return;
+    const until = Date.now() + cls.ms;
+    this._providerCooldowns[provider] = { until, reason: cls.reason };
+    console.warn(`[LLMSignalAssistant] ${provider} cooling down for ${Math.round(cls.ms / 60000)}m -- ${cls.reason}`);
+  }
+
+  _providerCooldownRemaining(provider) {
+    const cd = this._providerCooldowns[provider];
+    if (!cd) return 0;
+    const remaining = cd.until - Date.now();
+    if (remaining <= 0) { delete this._providerCooldowns[provider]; return 0; }
+    return remaining;
+  }
+
   /**
    * Public helper to retrieve recent query history
    */
@@ -646,6 +691,11 @@ Use this recall only as context, and prioritize current market snapshot data if 
     const promptLength = (systemPrompt || '').length + (userPrompt || '').length;
 
     for (const p of cascade) {
+      const cooldownMs = this._providerCooldownRemaining(p);
+      if (cooldownMs > 0) {
+        skipped.push(`${p}(cooldown ${Math.round(cooldownMs / 1000)}s)`);
+        continue;
+      }
       const startTime = Date.now();
       try {
         if (p === 'xai') {
@@ -686,7 +736,7 @@ Use this recall only as context, and prioritize current market snapshot data if 
         if (p === 'asi1') {
           if (!Asi1Client.hasAsi1Credentials()) { skipped.push(p); continue; }
           attempted.push(p);
-          const model = process.env.ASI1_MODEL || 'asi1';
+          const model = process.env.ASI1_MODEL || 'asi1-ultra';
           console.log('[LLM 5m] trying asi1');
           const result = await Asi1Client.chatCompletion(
             [
@@ -867,6 +917,7 @@ Use this recall only as context, and prioritize current market snapshot data if 
       } catch (err) {
         lastErr = err;
         console.warn(`[LLMSignalAssistant] Provider ${p} failed: ${err.message}. Falling back...`);
+        this._recordProviderCooldown(p, err);
         this._recordQueryExecution({
           id: `llm-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
           timestamp: new Date().toISOString(),
@@ -874,7 +925,7 @@ Use this recall only as context, and prioritize current market snapshot data if 
           coin,
           horizon,
           provider: p,
-          model: p === 'xai' ? XAI_MODEL : p === 'asi1' ? 'asi1' : p === 'anthropic' ? ANTHROPIC_MODEL : p === 'google' ? GOOGLE_MODEL : 'unknown',
+          model: p === 'xai' ? XAI_MODEL : p === 'asi1' ? 'asi1-ultra' : p === 'anthropic' ? ANTHROPIC_MODEL : p === 'google' ? GOOGLE_MODEL : 'unknown',
           status: 'FAILURE',
           latencyMs: Date.now() - startTime,
           promptChars: promptLength,
@@ -894,14 +945,27 @@ Use this recall only as context, and prioritize current market snapshot data if 
       if (skipped.length) {
         console.warn(
           `[LLMSignalAssistant] Cascade exhausted — attempted=[${attempted.join(', ')}] `
-          + `skipped (no credentials configured)=[${skipped.join(', ')}]. `
+          + `skipped (no credentials or on cooldown)=[${skipped.join(', ')}]. `
           + `Last error is from "${attempted[attempted.length - 1]}": ${lastErr.message}`
         );
       }
       throw lastErr;
     }
-    
-    // Fallback to default compatible if no keys matched the cascade
+
+    // Every provider was skipped (missing credentials and/or cooling down after a
+    // recent account-level failure) -- nothing was actually attempted, so there is
+    // no lastErr to throw. Falling through to callCompatibleAPI() with no explicit
+    // key/url would silently reuse whatever the default OpenAI-compatible config
+    // happens to be, which is confusing when the real reason is "everything is
+    // cooling down." Fail clearly instead.
+    if (skipped.length) {
+      throw new Error(
+        `[LLMSignalAssistant] All providers unavailable — skipped=[${skipped.join(', ')}]`
+      );
+    }
+
+    // No cascade entries matched at all (cascade array itself was empty) --
+    // preserves the original last-resort behavior.
     return this.callCompatibleAPI(systemPrompt, userPrompt);
   }
 
