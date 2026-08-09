@@ -141,6 +141,24 @@ const PREDICTION_COINS = [
       'https://cdn.jsdelivr.net/gh/spothq/cryptocurrency-icons@master/svg/color/xrp.svg',
     ],
   },
+  // DOGE, BNB, HYPE were added to the 5m Polymarket/Kalshi coin lists elsewhere
+  // (POLY_5M_COIN_SLUGS, KALSHI_5M_SERIES, COINS_5M in render-layer.js) but never
+  // here. runAll() iterates PREDICTION_COINS directly, so these three never had a
+  // prediction computed at all -- not a timing issue, they were simply absent from
+  // the coin list runAll() loops over. geckoId values match the mapping already
+  // used elsewhere in this codebase (see app-core.js CoinGecko id table).
+  {
+    sym: 'DOGE', name: 'Dogecoin', instrument: 'DOGEUSD', geckoId: 'dogecoin',
+    color: '#ba9f33', icon: 'Ð',
+  },
+  {
+    sym: 'BNB', name: 'BNB', instrument: 'BNBUSD', geckoId: 'binancecoin',
+    color: '#f3ba2f', icon: 'B',
+  },
+  {
+    sym: 'HYPE', name: 'Hyperliquid', instrument: 'HYPEUSD', geckoId: 'hyperliquid',
+    color: '#34d399', icon: 'H',
+  },
 ];
 window.PREDICTION_COINS = PREDICTION_COINS;
 

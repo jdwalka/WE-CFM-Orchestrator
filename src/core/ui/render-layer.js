@@ -574,6 +574,7 @@ function renderMarkets5M() {
     // mistake this session spent all day undoing for the price-to-beat itself.
     function _renderModelBoxBlock(sym, p5, p5prob, live5m, displayPolyMkts) {
       const modelOdds = _modelOdds5m(sym);
+      const ptbAnchored = _modelOdds5mIsPtbAnchored(sym);
       const edge = (modelOdds != null && Number.isFinite(p5prob)) ? (modelOdds - p5prob) : null;
       const edgeColor = edge == null ? 'var(--color-text-faint)' : Math.abs(edge) < 0.03 ? 'var(--color-text-faint)' : (edge > 0 ? 'var(--color-green)' : 'var(--color-red)');
       const edgeLabel = edge == null ? '' : `Δ${edge >= 0 ? '+' : ''}${Math.round(edge * 100)}pt vs venue`;
@@ -587,7 +588,7 @@ function renderMarkets5M() {
       return `
         <div style="background:var(--color-surface-2);border-radius:6px;padding:8px 10px;margin-top:6px;">
           <div style="display:flex;align-items:center;justify-content:space-between;">
-            <span style="font-size:9px;color:var(--color-text-faint);text-transform:uppercase;letter-spacing:0.05em;">Model · This Window</span>
+            <span style="font-size:9px;color:var(--color-text-faint);text-transform:uppercase;letter-spacing:0.05em;">Model ${ptbAnchored ? '· This Window' : '· Lean (no PTB yet)'}</span>
             ${edgeLabel ? `<span style="font-size:9px;font-weight:600;color:${edgeColor}">${edgeLabel}</span>` : ''}
           </div>
           ${modelOdds == null ? `
@@ -601,6 +602,7 @@ function renderMarkets5M() {
                 <span style="font-size:10px;font-weight:700;color:${actionColor}">${action}</span>
               </div>
               ${_confBar(modelOdds)}
+              ${!ptbAnchored ? `<div style="font-size:8px;color:var(--color-text-faint);margin-top:2px;">directional lean only -- Polymarket has not published this window's price-to-beat yet</div>` : ''}
             `;
           })()}
           ${live5m ? `
@@ -686,7 +688,27 @@ function renderMarkets5M() {
         const sideLean = gap >= 0 ? 0.08 : -0.08;
         return _clamp(0.5 + sideLean + h5Score * 0.22, 0.05, 0.95);
       }
+      // 4. No PTB yet. Polymarket often has not published openPrice for a fresh
+      // window for well over half its 5 minutes (observed: still absent >3 minutes
+      // in), and paths 0-3 all require a locked PTB by design -- so without this,
+      // the model shows nothing for most of every window even though it already has
+      // a PTB-independent directional score. Use that score directly. This is NOT
+      // "will this beat the PTB" (there isn't one yet); _modelOdds5mIsPtbAnchored()
+      // flags this case so the caller can label it as a lean, not a PTB call.
+      const rawScore = Number.isFinite(h5Score) ? h5Score : Number(p.score);
+      if (Number.isFinite(rawScore)) {
+        return _clamp(0.5 + rawScore * 0.4, 0.05, 0.95);
+      }
       return null;
+    }
+
+    // Whether _modelOdds5m(sym)'s current value (if any) is anchored to a locked
+    // Polymarket PTB, or is the PTB-independent directional-lean fallback (path 4).
+    // Purely a labeling signal for the UI -- does not change the odds computation.
+    function _modelOdds5mIsPtbAnchored(sym) {
+      const p5 = pm[sym]?.poly5m;
+      const ptb = Number(p5?.targetPriceNum ?? p5?.priceToBeatNum);
+      return Number.isFinite(ptb) && ptb > 0;
     }
 
     function _modelDivergence(sym, kalshiProb) {
