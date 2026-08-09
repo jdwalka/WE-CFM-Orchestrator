@@ -1674,6 +1674,47 @@ function renderObservability() {
       </tr>`;
     }).join('') || '<tr><td colspan="4" style="color:var(--color-text-faint)">No recent network failures.</td></tr>';
 
+    // LLM provider health: computed by _obsBuildMetrics (observability.js) from
+    // window.LLMSignalAssistant.getDiagnostics().observability, which was already
+    // being built but never rendered anywhere until now.
+    const llmQ = m.llmQueries || {};
+    const llmCooldowns = llmQ.providerCooldowns || {};
+    const llmProviderRows = Object.entries(llmQ.byProvider || {})
+      .sort((a, b) => (b[1].calls || 0) - (a[1].calls || 0))
+      .map(([provider, s]) => {
+        const cd = llmCooldowns[provider];
+        const rate = s.calls > 0 ? Math.round((s.successes / s.calls) * 100) : null;
+        const rateCol = rate == null ? 'var(--color-text-faint)' : rate >= 70 ? 'var(--color-green)' : rate >= 30 ? 'var(--color-orange)' : 'var(--color-red)';
+        const last = s.lastUsedTs ? new Date(s.lastUsedTs).toLocaleTimeString() : '—';
+        const statusBadge = cd
+          ? `<span style="font-size:9px;font-weight:700;color:var(--color-orange);border:1px solid var(--color-orange);border-radius:999px;padding:1px 6px;" title="${_obsEsc(cd.reason)}">cooldown ${Math.ceil(cd.remainingMs / 1000)}s</span>`
+          : (s.lastStatus === 'SUCCESS'
+            ? '<span style="font-size:9px;font-weight:700;color:var(--color-green)">live</span>'
+            : s.lastStatus === 'FAILURE'
+              ? '<span style="font-size:9px;font-weight:700;color:var(--color-red)">last call failed</span>'
+              : '');
+        return `<tr>
+          <td style="font-weight:700">${_obsEsc(provider)}</td>
+          <td>${s.calls || 0}</td>
+          <td style="color:${rateCol};font-weight:700">${rate == null ? '—' : rate + '%'}</td>
+          <td>${s.avgLatencyMs ? Math.round(s.avgLatencyMs) + 'ms' : '—'}</td>
+          <td style="font-size:10px;color:var(--color-text-muted)">${last}</td>
+          <td>${statusBadge}</td>
+        </tr>`;
+      }).join('') || '<tr><td colspan="6" style="color:var(--color-text-faint)">No LLM queries recorded yet.</td></tr>';
+
+    const llmRecentRows = (llmQ.recentQueries || []).slice().reverse().slice(0, 15).map(q => {
+      const col = q.status === 'SUCCESS' ? 'var(--color-green)' : 'var(--color-red)';
+      return `<tr>
+        <td style="font-size:10px;color:var(--color-text-muted)">${new Date(q.ts).toLocaleTimeString()}</td>
+        <td style="font-weight:700">${_obsEsc(q.provider)}</td>
+        <td style="font-size:10px">${_obsEsc(q.model)}</td>
+        <td style="color:${col};font-weight:700">${_obsEsc(q.status)}</td>
+        <td>${q.latencyMs ? Math.round(q.latencyMs) + 'ms' : '—'}</td>
+        <td style="font-size:10px;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${_obsEsc(q.error || q.notes || '')}">${_obsEsc(q.error || q.notes || '')}</td>
+      </tr>`;
+    }).join('') || '<tr><td colspan="6" style="color:var(--color-text-faint)">No LLM queries recorded yet.</td></tr>';
+
     const attrRows = m.attributionRows.length
       ? m.attributionRows.map(r => {
         const col = r.score >= 0 ? 'var(--color-green)' : 'var(--color-red)';
@@ -1833,6 +1874,27 @@ function renderObservability() {
             <table class="table">
               <thead><tr><th>Time</th><th>Provider</th><th>Status</th><th>URL</th></tr></thead>
               <tbody>${recentNetworkRows}</tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-bottom:12px">
+        <div class="card-title">LLM Provider Health</div>
+        <div style="font-size:11px;color:var(--color-text-muted);margin-bottom:8px">
+          A provider showing "cooldown" is being skipped without a network attempt after a recent auth/credit/rate-limit failure -- see the reason on hover.
+        </div>
+        <div style="display:grid;grid-template-columns:minmax(300px,0.9fr) minmax(360px,1.3fr);gap:12px">
+          <div class="table-wrap">
+            <table class="table">
+              <thead><tr><th>Provider</th><th>Calls</th><th>Success</th><th>Avg Latency</th><th>Last Used</th><th>Status</th></tr></thead>
+              <tbody>${llmProviderRows}</tbody>
+            </table>
+          </div>
+          <div class="table-wrap">
+            <table class="table">
+              <thead><tr><th>Time</th><th>Provider</th><th>Model</th><th>Status</th><th>Latency</th><th>Note</th></tr></thead>
+              <tbody>${llmRecentRows}</tbody>
             </table>
           </div>
         </div>

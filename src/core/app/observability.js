@@ -109,6 +109,24 @@ function _obsEmergencyToolsSummary() {
     return out;
   }
 
+// LLM diagnostics live in the main process (window.LLMSignalAssistant is not
+// reachable from here). Poll the IPC bridge and cache the result synchronously
+// so _obsBuildMetrics() -- called from render paths that can't await -- always
+// has a recent snapshot to read.
+window._llmDiagnosticsCache = window._llmDiagnosticsCache || null;
+async function _obsPollLLMDiagnostics() {
+  try {
+    const res = await window.electron?.llm?.getDiagnostics?.();
+    if (res && res.success) window._llmDiagnosticsCache = res.diagnostics;
+  } catch (_) { }
+}
+if (typeof document !== 'undefined') {
+  document.addEventListener('DOMContentLoaded', () => {
+    _obsPollLLMDiagnostics();
+    setInterval(_obsPollLLMDiagnostics, 8000);
+  });
+}
+
 function _obsBuildMetrics() {
     const resLog = window._15mResolutionLog || [];
     const kalshiLog = window._kalshiLog || [];
@@ -134,6 +152,8 @@ function _obsBuildMetrics() {
       emergencyTools.total,
       networkSummary.total,
       networkSummary.lastTs || 0,
+      window._llmDiagnosticsCache?.observability?.totalQueries || 0,
+      window._llmDiagnosticsCache?.observability?.lastQuery?.ts || 0,
     ].join('|');
 
     if (_observabilityCache.sig === sig && _observabilityCache.data && (Date.now() - _observabilityCache.ts) < 10_000) {
@@ -440,7 +460,14 @@ function _obsBuildMetrics() {
       .sort((a, b) => (b.maxDrawdown - a.maxDrawdown) || (b.maxLossStreak - a.maxLossStreak))
       .slice(0, 10);
 
-    const llmDiag = window.LLMSignalAssistant?.getDiagnostics?.() || {};
+    // window.LLMSignalAssistant does not exist in the renderer -- that module is
+    // require()'d only in electron/main.js (nodeIntegration is off), so this line
+    // always fell through to {} regardless of what the assistant was doing. The
+    // real bridge is the async window.electron.llm.getDiagnostics() IPC call
+    // (see preload.js); _obsPollLLMDiagnostics() below keeps a synchronous
+    // snapshot in window._llmDiagnosticsCache for this (necessarily synchronous)
+    // metrics builder to read.
+    const llmDiag = window._llmDiagnosticsCache || {};
     const llmQueries = llmDiag.observability || {
       totalQueries: 0,
       recentQueries: [],

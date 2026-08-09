@@ -220,6 +220,37 @@ function resolveXaiApiKey() {
     || '';
 }
 
+// TokenMix (tokenmix.ai) -- OpenAI-compatible multi-provider relay, one key for
+// 171+ models across 14 providers. Not a free tier: prepaid wallet, pay-as-you-go.
+// Verified live (2026-08-09) that a subset of models work on promotional credit
+// even at a $0.00 paid balance -- confirmed working: gpt-5.4-mini,
+// deepseek-v4-flash, doubao-seed-2.1-turbo, grok-4.3. Others (gemini-3.5-flash,
+// qwen3.6-flash, kimi-k2.5) returned 402 "not available with promotional
+// credits" on the same account, so model choice matters even before funding it.
+function readTokenMixKeyFromSecrets() {
+  const fileNames = ["tokenmix_api_key.txt", "TOKENMIX_API_KEY.txt", "TokenMix.txt"];
+  const patterns = [/sk-tm-[A-Za-z0-9_-]+/i];
+
+  for (const dir of getLlmSecretDirCandidates()) {
+    for (const name of fileNames) {
+      try {
+        const file = path.join(dir, name);
+        if (!fs.existsSync(file)) continue;
+        const raw = fs.readFileSync(file, "utf8");
+        const val = extractKeyFromRaw(raw, patterns);
+        if (val) return val;
+      } catch (_) { }
+    }
+  }
+  return "";
+}
+
+function resolveTokenMixApiKey() {
+  return process.env.TOKENMIX_API_KEY
+    || readTokenMixKeyFromSecrets()
+    || '';
+}
+
 // Configuration from environment
 const LLM_API_URL = process.env.LLM_API_URL || process.env.OPENAI_BASE_URL || "https://api.openai.com/v1/chat/completions";
 const LLM_API_KEY = resolveCompatibleApiKey();
@@ -232,6 +263,12 @@ const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || "~openai/gpt-latest";
 // remaining balance can afford ("requested up to 1500, can only afford 1326") —
 // it does not silently truncate. Keep the ask under the balance or every call fails.
 const OPENROUTER_MAX_TOKENS = Number(process.env.OPENROUTER_MAX_TOKENS || 800);
+const TOKENMIX_API_KEY = resolveTokenMixApiKey();
+const TOKENMIX_BASE_URL = process.env.TOKENMIX_BASE_URL || "https://api.tokenmix.ai/v1/chat/completions";
+// grok-4.3 confirmed working live on this account's promotional credit balance
+// (see readTokenMixKeyFromSecrets comment above for the full verified list).
+const TOKENMIX_MODEL = process.env.TOKENMIX_MODEL || "grok-4.3";
+const TOKENMIX_MAX_TOKENS = Number(process.env.TOKENMIX_MAX_TOKENS || 800);
 // Anthropic (Claude) kept for backward/fallback only.
 // xAI (rex) is primary for 5m PTB. Fallback on failure: asi1 → openai → claude → gemini.
 const ANTHROPIC_API_KEY = resolveAnthropicApiKey();
@@ -370,6 +407,7 @@ class LLMSignalAssistant {
       xaiKeySource: XAI_API_KEY ? 'env-or-secrets' : null,
       hasAsi1Key: Asi1Client.hasAsi1Credentials(),
       asi1KeysConfigured: Asi1Client.getDiagnostics().keysConfigured,
+      hasTokenMixKey: !!TOKENMIX_API_KEY,
       providerOverride: process.env.LLM_PROVIDER || null,
     };
 
@@ -668,11 +706,16 @@ Use this recall only as context, and prioritize current market snapshot data if 
     const is5mPtb = isFiveMinPtbMarket(snapshot);
     const useXai = !!XAI_API_KEY && (XAI_PRIMARY_ALL || is5mPtb);
     const useLegacyClaude = is5mPtb && !XAI_API_KEY && !!ANTHROPIC_API_KEY;
+    // tokenmix leads every variant: as of 2026-08-09 it is the only provider in
+    // this cascade with a live, working call on this account (grok-4.3 via
+    // promotional credit -- see TOKENMIX_MODEL comment). Every other entry below
+    // was individually verified dead (invalid key, exhausted credits/quota) on
+    // the same date; they stay in the cascade as fallbacks in case that changes.
     const baseCascade = useXai
-      ? ['xai', 'asi1', 'openai', 'anthropic', 'google', 'openrouter']
+      ? ['tokenmix', 'xai', 'asi1', 'openai', 'anthropic', 'google', 'openrouter']
       : useLegacyClaude
-        ? ['anthropic', 'asi1', 'openai', 'google', 'openrouter']
-        : ['asi1', 'google', 'openai', 'openrouter'];
+        ? ['tokenmix', 'anthropic', 'asi1', 'openai', 'google', 'openrouter']
+        : ['tokenmix', 'asi1', 'google', 'openai', 'openrouter'];
     // LLM_CASCADE_PRIMARY pins one provider to the front without disturbing the
     // fallback order behind it. Set it when the default primary is known-dead
     // (e.g. xAI 403 "no credits") so every call stops paying failed round trips
@@ -914,6 +957,41 @@ Use this recall only as context, and prioritize current market snapshot data if 
           });
           return res;
         }
+
+        if (p === 'tokenmix') {
+          if (!TOKENMIX_API_KEY) { skipped.push(p); continue; }
+          attempted.push(p);
+          const model = TOKENMIX_MODEL;
+          console.log(`[LLM 5m] trying tokenmix (${model})`);
+          const res = await this.callCompatibleAPI(systemPrompt, userPrompt, {
+            url: TOKENMIX_BASE_URL,
+            model,
+            key: TOKENMIX_API_KEY,
+            maxTokens: TOKENMIX_MAX_TOKENS,
+          });
+
+          this._recordQueryExecution({
+            id: `llm-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+            timestamp: new Date().toISOString(),
+            ts: Date.now(),
+            coin,
+            horizon,
+            provider: 'tokenmix',
+            model,
+            status: 'SUCCESS',
+            latencyMs: Date.now() - startTime,
+            promptChars: promptLength,
+            responseChars: JSON.stringify(res || {}).length,
+            resultCall: res?.call || res?.direction || null,
+            regime: res?.regime || null,
+            confidence: res?.confidence ?? null,
+            notes: res?.suggestions?.notes?.slice(0, 180) || null,
+            attempted: [...attempted],
+            skipped: [...skipped],
+            error: null,
+          });
+          return res;
+        }
       } catch (err) {
         lastErr = err;
         console.warn(`[LLMSignalAssistant] Provider ${p} failed: ${err.message}. Falling back...`);
@@ -925,7 +1003,7 @@ Use this recall only as context, and prioritize current market snapshot data if 
           coin,
           horizon,
           provider: p,
-          model: p === 'xai' ? XAI_MODEL : p === 'asi1' ? 'asi1-ultra' : p === 'anthropic' ? ANTHROPIC_MODEL : p === 'google' ? GOOGLE_MODEL : 'unknown',
+          model: p === 'xai' ? XAI_MODEL : p === 'asi1' ? 'asi1-ultra' : p === 'tokenmix' ? TOKENMIX_MODEL : p === 'anthropic' ? ANTHROPIC_MODEL : p === 'google' ? GOOGLE_MODEL : 'unknown',
           status: 'FAILURE',
           latencyMs: Date.now() - startTime,
           promptChars: promptLength,
@@ -1589,6 +1667,15 @@ Use this recall only as context, and prioritize current market snapshot data if 
         lastQuery: this.queryHistory.length ? this.queryHistory[this.queryHistory.length - 1] : null,
         byProvider: this.queryStatsByProvider,
         byModel: this.queryStatsByModel,
+        // Per-provider circuit breaker state (distinct from the single-global
+        // `cooldown` field above, which predates this and tracks something else).
+        // A provider showing here is being skipped without a network attempt --
+        // see _recordProviderCooldown / _providerCooldownRemaining.
+        providerCooldowns: Object.fromEntries(
+          Object.entries(this._providerCooldowns)
+            .map(([p, cd]) => [p, cd.until > Date.now() ? { remainingMs: cd.until - Date.now(), reason: cd.reason } : null])
+            .filter(([, v]) => v)
+        ),
       },
     };
   }
