@@ -2355,7 +2355,12 @@ ipcMain.handle('data:appendLineDetailed', async (_, filePath, line) => {
   try {
     await fsp.mkdir(path.dirname(filePath), { recursive: true });
     await fsp.appendFile(filePath, line + '\n', 'utf8');
-    return { ok: true };
+    // Resulting size lets callers (e.g. data-logger.js's rotation for
+    // high-volume categories) decide to roll to a new file without a
+    // separate stat round trip.
+    let size = null;
+    try { size = (await fsp.stat(filePath)).size; } catch (_) { }
+    return { ok: true, size };
   } catch (error) {
     return { ok: false, code: error?.code || null, error: error?.message || String(error) };
   }

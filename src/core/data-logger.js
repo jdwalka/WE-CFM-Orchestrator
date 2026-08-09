@@ -31,9 +31,17 @@
   // surface for that is notoriously generic. That is the far more likely
   // explanation for a spurious Drive "permission" error on an unrelated file
   // in the same dated folder than an actual ACL problem, especially on an
-  // admin account. These categories are logged locally only; never queued for
-  // cloud sync.
-  const CLOUD_SYNC_EXCLUDE_CATEGORIES = new Set(['polymarket_raw', 'polymarket_5m']);
+  // admin account.
+  //
+  // Fix (storage is not the constraint -- keep syncing everything): these
+  // categories write into a "raw\" child folder, one level below the other
+  // small per-day files, and roll to a new timestamped filename once the
+  // active file passes ROTATE_SIZE_BYTES. A file that has been rolled past is
+  // never appended to again, so Drive only has to upload it once and settle --
+  // the growing, repeatedly-touched file is always small.
+  const CLOUD_SYNC_ROTATE_CATEGORIES = new Set(['polymarket_raw', 'polymarket_5m']);
+  const ROTATE_SIZE_BYTES = 20 * 1024 * 1024; // 20MB -- comfortably small for Drive to re-sync repeatedly
+  const _rotateTag = {}; // category -> active segment tag, e.g. "20260809-143205"
   const LOCAL_FLUSH_MS = 5_000;
   const CLOUD_SYNC_MS = 60_000;
   const DRIVE_REPROBE_MS = 300_000;
@@ -460,9 +468,28 @@
   }
 
   function trackCloudPartition(day, category) {
-    if (CLOUD_SYNC_EXCLUDE_CATEGORIES.has(category)) return;
     _cloudPartitions.add(`${day}|${category}`);
     _stats.session.cloudTrackedFiles = _cloudPartitions.size;
+  }
+
+  // For rotate-categories, returns the *physical* category fragment currently
+  // being appended to -- "raw\polymarket_raw-20260809-143205" -- which the
+  // existing generic path template (`${root}\${day}\${category}.jsonl`) turns
+  // into "...\2026-08-09\raw\polymarket_raw-20260809-143205.jsonl" with no
+  // other code needing to change. Non-rotate categories pass through as-is.
+  // A fresh tag is minted once per process per category (not resumed across
+  // restarts) -- simple and correct; worst case is one extra small file per
+  // app session, which costs nothing given the available storage.
+  function rotatedCategoryKey(category) {
+    if (!CLOUD_SYNC_ROTATE_CATEGORIES.has(category)) return category;
+    if (!_rotateTag[category]) _rotateTag[category] = mintRotateTag();
+    return `raw\\${category}-${_rotateTag[category]}`;
+  }
+
+  function mintRotateTag() {
+    const d = new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
   }
 
   async function trackLocalSpoolPartitions() {
@@ -480,6 +507,18 @@
         if (typeof entry !== 'string' || !entry.endsWith('.jsonl')) continue;
         trackCloudPartition(day, entry.slice(0, -6));
       }
+
+      // Rotated segments (polymarket_raw / polymarket_5m) live one level down
+      // in raw\ and are never revisited once their tag rotates out -- without
+      // this, a segment still mid-upload when the app closed would never be
+      // retried, since a fresh session mints a new tag rather than resuming.
+      const rawResult = await window.dataStore.listDir(`${LOCAL_ROOT}\\${day}\\raw`);
+      if (rawResult?.ok && Array.isArray(rawResult.entries)) {
+        for (const entry of rawResult.entries) {
+          if (typeof entry !== 'string' || !entry.endsWith('.jsonl')) continue;
+          trackCloudPartition(day, `raw\\${entry.slice(0, -6)}`);
+        }
+      }
     }
   }
 
@@ -488,7 +527,7 @@
     if (!appendLine) return { ok: false, path: filePath, error: 'dataStore append bridge unavailable' };
     try {
       const result = await appendLine(filePath, block);
-      if (writeResultOk(result)) return { ok: true, path: filePath };
+      if (writeResultOk(result)) return { ok: true, path: filePath, size: Number.isFinite(result?.size) ? result.size : null };
       return { ok: false, path: filePath, error: writeResultError(result), code: result?.code || null };
     } catch (error) {
       return { ok: false, path: filePath, error: error?.message || String(error), code: error?.code || null };
@@ -508,7 +547,8 @@
     const block = lines.join('\n');
     _buf[category] = [];
     const day = todayStr();
-    const localPath = `${LOCAL_ROOT}\\${day}\\${category}.jsonl`;
+    const physicalCategory = rotatedCategoryKey(category);
+    const localPath = `${LOCAL_ROOT}\\${day}\\${physicalCategory}.jsonl`;
     const localResult = await appendBlock(localPath, block);
     if (!localResult.ok) {
       _buf[category] = lines.concat(_buf[category] || []);
@@ -529,8 +569,17 @@
       return;
     }
 
-    trackCloudPartition(day, category);
+    trackCloudPartition(day, physicalCategory);
     _stats.session.bytesWritten += block.length;
+
+    // Past this size, the CURRENT segment is done: mint a new tag so the next
+    // flush starts a fresh file. This one keeps its filename forever, so Drive
+    // uploads it once and it settles -- the actively-growing file is always
+    // the small one.
+    if (CLOUD_SYNC_ROTATE_CATEGORIES.has(category) && Number.isFinite(localResult.size) && localResult.size >= ROTATE_SIZE_BYTES) {
+      console.log(`[DataLogger] rotating ${category} segment (${(localResult.size / 1024 / 1024).toFixed(1)}MB) -- next flush starts a new file`);
+      _rotateTag[category] = mintRotateTag();
+    }
   }
 
   function logPolymarketRaw(data) {
