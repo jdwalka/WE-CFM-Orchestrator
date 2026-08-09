@@ -1033,7 +1033,7 @@ function renderMarkets5M() {
               ${p5?.slug ? `
                 <iframe
                   title="${sym} Up or Down 5m — Polymarket"
-                  src="https://embed.polymarket.com/market?market=${encodeURIComponent(p5.slug)}&theme=dark&liveactivity=true&border=true&creator=JohnDaWalka&height=300"
+                  src="https://embed.polymarket.com/market?market=${encodeURIComponent(p5.slug)}&theme=dark&liveactivity=true&border=false&creator=JohnDaWalka&height=300"
                   style="width:100%;height:300px;border:0;border-radius:6px;display:block;"
                   frameborder="0"
                   allowtransparency="true"
@@ -1065,21 +1065,22 @@ function renderMarkets5M() {
               ` : `<div style="color:var(--color-text-faint);font-size:11px">No Poly 5M market</div>`}
             </div>
 
-            <!-- Model Odds Column -->
-            <div style="background:var(--color-surface-2);border-radius:6px;padding:10px;">
-              <div style="font-size:10px;color:var(--color-text-faint);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:5px;">Model Odds (5m)</div>
+            <!-- Model Odds Column (compact: the venue's own odds are the signal that
+                 matters, the model read is secondary and should not compete with it) -->
+            <div style="background:var(--color-surface-2);border-radius:6px;padding:6px 8px;align-self:start;">
+              <div style="font-size:9px;color:var(--color-text-faint);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:3px;">Model Odds (5m)</div>
               ${(() => {
                 const modelOdds = _modelOdds5m(sym);
-                if (modelOdds == null) return `<span style="color:var(--color-text-faint);font-size:11px">Run predictions</span>`;
+                if (modelOdds == null) return `<span style="color:var(--color-text-faint);font-size:9px">Run predictions</span>`;
                 const action = modelOdds >= 0.55 ? '▲ BUY YES' : modelOdds <= 0.45 ? '▼ BUY NO' : '◆ WAIT';
                 const actionColor = modelOdds >= 0.55 ? 'var(--color-green)' : modelOdds <= 0.45 ? 'var(--color-red)' : 'var(--color-text-faint)';
                 return modelOdds != null ? `
-                  <div style="display:flex;gap:8px;align-items:baseline;margin-bottom:4px;">
-                    <span style="color:${actionColor};font-size:14px;font-weight:700">${Math.round(modelOdds * 100)}%</span>
-                    <span style="font-size:12px;color:var(--color-text-muted)">YES</span>
+                  <div style="display:flex;gap:5px;align-items:baseline;margin-bottom:2px;">
+                    <span style="color:${actionColor};font-size:11px;font-weight:700">${Math.round(modelOdds * 100)}%</span>
+                    <span style="font-size:9px;color:var(--color-text-muted)">YES</span>
                   </div>
-                  <div style="font-size:11px;color:var(--color-text-faint);margin-top:3px;">${action}</div>
-                ` : `<span style="color:var(--color-text-faint);font-size:11px">—</span>`;
+                  <div style="font-size:9px;color:var(--color-text-faint);margin-top:2px;">${action}</div>
+                ` : `<span style="color:var(--color-text-faint);font-size:9px">—</span>`;
               })()}
             </div>
 
