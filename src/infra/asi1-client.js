@@ -6,6 +6,7 @@
  *   ASI1_API_KEY             — alias accepted by LeakSnipe + WECRYP
  *   asi1_api_key2_fallback   — secondary fallback key (user-provided)
  *   ASI1_API_KEY2_FALLBACK   — uppercase alias for the same fallback
+ *   ASI1_API_KEY_FALLBACK    — alias without the "2" (spelling used in WECRYP .env)
  *   ASI1_BASE_URL            — default https://api.asi1.ai/v1
  *   ASI1_MODEL               — default asi1 | asi1-mini | asi1-ultra
  *
@@ -27,6 +28,10 @@ const KEY_ENV_NAMES = [
   'ASI1_API_KEY',
   'asi1_api_key2_fallback',
   'ASI1_API_KEY2_FALLBACK',
+  // .env ships this spelling (no "2"); without it the second key is silently
+  // ignored and rotation can't fire, since it requires keys.length > 1.
+  'ASI1_API_KEY_FALLBACK',
+  'asi1_api_key_fallback',
 ];
 
 function resolveAsi1ApiKeys() {

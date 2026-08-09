@@ -16,6 +16,7 @@
   const FLOOR_15M_MS = 12 * 60_000;    // guarantee ~1 call per 12–15m window
   const FLOOR_1H_MS = 50 * 60_000;     // guarantee ~1 call per hour
   const WARMUP_MS = 45_000;            // allow first fires after 45s of memory sampling
+  const STALE_15M_MS = 15 * 60_000;    // hard age cap for 15m guidance with no contract closeTime
   const REQUEST_TIMEOUT_MS = Number(
     (typeof window !== 'undefined' && window.__env && window.__env.GROK_RANGE_TIMEOUT_MS) || 55_000
   );
@@ -534,21 +535,34 @@
   }
 
   function parseGrokPriceDir(output, strikeDir = 'above') {
+    // The prompt schema REQUIRES structured "call"/"direction" fields ("UP"|"DOWN")
+    // — see specialized_prompt.js. Trust those FIRST.
+    //
+    // Previously this scanned suggestions.notes for the words UP/DOWN/BULL/BEAR/
+    // LONG/SHORT *anywhere* in the prose and only consulted output.call as a last
+    // resort. Rationale text routinely mentions the opposite side ("momentum is UP
+    // but the risk is to the DOWN side", "no SHORT setup here"), and DOWN was tested
+    // before UP, so mixed prose silently flipped the card against the model's own
+    // call. Keyword-scraping free text cannot see negation or hypotheticals; the
+    // structured field can't be misread. Anything unresolved returns null so
+    // finalizeCall() falls back to the mechanical market-structure signal, which is
+    // a defined fallback rather than a coin flip from prose.
+    const structured = String(
+      (output && output.call) || (output && output.direction) || ''
+    ).trim().toUpperCase();
+    if (structured === 'UP' || structured === 'DOWN') return structured;
+
     const notes = String(
       (output && output.suggestions && output.suggestions.notes) ||
-      (output && output.ai_wording && output.ai_wording.primary_rationale) ||
-      (output && output.call) ||
-      (output && output.direction) || ''
-    ).toUpperCase();
+      (output && output.ai_wording && output.ai_wording.primary_rationale) || ''
+    ).trim().toUpperCase();
     const isBelow = String(strikeDir).toLowerCase() === 'below';
-    if (notes.startsWith('BUY YES')) return isBelow ? 'DOWN' : 'UP';
-    if (notes.startsWith('BUY NO')) return isBelow ? 'UP' : 'DOWN';
-    if (/^\s*UP\b/.test(notes)) return 'UP';
-    if (/^\s*DOWN\b/.test(notes)) return 'DOWN';
-    if (/\bDOWN\b|\bSHORT\b|\bBEAR/.test(notes) && !/^\s*UP\b/.test(notes)) return 'DOWN';
-    if (/\bUP\b|\bLONG\b|\bBULL/.test(notes)) return 'UP';
-    const d = String((output && (output.call || output.direction)) || '').toUpperCase();
-    if (d === 'UP' || d === 'DOWN') return d;
+    // Prefix forms only — the prompt mandates notes START with the call
+    // ("BUY UP" / "BUY DOWN" / "WAIT", or UP/DOWN for the range horizons).
+    if (/^BUY\s+YES\b/.test(notes)) return isBelow ? 'DOWN' : 'UP';
+    if (/^BUY\s+NO\b/.test(notes)) return isBelow ? 'UP' : 'DOWN';
+    if (/^(?:BUY\s+)?UP\b/.test(notes)) return 'UP';
+    if (/^(?:BUY\s+)?DOWN\b/.test(notes)) return 'DOWN';
     return null;
   }
 
@@ -624,7 +638,14 @@
         const grokDir = parseGrokPriceDir(o, snapshot.kalshi15m?.strikeDir);
         const finalized = finalizeCall(horizonMinutes, grokDir, snapshot);
         let call = finalized.call;
-        if (call !== 'UP' && call !== 'DOWN') call = 'UP';
+        if (call !== 'UP' && call !== 'DOWN') {
+          // Was: call = 'UP' — an unresolved direction rendered as a confident green
+          // UP, which is indistinguishable from a real bullish call and made the UI's
+          // neutral 'WAIT' state (orange ◆ in render-layer _oneBlock) unreachable.
+          // Prefer the mechanical call; only show WAIT when there is genuinely nothing.
+          const mechCall = finalized.mech && finalized.mech.call;
+          call = (mechCall === 'UP' || mechCall === 'DOWN') ? mechCall : 'WAIT';
+        }
         const preferredRange = horizonMinutes === 60
           ? resolvePreferredRange(o, snapshot, call, finalized.mech)
           : null;
@@ -634,9 +655,14 @@
           : null;
         const confidence = clamp01(Math.max(finalized.confidence, grokConf != null ? grokConf : 0));
         const k15 = snapshot.kalshi15m || {};
-        const yesSide = horizonMinutes === 15
-          ? priceDirToYesSide(call, k15.strikeDir)
-          : (call === 'UP' ? 'YES' : 'NO');
+        // A non-directional call has no contract side — emitting YES/NO here would
+        // assert a trade the model never made (priceDirToYesSide treats anything
+        // that is not 'UP' as the down side).
+        const yesSide = call === 'WAIT'
+          ? null
+          : (horizonMinutes === 15
+            ? priceDirToYesSide(call, k15.strikeDir)
+            : (call === 'UP' ? 'YES' : 'NO'));
         const kalshiPeg = horizonMinutes === 15
           ? {
               ticker: k15.ticker,
@@ -673,6 +699,11 @@
             + (notesBase ? ` — ${notesBase.replace(/^\s*(UP|DOWN)\b\s*/i, '').slice(0, 100)}` : ''));
         const guidance = {
           ts: now,
+          // Stamped so render-layer can tell model output from the mechanical
+          // fallback (which sets provider:'mechanical'). Note this reports the
+          // CONFIGURED provider, not necessarily the one that answered inside the
+          // assistant's fallback cascade.
+          provider: (res && res.providerStatus && res.providerStatus.provider) || 'grok',
           horizonMinutes,
           call,
           direction: call,
@@ -814,7 +845,13 @@
     if (key === '15m' && g) {
       const k15 = g.kalshiPeg || g.kalshi15m;
       const closeMs = k15 && k15.closeTime ? Date.parse(k15.closeTime) : NaN;
-      if (Number.isFinite(closeMs) && closeMs <= now) {
+      // Age fallback: guidance built when no Kalshi contract could be resolved has
+      // k15 = {} → closeTime undefined → closeMs NaN, so the close check below can
+      // never fire and the entry would live forever, rendering its original call and
+      // colour indefinitely. A 15m call cannot outlive its own window.
+      const ageMs = now - (Number(g.ts) || 0);
+      const expiredByAge = !Number.isFinite(closeMs) && ageMs > STALE_15M_MS;
+      if (expiredByAge || (Number.isFinite(closeMs) && closeMs <= now)) {
         delete _guidance['15m'][coin];
         setTimeout(() => { fire(coin, 15).catch(() => {}); }, 50);
         return null;

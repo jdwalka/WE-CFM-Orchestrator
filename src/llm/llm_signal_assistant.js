@@ -228,6 +228,10 @@ const GOOGLE_API_KEY = resolveGoogleApiKey();
 const GOOGLE_MODEL = process.env.GOOGLE_MODEL || process.env.GEMINI_MODEL || "gemini-2.0-flash";
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || '';
 const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || "~openai/gpt-latest";
+// OpenRouter rejects the whole request with 402 when max_tokens exceeds what the
+// remaining balance can afford ("requested up to 1500, can only afford 1326") —
+// it does not silently truncate. Keep the ask under the balance or every call fails.
+const OPENROUTER_MAX_TOKENS = Number(process.env.OPENROUTER_MAX_TOKENS || 800);
 // Anthropic (Claude) kept for backward/fallback only.
 // xAI (rex) is primary for 5m PTB. Fallback on failure: asi1 → openai → claude → gemini.
 const ANTHROPIC_API_KEY = resolveAnthropicApiKey();
@@ -390,6 +394,12 @@ class LLMSignalAssistant {
         `[LLMSignalAssistant] xAI Grok PRIMARY (model=${XAI_MODEL}, fast=${XAI_MODEL_FAST}, ` +
         `allHorizons=${XAI_PRIMARY_ALL}) — fallback: asi1→openai→claude→gemini`
       );
+      if (process.env.LLM_CASCADE_PRIMARY) {
+        console.log(
+          `[LLMSignalAssistant] ⚠ LLM_CASCADE_PRIMARY=${process.env.LLM_CASCADE_PRIMARY} overrides the above — ` +
+          `that provider is tried FIRST. Unset it to restore xAI-first order.`
+        );
+      }
     } else if (ANTHROPIC_API_KEY) {
       console.log(`[LLMSignalAssistant] (fallback) Claude for 5m PTB (model=${ANTHROPIC_MODEL})`);
     }
@@ -613,11 +623,19 @@ Use this recall only as context, and prioritize current market snapshot data if 
     const is5mPtb = isFiveMinPtbMarket(snapshot);
     const useXai = !!XAI_API_KEY && (XAI_PRIMARY_ALL || is5mPtb);
     const useLegacyClaude = is5mPtb && !XAI_API_KEY && !!ANTHROPIC_API_KEY;
-    const cascade = useXai
+    const baseCascade = useXai
       ? ['xai', 'asi1', 'openai', 'anthropic', 'google', 'openrouter']
       : useLegacyClaude
         ? ['anthropic', 'asi1', 'openai', 'google', 'openrouter']
         : ['asi1', 'google', 'openai', 'openrouter'];
+    // LLM_CASCADE_PRIMARY pins one provider to the front without disturbing the
+    // fallback order behind it. Set it when the default primary is known-dead
+    // (e.g. xAI 403 "no credits") so every call stops paying failed round trips
+    // before reaching a provider that answers. Unset it to restore the default.
+    const primaryOverride = String(process.env.LLM_CASCADE_PRIMARY || '').trim().toLowerCase();
+    const cascade = primaryOverride && baseCascade.includes(primaryOverride)
+      ? [primaryOverride, ...baseCascade.filter((p) => p !== primaryOverride)]
+      : baseCascade;
     console.log(`[LLM] is5mPtb=${is5mPtb} useXai=${useXai} model=${useXai ? XAI_MODEL : 'cascade'} path=${cascade.join('→')}`);
 
     let lastErr = null;
@@ -813,6 +831,7 @@ Use this recall only as context, and prioritize current market snapshot data if 
             url: "https://openrouter.ai/api/v1/chat/completions",
             model,
             key: OPENROUTER_API_KEY,
+            maxTokens: OPENROUTER_MAX_TOKENS,
             extraHeaders: {
               "HTTP-Referer": process.env.OPENROUTER_REFERER || "http://localhost:3000",
               "X-OpenRouter-Title": process.env.OPENROUTER_TITLE || "WE-CFM"
