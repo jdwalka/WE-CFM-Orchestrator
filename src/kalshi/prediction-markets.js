@@ -1609,10 +1609,17 @@
   // v7: added the official Polymarket crypto-price microservice as a trusted source
   // (openPrice exact, prevClose provisional) and allowed an exact openPrice to upgrade
   // a provisional lock exactly once.
-  const POLY5M_PTB_LOCK_VERSION = 7;
+  // v8: REMOVED the crypto-price microservice. Measured against live windows it is
+  // hourly-bucketed, not 5-minute: every 03:xx window returns the 03:00 open
+  // (64820.01), every 02:xx returns 64861.46, changing only at the top of the hour.
+  // That made the PTB correct for 1 window in 12 and up to ~$50 wrong for the rest
+  // (observed: locked 64788.80 against an actual PTB of 64756).
+  // These markets settle on the Chainlink BTC/USD TWAP-30s stream, which no spot or
+  // OHLC feed reproduces, so an approximate source is worse than none: a wrong PTB
+  // shown as [exact-contract] is actively traded on. Rotating the version also purges
+  // the bad values already persisted in localStorage under the v7 key.
+  const POLY5M_PTB_LOCK_VERSION = 8;
   const POLY5M_PTB_TRUSTED_SOURCES = new Set([
-    'polymarket-official-api-openPrice',
-    'polymarket-official-api-prevClose',
     'polymarket-event-page',
     'gamma-market',
     'gamma-event-metadata',
@@ -1635,13 +1642,11 @@
     if (!slug || price == null || !POLY5M_PTB_TRUSTED_SOURCES.has(source)) return null;
     const existing = _poly5mPriceToBeatLocks.get(slug);
     if (existing) {
-      // Allow exact official microservice openPrice or HTML openPrice to upgrade a provisional prevClose fallback
-      const isOfficialOpenUpgrade = source === 'polymarket-official-api-openPrice' || source === 'polymarket-event-page';
-      const wasProvisional = existing.source === 'polymarket-official-api-prevClose' || existing.source === 'pyth-boundary-open';
-      if (!isOfficialOpenUpgrade || !wasProvisional) {
-        return existing;
-      }
-      console.info(`[Poly5M-PTB] Upgrading PTB lock for ${slug} from provisional ${existing.source} ($${existing.price}) to exact official openPrice $${price}`);
+      // PTB locks are strictly immutable once established. The v7 "provisional upgrade"
+      // path existed only to let the crypto-price microservice correct itself; with that
+      // source removed (see v8 note above) there is nothing provisional left to upgrade,
+      // and any mid-window mutation is exactly the drift this is meant to prevent.
+      return existing;
     }
     const locked = Object.freeze({
       version: POLY5M_PTB_LOCK_VERSION,
@@ -1868,27 +1873,13 @@
         const startIso = new Date(startSec * 1000).toISOString().split('.')[0] + 'Z';
         const prevIso = new Date((startSec - 300) * 1000).toISOString().split('.')[0] + 'Z';
 
-        try {
-          // Direct official microservice query for active window
-          const resCurrent = await jsonFetch(`https://polymarket.com/api/crypto/crypto-price?symbol=${sym}&eventStartTime=${encodeURIComponent(startIso)}`).catch(() => null);
-          let apiPtb = toPositiveFiniteNumber(resCurrent?.openPrice);
-          let apiSource = 'polymarket-official-api-openPrice';
-
-          // If current window openPrice not populated yet, query previous window closePrice (identical boundary)
-          if (apiPtb == null) {
-            const resPrev = await jsonFetch(`https://polymarket.com/api/crypto/crypto-price?symbol=${sym}&eventStartTime=${encodeURIComponent(prevIso)}`).catch(() => null);
-            apiPtb = toPositiveFiniteNumber(resPrev?.closePrice);
-            apiSource = 'polymarket-official-api-prevClose';
-          }
-
-          if (apiPtb != null && apiPtb > 0) {
-            _lockPolymarketPriceToBeat(slug, apiPtb, apiSource);
-            _poly5mPriceToBeatCache[slug] = { value: apiPtb, fetchedAt: Date.now() };
-            return apiPtb;
-          }
-        } catch (e) {
-          console.warn(`[Poly5M-PTB] Official microservice query failed for ${slug}:`, e?.message || e);
-        }
+        // The crypto-price microservice used to be queried here for openPrice (and the
+        // previous window's closePrice as a fallback). Both are HOURLY figures: for a
+        // 04:20 window it returns the 04:00 hour open, so the PTB was up to ~$50 wrong
+        // for 11 of every 12 windows. It is deliberately no longer consulted for the
+        // 5-minute PTB. See the v8 note on POLY5M_PTB_LOCK_VERSION.
+        void startIso;
+        void prevIso;
       }
     }
 
