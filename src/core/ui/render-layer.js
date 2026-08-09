@@ -1025,7 +1025,7 @@ function renderMarkets5M() {
                already renders those live, straight from the venue, with nothing to
                parse or drift -- the text version could only ever lag or duplicate it. -->
           <div style="margin-top:8px;">
-            <div style="background:var(--color-surface-2);border-radius:6px;padding:10px;">
+            <div style="background:var(--color-surface-2);border-radius:6px;padding:10px;position:relative;">
               <!-- liveactivity intentionally omitted: it drives a constant internal
                    re-render inside a fixed-size iframe, fighting this page's own
                    refresh cycle. It never fed the model either way -- the iframe is
@@ -1034,6 +1034,43 @@ function renderMarkets5M() {
                    through pm[sym].poly5m (see _modelOdds5m above), sourced straight
                    from prediction-markets.js, independent of what this widget shows. -->
               ${p5?.slug ? `
+                ${(() => {
+                  // Micro-momentum / volume divergence / order book imbalance HUD,
+                  // floated on top of the embed. All three come from feeds already
+                  // live in this app (window.OB, window.ExchangeWS) plus a small
+                  // price ring buffer -- see src/core/microstructure.js. pointer-events
+                  // is disabled so the overlay never blocks clicking through to the
+                  // embed underneath.
+                  const snap = window.Microstructure?.getSnapshot?.(sym);
+                  const mom = snap?.momentum;
+                  const imb = snap?.imbalance;
+                  const vd = snap?.volumeDivergence;
+                  if (!mom && !imb && !vd) {
+                    return `<div style="position:absolute;top:16px;left:16px;z-index:5;pointer-events:none;background:rgba(0,0,0,0.55);border-radius:4px;padding:4px 7px;font-size:9px;color:#9aa;">Microstructure warming up…</div>`;
+                  }
+                  const momPct = mom ? (mom.pct30 ?? mom.pct60) : null;
+                  const momWindow = mom ? (mom.pct30 != null ? '30s' : '60s') : '';
+                  const momColor = mom?.dir === 'UP' ? '#4ade80' : mom?.dir === 'DOWN' ? '#f87171' : '#9aa';
+                  const momIcon = mom?.dir === 'UP' ? '▲' : mom?.dir === 'DOWN' ? '▼' : '–';
+                  const momLine = mom && momPct != null
+                    ? `${momIcon} ${(momPct * 100 >= 0 ? '+' : '')}${(momPct * 100).toFixed(2)}% <span style="opacity:.6">/${momWindow}</span>`
+                    : `<span style="opacity:.6">warming up</span>`;
+
+                  const imbBandLabel = { extreme_bid: 'extreme bid', strong_bid: 'strong bid', lean_bid: 'lean bid', balanced: 'balanced', lean_ask: 'lean ask', strong_ask: 'strong ask', extreme_ask: 'extreme ask' };
+                  const imbColor = !imb?.band ? '#9aa' : imb.band.includes('bid') ? '#4ade80' : imb.band.includes('ask') ? '#f87171' : '#9aa';
+                  const imbLine = imb?.band ? `OB ${imbBandLabel[imb.band] || imb.band}` : `<span style="opacity:.6">OB warming up</span>`;
+
+                  const vdColor = vd?.label === 'BULLISH DIVERGENCE' ? '#4ade80' : vd?.label === 'BEARISH DIVERGENCE' ? '#f87171' : '#9aa';
+                  const vdLine = vd ? `${vd.label === 'CONFIRMING' ? 'Vol confirming' : vd.label === 'NEUTRAL' ? 'Vol neutral' : vd.label.replace(' DIVERGENCE', ' diverg.')} (${Math.round(vd.buyPct)}% buy)` : `<span style="opacity:.6">Vol warming up</span>`;
+
+                  return `
+                    <div style="position:absolute;top:16px;left:16px;z-index:5;pointer-events:none;background:rgba(0,0,0,0.6);backdrop-filter:blur(2px);border-radius:5px;padding:5px 8px;font-size:9.5px;line-height:1.65;color:#e6e6e6;max-width:170px;">
+                      <div style="color:${momColor};font-weight:700;">${momLine}</div>
+                      <div style="color:${imbColor};">${imbLine}</div>
+                      <div style="color:${vdColor};">${vdLine}</div>
+                    </div>
+                  `;
+                })()}
                 <iframe
                   id="p5emb-${sym}"
                   title="${sym} Up or Down 5m — Polymarket"
