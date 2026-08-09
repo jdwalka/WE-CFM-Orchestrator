@@ -70,6 +70,34 @@
     return (latest.price - anchor.price) / anchor.price;
   }
 
+  // Genuine time-weighted average price over the last windowMs -- each sample is
+  // weighted by how long it was the most-recent-known price, not by recency. This
+  // is the correct TWAP definition (what Chainlink's TWAP-30s stream computes at
+  // tick level) and deliberately does NOT weight recent samples more heavily,
+  // which is what would make it a recency-weighted average instead of a TWAP.
+  // Exposed for predictions.js to use as the live price feeding the 5m
+  // price-to-beat comparison, replacing a CME CF RTI-blended price that has no
+  // connection to what these Polymarket/Chainlink contracts actually settle on.
+  function getTwap(sym, windowMs = 30_000) {
+    const buf = priceBuf[sym];
+    if (!buf || buf.length < 2) return null;
+    const now = Date.now();
+    const windowStart = now - windowMs;
+    const inWindow = buf.filter((s) => s.ts >= windowStart);
+    if (inWindow.length < 2) return null;
+    let weightedSum = 0;
+    let totalDuration = 0;
+    for (let i = 0; i < inWindow.length; i++) {
+      const cur = inWindow[i];
+      const nextTs = i + 1 < inWindow.length ? inWindow[i + 1].ts : now;
+      const duration = Math.max(0, nextTs - cur.ts);
+      weightedSum += cur.price * duration;
+      totalDuration += duration;
+    }
+    if (totalDuration <= 0) return null;
+    return weightedSum / totalDuration;
+  }
+
   function getMomentum(sym) {
     const pct30 = pctChangeSince(sym, 30_000);
     const pct60 = pctChangeSince(sym, 60_000);
@@ -126,7 +154,7 @@
     _timer = null;
   }
 
-  window.Microstructure = { start, stop, getSnapshot, getMomentum, getImbalance, getVolumeDivergence };
+  window.Microstructure = { start, stop, getSnapshot, getMomentum, getImbalance, getVolumeDivergence, getTwap };
 
   document.addEventListener('DOMContentLoaded', start);
 })();

@@ -5887,7 +5887,21 @@
     try {
       const p5m = window.PredictionMarkets?.getCoin?.(coin.sym)?.poly5m;
       const ptb = Number(p5m?.targetPriceNum ?? p5m?.priceToBeatNum);
-      const livePx = Number(liveTimingGuard?.livePrice || timed.price || 0);
+      // This comparison decides whether the model calls UP or DOWN against the
+      // actual Polymarket price-to-beat, so its live price must be methodologically
+      // consistent with what the contract settles on: a Chainlink TWAP-30s stream,
+      // NOT a point price. It used to default to liveTimingGuard.livePrice, which
+      // is a blend where CME CF Real-Time Index (RTI) carries the highest weight
+      // (1.0, vs 0.9 ticker / 0.75 Pyth) -- RTI is a traditional-futures benchmark
+      // methodology genuinely correct for Kalshi's own settlement elsewhere in this
+      // file, but has no relationship to what these Chainlink-settled contracts pay
+      // out on. Prefer a genuine time-weighted average (see
+      // microstructure-hud.js getTwap, equal time-weight per sample -- the opposite
+      // of a recency-weighted blend) over the last 30s, matching the contract's own
+      // TWAP window; fall back to the plain candle price (also RTI-free) rather
+      // than the RTI blend if the TWAP buffer has not warmed up yet.
+      const twapPx = window.Microstructure?.getTwap?.(coin.sym, 30_000);
+      const livePx = Number(twapPx || timed.price || 0);
       if (p5m && Number.isFinite(ptb) && ptb > 0 && Number.isFinite(livePx) && livePx > 0) {
         const closeTimeMs = p5m.closeTime ? new Date(p5m.closeTime).getTime() : null;
         const remainingMs = Number.isFinite(closeTimeMs) ? Math.max(0, closeTimeMs - Date.now()) : 5 * 60_000;
