@@ -1655,17 +1655,42 @@
     BNB: '0x82a6c4AF830caa6c97bb504425f6A66165C2c26e',
     // HYPE deliberately absent: no Chainlink feed on Polygon. Falls through to pending.
   };
-  const POLY5M_POLYGON_RPCS = [
-    'https://1rpc.io/matic',
+  // Public Polygon RPCs rate-limit quickly (observed: 1rpc.io returns -32001 "usage
+  // limit" under modest polling), which would silently drop the PTB. Prefer the
+  // project's Alchemy key -- same resolution order as src/feeds/blockchain-scan.js --
+  // and keep the public endpoints only as last-resort fallbacks.
+  const POLY5M_PUBLIC_POLYGON_RPCS = [
     'https://polygon-bor-rpc.publicnode.com',
+    'https://1rpc.io/matic',
     'https://polygon.llamarpc.com',
   ];
+  let _polygonRpcListPromise = null;
+
+  async function _poly5mPolygonRpcs() {
+    if (_polygonRpcListPromise) return _polygonRpcListPromise;
+    _polygonRpcListPromise = (async () => {
+      let key = null;
+      try {
+        key = (typeof process !== 'undefined' && process.env && process.env.ALCHEMY_API_KEY) || null;
+      } catch (e) { /* no process in renderer */ }
+      if (!key && window.electron?.readFile) {
+        try {
+          const txt = await window.electron.readFile('secrets/ALCHEMY-API-KEY.txt');
+          if (txt) key = String(txt).trim();
+        } catch (e) { /* fall through to public RPCs */ }
+      }
+      return key
+        ? [`https://polygon-mainnet.g.alchemy.com/v2/${key}`, ...POLY5M_PUBLIC_POLYGON_RPCS]
+        : POLY5M_PUBLIC_POLYGON_RPCS.slice();
+    })();
+    return _polygonRpcListPromise;
+  }
   const _chainlinkDecimals = new Map();
   const _chainlinkBoundaryCache = new Map(); // `${sym}:${boundarySec}` -> price
 
   async function _polygonEthCall(to, data) {
     let lastErr = null;
-    for (const rpc of POLY5M_POLYGON_RPCS) {
+    for (const rpc of await _poly5mPolygonRpcs()) {
       try {
         const res = await jsonFetch(rpc, {
           method: 'POST',
