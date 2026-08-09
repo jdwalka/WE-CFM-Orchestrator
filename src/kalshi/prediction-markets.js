@@ -1737,20 +1737,42 @@
       const phase = latestId >> 64n;
       const agg = latestId & ((1n << 64n) - 1n);
 
-      let answer = _clWord(latest, 1);
-      let updatedAt = Number(_clWord(latest, 3));
+      const toPrice = (raw) => Number(_clWord(raw, 1)) / 10 ** decimals;
+      let after = null; // earliest round strictly after the boundary
+      let before = null; // latest round at or before the boundary
 
-      // Walk back one round at a time until we are at or before the boundary.
-      for (let i = 1; i <= 24 && updatedAt > boundarySec; i++) {
+      let updatedAt = Number(_clWord(latest, 3));
+      if (updatedAt > boundarySec) after = { price: toPrice(latest), t: updatedAt };
+      else before = { price: toPrice(latest), t: updatedAt };
+
+      // Walk back one round at a time until we bracket the boundary.
+      for (let i = 1; i <= 24 && !before; i++) {
         if (agg - BigInt(i) <= 0n) return null;
         const id = (phase << 64n) | (agg - BigInt(i));
         const raw = await _polygonEthCall(addr, '0x9a6fc8f5' + id.toString(16).padStart(64, '0'));
-        answer = _clWord(raw, 1);
-        updatedAt = Number(_clWord(raw, 3));
+        const t = Number(_clWord(raw, 3));
+        if (t > boundarySec) after = { price: toPrice(raw), t };
+        else before = { price: toPrice(raw), t };
       }
-      if (updatedAt > boundarySec) return null; // never reached the boundary
+      if (!before) return null;
 
-      const price = Number(answer) / 10 ** decimals;
+      // The feed only publishes on deviation/heartbeat (~33s), so the last round
+      // before the boundary can be badly stale and lags a trending price -- that is
+      // the systematic error (a few cents when fresh, ~a dime when 30s stale).
+      // Interpolating between the rounds either side estimates the value AT the
+      // boundary instant and removes the lag bias.
+      let price = before.price;
+      if (after && after.t > before.t) {
+        const f = (boundarySec - before.t) / (after.t - before.t);
+        price = before.price + (after.price - before.price) * f;
+      } else if (Math.floor(Date.now() / 1000) - boundarySec < 120) {
+        // No bracketing round yet. The PTB must be locked exactly once and never
+        // move, so rather than lock the biased point read we stay pending briefly
+        // and let a later refresh lock the interpolated value. After 2 minutes with
+        // no further round we accept the point read rather than show nothing.
+        return null;
+      }
+
       if (!Number.isFinite(price) || price <= 0) return null;
       _chainlinkBoundaryCache.set(cacheKey, price);
       return price;
