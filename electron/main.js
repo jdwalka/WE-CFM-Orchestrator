@@ -3907,7 +3907,15 @@ function createWindow() {
     return { action: 'deny' };
   });
 
-  win.loadFile(path.join(__dirname, '../public/index.html'));
+  // Clear the disk cache before every launch. UI edits to src/core/ui/render-layer.js
+  // and other locally-referenced scripts were repeatedly not showing up after a
+  // restart even though the files on disk were correct -- Chromium's network cache
+  // can persist across process restarts for file:// subresource loads. This removes
+  // that entire class of "my change isn't showing up" confusion at the cost of one
+  // cache rebuild per launch, which is negligible for local files.
+  win.webContents.session.clearCache()
+    .catch((err) => console.warn('[Main] clearCache failed (continuing):', err?.message || err))
+    .finally(() => win.loadFile(path.join(__dirname, '../public/index.html')));
 
   win.webContents.on('console-message', (event, level, message, line, sourceId) => {
     const levelName = ['DEBUG', 'INFO', 'WARN', 'ERROR'][level] || 'LOG';
