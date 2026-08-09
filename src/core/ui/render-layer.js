@@ -1035,6 +1035,7 @@ function renderMarkets5M() {
                    from prediction-markets.js, independent of what this widget shows. -->
               ${p5?.slug ? `
                 <iframe
+                  id="p5emb-${sym}"
                   title="${sym} Up or Down 5m — Polymarket"
                   src="https://embed.polymarket.com/market?market=${encodeURIComponent(p5.slug)}&theme=dark&border=false&creator=JohnDaWalka&height=300"
                   style="width:100%;height:300px;border:0;border-radius:6px;display:block;"
@@ -1046,20 +1047,60 @@ function renderMarkets5M() {
               ` : `<div style="color:var(--color-text-faint);font-size:11px">No Poly 5M market</div>`}
             </div>
 
-            <!-- Model prediction: compact, secondary to the venue's own odds above -->
-            <div style="background:var(--color-surface-2);border-radius:6px;padding:5px 8px;margin-top:6px;display:flex;align-items:center;gap:8px;">
-              <span style="font-size:9px;color:var(--color-text-faint);text-transform:uppercase;letter-spacing:0.05em;">Model</span>
-              ${(() => {
-                const modelOdds = _modelOdds5m(sym);
-                if (modelOdds == null) return `<span style="color:var(--color-text-faint);font-size:9px">Run predictions</span>`;
-                const action = modelOdds >= 0.55 ? '▲ YES' : modelOdds <= 0.45 ? '▼ NO' : '◆ WAIT';
-                const actionColor = modelOdds >= 0.55 ? 'var(--color-green)' : modelOdds <= 0.45 ? 'var(--color-red)' : 'var(--color-text-faint)';
-                return `
-                  <span style="color:${actionColor};font-size:11px;font-weight:700">${Math.round(modelOdds * 100)}%</span>
-                  <span style="font-size:9px;color:${actionColor};">${action}</span>
-                `;
-              })()}
-            </div>
+            <!-- Model + venue stat box: everything here is either the model's own
+                 computed odds or a value already sourced live elsewhere in this
+                 function (p5prob, live5m, displayPolyMkts) -- nothing invented.
+                 The "next window" row deliberately shows Polymarket's own odds for
+                 the upcoming contract, not a model guess: that market has often not
+                 published its PTB yet (see poly5m pending state), and showing a
+                 plausible-looking number for a contract that isn't priced yet is
+                 exactly the mistake this session spent all day undoing for the
+                 price-to-beat itself. -->
+            ${(() => {
+              const modelOdds = _modelOdds5m(sym);
+              const edge = (modelOdds != null && Number.isFinite(p5prob)) ? (modelOdds - p5prob) : null;
+              const edgeColor = edge == null ? 'var(--color-text-faint)' : Math.abs(edge) < 0.03 ? 'var(--color-text-faint)' : (edge > 0 ? 'var(--color-green)' : 'var(--color-red)');
+              const edgeLabel = edge == null ? '' : `Δ${edge >= 0 ? '+' : ''}${Math.round(edge * 100)}pt vs venue`;
+
+              const curIdx = displayPolyMkts.findIndex(m => m.slug === p5?.slug);
+              const nextMkt = curIdx >= 0 ? displayPolyMkts[curIdx + 1] : (displayPolyMkts.length > 1 ? displayPolyMkts[1] : null);
+              const nextTimeLabel = nextMkt?.endDate ? new Date(nextMkt.endDate).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : null;
+              const nextYes = Number(nextMkt?.yes);
+              const nextHasOdds = Number.isFinite(nextYes);
+
+              return `
+                <div style="background:var(--color-surface-2);border-radius:6px;padding:8px 10px;margin-top:6px;">
+                  <div style="display:flex;align-items:center;justify-content:space-between;">
+                    <span style="font-size:9px;color:var(--color-text-faint);text-transform:uppercase;letter-spacing:0.05em;">Model · This Window</span>
+                    ${edgeLabel ? `<span style="font-size:9px;font-weight:600;color:${edgeColor}">${edgeLabel}</span>` : ''}
+                  </div>
+                  ${modelOdds == null ? `
+                    <div style="font-size:9px;color:var(--color-text-faint);margin-top:4px;">Run predictions</div>
+                  ` : (() => {
+                    const action = modelOdds >= 0.55 ? '▲ YES' : modelOdds <= 0.45 ? '▼ NO' : '◆ WAIT';
+                    const actionColor = modelOdds >= 0.55 ? 'var(--color-green)' : modelOdds <= 0.45 ? 'var(--color-red)' : 'var(--color-text-faint)';
+                    return `
+                      <div style="display:flex;align-items:baseline;gap:6px;margin-top:3px;">
+                        <span style="font-size:16px;font-weight:800;color:${actionColor}">${Math.round(modelOdds * 100)}%</span>
+                        <span style="font-size:10px;font-weight:700;color:${actionColor}">${action}</span>
+                      </div>
+                      ${_confBar(modelOdds)}
+                    `;
+                  })()}
+                  ${live5m ? `
+                    <div style="font-size:9px;color:${live5m.dir === 'UP' ? 'var(--color-green)' : 'var(--color-red)'};margin-top:5px;">
+                      ${live5m.state} PTB by <strong>${_fmtSignedPriceDelta(live5m.delta)}</strong> (${(Math.abs(live5m.deltaPct) * 100).toFixed(3)}%)
+                    </div>
+                  ` : ''}
+                  ${nextMkt ? `
+                    <div style="margin-top:6px;padding-top:6px;border-top:1px solid var(--color-border);display:flex;align-items:center;justify-content:space-between;">
+                      <span style="font-size:9px;color:var(--color-text-faint);">Next${nextTimeLabel ? ' ' + nextTimeLabel : ''} (venue)</span>
+                      <span style="font-size:9px;font-weight:700;color:${nextHasOdds ? (nextYes >= 0.5 ? 'var(--color-green)' : 'var(--color-red)') : 'var(--color-text-faint)'};">${nextHasOdds ? Math.round(nextYes * 100) + '% YES' : 'Not open yet'}</span>
+                    </div>
+                  ` : ''}
+                </div>
+              `;
+            })()}
           </div>
 
           <!-- Upcoming 5M contract queue -->
@@ -1120,6 +1161,31 @@ function renderMarkets5M() {
         YES/NO mapping follows strike type (<b>above</b> vs <b>below</b>), then resolves to UP/DOWN.
       </div>
     `;
+
+    // Reuse already-loaded Polymarket iframes instead of letting them reload.
+    // renderMarkets5M() rebuilds this whole panel via one innerHTML write, which is
+    // called far more often than the market data actually changes -- refreshActiveView()
+    // in app-core.js calls it on every debounced live price tick (as often as every
+    // 250-900ms), not just on a real window rollover. Recreating the iframe DOM node
+    // makes the browser reload it from Polymarket even when its src is identical,
+    // which is the blink. Right after the rebuild, for each coin whose slug (and
+    // therefore src) has not actually changed, swap the brand-new (reloading) node
+    // back out for the previous already-loaded one. This runs synchronously in the
+    // same task as the innerHTML write, before the browser paints, so the swap itself
+    // is invisible -- only a genuine window rollover (a real src change) is allowed
+    // to reload.
+    window._p5EmbedCache = window._p5EmbedCache || new Map();
+    COINS_5M.forEach((sym) => {
+      const freshFrame = document.getElementById(`p5emb-${sym}`);
+      if (!freshFrame) { window._p5EmbedCache.delete(sym); return; }
+      const src = freshFrame.getAttribute('src');
+      const cached = window._p5EmbedCache.get(sym);
+      if (cached && cached.src === src && cached.node !== freshFrame) {
+        freshFrame.replaceWith(cached.node);
+      } else {
+        window._p5EmbedCache.set(sym, { src, node: freshFrame });
+      }
+    });
 
     // Live countdown tick
     _markets5mCountdown = setInterval(() => {
