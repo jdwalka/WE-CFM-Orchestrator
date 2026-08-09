@@ -20,6 +20,20 @@
     'H:\\My Drive\\WECRYP\\data',
     'I:\\My Drive\\WECRYP\\data',
   ];
+  // polymarket_raw is an unbounded firehose (observed 2.7GB in a single day,
+  // still growing, one snapshot every POLYMARKET_RAW_SNAPSHOT_MS) and
+  // polymarket_5m regularly reaches 100MB+/day. This app's own sync to the
+  // mapped drive letter is a genuine incremental append (see
+  // data:syncFileIncremental in main.js), but Google Drive for Desktop's own
+  // background sync service still has to watch and re-process the whole file
+  // on every touch -- a multi-GB file modified every CLOUD_SYNC_MS is a known
+  // way to wedge that service into a stuck/degraded state, and its error
+  // surface for that is notoriously generic. That is the far more likely
+  // explanation for a spurious Drive "permission" error on an unrelated file
+  // in the same dated folder than an actual ACL problem, especially on an
+  // admin account. These categories are logged locally only; never queued for
+  // cloud sync.
+  const CLOUD_SYNC_EXCLUDE_CATEGORIES = new Set(['polymarket_raw', 'polymarket_5m']);
   const LOCAL_FLUSH_MS = 5_000;
   const CLOUD_SYNC_MS = 60_000;
   const DRIVE_REPROBE_MS = 300_000;
@@ -446,6 +460,7 @@
   }
 
   function trackCloudPartition(day, category) {
+    if (CLOUD_SYNC_EXCLUDE_CATEGORIES.has(category)) return;
     _cloudPartitions.add(`${day}|${category}`);
     _stats.session.cloudTrackedFiles = _cloudPartitions.size;
   }
