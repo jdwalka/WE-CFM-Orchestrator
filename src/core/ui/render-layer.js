@@ -840,10 +840,19 @@ function renderMarkets5M() {
           ? ` · range ${range.low != null ? '$' + Number(range.low).toLocaleString() : '?'}-${range.high != null ? '$' + Number(range.high).toLocaleString() : '?'}${range.widthPct != null ? ` (${Number(range.widthPct).toFixed(2)}%)` : ''}`
           : '';
         const mem = g.memory ? ` · mem ${g.memory.sampleCount || 0} samples / ${g.memory.sessionMinutes || 0}m` : '';
+        // The panel header says "Grok", but fire() falls back to a mechanical
+        // Kalshi-tied call whenever the LLM errors or returns nothing (it stamps
+        // provider:'mechanical'). Without this badge those calls are indistinguishable
+        // from model output — the card claims Grok said something Grok never said.
+        const provider = String(g.provider || '').toLowerCase();
+        const srcBadge = provider && provider !== 'grok' && provider !== 'xai'
+          ? `<span title="Not model output — ${provider} fallback" style="font-size:9px;font-weight:800;letter-spacing:0.04em;padding:1px 5px;border-radius:8px;background:var(--color-surface-3,rgba(255,255,255,0.08));color:var(--color-orange);border:1px solid var(--color-orange);">${provider.toUpperCase()}</span>`
+          : '';
         return `<div style="margin-top:6px;">
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
             <span style="font-size:10px;color:var(--color-text-faint);font-weight:700;text-transform:uppercase;">${label}</span>
             <span style="color:${callColor};font-weight:800;font-size:13px;">${callIcon} ${call}</span>
+            ${srcBadge}
             <span style="font-size:11px;color:var(--color-text-muted);">${confPct}%${rangeLine}</span>
             <span style="font-size:10px;color:var(--color-text-faint);">${ageLabel}${mem}</span>
           </div>
@@ -1011,27 +1020,27 @@ function renderMarkets5M() {
           <!-- Kalshi 5M + Polymarket + Model row -->
           <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:8px;">
 
-            <!-- Kalshi 5M Column -->
+            <!-- Live Polymarket embed (replaces the old Kalshi 5M column).
+                 Kalshi has no 5-minute crypto series -- KXBTC5M/KXETH5M return 404
+                 while the 15M series exist -- so that column could only ever show
+                 "no market" or a 15M contract mislabelled as 5M. The embed renders
+                 Polymarket's own market, so odds and price-to-beat are correct by
+                 construction with nothing to parse or drift. -->
             <div style="background:var(--color-surface-2);border-radius:6px;padding:10px;">
               <div style="font-size:10px;color:var(--color-text-faint);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:5px;">
-                Kalshi 5M
+                Polymarket Live
               </div>
-              ${(() => {
-                const k5 = coin.kalshi5m;
-                if (!k5) return `<div style="color:var(--color-text-faint);font-size:11px">No Kalshi 5M market</div>`;
-                const k5prob = k5.probability ?? null;
-                return `
-                  <div style="display:flex;gap:8px;align-items:baseline;margin-bottom:4px;">
-                    <span style="color:var(--color-green);font-size:14px;font-weight:700">${_pct(k5prob)}</span>
-                    <span style="font-size:12px;color:var(--color-text-muted)">UP odds</span>
-                  </div>
-                  <div style="font-size:11px;color:var(--color-text-faint);margin-top:3px;" id="k5cd-${sym}" data-close="${k5.closeTime || ''}">⏱ ${_countdown(k5.closeTime)}</div>
-                  ${k5.targetPrice ? `<div style="font-size:11px;color:var(--color-text);margin-top:4px;">Strike <strong>${k5.targetPrice}</strong></div>` : ''}
-                  ${k5.volume != null ? `<div style="font-size:11px;color:var(--color-text-muted);margin-top:4px;">Vol <strong>${_fmtVol(k5.volume)}</strong></div>` : ''}
-                  <div style="font-size:10px;color:var(--color-text-faint);margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="${k5.ticker || ''}">${k5.ticker || 'kalshi5m'}</div>
-                  <div style="font-size:10px;color:var(--color-text-faint);margin-top:3px;">Source: ${k5._proxy15m ? '15M Proxy' : 'Direct 5M'}</div>
-                `;
-              })()}
+              ${p5?.slug ? `
+                <iframe
+                  title="${sym} Up or Down 5m — Polymarket"
+                  src="https://embed.polymarket.com/market?market=${encodeURIComponent(p5.slug)}&theme=dark&liveactivity=true&border=true&creator=JohnDaWalka&height=300"
+                  style="width:100%;height:300px;border:0;border-radius:6px;display:block;"
+                  frameborder="0"
+                  allowtransparency="true"
+                  loading="lazy"></iframe>
+                <a href="https://polymarket.com/event/${encodeURIComponent(p5.slug)}" target="_blank" rel="noopener"
+                   style="display:inline-block;margin-top:5px;font-size:10px;color:var(--color-text-faint);text-decoration:none;">Open on Polymarket ↗</a>
+              ` : `<div style="color:var(--color-text-faint);font-size:11px">No Poly 5M market</div>`}
             </div>
 
             <!-- Polymarket Column -->
