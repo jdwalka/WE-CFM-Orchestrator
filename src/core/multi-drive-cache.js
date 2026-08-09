@@ -1,16 +1,26 @@
 /**
  * ════════════════════════════════════════════════════════════════════════════
- * MULTI-DRIVE INSTANT CACHE SYSTEM
- * 
- * Writes predictions/settlements/errors INSTANTLY to every mounted target the
- * Electron bridge exposes:
+ * MULTI-DRIVE ROLLING CACHE SYSTEM
+ *
+ * Writes predictions/settlements/errors to every mounted target the Electron
+ * bridge exposes:
  *   - all mounted local drives
  *   - mapped/UNC network shares
  *   - OneDrive mirrors
  *   - Google Drive mirrors
  *   - localStorage (browser persistence)
- * 
- * No async delays — synchronous to each drive before returning
+ *
+ * Fire-and-forget, debounced to at most one full rewrite per target per 60s
+ * (see _syncAllDrives). It never was truly synchronous despite the old
+ * comment here claiming so -- record*() calls return immediately and the
+ * actual write happens on a timer. The debounce window was 2s until this app
+ * hit repeated Google Drive "permission or lost internet connection" errors
+ * on this exact file: a full rewrite of a ~1MB file, to every synced target,
+ * sustained roughly every 2 seconds for an entire session, is enough to
+ * destabilize Google Drive Desktop's own background sync service even though
+ * the file itself is nowhere near Drive's size limits. 60s matches
+ * CLOUD_SYNC_MS elsewhere in this app for the same class of rolling
+ * telemetry, and is easily fresh enough for a 2-hour recovery cache.
  * ════════════════════════════════════════════════════════════════════════════
  */
 
@@ -246,10 +256,19 @@
         }
 
         for (const candidate of this._uniquePaths([...googleCandidates])) {
+          // Only the first writable candidate per Google Drive root becomes a
+          // write target -- _candidateCacheDirs() offers two near-duplicate
+          // subfolder names for backward compatibility, and probing/writing
+          // both meant every sync wrote the identical ~1.1MB file twice per
+          // drive letter (4 total writes across H:\ and I:\ for one update).
+          // Google Drive Desktop's own sync service has to notice and
+          // re-upload each one independently; halving the write fanout
+          // directly halves that churn. break, don't continue, once one
+          // candidate under this root is confirmed writable.
           for (const dir of this._candidateCacheDirs(candidate)) {
             const probe = await this._probeWritableDir(dir);
-            if (probe.ok) this.googleDriveFolders.push(dir);
-            else this.lastSyncFailures.push({ path: probe.dirPath, error: probe.error || probe.code || 'probe failed' });
+            if (probe.ok) { this.googleDriveFolders.push(dir); break; }
+            this.lastSyncFailures.push({ path: probe.dirPath, error: probe.error || probe.code || 'probe failed' });
           }
         }
 
@@ -446,7 +465,16 @@
       if (this._syncPending) return;
       this._syncPending = true;
 
-      // Debounce writing to avoid starving the main thread on every prediction
+      // recordPrediction/recordMarketContext/recordInference/recordSettlement
+      // each call this on every event, so at the old 2s debounce this app
+      // sustained a full ~1.1MB rewrite to every target roughly every 2
+      // seconds for the entire session -- hours of that is a well-documented
+      // way to destabilize Google Drive Desktop's own background sync
+      // service (a multi-GB *append-only* file caused the same class of
+      // failure elsewhere in this app; here it's write *frequency* against a
+      // modest file instead of file *size*, same underlying problem). This is
+      // a 2-hour rolling cache -- CLOUD_SYNC_MS elsewhere in this app already
+      // treats 60s as an acceptable telemetry cadence, so match that here.
       setTimeout(() => {
         this._syncPending = false;
         try {
@@ -483,7 +511,7 @@
         } catch (err) {
           console.warn('[MultiDriveCache] Sync failed:', err.message);
         }
-      }, 2000);
+      }, 60_000);
     }
 
     /**
