@@ -1866,23 +1866,40 @@
     // Polymarket Next.js RSC streaming payload contains dehydrated React-Query state entries.
     // We anchor on startIso (e.g. "2026-08-07T11:10:00Z") inside the crypto-prices query
     // entry to guarantee 100% precision for the exact 5-minute contract window.
-    let pos = 0;
-    while ((pos = html.indexOf(startIso, pos)) !== -1) {
-      const snippetBefore = html.slice(Math.max(0, pos - 600), pos);
-      const snippetAfter = html.slice(pos, Math.min(html.length, pos + 300));
+    // The page serialises timestamps WITH milliseconds ("2026-08-09T11:35:00.000Z"),
+    // so anchoring on the second-precision form alone never matched. And in the real
+    // payload the shape is {"startTime":"...","endTime":"...","openPrice":N}, i.e.
+    // openPrice follows the timestamp -- searching only the text before it missed it.
+    // Try both timestamp formats and look on both sides of the anchor.
+    const startIsoMs = new Date(startSec * 1000).toISOString(); // with .000Z
+    for (const anchor of [startIsoMs, startIso]) {
+      let pos = 0;
+      while ((pos = html.indexOf(anchor, pos)) !== -1) {
+        const before = html.slice(Math.max(0, pos - 600), pos);
+        const after = html.slice(pos, Math.min(html.length, pos + 600));
 
-      if (snippetBefore.includes('crypto-prices') || snippetAfter.includes('fiveminute') || snippetBefore.includes('fiveminute')) {
-        const matches = [
-          ...snippetBefore.matchAll(/\\"openPrice\\":\s*([0-9.]+)/g),
-          ...snippetBefore.matchAll(/"openPrice":\s*([0-9.]+)/g),
-          ...snippetBefore.matchAll(/openPrice[^\d]*([0-9.]+)/g)
+        // openPrice immediately after this window's startTime is the contract open.
+        const fwd = [
+          ...after.matchAll(/\\"openPrice\\":\s*([0-9.]+)/g),
+          ...after.matchAll(/"openPrice":\s*([0-9.]+)/g),
         ];
-        if (matches.length > 0) {
-          const op = Number(matches[matches.length - 1][1]);
+        if (fwd.length > 0) {
+          const op = Number(fwd[0][1]);
           if (Number.isFinite(op) && op > 0) return op;
         }
+
+        if (before.includes('crypto-prices') || after.includes('fiveminute') || before.includes('fiveminute')) {
+          const back = [
+            ...before.matchAll(/\\"openPrice\\":\s*([0-9.]+)/g),
+            ...before.matchAll(/"openPrice":\s*([0-9.]+)/g),
+          ];
+          if (back.length > 0) {
+            const op = Number(back[back.length - 1][1]);
+            if (Number.isFinite(op) && op > 0) return op;
+          }
+        }
+        pos += anchor.length;
       }
-      pos += startIso.length;
     }
 
     // Attempt to extract the dehydratedState JSON from HTML (legacy unescaped page format)
@@ -2026,7 +2043,30 @@
         void startIso;
         void prevIso;
 
-        // Read the Chainlink on-chain price as of the window boundary instead.
+        // PRIMARY: Polymarket's own openPrice for this exact window, parsed from the
+        // event page's dehydrated React-Query state. This is the contract's published
+        // number -- the same value the Polymarket UI renders -- so it needs no oracle
+        // approximation. It is not present for the first minutes after a window opens,
+        // in which case we fall through and try again on a later refresh.
+        try {
+          const html = await textFetch(`https://polymarket.com/event/${encodeURIComponent(slug)}`, {
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151 Safari/537.36',
+              'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+              'Accept-Language': 'en-US,en;q=0.9',
+            },
+          });
+          const pmOpen = toPositiveFiniteNumber(_parsePolymarketPriceToBeat(html, slug));
+          if (pmOpen != null && pmOpen > 0) {
+            _lockPolymarketPriceToBeat(slug, pmOpen, 'polymarket-event-page');
+            _poly5mPriceToBeatCache[slug] = { value: pmOpen, fetchedAt: Date.now() };
+            return pmOpen;
+          }
+        } catch (e) {
+          console.warn(`[Poly5M-PTB] Polymarket openPrice lookup failed for ${slug}:`, e?.message || e);
+        }
+
+        // FALLBACK: Chainlink on-chain price as of the window boundary.
         const clPtb = await _chainlinkPriceAtBoundary(sym, startSec);
         if (clPtb != null && clPtb > 0) {
           _lockPolymarketPriceToBeat(slug, clPtb, 'chainlink-onchain-boundary');
