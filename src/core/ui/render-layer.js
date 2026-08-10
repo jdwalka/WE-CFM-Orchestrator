@@ -1258,7 +1258,6 @@ function renderMarkets5M() {
         ${cards}
       </div>
       <div style="padding:10px 0;font-size:11px;color:var(--color-text-faint);">
-        ⚡ <b>Snipe</b> = Kalshi contract closing within 5 min with ≥65% YES or ≤35% probability.
         Prices in <b>¢</b> = cents per $1 contract (65¢ YES = 65% implied YES for that strike).
         YES/NO mapping follows strike type (<b>above</b> vs <b>below</b>), then resolves to UP/DOWN.
       </div>
@@ -1564,7 +1563,7 @@ function renderDebugLog() {
           <button onclick="window._debugIncludeHistorical = !window._debugIncludeHistorical; window.refreshDebugLog?.()" style="padding:5px 10px;background:var(--color-surface-2);color:var(--color-text);border:1px solid var(--color-border);border-radius:5px;font-size:11px;cursor:pointer" title="Historical data can be heavy and freeze slower systems.">${includeHistorical ? 'Historic: ON' : 'Historic: OFF'}</button>
         </div>
 
-        ${card('📡 Live Kalshi Probability Velocity', tbl(
+        ${card('📡 Probability Velocity (inactive — was Kalshi-only, no Polymarket equivalent tracked yet)', tbl(
       ['Coin', 'Trend', '¢/Min', 'Accel', 'Samples', 'Latest YES'],
       velRows
     ))}
