@@ -1850,10 +1850,34 @@
       const chunk = html.substring(queryKeyIndex, queryKeyIndex + 3000);
       const nextQueryStart = chunk.indexOf('{"queryKey":', 20);
       const validChunk = nextQueryStart !== -1 ? chunk.substring(0, nextQueryStart) : chunk;
-      
+
       const openMatches = [...validChunk.matchAll(/"openPrice":\s*([0-9]+(?:\.[0-9]+)?)/g)];
       const op = openMatches.length ? Number(openMatches[0][1]) : NaN; // The first match after the key belongs to this query
       if (Number.isFinite(op) && op > 0) return op;
+
+      // Verified live (2026-08-09): Polymarket moved off Pages Router's
+      // dehydratedState/__NEXT_DATA__ script tag entirely (App Router RSC
+      // streaming now), and in this format each dehydrated query entry puts
+      // "state":{"data":{"openPrice":N,...}} BEFORE its own "queryKey", not
+      // after -- {"dehydratedAt":...,"state":{"data":{"openPrice":N,...}},
+      // "queryKey":[...]}. The forward search above is now the one that never
+      // matches for this entry shape. Bound the backward search to this
+      // query's own object (from its "{"dehydratedAt":" start) so it can never
+      // pick up an adjacent window's openPrice.
+      const entryStart = (() => {
+        const a = html.lastIndexOf('{"dehydratedAt":', queryKeyIndex);
+        const b = html.lastIndexOf('{\\"dehydratedAt\\":', queryKeyIndex);
+        return Math.max(a, b);
+      })();
+      const ownChunk = entryStart !== -1
+        ? html.substring(entryStart, queryKeyIndex)
+        : html.substring(Math.max(0, queryKeyIndex - 2000), queryKeyIndex);
+      const openMatchesBack = [
+        ...ownChunk.matchAll(/\\"openPrice\\":\s*([0-9]+(?:\.[0-9]+)?)/g),
+        ...ownChunk.matchAll(/"openPrice":\s*([0-9]+(?:\.[0-9]+)?)/g),
+      ];
+      const opBack = openMatchesBack.length ? Number(openMatchesBack[openMatchesBack.length - 1][1]) : NaN;
+      if (Number.isFinite(opBack) && opBack > 0) return opBack;
     }
 
     // Deliberately no page-global "grab any openPrice/priceToBeat on the page" fallback
