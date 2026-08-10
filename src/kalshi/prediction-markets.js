@@ -428,6 +428,51 @@
     return v;
   }
 
+  // A single attempt exactly at boundary rollover missed too often (RTDS
+  // socket momentarily behind on the exact tick, or the scrape returning
+  // null) -- once missed, PTB stayed "pending" for the rest of the whole
+  // window instead of resolving within a few seconds. Retry every tick for
+  // a short grace window after rollover instead of giving up after one try.
+  // RTDS is checked every tick (cheap, just reads a cache); the event-page
+  // scrape is throttled since it's a real network fetch. After the grace
+  // window elapses with nothing found, stop -- that means Polymarket
+  // genuinely hasn't published it yet, and "pending" is the honest state.
+  const _pendingPtbLocks = {}; // slug -> { sym, boundaryMs, lastScrapeAttemptTs, scrapeAttempts }
+  const PTB_LOCK_GRACE_MS = 25_000;
+  const PTB_SCRAPE_RETRY_MS = 4_000;
+  const PTB_SCRAPE_MAX_ATTEMPTS = 6;
+
+  function _seedPendingPtbLock(sym, slug, boundaryMs) {
+    if (_getPolymarketPriceToBeatLock(slug)) return;
+    _pendingPtbLocks[slug] = { sym, boundaryMs, lastScrapeAttemptTs: 0, scrapeAttempts: 0 };
+  }
+
+  function _tickPendingPtbLocks() {
+    const now = Date.now();
+    for (const [slug, st] of Object.entries(_pendingPtbLocks)) {
+      if (_getPolymarketPriceToBeatLock(slug)) { delete _pendingPtbLocks[slug]; continue; }
+      if (now - st.boundaryMs > PTB_LOCK_GRACE_MS) { delete _pendingPtbLocks[slug]; continue; }
+
+      const rtds = _getFreshRtdsTwap(st.sym);
+      if (rtds) {
+        _lockPolymarketPriceToBeat(slug, rtds.price, 'polymarket-rtds-twap30');
+        delete _pendingPtbLocks[slug];
+        continue;
+      }
+
+      if (st.scrapeAttempts >= PTB_SCRAPE_MAX_ATTEMPTS) continue;
+      if (now - st.lastScrapeAttemptTs < PTB_SCRAPE_RETRY_MS) continue;
+      st.lastScrapeAttemptTs = now;
+      st.scrapeAttempts++;
+      fetchPolymarketPriceToBeat(slug).then(scraped => {
+        if (Number.isFinite(scraped) && scraped > 0) {
+          _lockPolymarketPriceToBeat(slug, scraped, 'polymarket-event-page');
+          delete _pendingPtbLocks[slug];
+        }
+      }).catch(() => {});
+    }
+  }
+
   const PYTH_LAZER_PRICE_FEED_IDS = { BTC: 1, ETH: 2, SOL: 6, DOGE: 10, XRP: 14, BNB: 15 };
   let _pythRealtimeSnapshot = { fetchedAt: 0, prices: null, inFlight: null };
 
@@ -2846,6 +2891,22 @@ function polymarketSentiment(markets, sym) {
       if (timer) return;
       fetchAll();
       _ensurePolymarketRtdsSocket();
+      // If the app just (re)started within the grace window of an already-
+      // open 5m/15m window, seed a lock attempt for it too -- otherwise it
+      // would sit pending until that window's own next rollover, minutes
+      // away. _tickPendingPtbLocks' own grace-window check (PTB_LOCK_GRACE_MS)
+      // already makes this a no-op if the window opened too long ago to
+      // still be a valid "opening price" sample, so this is safe either way.
+      (() => {
+        const nowSec0 = Math.floor(Date.now() / 1000);
+        const boundary5 = nowSec0 - (nowSec0 % 300);
+        const boundary15 = nowSec0 - (nowSec0 % 900);
+        Object.keys(POLY_5M_COIN_SLUGS).forEach((sym) => {
+          const prefix = POLY_5M_COIN_SLUGS[sym];
+          _seedPendingPtbLock(sym, `${prefix}-updown-5m-${boundary5}`, boundary5 * 1000);
+          _seedPendingPtbLock(sym, `${prefix}-updown-15m-${boundary15}`, boundary15 * 1000);
+        });
+      })();
       timer = setInterval(() => { if (!document.hidden) fetchAll(); }, POLL_MS);
       // Fast-poll: when any 15M contract is < 2 min from close, re-fetch Kalshi every 10s.
       // Ensures price is at most 10s stale for last-call trades.
@@ -2961,28 +3022,14 @@ function polymarketSentiment(markets, sym) {
             window.dispatchEvent(new CustomEvent('predictionmarketsready', { detail: cache }));
           }
 
-          // At exact rollover, establish this window's PTB. Prefer Polymarket's
-          // own live RTDS TWAP feed (sampled at this exact instant -- the only
-          // moment it's valid as an "opening price"), fall back to the event
-          // page scrape when the socket isn't connected/fresh. Both are
-          // Polymarket-sourced; never a provisional spot proxy from elsewhere.
-          Object.keys(POLY_5M_COIN_SLUGS).forEach(async (sym) => {
-            try {
-              const prefix = POLY_5M_COIN_SLUGS[sym];
-              const newSlug = `${prefix}-updown-5m-${currentBoundary}`;
-              let existing = _getPolymarketPriceToBeatLock(newSlug);
-              if (!existing) {
-                const rtds = _getFreshRtdsTwap(sym);
-                if (rtds) {
-                  _lockPolymarketPriceToBeat(newSlug, rtds.price, 'polymarket-rtds-twap30');
-                } else {
-                  const scraped = await fetchPolymarketPriceToBeat(newSlug).catch(() => null);
-                  if (Number.isFinite(scraped) && scraped > 0) {
-                    _lockPolymarketPriceToBeat(newSlug, scraped, 'polymarket-event-page');
-                  }
-                }
-              }
-            } catch (e) {}
+          // At exact rollover, seed a retry-backed PTB lock attempt for this
+          // window (see _tickPendingPtbLocks -- a single attempt right here
+          // missed too often and left PTB stuck on "pending" for the whole
+          // window instead of resolving within seconds).
+          Object.keys(POLY_5M_COIN_SLUGS).forEach((sym) => {
+            const prefix = POLY_5M_COIN_SLUGS[sym];
+            const newSlug = `${prefix}-updown-5m-${currentBoundary}`;
+            _seedPendingPtbLock(sym, newSlug, currentBoundary * 1000);
           });
 
           // Trigger background fetch to get actual PTB and live pricing
@@ -2998,28 +3045,17 @@ function polymarketSentiment(markets, sym) {
         const boundary15 = nowSec - secIn15;
         if (boundary15 > lastBoundary15Sec && lastBoundary15Sec > 0) {
           lastBoundary15Sec = boundary15;
-          Object.keys(POLY_5M_COIN_SLUGS).forEach(async (sym) => {
-            try {
-              const prefix = POLY_5M_COIN_SLUGS[sym];
-              const newSlug15 = `${prefix}-updown-15m-${boundary15}`;
-              let existing = _getPolymarketPriceToBeatLock(newSlug15);
-              if (!existing) {
-                const rtds = _getFreshRtdsTwap(sym);
-                if (rtds) {
-                  _lockPolymarketPriceToBeat(newSlug15, rtds.price, 'polymarket-rtds-twap30');
-                } else {
-                  const scraped = await fetchPolymarketPriceToBeat(newSlug15).catch(() => null);
-                  if (Number.isFinite(scraped) && scraped > 0) {
-                    _lockPolymarketPriceToBeat(newSlug15, scraped, 'polymarket-event-page');
-                  }
-                }
-              }
-            } catch (e) {}
+          Object.keys(POLY_5M_COIN_SLUGS).forEach((sym) => {
+            const prefix = POLY_5M_COIN_SLUGS[sym];
+            const newSlug15 = `${prefix}-updown-15m-${boundary15}`;
+            _seedPendingPtbLock(sym, newSlug15, boundary15 * 1000);
           });
           refreshPoly15M('boundary-clock').catch(() => {});
         } else if (lastBoundary15Sec === 0) {
           lastBoundary15Sec = boundary15;
         }
+
+        _tickPendingPtbLocks();
       }, 1000);
 
       // Independent 15-minute Polymarket pull. Runs on its own cadence,
