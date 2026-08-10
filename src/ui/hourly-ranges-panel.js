@@ -673,13 +673,38 @@
       }
     } catch (_) { grokHtml = ''; }
 
+    // Polymarket 15m Up/Down — pulled by prediction-markets.js refreshPoly15M(),
+    // independent of the Kalshi range buckets above. Shown only when the venue
+    // has actually published probability for this window; never a guess.
+    let poly15mHtml = '';
+    try {
+      const p15 = window.PredictionMarkets?.getCoin?.(sym)?.poly15m;
+      if (p15 && Number.isFinite(Number(p15.probability))) {
+        const upProb = Number(p15.probability);
+        const call = upProb >= 0.5 ? 'UP' : 'DOWN';
+        const col = call === 'UP' ? 'var(--color-green,#26a69a)' : 'var(--color-red,#ef5350)';
+        const ptbNum = Number(p15.priceToBeatNum ?? p15.targetPriceNum);
+        const ptbLabel = p15.targetPrice || (Number.isFinite(ptbNum) && ptbNum > 0
+          ? `$${ptbNum.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 6 })}` : 'pending');
+        const closeLabel15 = p15.closeTime ? timeToClose(p15.closeTime) : null;
+        poly15mHtml = `<div class="hr-grok">
+          <div class="hr-grok-hdr">Polymarket 15m Up/Down</div>
+          <div class="hr-grok-row">
+            <span class="hr-grok-call" style="color:${col}">${call === 'UP' ? '▲' : '▼'} ${Math.round(upProb * 100)}% YES</span>
+            <span class="hr-grok-meta">PTB ${ptbLabel}${closeLabel15 ? ` · closes ${closeLabel15}` : ''}</span>
+          </div>
+          ${p15.slug ? `<a href="https://polymarket.com/event/${encodeURIComponent(p15.slug)}" target="_blank" rel="noopener" style="display:inline-block;margin-top:3px;font-size:10px;color:var(--color-text-faint);text-decoration:none;">Open on Polymarket ↗</a>` : ''}
+        </div>`;
+      }
+    } catch (_) { poly15mHtml = ''; }
+
     return `
       <div class="hr-card">
         <div class="hr-card-header">
           <span class="hr-sym" style="color:${color}">${sym}</span>
           <span class="hr-price">${priceStr}</span>
         </div>
-        <div class="hr-card-body">${body}${grokHtml}</div>
+        <div class="hr-card-body">${body}${grokHtml}${poly15mHtml}</div>
       </div>`;
   }
 

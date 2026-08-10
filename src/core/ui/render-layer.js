@@ -431,7 +431,7 @@ function renderMarkets5M() {
     // (fingerprint changed) or the panel was just freshly mounted (content still
     // holds a different view's markup -- checked via the container's own
     // dataset, which survives other views overwriting content.innerHTML).
-    const fingerprint = COINS_5M.map(s => `${s}:${pm[s]?.poly5m?.slug || ''}`).join('|');
+    const fingerprint = COINS_5M.map(s => `${s}:${pm[s]?.poly5m?.slug || ''}:${pm[s]?.poly5m?.priceToBeatNum ?? pm[s]?.poly5m?.targetPriceNum ?? ''}`).join('|');
     const _now5m = Date.now();
     const stillMounted = content?.dataset?.wecryptoView === 'markets5m';
     if (stillMounted && fingerprint === window._markets5mLastFingerprint
