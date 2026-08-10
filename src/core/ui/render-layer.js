@@ -575,6 +575,13 @@ function renderMarkets5M() {
     function _renderModelBoxBlock(sym, p5, p5prob, live5m, displayPolyMkts) {
       const modelOdds = _modelOdds5m(sym);
       const ptbAnchored = _modelOdds5mIsPtbAnchored(sym);
+      // The PTB dollar figure itself was only ever visible inside the
+      // Polymarket embed (a cross-origin iframe this app can't read out of),
+      // never as plain text on the tab -- even though _modelOdds5m has been
+      // comparing against it the whole time. p5.targetPrice is the same
+      // already-formatted string used elsewhere (the contract queue).
+      const ptbNum = Number(p5?.targetPriceNum ?? p5?.priceToBeatNum);
+      const ptbLabel = p5?.targetPrice || (Number.isFinite(ptbNum) && ptbNum > 0 ? `$${ptbNum.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 6 })}` : null);
       const edge = (modelOdds != null && Number.isFinite(p5prob)) ? (modelOdds - p5prob) : null;
       const edgeColor = edge == null ? 'var(--color-text-faint)' : Math.abs(edge) < 0.03 ? 'var(--color-text-faint)' : (edge > 0 ? 'var(--color-green)' : 'var(--color-red)');
       const edgeLabel = edge == null ? '' : `Δ${edge >= 0 ? '+' : ''}${Math.round(edge * 100)}pt vs venue`;
@@ -590,6 +597,9 @@ function renderMarkets5M() {
           <div style="display:flex;align-items:center;justify-content:space-between;">
             <span style="font-size:9px;color:var(--color-text-faint);text-transform:uppercase;letter-spacing:0.05em;">Model ${ptbAnchored ? '· This Window' : '· Lean (no PTB yet)'}</span>
             ${edgeLabel ? `<span style="font-size:9px;font-weight:600;color:${edgeColor}">${edgeLabel}</span>` : ''}
+          </div>
+          <div style="font-size:11px;color:var(--color-text-faint);margin-top:2px;">
+            PTB <strong style="color:${ptbLabel ? 'var(--color-text)' : 'var(--color-text-faint)'}">${ptbLabel || 'pending'}</strong>
           </div>
           ${modelOdds == null ? `
             <div style="font-size:9px;color:var(--color-text-faint);margin-top:4px;">Run predictions</div>
