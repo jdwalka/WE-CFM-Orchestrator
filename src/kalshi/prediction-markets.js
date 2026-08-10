@@ -853,7 +853,17 @@
 
   // ---- Kalshi 15M -----------------------------------------------------
 
+  // User no longer trades Kalshi. Rather than delete the large surface of
+  // code across this file and its many downstream consumers (app-init,
+  // observability, crash-analysis, quant-layer, etc.) that read Kalshi
+  // fields defensively (kalshi15m/kalshi5m stay null, combinedProb already
+  // falls back to Polymarket-only -- see below), kill it at the source: no
+  // network calls are made, so every consumer just sees "no Kalshi data",
+  // which they already handle. Flip to re-enable.
+  const KALSHI_DISABLED = true;
+
   async function fetchKalshi15M() {
+    if (KALSHI_DISABLED) return {};
     const result = {};
     const coins = Object.keys(KALSHI_15M_SERIES);
     for (let i = 0; i < coins.length; i++) {
@@ -892,6 +902,7 @@
   // falls back to nearest-expiry 15M market as real-time proxy ----
 
   async function fetchKalshi5M() {
+    if (KALSHI_DISABLED) return {};
     const result = {};
     const coins = Object.keys(KALSHI_15M_SERIES);
     // Space series calls so we don't trip Kalshi 429 (7 coins × multi-transport was a storm)
@@ -2537,14 +2548,18 @@ function polymarketSentiment(markets, sym) {
 
     // --- Network Health Reporting ---
     if (window.NetworkHealth) {
-      // Kalshi
-      const kalshiStatus = {
-        status: kalshi15m && Object.values(kalshi15m).some(x => x) ? 'healthy' : 'down',
-        lastFetch: Date.now(),
-        fallback: false,
-        reason: kalshi15m && Object.values(kalshi15m).some(x => x) ? '' : 'No Kalshi 15M data',
-      };
-      window.NetworkHealth.update('Kalshi', kalshiStatus);
+      // Kalshi -- intentionally disabled, not a fetch failure. Report a
+      // neutral status rather than a permanent 'down'/red alert for
+      // something that was turned off on purpose.
+      if (!KALSHI_DISABLED) {
+        const kalshiStatus = {
+          status: kalshi15m && Object.values(kalshi15m).some(x => x) ? 'healthy' : 'down',
+          lastFetch: Date.now(),
+          fallback: false,
+          reason: kalshi15m && Object.values(kalshi15m).some(x => x) ? '' : 'No Kalshi 15M data',
+        };
+        window.NetworkHealth.update('Kalshi', kalshiStatus);
+      }
 
       // Polymarket
       const hasPolyMarkets = Array.isArray(polyMarkets) && polyMarkets.length > 0;
@@ -2577,7 +2592,9 @@ function polymarketSentiment(markets, sym) {
     // Debug: log what we got from Kalshi 15M
     const k15Coins = Object.entries(kalshi15m).filter(([sym, data]) => data !== null).map(([sym]) => sym);
     const k15Empty = Object.entries(kalshi15m).filter(([sym, data]) => data === null).map(([sym]) => sym);
-    if (k15Coins.length === 0) {
+    if (KALSHI_DISABLED) {
+      // Expected -- Kalshi fetching is intentionally off, not a fetch failure.
+    } else if (k15Coins.length === 0) {
       console.error(`[PredictionMarkets] CRITICAL: No Kalshi 15M contracts loaded. Empty coins: ${k15Empty.join(', ')}`);
     } else {
       console.log(`[PredictionMarkets] Loaded Kalshi 15M for: ${k15Coins.join(', ')} (failed: ${k15Empty.join(', ')})`);
@@ -2821,7 +2838,7 @@ function polymarketSentiment(markets, sym) {
     start() {
       if (PredictionMarkets._started) return;
       PredictionMarkets._started = true;
-      window.EndpointTransport?.ensureKalshiWs?.();
+      if (!KALSHI_DISABLED) window.EndpointTransport?.ensureKalshiWs?.();
       if (!PredictionMarkets._tickerBound) {
         PredictionMarkets._tickerBound = true;
         window.addEventListener('kalshi:ticker', onKalshiTicker);

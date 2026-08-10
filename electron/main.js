@@ -7,6 +7,12 @@ const { spawn } = require('child_process');
 const { loadKalshiCredentials, buildKalshiWsAuthHeaders } = require('./kalshi-credentials.js');
 const { normalizeCoinbaseJwtUri } = require('../src/infra/coinbase-jwt-utils');
 
+// User no longer trades Kalshi. Kill it at the source (don't spawn the
+// worker process) rather than tear out the credential/IPC-bridge files --
+// they're inert once nothing starts the worker, and other code already
+// checks for its absence defensively.
+const KALSHI_DISABLED = true;
+
 // --- AMD AOCL & BLAS Optimizations for Downstream C++/Python Binaries ---
 // Force NumPy, PyTorch, and Custom C++ to prioritize AMD AOCL (BLIS/libflame) and avoid Intel MKL throttling on Ryzen.
 process.env.MKL_DEBUG_CPU_TYPE = '5'; // Force MKL to not cripple AMD CPUs if inadvertently loaded
@@ -1419,9 +1425,11 @@ function logStartupHealth(tag = 'snapshot') {
   if (typeof getWebServiceHealth === 'function') {
     webServiceHealth = getWebServiceHealth() || webServiceHealth;
   }
-  const kalshi = typeof getWorkerReadiness === 'function'
-    ? getWorkerReadiness()
-    : { ready: false, readyLatencyMs: null, lastHealthError: 'readiness unavailable' };
+  const kalshi = KALSHI_DISABLED
+    ? { ready: true, readyLatencyMs: null, lastHealthError: null, disabled: true }
+    : (typeof getWorkerReadiness === 'function'
+      ? getWorkerReadiness()
+      : { ready: false, readyLatencyMs: null, lastHealthError: 'readiness unavailable' });
   const pythAgeMs = pythLazerStatus.lastDataTs
     ? Date.now() - pythLazerStatus.lastDataTs
     : null;
@@ -1432,6 +1440,7 @@ function logStartupHealth(tag = 'snapshot') {
       ready: !!kalshi.ready,
       readyLatencyMs: kalshi.readyLatencyMs,
       lastHealthError: kalshi.lastHealthError || null,
+      disabled: !!kalshi.disabled,
     },
     web: {
       started: !!webServiceHealth.started,
@@ -3944,7 +3953,10 @@ app.whenReady().then(async () => {
 
   await startProxy();
   startCexFlowMonitor(); // best-effort; never blocks boot
-  await startKalshiWorker({ bootTimeoutMs: 12000, pollMs: 150 });
+  // User no longer trades Kalshi -- the worker process/IPC bridge stays in
+  // the tree (renderer code still defensively checks for its absence) but
+  // is no longer spawned, so it stops polling Kalshi entirely.
+  if (!KALSHI_DISABLED) await startKalshiWorker({ bootTimeoutMs: 12000, pollMs: 150 });
 
   // --- Orbital Matrix (Redpanda Orchestration + Ingestion & Sync) ---
   (async () => {
