@@ -358,6 +358,76 @@
     return Number.isFinite(n) && n > 0 ? n : null;
   }
 
+  // --- Polymarket RTDS (Real-Time Data Service) live TWAP feed ---
+  // wss://ws-live-data.polymarket.com is Polymarket's own free, credential-free
+  // websocket for the exact Chainlink TWAP series their 5m/15m Up/Down contracts
+  // resolve against (docs.polymarket.com/market-data/chainlink-twap). This is
+  // NOT a Chainlink-direct integration -- it's Polymarket's own relay of it, so
+  // it stays inside the "Polymarket only" rule for PTB.
+  // It only streams the live value going forward (no history/replay after a
+  // disconnect), so it can only ever tell us the true price AT the moment a
+  // window opens -- never retroactively. It is sampled once, at the exact
+  // boundary-clock rollover, and locked immediately; it must never be read
+  // later in a window as a live/current price, or it would be exactly the
+  // "provisional spot proxy" this whole PTB effort has been built to avoid.
+  const RTDS_TWAP_SYMBOL = { BTC: 'btc/usd', ETH: 'eth/usd', SOL: 'sol/usd', XRP: 'xrp/usd', DOGE: 'doge/usd', BNB: 'bnb/usd', HYPE: 'hype/usd' };
+  const _rtdsLiveTwap = {}; // sym -> { price, obsTs, recvAt }
+  let _rtdsSocket = null;
+  let _rtdsPingTimer = null;
+  let _rtdsReconnectTimer = null;
+
+  function _ensurePolymarketRtdsSocket() {
+    if (typeof WebSocket === 'undefined') return;
+    if (_rtdsSocket && (_rtdsSocket.readyState === WebSocket.OPEN || _rtdsSocket.readyState === WebSocket.CONNECTING)) return;
+    try {
+      const ws = new WebSocket('wss://ws-live-data.polymarket.com');
+      _rtdsSocket = ws;
+      ws.addEventListener('open', () => {
+        try {
+          ws.send(JSON.stringify({
+            action: 'subscribe',
+            subscriptions: [{ topic: 'crypto_prices_twap_thirty', type: 'update' }],
+          }));
+        } catch (_) {}
+        if (_rtdsPingTimer) clearInterval(_rtdsPingTimer);
+        _rtdsPingTimer = setInterval(() => { try { ws.send('PING'); } catch (_) {} }, 5_000);
+        console.info('[PredictionMarkets] Polymarket RTDS TWAP socket connected');
+      });
+      ws.addEventListener('message', (evt) => {
+        try {
+          const msg = JSON.parse(evt.data);
+          const payload = msg?.payload;
+          const symKey = payload?.symbol;
+          const value = Number(payload?.value);
+          if (!symKey || !Number.isFinite(value) || value <= 0) return;
+          const sym = Object.keys(RTDS_TWAP_SYMBOL).find(k => RTDS_TWAP_SYMBOL[k] === symKey);
+          if (!sym) return;
+          _rtdsLiveTwap[sym] = { price: value, obsTs: Number(payload.timestamp) || Date.now(), recvAt: Date.now() };
+        } catch (_) {}
+      });
+      const scheduleReconnect = () => {
+        _rtdsSocket = null;
+        if (_rtdsPingTimer) { clearInterval(_rtdsPingTimer); _rtdsPingTimer = null; }
+        if (_rtdsReconnectTimer) return;
+        _rtdsReconnectTimer = setTimeout(() => {
+          _rtdsReconnectTimer = null;
+          try { _ensurePolymarketRtdsSocket(); } catch (_) {}
+        }, 5_000);
+      };
+      ws.addEventListener('close', scheduleReconnect);
+      ws.addEventListener('error', () => { try { ws.close(); } catch (_) {} });
+    } catch (_) {}
+  }
+
+  // Only usable within a few seconds of receipt -- see comment above on why
+  // this must never be treated as a general-purpose live price source.
+  function _getFreshRtdsTwap(sym, maxAgeMs = 8_000) {
+    const v = _rtdsLiveTwap[sym];
+    if (!v) return null;
+    if (Date.now() - v.recvAt > maxAgeMs) return null;
+    return v;
+  }
+
   const PYTH_LAZER_PRICE_FEED_IDS = { BTC: 1, ETH: 2, SOL: 6, DOGE: 10, XRP: 14, BNB: 15 };
   let _pythRealtimeSnapshot = { fetchedAt: 0, prices: null, inFlight: null };
 
@@ -2731,8 +2801,11 @@ function polymarketSentiment(markets, sym) {
 
     let touched = false;
     for (const [sym, poly15m] of Object.entries(results)) {
-      if (!poly15m || !cache[sym]) continue;
-      cache[sym] = { ...cache[sym], poly15m };
+      if (!poly15m) continue;
+      // Don't drop this on the floor if the coin's base cache entry hasn't
+      // been created by fetchAll() yet (real race at app start: refreshPoly15M
+      // fires immediately in start(), same tick as the un-awaited fetchAll()).
+      cache[sym] = { ...(cache[sym] || {}), poly15m };
       touched = true;
     }
     if (touched) {
@@ -2755,6 +2828,7 @@ function polymarketSentiment(markets, sym) {
       }
       if (timer) return;
       fetchAll();
+      _ensurePolymarketRtdsSocket();
       timer = setInterval(() => { if (!document.hidden) fetchAll(); }, POLL_MS);
       // Fast-poll: when any 15M contract is < 2 min from close, re-fetch Kalshi every 10s.
       // Ensures price is at most 10s stale for last-call trades.
@@ -2772,6 +2846,7 @@ function polymarketSentiment(markets, sym) {
 
       // High-precision clock for 5m boundaries to handle instant rollover, settlement, and pre-fetching
       let lastBoundarySec = 0;
+      let lastBoundary15Sec = 0;
       let prefetchTriggered = false;
       setInterval(() => {
         if (document.hidden) return;
@@ -2869,18 +2944,25 @@ function polymarketSentiment(markets, sym) {
             window.dispatchEvent(new CustomEvent('predictionmarketsready', { detail: cache }));
           }
 
-          // At exact rollover, fetch canonical Polymarket Chainlink contract benchmark
-          // PTB comes strictly from Polymarket's event page stream (the single source of truth for settlement).
-          // Never inject provisional spot proxies to avoid mid-contract shifts.
+          // At exact rollover, establish this window's PTB. Prefer Polymarket's
+          // own live RTDS TWAP feed (sampled at this exact instant -- the only
+          // moment it's valid as an "opening price"), fall back to the event
+          // page scrape when the socket isn't connected/fresh. Both are
+          // Polymarket-sourced; never a provisional spot proxy from elsewhere.
           Object.keys(POLY_5M_COIN_SLUGS).forEach(async (sym) => {
             try {
               const prefix = POLY_5M_COIN_SLUGS[sym];
               const newSlug = `${prefix}-updown-5m-${currentBoundary}`;
               let existing = _getPolymarketPriceToBeatLock(newSlug);
               if (!existing) {
-                const scraped = await fetchPolymarketPriceToBeat(newSlug).catch(() => null);
-                if (Number.isFinite(scraped) && scraped > 0) {
-                  _lockPolymarketPriceToBeat(newSlug, scraped, 'polymarket-event-page');
+                const rtds = _getFreshRtdsTwap(sym);
+                if (rtds) {
+                  _lockPolymarketPriceToBeat(newSlug, rtds.price, 'polymarket-rtds-twap30');
+                } else {
+                  const scraped = await fetchPolymarketPriceToBeat(newSlug).catch(() => null);
+                  if (Number.isFinite(scraped) && scraped > 0) {
+                    _lockPolymarketPriceToBeat(newSlug, scraped, 'polymarket-event-page');
+                  }
                 }
               }
             } catch (e) {}
@@ -2892,10 +2974,39 @@ function polymarketSentiment(markets, sym) {
         } else if (lastBoundarySec === 0) {
           lastBoundarySec = currentBoundary;
         }
+
+        // Same exact-instant PTB capture for the 15-minute Up/Down contracts,
+        // piggybacking on this same 1s clock tick rather than a second timer.
+        const secIn15 = nowSec % 900;
+        const boundary15 = nowSec - secIn15;
+        if (boundary15 > lastBoundary15Sec && lastBoundary15Sec > 0) {
+          lastBoundary15Sec = boundary15;
+          Object.keys(POLY_5M_COIN_SLUGS).forEach(async (sym) => {
+            try {
+              const prefix = POLY_5M_COIN_SLUGS[sym];
+              const newSlug15 = `${prefix}-updown-15m-${boundary15}`;
+              let existing = _getPolymarketPriceToBeatLock(newSlug15);
+              if (!existing) {
+                const rtds = _getFreshRtdsTwap(sym);
+                if (rtds) {
+                  _lockPolymarketPriceToBeat(newSlug15, rtds.price, 'polymarket-rtds-twap30');
+                } else {
+                  const scraped = await fetchPolymarketPriceToBeat(newSlug15).catch(() => null);
+                  if (Number.isFinite(scraped) && scraped > 0) {
+                    _lockPolymarketPriceToBeat(newSlug15, scraped, 'polymarket-event-page');
+                  }
+                }
+              }
+            } catch (e) {}
+          });
+          refreshPoly15M('boundary-clock').catch(() => {});
+        } else if (lastBoundary15Sec === 0) {
+          lastBoundary15Sec = boundary15;
+        }
       }, 1000);
 
       // Independent 15-minute Polymarket pull. Runs on its own cadence,
-      // separate from the 5m exact-boundary-rollover clock above.
+      // separate from the exact-boundary-rollover clock above.
       refreshPoly15M('start').catch(() => {});
       setInterval(() => {
         if (document.hidden) return;
