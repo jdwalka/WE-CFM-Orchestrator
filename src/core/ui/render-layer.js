@@ -572,7 +572,7 @@ function renderMarkets5M() {
     // model guess: that market has often not published its PTB yet, and showing a
     // plausible-looking number for a contract that isn't priced yet is exactly the
     // mistake this session spent all day undoing for the price-to-beat itself.
-    function _renderModelBoxBlock(sym, p5, p5prob, live5m, displayPolyMkts) {
+    function _renderModelBoxBlock(sym, p5, p5prob, live5m, displayPolyMkts, rationaleBlockHtml = '', divergenceAlertHtml = '') {
       const modelOdds = _modelOdds5m(sym);
       const ptbAnchored = _modelOdds5mIsPtbAnchored(sym);
       // The PTB dollar figure itself was only ever visible inside the
@@ -606,7 +606,11 @@ function renderMarkets5M() {
           ` : (() => {
             const action = modelOdds >= 0.55 ? '▲ YES' : modelOdds <= 0.45 ? '▼ NO' : '◆ WAIT';
             const actionColor = modelOdds >= 0.55 ? 'var(--color-green)' : modelOdds <= 0.45 ? 'var(--color-red)' : 'var(--color-text-faint)';
+            const actionVerb = modelOdds >= 0.55 ? 'close ABOVE PTB' : modelOdds <= 0.45 ? 'close BELOW PTB' : 'is a coin flip right now';
             return `
+              <div style="font-size:11px;color:var(--color-text);margin-top:4px;">
+                Model believes <strong style="color:${actionColor}">${Math.round(modelOdds * 100)}%</strong> chance to ${actionVerb}
+              </div>
               <div style="display:flex;align-items:baseline;gap:6px;margin-top:3px;">
                 <span style="font-size:16px;font-weight:800;color:${actionColor}">${Math.round(modelOdds * 100)}%</span>
                 <span style="font-size:10px;font-weight:700;color:${actionColor}">${action}</span>
@@ -618,6 +622,12 @@ function renderMarkets5M() {
           ${live5m ? `
             <div style="font-size:9px;color:${live5m.dir === 'UP' ? 'var(--color-green)' : 'var(--color-red)'};margin-top:5px;">
               ${live5m.state} PTB by <strong>${_fmtSignedPriceDelta(live5m.delta)}</strong> (${(Math.abs(live5m.deltaPct) * 100).toFixed(3)}%)
+            </div>
+          ` : ''}
+          ${rationaleBlockHtml || divergenceAlertHtml ? `
+            <div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--color-border);display:flex;flex-direction:column;gap:6px;">
+              ${rationaleBlockHtml}
+              ${divergenceAlertHtml}
             </div>
           ` : ''}
           ${nextMkt ? `
@@ -1115,6 +1125,12 @@ function renderMarkets5M() {
       // Pick the best Poly markets to display (short-term first, then high-vol)
       const displayPolyMkts = (poly5m.length ? poly5m : polyAll).slice(0, 7);
 
+      // Populated by the rationale/divergence blocks below, before the embed
+      // markup is built -- both get consumed inside _renderModelBoxBlock's
+      // combined panel underneath the widget instead of rendering in place.
+      let rationaleBlockHtml = '';
+      let divergenceAlertHtml = '';
+
       return `
         <div class="opp-card" style="border-left:3px solid ${coinColor};padding:14px 16px;">
 
@@ -1132,7 +1148,16 @@ function renderMarkets5M() {
 
           ${combined5m != null ? _confBar(combined5m) : ''}
 
-          <!-- Live Rationale Pre-Prediction Block -->
+          <!-- 5M Micro-indicators -->
+          ${_render5mIndicators(sym)}
+
+          <!-- Grok lives on Hourly Ranges panel (15m + 1h Kalshi), not 5m tab -->
+
+          <!-- Rationale (conviction/drivers) and the market-divergence note both
+               used to render here, above the embed. Moved below the embed instead,
+               combined into one panel with the model's odds/PTB/venue-comparison
+               box, so all the "what does the model actually think" detail lives
+               in one place instead of being split above and below the widget. -->
           ${(() => {
           const p = pred[sym];
           if (!p || !p.rationale) return '';
@@ -1144,22 +1169,17 @@ function renderMarkets5M() {
               <span class="conv-pct" style="color:var(--color-text-faint);font-size:10px">${(r.conviction * 100).toFixed(0)}%</span>
             </div>`;
           const drivers = r.lines.slice(1, 3).map(l => `<div class="rationale-line">${l}</div>`).join('');
-          return `<div class="rationale-block">${locked}${regimeBadge}${conviction}${drivers}</div>`;
+          rationaleBlockHtml = `<div class="rationale-block">${locked}${regimeBadge}${conviction}${drivers}</div>`;
+          return '';
         })()}
-
-          <!-- 5M Micro-indicators -->
-          ${_render5mIndicators(sym)}
-
-          <!-- Grok lives on Hourly Ranges panel (15m + 1h Kalshi), not 5m tab -->
-
-          <!-- Market Divergence Alert -->
           ${primaryMarketProb != null ? (() => {
           const note = _marketNote(sym, primaryMarketProb, primaryMarketLabel);
           const isDivergent = note.includes('DIVERGENCE');
           const isMismatch = note.includes('MISMATCH');
           const bgColor = isDivergent ? 'rgba(255,77,77,0.1)' : isMismatch ? 'rgba(255,193,7,0.1)' : 'rgba(76,175,80,0.1)';
           const borderColor = isDivergent ? 'rgba(255,77,77,0.4)' : isMismatch ? 'rgba(255,193,7,0.4)' : 'rgba(76,175,80,0.3)';
-          return `<div style="background:${bgColor};border:1px solid ${borderColor};border-radius:5px;padding:7px 10px;margin-bottom:8px;font-size:11px;color:var(--color-text);">${note}</div>`;
+          divergenceAlertHtml = `<div style="background:${bgColor};border:1px solid ${borderColor};border-radius:5px;padding:7px 10px;font-size:11px;color:var(--color-text);">${note}</div>`;
+          return '';
         })() : ''}
 
           <!-- Polymarket embed + Model row.
@@ -1202,7 +1222,7 @@ function renderMarkets5M() {
                  plausible-looking number for a contract that isn't priced yet is
                  exactly the mistake this session spent all day undoing for the
                  price-to-beat itself. -->
-            <div id="p5modelwrap-${sym}">${_renderModelBoxBlock(sym, p5, p5prob, live5m, displayPolyMkts)}</div>
+            <div id="p5modelwrap-${sym}">${_renderModelBoxBlock(sym, p5, p5prob, live5m, displayPolyMkts, rationaleBlockHtml, divergenceAlertHtml)}</div>
           </div>
 
           <!-- Upcoming 5M contract queue -->
