@@ -2766,6 +2766,14 @@ function polymarketSentiment(markets, sym) {
         polyMarkets: poly?.markets || [],
         kalshiTitle: k15?.title ?? null,
         probVelocity: getProbVelocity(sym),  // Kalshi YES-price drift (Â¢/min)
+        // _doFetch runs every POLL_MS (15s) and wholesale-replaces `cache`
+        // via `cache = next` below -- carry this forward or it gets dropped
+        // every cycle, only to be restored a few seconds later by
+        // refreshPoly15M's own independent cadence. That's the actual cause
+        // of PTB flickering between a real value and "pending": not a
+        // resolution failure, not a race in refreshPoly15M -- this rebuild
+        // just never included the field in the first place.
+        poly15m: cache[sym]?.poly15m ?? null,
       };
       // Update velocity history AFTER building next[sym] so this cycle feeds next read
       if (k15?.probability != null) trackProbability(sym, k15.probability);
@@ -2936,7 +2944,21 @@ function polymarketSentiment(markets, sym) {
     }
   }
 
+  let _refreshPoly15MInFlight = null;
+
   async function refreshPoly15M(reason = 'manual') {
+    // refreshPoly15M is triggered from several independent places (the 20s
+    // interval, boundary-clock rollovers, start()) with no coordination
+    // between them. This doesn't fix any bug by itself (the actual PTB
+    // flicker turned out to be _doFetch dropping the poly15m field on every
+    // cache rebuild, see next[sym] below) -- it's a plain de-duplication
+    // guard so overlapping calls don't do redundant network work.
+    if (_refreshPoly15MInFlight) return _refreshPoly15MInFlight;
+    _refreshPoly15MInFlight = _doRefreshPoly15M(reason).finally(() => { _refreshPoly15MInFlight = null; });
+    return _refreshPoly15MInFlight;
+  }
+
+  async function _doRefreshPoly15M(reason) {
     const results = {};
     await Promise.all(Object.keys(POLY_5M_COIN_SLUGS).map(async sym => {
       results[sym] = await fetchPolymarket15MBySlug(sym);
@@ -2945,10 +2967,24 @@ function polymarketSentiment(markets, sym) {
     let touched = false;
     for (const [sym, poly15m] of Object.entries(results)) {
       if (!poly15m) continue;
+      const prev = cache[sym]?.poly15m;
+      // Defense in depth on top of the in-flight guard above: never let a
+      // missing/null PTB clobber an already-known good one for the SAME
+      // window (same slug). Whatever the cause, regressing a real number
+      // back to "pending" is the one thing that must never happen.
+      const merged = (poly15m.priceToBeatNum == null && prev?.slug === poly15m.slug && prev?.priceToBeatNum != null)
+        ? {
+          ...poly15m,
+          priceToBeatNum: prev.priceToBeatNum,
+          priceToBeatSource: prev.priceToBeatSource,
+          targetPriceNum: prev.priceToBeatNum,
+          targetPrice: prev.targetPrice,
+        }
+        : poly15m;
       // Don't drop this on the floor if the coin's base cache entry hasn't
       // been created by fetchAll() yet (real race at app start: refreshPoly15M
       // fires immediately in start(), same tick as the un-awaited fetchAll()).
-      cache[sym] = { ...(cache[sym] || {}), poly15m };
+      cache[sym] = { ...(cache[sym] || {}), poly15m: merged };
       touched = true;
     }
     if (touched) {
