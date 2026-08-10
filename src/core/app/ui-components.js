@@ -22,7 +22,11 @@ function predictionCard(p) {
     // modelYesPct = P(projected target ≥ strike) via normal CDF — this is the RIGHT metric.
     const _k15mCV = window.PredictionMarkets?.getCoin(p.sym);
     const _k15mV = _k15mCV?.kalshi15m ?? null;
-    const kalshiProb = _k15mV?.probability ?? _k15mCV?.combinedProb ?? null;
+    // Kalshi fetching is disabled (user no longer trades there) -- _k15mV is
+    // always null now. Prefer the Polymarket 15m Up/Down market directly
+    // (fresher/more precise than the blended combinedProb fallback).
+    const _poly15mV = _k15mCV?.poly15m ?? null;
+    const kalshiProb = _poly15mV?.probability ?? _k15mV?.probability ?? _k15mCV?.combinedProb ?? null;
     const kalshiPct = kalshiProb !== null ? Math.round(kalshiProb * 100) : null;
     const kalshiEdge = kalshiProb !== null ? Math.abs(kalshiProb - 0.5) : null;
     let _kAlignEarly = p.projections?.p15?.kalshiAlign ?? null;
@@ -317,13 +321,16 @@ function predictionCard(p) {
     const scalpCount = mySetups.filter(s => s.type.startsWith('scalp_')).length;
     const contrarianCount = mySetups.filter(s => s.type.startsWith('contrarian_')).length;
 
-    // ---- Kalshi 15M live market row ----
+    // ---- Polymarket 15M Up/Down live market row ----
     // YES resolves if closePrice ≥ targetPriceNum (meet or exceed the reference).
     // NO  resolves if closePrice  < targetPriceNum (falls below the reference).
-    // Show both sides: Kalshi YES/NO prices + model P(≥ ref) / P(< ref).
+    // Kalshi fetching is disabled -- _k15m is always null now. Source this row
+    // from Polymarket's 15m Up/Down market instead (poly15m), which is always
+    // "beat the opening price" (no variable strike direction like Kalshi had).
     const _k15mCoin = window.PredictionMarkets?.getCoin(p.sym);
     const _k15m = _k15mCoin?.kalshi15m ?? null;
-    const _kProb = ind.mktSentiment?.kalshi ?? _k15m?.probability ?? _k15mCoin?.combinedProb ?? null;
+    const _poly15m = _k15mCoin?.poly15m ?? null;
+    const _kProb = ind.mktSentiment?.kalshi ?? _poly15m?.probability ?? _k15m?.probability ?? _k15mCoin?.combinedProb ?? null;
     let _kAlign = p.projections?.p15?.kalshiAlign ?? null;
     if (_kAlign && _k15m && _kAlign.ticker && _k15m.ticker && _kAlign.ticker !== _k15m.ticker) {
       _kAlign = null;
@@ -341,7 +348,10 @@ function predictionCard(p) {
       // YES and NO are complementary — always sum to 100%
       const kYesPct = Math.round(_kProb * 100);
       const kNoPct = 100 - kYesPct;
-      const _rowStrikeDir = (_kAlign?.strikeDir ?? _k15m?.strikeDir ?? _strikeDirEarly) === 'below' ? 'below' : 'above';
+      // Polymarket Up/Down has no variable strike direction like Kalshi did --
+      // it's always "beat the opening price" -- so default to 'above' unless
+      // an actual Kalshi alignment object is still present with one set.
+      const _rowStrikeDir = _poly15m ? 'above' : ((_kAlign?.strikeDir ?? _k15m?.strikeDir ?? _strikeDirEarly) === 'below' ? 'below' : 'above');
       const _rowYesDir = _rowStrikeDir === 'below' ? 'down' : 'up';
       const _rowNoDir = _rowYesDir === 'up' ? 'down' : 'up';
       const kDir = _kProb >= 0.5 ? _rowYesDir : _rowNoDir;
@@ -388,8 +398,8 @@ function predictionCard(p) {
       }
 
       // Reference threshold — "Beat $85.32" for above, "Below $85.32" for below.
-      // Prefer the raw API string (targetPrice) to avoid rounding the Kalshi strike.
-      const refTarget = _k15m?.targetPrice ?? (_kAlign?.ref != null ? fmtPrice(_kAlign.ref) : null);
+      // Prefer the raw API string (targetPrice) to avoid rounding.
+      const refTarget = _poly15m?.targetPrice ?? _k15m?.targetPrice ?? (_kAlign?.ref != null ? fmtPrice(_kAlign.ref) : null);
       const refVerb = _rowStrikeDir === 'below' ? 'Below' : 'Beat';
       const refLine = refTarget
         ? ` <span class="k15-target">${refVerb} ${refTarget}</span>`
@@ -409,12 +419,13 @@ function predictionCard(p) {
 
       // Countdown to settlement
       let countdown = '';
-      if (_k15m?.closeTime) {
-        const msl = new Date(_k15m.closeTime).getTime() - Date.now();
-        const closeUtc4 = formatUtc4Time(_k15m.closeTime);
+      const _closeTimeRow = _poly15m?.closeTime ?? _k15m?.closeTime;
+      if (_closeTimeRow) {
+        const msl = new Date(_closeTimeRow).getTime() - Date.now();
+        const closeUtc4 = formatUtc4Time(_closeTimeRow);
         if (msl > 0) {
           const ts = Math.floor(msl / 1000);
-          countdown = ` <span class="k15-expiry" data-close-ms="${new Date(_k15m.closeTime).getTime()}">⏱ ${Math.floor(ts / 60)}m${String(ts % 60).padStart(2, '0')}s · UTC-4 ${closeUtc4}</span>`;
+          countdown = ` <span class="k15-expiry" data-close-ms="${new Date(_closeTimeRow).getTime()}">⏱ ${Math.floor(ts / 60)}m${String(ts % 60).padStart(2, '0')}s · UTC-4 ${closeUtc4}</span>`;
         } else {
           countdown = ` <span class="k15-expiry k15-settling">⏱ SETTLING</span>`;
         }
@@ -428,7 +439,8 @@ function predictionCard(p) {
         return `<div class="ind-item"><span class="ind-name">CFM Context</span><span class="ind-val ${dir}">${String(cfmData.bias).toUpperCase()} · ${mktContext}</span></div>`;
       })();
 
-      return `<div class="ind-item k15m-row"><span class="ind-name">Kalshi 15M</span><span class="ind-val ${kCls}">${probLine}${refLine}${gapLine}${countdown}</span></div>${cfmRow}`;
+      const _rowLabel = _poly15m ? 'Polymarket 15M' : 'Kalshi 15M';
+      return `<div class="ind-item k15m-row"><span class="ind-name">${_rowLabel}</span><span class="ind-val ${kCls}">${probLine}${refLine}${gapLine}${countdown}</span></div>${cfmRow}`;
     })();
 
     const model5mRow = (() => {
