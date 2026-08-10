@@ -1730,6 +1730,13 @@
   const POLY5M_PTB_LOCK_VERSION = 8;
   const POLY5M_PTB_TRUSTED_SOURCES = new Set([
     'polymarket-event-page',
+    // Polymarket's own live RTDS TWAP-30s feed (wss://ws-live-data.polymarket.com),
+    // sampled once at the exact instant a window opens -- the same Chainlink
+    // TWAP series these contracts resolve against, not a third-party proxy.
+    // Was missing from this allowlist since the feature was added, so every
+    // RTDS-sourced lock attempt was silently rejected here and fell through
+    // to "pending" no matter how well the capture/retry logic worked.
+    'polymarket-rtds-twap30',
     'gamma-market',
     'gamma-event-metadata',
     'gamma-price-to-beat',
