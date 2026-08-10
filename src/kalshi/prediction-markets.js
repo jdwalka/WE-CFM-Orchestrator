@@ -453,13 +453,9 @@
       if (_getPolymarketPriceToBeatLock(slug)) { delete _pendingPtbLocks[slug]; continue; }
       if (now - st.boundaryMs > PTB_LOCK_GRACE_MS) { delete _pendingPtbLocks[slug]; continue; }
 
-      const rtds = _getFreshRtdsTwap(st.sym);
-      if (rtds) {
-        _lockPolymarketPriceToBeat(slug, rtds.price, 'polymarket-rtds-twap30');
-        delete _pendingPtbLocks[slug];
-        continue;
-      }
-
+      // RTDS is deliberately not used here -- see POLY5M_PTB_TRUSTED_SOURCES.
+      // Only the event-page scrape (Polymarket's own closed-window continuity
+      // record) can produce an exact value, so that's the only thing retried.
       if (st.scrapeAttempts >= PTB_SCRAPE_MAX_ATTEMPTS) continue;
       if (now - st.lastScrapeAttemptTs < PTB_SCRAPE_RETRY_MS) continue;
       st.lastScrapeAttemptTs = now;
@@ -1730,13 +1726,17 @@
   const POLY5M_PTB_LOCK_VERSION = 8;
   const POLY5M_PTB_TRUSTED_SOURCES = new Set([
     'polymarket-event-page',
-    // Polymarket's own live RTDS TWAP-30s feed (wss://ws-live-data.polymarket.com),
-    // sampled once at the exact instant a window opens -- the same Chainlink
-    // TWAP series these contracts resolve against, not a third-party proxy.
-    // Was missing from this allowlist since the feature was added, so every
-    // RTDS-sourced lock attempt was silently rejected here and fell through
-    // to "pending" no matter how well the capture/retry logic worked.
-    'polymarket-rtds-twap30',
+    // 'polymarket-rtds-twap30' deliberately NOT trusted: verified live that
+    // Polymarket's RTDS TWAP-30s value sampled a few seconds after rollover
+    // is a rolling 30-second average straddling the boundary, not the exact
+    // print Polymarket itself recorded as the window's official open -- a
+    // real ~$21 discrepancy on BTC, not noise. Structurally biased whenever
+    // price moves during that window, so it can never be "exact," only
+    // "close." Kept the RTDS plumbing (still useful context elsewhere) but
+    // it must never lock a PTB. See 'polymarket-event-page' scraping below
+    // for the actual exact source: Polymarket's own closed-window
+    // continuity record (previous window's official close == next window's
+    // official open).
     'gamma-market',
     'gamma-event-metadata',
     'gamma-price-to-beat',
@@ -1857,6 +1857,40 @@
     // entry and return its openPrice -- one window early, which is where the residual
     // ~10c came from.
     const startIsoMs = new Date(startSec * 1000).toISOString(); // with .000Z
+
+    // Verified live (2026-08-10): Polymarket's own closed-window continuity
+    // record is the most trustworthy scraped source available -- it's their
+    // own resolved settlement value, not a live/approximate read. By TWAP
+    // continuity a window's official open price equals the immediately
+    // preceding window's official close price. Each closed-window entry has
+    // the literal shape {"startTime":...,"endTime":...,"openPrice":N,
+    // "closePrice":M,"outcome":...} -- find the entry whose endTime equals
+    // THIS window's startTime, and read ITS closePrice (not the openPrice on
+    // that same match, which belongs to the earlier window's own open).
+    // This becomes available shortly after the preceding window closes, i.e.
+    // almost immediately once our own window opens -- unlike the "openPrice"
+    // anchor below, which only fires for an in-progress window if Polymarket
+    // has separately embedded its own live query (verified unreliable).
+    const endTimeAnchors = [];
+    for (const iso of [startIsoMs, startIso]) {
+      endTimeAnchors.push(`"endTime":"${iso}"`, `\\"endTime\\":\\"${iso}\\"`);
+    }
+    for (const anchor of endTimeAnchors) {
+      let pos = 0;
+      while ((pos = html.indexOf(anchor, pos)) !== -1) {
+        const after = html.slice(pos, Math.min(html.length, pos + 300));
+        const closeMatches = [
+          ...after.matchAll(/\\"closePrice\\":\s*([0-9.]+)/g),
+          ...after.matchAll(/"closePrice":\s*([0-9.]+)/g),
+        ];
+        if (closeMatches.length > 0) {
+          const cp = Number(closeMatches[0][1]);
+          if (Number.isFinite(cp) && cp > 0) return cp;
+        }
+        pos += anchor.length;
+      }
+    }
+
     const anchors = [];
     for (const iso of [startIsoMs, startIso]) {
       anchors.push(`"startTime":"${iso}"`, `\\"startTime\\":\\"${iso}\\"`);
@@ -2044,6 +2078,36 @@
     return null;
   }
 
+  // Verified live (2026-08-10) by watching the actual Polymarket page make this
+  // exact request: clicking the "Price To Beat" chart view on an event page
+  // fires GET /api/chainlink-candles?symbol=..&interval=5m|15m&limit=30&
+  // endTime=<ms>&twapEnabled=true&twapLookbackSeconds=30, returning proper OHLC
+  // candles keyed by window-start unix-seconds. This is the exact source the
+  // "Price To Beat: $X" figure on Polymarket's own UI comes from -- a real,
+  // documented-shape REST endpoint, not something that depends on what the SSR
+  // payload happens to include on any given request (confirmed unreliable: a
+  // live test found zero occurrences of the SSR-embedded data 78 seconds into
+  // an active window). limit must be exactly 30 -- any other value 400s.
+  async function fetchPolymarketChainlinkCandleOpen(sym, horizonTag, boundarySec) {
+    try {
+      const interval = horizonTag === '15m' ? '15m' : '5m';
+      const url = `https://polymarket.com/api/chainlink-candles?symbol=${encodeURIComponent(sym)}&interval=${interval}&limit=30&endTime=${Date.now()}&twapEnabled=true&twapLookbackSeconds=30`;
+      const txt = await textFetch(url, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151 Safari/537.36',
+          'Accept': 'application/json',
+        },
+      });
+      const data = JSON.parse(txt);
+      const candle = Array.isArray(data?.candles) ? data.candles.find(c => c.time === boundarySec) : null;
+      const open = toPositiveFiniteNumber(candle?.open);
+      return open;
+    } catch (e) {
+      console.warn(`[Poly5M-PTB] chainlink-candles lookup failed for ${sym} ${horizonTag} ${boundarySec}:`, e?.message || e);
+      return null;
+    }
+  }
+
   async function fetchPolymarketPriceToBeat(slug) {
     if (!slug) return null;
     const cached = _poly5mPriceToBeatCache[slug];
@@ -2053,7 +2117,8 @@
     if (slugMatch) {
       const symMap = { btc: 'BTC', eth: 'ETH', sol: 'SOL', xrp: 'XRP', doge: 'DOGE', hype: 'HYPE', bnb: 'BNB' };
       const sym = symMap[slugMatch[1].toLowerCase()];
-      const windowSec = slugMatch[2].toLowerCase() === '15m' ? 900 : 300;
+      const horizonTag = slugMatch[2].toLowerCase();
+      const windowSec = horizonTag === '15m' ? 900 : 300;
       const startSec = Number(slugMatch[3]);
       if (sym && Number.isFinite(startSec)) {
         const startIso = new Date(startSec * 1000).toISOString().split('.')[0] + 'Z';
@@ -2067,11 +2132,20 @@
         void startIso;
         void prevIso;
 
-        // PRIMARY: Polymarket's own openPrice for this exact window, parsed from the
-        // event page's dehydrated React-Query state. This is the contract's published
-        // number -- the same value the Polymarket UI renders -- so it needs no oracle
-        // approximation. It is not present for the first minutes after a window opens,
-        // in which case we fall through and try again on a later refresh.
+        // PRIMARY: the same chainlink-candles REST endpoint Polymarket's own
+        // "Price To Beat" UI calls.
+        const candleOpen = await fetchPolymarketChainlinkCandleOpen(sym, horizonTag, startSec);
+        if (candleOpen != null && candleOpen > 0) {
+          _lockPolymarketPriceToBeat(slug, candleOpen, 'polymarket-event-page');
+          _poly5mPriceToBeatCache[slug] = { value: candleOpen, fetchedAt: Date.now() };
+          return candleOpen;
+        }
+
+        // SECONDARY: Polymarket's own openPrice for this exact window, parsed from the
+        // event page's dehydrated React-Query state. Kept as a fallback for whatever
+        // this REST endpoint doesn't cover (it's undocumented, so treat it as best-
+        // effort); not present for the first minutes after a window opens, in which
+        // case we fall through and try again on a later refresh.
         try {
           const html = await textFetch(`https://polymarket.com/event/${encodeURIComponent(slug)}`, {
             headers: {
