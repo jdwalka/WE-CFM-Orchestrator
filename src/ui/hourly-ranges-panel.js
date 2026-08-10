@@ -709,13 +709,18 @@
       }
     } catch (_) { poly15mHtml = ''; }
 
+    // Kalshi ranges/Grok (body, grokHtml) are computed above but no longer
+    // rendered -- Kalshi isn't traded here anymore, this card is Polymarket 15m
+    // Up/Down only. Left the fetch/compute in place since HourlyRangesPanel's
+    // get15mMarket() is part of its public API and other modules may still
+    // read it even though this card doesn't display it.
     return `
       <div class="hr-card">
         <div class="hr-card-header">
           <span class="hr-sym" style="color:${color}">${sym}</span>
           <span class="hr-price">${priceStr}</span>
         </div>
-        <div class="hr-card-body">${poly15mHtml}${body}${grokHtml}</div>
+        <div class="hr-card-body">${poly15mHtml || '<div class="hr-empty">Loading Polymarket 15m market…</div>'}</div>
       </div>`;
   }
 
@@ -725,8 +730,8 @@
     return `
       <div class="hr-panel" id="hourly-ranges-panel">
         <div class="hr-panel-hdr">
-          <h2 class="hr-panel-title">⏱ Kalshi Hourly Ranges + Grok 15m/1h</h2>
-          <span class="hr-panel-updated">Updated ${now} · Grok pegs to ladder buckets (UP/DOWN only)</span>
+          <h2 class="hr-panel-title">⏱ Polymarket 15m Up/Down</h2>
+          <span class="hr-panel-updated">Updated ${now}</span>
         </div>
         <div class="hr-grid">
           ${COINS.map(buildCoinCard).join('')}
