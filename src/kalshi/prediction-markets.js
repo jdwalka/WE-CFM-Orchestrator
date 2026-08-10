@@ -1685,7 +1685,11 @@
       if (Number.isFinite(ptb) && ptb > 0) return ptb;
     }
 
-    const slugMatch = slug.match(/^([a-z0-9-]+)-updown-5m-(\d+)$/i);
+    // Verified live (2026-08-09) against Polymarket's own dehydrated queryKey:
+    // ["crypto-prices","price","BTC","<startIso>","fifteen","<endIso>",true,60]
+    // -- the 15-minute horizon literal is "fifteen", NOT "fifteenminute"; naming
+    // it by analogy with the 5-minute "fiveminute" would have been wrong.
+    const slugMatch = slug.match(/^([a-z0-9-]+)-updown-(5m|15m)-(\d+)$/i);
     if (!slugMatch) return null;
     const querySymbols = {
       btc: 'BTC', bitcoin: 'BTC',
@@ -1697,11 +1701,14 @@
       bnb: 'BNB', binancecoin: 'BNB'
     };
     const querySymbol = querySymbols[slugMatch[1].toLowerCase()];
-    const startSec = Number(slugMatch[2]);
+    const horizonTag = slugMatch[2].toLowerCase();
+    const windowSec = horizonTag === '15m' ? 900 : 300;
+    const horizonLiteral = horizonTag === '15m' ? 'fifteen' : 'fiveminute';
+    const startSec = Number(slugMatch[3]);
     if (!querySymbol || !Number.isFinite(startSec)) return null;
 
     const startIso = new Date(startSec * 1000).toISOString().split('.')[0] + 'Z';
-    const endIso = new Date((startSec + 300) * 1000).toISOString().split('.')[0] + 'Z';
+    const endIso = new Date((startSec + windowSec) * 1000).toISOString().split('.')[0] + 'Z';
 
     // Polymarket Next.js RSC streaming payload contains dehydrated React-Query state entries.
     // We anchor on startIso (e.g. "2026-08-07T11:10:00Z") inside the crypto-prices query
@@ -1737,7 +1744,7 @@
           if (Number.isFinite(op) && op > 0) return op;
         }
 
-        if (before.includes('crypto-prices') || after.includes('fiveminute') || before.includes('fiveminute')) {
+        if (before.includes('crypto-prices') || after.includes(horizonLiteral) || before.includes(horizonLiteral)) {
           const back = [
             ...before.matchAll(/\\"openPrice\\":\s*([0-9.]+)/g),
             ...before.matchAll(/"openPrice":\s*([0-9.]+)/g),
@@ -1790,7 +1797,10 @@
       const normalizeIso = value => typeof value === 'string' ? value.replace('.000Z', 'Z') : '';
 
       // Prefer the contract's exact Chainlink opening-price query. Symbol-only
-      // matching is unsafe because the page can hydrate adjacent 5m windows.
+      // matching is unsafe because the page can hydrate adjacent windows.
+      // Verified live (2026-08-09) this array shape is identical between 5m and
+      // 15m -- only the horizon literal at index 4 differs ("fiveminute" vs
+      // "fifteen").
       const openingPriceQuery = stateJson.queries.find(q => {
         const key = q.queryKey;
         return Array.isArray(key)
@@ -1798,7 +1808,7 @@
           && key[1] === 'price'
           && key[2] === querySymbol
           && normalizeIso(key[3]) === normalizedStartIso
-          && key[4] === 'fiveminute'
+          && key[4] === horizonLiteral
           && normalizeIso(key[5]) === normalizedEndIso;
       });
       const exactOpenPrice = toPositiveFiniteNumber(openingPriceQuery?.state?.data?.openPrice);
@@ -1807,13 +1817,20 @@
       // During the first moments of a window, the opening query may not yet be
       // populated. The immediately preceding Chainlink close is the identical
       // boundary, but accept it only when both query and row timestamps match.
+      // Unlike the crypto-prices key above, this one's shape genuinely differs
+      // per horizon -- verified live the 15m array carries an extra numeric
+      // element between the horizon literal and the timestamp
+      // (["past-results","BTC","fifteen",4,"<startIso>",...]) that the 5m array
+      // does not have. Rather than hardcode either shape, just require the
+      // horizon literal and the target timestamp to both appear somewhere in
+      // the key, in order -- correct regardless of exactly which index the
+      // timestamp lands at.
       const pastResultsQuery = stateJson.queries.find(q => {
         const key = q.queryKey;
-        return Array.isArray(key)
-          && key[0] === 'past-results'
-          && key[1] === querySymbol
-          && key[2] === 'fiveminute'
-          && normalizeIso(key[3]) === normalizedStartIso;
+        if (!Array.isArray(key) || key[0] !== 'past-results' || key[1] !== querySymbol) return false;
+        const literalIdx = key.indexOf(horizonLiteral);
+        if (literalIdx === -1) return false;
+        return key.slice(literalIdx + 1).some(v => normalizeIso(v) === normalizedStartIso);
       });
       const pastResults = pastResultsQuery?.state?.data?.data?.results
         || pastResultsQuery?.state?.data?.results;
@@ -1826,7 +1843,7 @@
 
     // Legacy page fallback: retain exact full query-key matching. Never use a
     // symbol-only or page-global price because future windows share this HTML.
-    const queryKey = JSON.stringify(['crypto-prices', 'price', querySymbol, startIso, 'fiveminute', endIso]);
+    const queryKey = JSON.stringify(['crypto-prices', 'price', querySymbol, startIso, horizonLiteral, endIso]);
     const queryKeyIndex = html.indexOf(`"queryKey":${queryKey}`);
     if (queryKeyIndex !== -1) {
       // The state and data for this query key are located AFTER the queryKey in the JSON string.
@@ -1875,14 +1892,15 @@
     const cached = _poly5mPriceToBeatCache[slug];
     if (cached && (cached.value != null || Date.now() - cached.fetchedAt < 500)) return cached.value;
 
-    const slugMatch = slug.match(/^([a-z0-9-]+)-updown-5m-(\d+)$/i);
+    const slugMatch = slug.match(/^([a-z0-9-]+)-updown-(5m|15m)-(\d+)$/i);
     if (slugMatch) {
       const symMap = { btc: 'BTC', eth: 'ETH', sol: 'SOL', xrp: 'XRP', doge: 'DOGE', hype: 'HYPE', bnb: 'BNB' };
       const sym = symMap[slugMatch[1].toLowerCase()];
-      const startSec = Number(slugMatch[2]);
+      const windowSec = slugMatch[2].toLowerCase() === '15m' ? 900 : 300;
+      const startSec = Number(slugMatch[3]);
       if (sym && Number.isFinite(startSec)) {
         const startIso = new Date(startSec * 1000).toISOString().split('.')[0] + 'Z';
-        const prevIso = new Date((startSec - 300) * 1000).toISOString().split('.')[0] + 'Z';
+        const prevIso = new Date((startSec - windowSec) * 1000).toISOString().split('.')[0] + 'Z';
 
         // The crypto-price microservice used to be queried here for openPrice (and the
         // previous window's closePrice as a fallback). Both are HOURLY figures: for a
@@ -2588,6 +2606,118 @@ function polymarketSentiment(markets, sym) {
     return results;
   }
 
+  // ── Polymarket 15-minute pull ────────────────────────────────────────────
+  // Deliberately leaner than the 5-minute pipeline above. That pipeline's
+  // immutable PTB locking, Pyth/Chainlink cross-referencing, and multi-window
+  // lookahead were all built specifically to solve 5-minute-window timing
+  // pressure across many iterations; 15-minute windows have far more slack,
+  // and Kalshi's own 15M pipeline already provides model-comparison logic
+  // elsewhere in this file. This pulls the market, its live odds, and a
+  // best-effort PTB via the same generalized parser/fetcher used for 5m
+  // (fetchPolymarket5MMarketCandidate, _parseUpProb, fetchPolymarketPriceToBeat,
+  // _lockPolymarketPriceToBeat -- all horizon-agnostic; verified live against
+  // Polymarket's actual 15m slug/queryKey shapes, not assumed by analogy with
+  // 5m). No immutable-lock version namespace of its own is needed: the lock
+  // key is the full slug string, which already encodes "15m" vs "5m", so
+  // reusing the same lock store cannot collide between horizons.
+  const _poly15mCache = {};
+
+  async function fetchPolymarket15MBySlug(sym) {
+    const coinSlugPrefix = POLY_5M_COIN_SLUGS[sym];
+    if (!coinSlugPrefix) return null;
+
+    const nowSec = Math.floor(Date.now() / 1000);
+    const windowTs = nowSec - (nowSec % 900);
+    const cached = _poly15mCache[sym];
+    if (cached && cached.windowTs === windowTs && Date.now() - cached.fetchedAt < (cached.data?.priceToBeatNum != null ? 30_000 : 5_000)) {
+      return cached.data;
+    }
+
+    const slug = `${coinSlugPrefix}-updown-15m-${windowTs}`;
+    try {
+      const hit = await fetchPolymarket5MMarketCandidate(sym, slug);
+      const m = hit?.market;
+      if (!m) return null;
+      const upProb = _parseUpProb(m);
+      if (upProb === null) return null;
+
+      const title = m.question || m.title || `${sym} Up or Down 15M`;
+      const endDate = m.endDate || m.end_date_iso || m.end_date || null;
+      const startDate = new Date(windowTs * 1000).toISOString();
+      const volume = parseFloat(m.volume24hr || m.volumeNum || m.volume || 0) || 0;
+      const marketSlug = m.slug || slug;
+
+      let priceToBeatNum = null;
+      let priceToBeatSource = null;
+
+      const existingLock = _getPolymarketPriceToBeatLock(marketSlug);
+      if (existingLock) {
+        priceToBeatNum = existingLock.price;
+        priceToBeatSource = existingLock.source;
+      } else {
+        if (Number.isFinite(m.priceToBeat) && m.priceToBeat > 0) {
+          priceToBeatNum = m.priceToBeat;
+          priceToBeatSource = 'gamma-market';
+        } else if (m.eventMetadata && Number.isFinite(m.eventMetadata.priceToBeat)) {
+          priceToBeatNum = m.eventMetadata.priceToBeat;
+          priceToBeatSource = 'gamma-event-metadata';
+        }
+        if (priceToBeatNum == null) {
+          try {
+            const scraped = await fetchPolymarketPriceToBeat(marketSlug);
+            if (Number.isFinite(scraped) && scraped > 0) {
+              priceToBeatNum = scraped;
+              priceToBeatSource = 'polymarket-event-page';
+            }
+          } catch (_) { /* stays pending, retried next refresh */ }
+        }
+        if (priceToBeatNum != null) {
+          const locked = _lockPolymarketPriceToBeat(marketSlug, priceToBeatNum, priceToBeatSource);
+          if (locked) { priceToBeatNum = locked.price; priceToBeatSource = locked.source; }
+        }
+      }
+
+      console.log(`[Poly15M-PTB] ${sym} ${marketSlug} → $${priceToBeatNum ?? 'pending'} (source: ${priceToBeatSource ?? 'waiting-for-open'})`);
+
+      const data = {
+        slug: marketSlug,
+        title,
+        probability: upProb,
+        priceToBeatNum,
+        priceToBeatSource,
+        targetPriceNum: priceToBeatNum,
+        targetPrice: _formatPolyPriceToBeat(priceToBeatNum, sym),
+        startDate,
+        closeTime: endDate,
+        volume,
+      };
+      _poly15mCache[sym] = { windowTs, fetchedAt: Date.now(), data };
+      return data;
+    } catch (err) {
+      console.warn(`[PredictionMarkets] Poly15M fetch failed for ${sym} ${slug}:`, err?.message || err);
+      return null;
+    }
+  }
+
+  async function refreshPoly15M(reason = 'manual') {
+    const results = {};
+    await Promise.all(Object.keys(POLY_5M_COIN_SLUGS).map(async sym => {
+      results[sym] = await fetchPolymarket15MBySlug(sym);
+    }));
+
+    let touched = false;
+    for (const [sym, poly15m] of Object.entries(results)) {
+      if (!poly15m || !cache[sym]) continue;
+      cache[sym] = { ...cache[sym], poly15m };
+      touched = true;
+    }
+    if (touched) {
+      window.dispatchEvent(new CustomEvent('predictionmarketsready', { detail: cache }));
+    }
+    console.info(`[PredictionMarkets] Poly15M refresh (${reason}): ${Object.entries(results).filter(([, v]) => v).map(([sym]) => sym).join(', ') || 'none'}`);
+    return results;
+  }
+
   // ---- Public API ---------------------------------------------------
 
   window.PredictionMarkets = {
@@ -2739,6 +2869,14 @@ function polymarketSentiment(markets, sym) {
           lastBoundarySec = currentBoundary;
         }
       }, 1000);
+
+      // Independent 15-minute Polymarket pull. Runs on its own cadence,
+      // separate from the 5m exact-boundary-rollover clock above.
+      refreshPoly15M('start').catch(() => {});
+      setInterval(() => {
+        if (document.hidden) return;
+        refreshPoly15M('interval').catch(() => {});
+      }, 20_000);
     },
     getAll() { return cache; },
     getCoin(sym) { return cache[sym] ?? null; },
@@ -2771,6 +2909,7 @@ function polymarketSentiment(markets, sym) {
     },
     fetchAll,
     refreshPoly5M,
+    refreshPoly15M,
   };
 
   if (window.__WE_TEST__) {
