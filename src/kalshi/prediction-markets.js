@@ -438,9 +438,18 @@
   // window elapses with nothing found, stop -- that means Polymarket
   // genuinely hasn't published it yet, and "pending" is the honest state.
   const _pendingPtbLocks = {}; // slug -> { sym, boundaryMs, lastScrapeAttemptTs, scrapeAttempts }
-  const PTB_LOCK_GRACE_MS = 25_000;
+  // Verified live (2026-08-11): Polymarket's own chainlink-candles endpoint
+  // does not have a candle for a brand-new window immediately -- checked a
+  // window 31 seconds after it opened and the API's latest candle was still
+  // the *previous* one. The original 25s grace window was shorter than that
+  // real-world publish latency, so it gave up and left PTB stuck on
+  // "pending" for the rest of the window before Polymarket ever published
+  // it. 120s gives ample margin inside a 300s (5m) window without ever
+  // showing a late/approximate value -- it's still the exact number once
+  // found, just retried for longer before conceding "pending" is honest.
+  const PTB_LOCK_GRACE_MS = 120_000;
   const PTB_SCRAPE_RETRY_MS = 4_000;
-  const PTB_SCRAPE_MAX_ATTEMPTS = 6;
+  const PTB_SCRAPE_MAX_ATTEMPTS = 30;
 
   function _seedPendingPtbLock(sym, slug, boundaryMs) {
     if (_getPolymarketPriceToBeatLock(slug)) return;
