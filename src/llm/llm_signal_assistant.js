@@ -265,9 +265,19 @@ const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || "~openai/gpt-latest";
 const OPENROUTER_MAX_TOKENS = Number(process.env.OPENROUTER_MAX_TOKENS || 800);
 const TOKENMIX_API_KEY = resolveTokenMixApiKey();
 const TOKENMIX_BASE_URL = process.env.TOKENMIX_BASE_URL || "https://api.tokenmix.ai/v1/chat/completions";
-// grok-4.3 confirmed working live on this account's promotional credit balance
-// (see readTokenMixKeyFromSecrets comment above for the full verified list).
-const TOKENMIX_MODEL = process.env.TOKENMIX_MODEL || "grok-4.3";
+// "grok-4.3" is why every TokenMix call was failing: fetched TokenMix's live
+// model catalog (https://api.tokenmix.ai/api/models, verified 2026-08-13) and
+// there is no Grok/xAI model anywhere in it -- every request for that model id
+// 404s at TokenMix before it ever reaches a provider. Picked
+// deepseek/deepseek-v4-flash from the real catalog instead: "Flash" tier (built
+// for the low-latency quick-prediction use case here), full reasoning/JSON/
+// tool-call support (needed for this pipeline's structured {call,confidence,
+// notes} schema), 1M context, and ~10-70x cheaper per token than the other
+// live options (gemini-3.5-flash, glm-5.2-fast-preview, claude-fable-5) --
+// this gets called roughly every 5 minutes per coin across 7 coins all day,
+// so per-call cost compounds fast. Now backed by real funded TokenMix credit,
+// not a promotional-credit-only model.
+const TOKENMIX_MODEL = process.env.TOKENMIX_MODEL || "deepseek/deepseek-v4-flash";
 const TOKENMIX_MAX_TOKENS = Number(process.env.TOKENMIX_MAX_TOKENS || 800);
 // Anthropic (Claude) kept for backward/fallback only.
 // xAI (rex) is primary for 5m PTB. Fallback on failure: asi1 → openai → claude → gemini.
