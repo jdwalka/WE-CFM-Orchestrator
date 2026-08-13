@@ -2097,24 +2097,92 @@
   // payload happens to include on any given request (confirmed unreliable: a
   // live test found zero occurrences of the SSR-embedded data 78 seconds into
   // an active window). limit must be exactly 30 -- any other value 400s.
+  // Live-verified (2026-08-13): a 4-minute audit of the real fetch pipeline
+  // caught every single symbol/horizon combination failing with HTTP 429 from
+  // this endpoint. Root cause: fetchPolymarketChainlinkCandleOpen used to fire
+  // its own network request per {sym, horizon, boundarySec} lookup with no
+  // caching, dedup, or 429 handling -- and it's called from three uncoordinated
+  // places (_tickPendingPtbLocks' retry loop, both fetchPolymarket*BySlug's own
+  // internal resolution, and the 15s _doFetch poll cycle), all hammering the
+  // same endpoint independently right after every boundary rollover across all
+  // 7 coins x 2 horizons. One call with limit=30 already returns ~2.5h (5m) /
+  // ~7.5h (15m) of candles, so per-boundary-lookup fetching was wasteful even
+  // before counting the duplication. Consolidated into a single shared,
+  // rate-limited cache below -- mirrors the existing Kalshi 429-cooldown
+  // pattern (_ipcLooksRateLimited/_tripKalshiCooldown above) rather than
+  // inventing a new one.
+  const _chainlinkCandleCache = {}; // `${sym}:${interval}` -> { candles, fetchedAt, inFlight }
+  const CHAINLINK_CANDLE_TTL_MS = 45_000;
+  const CHAINLINK_MIN_GLOBAL_INTERVAL_MS = 1_500; // gate across ALL keys, not per-key
+  let _chainlinkLastRequestAt = 0;
+  let _chainlinkRateLimitUntil = 0;
+  let _chainlinkConsecutive429 = 0;
+
+  function _tripChainlinkCooldown(reason) {
+    _chainlinkConsecutive429++;
+    const wait = _chainlinkConsecutive429 >= 3 ? 90_000 : Math.min(60_000, 10_000 * (2 ** Math.min(4, _chainlinkConsecutive429 - 1)));
+    _chainlinkRateLimitUntil = Date.now() + wait;
+    console.warn(`[PredictionMarkets] chainlink-candles cooldown ${wait}ms — ${reason} (streak=${_chainlinkConsecutive429})`);
+    return wait;
+  }
+
+  async function _fetchChainlinkCandlesCached(sym, interval) {
+    const key = `${sym}:${interval}`;
+    const now = Date.now();
+    const entry = _chainlinkCandleCache[key];
+
+    if (entry?.inFlight) return entry.inFlight;
+    if (entry && now - entry.fetchedAt < CHAINLINK_CANDLE_TTL_MS) return entry.candles;
+    if (_chainlinkRateLimitUntil > now) return entry?.candles || null; // cooling down -- serve stale, never fetch
+
+    const wait = Math.max(0, CHAINLINK_MIN_GLOBAL_INTERVAL_MS - (now - _chainlinkLastRequestAt));
+    const doFetch = (async () => {
+      if (wait > 0) await new Promise(r => setTimeout(r, wait));
+      _chainlinkLastRequestAt = Date.now();
+      try {
+        const url = `https://polymarket.com/api/chainlink-candles?symbol=${encodeURIComponent(sym)}&interval=${interval}&limit=30&endTime=${Date.now()}&twapEnabled=true&twapLookbackSeconds=30`;
+        const txt = await textFetch(url, {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151 Safari/537.36',
+            'Accept': 'application/json',
+          },
+        });
+        const data = JSON.parse(txt);
+        const candles = Array.isArray(data?.candles) ? data.candles : [];
+        _chainlinkConsecutive429 = 0;
+        _chainlinkCandleCache[key] = { candles, fetchedAt: Date.now(), inFlight: null };
+        return candles;
+      } catch (e) {
+        const msg = e?.message || String(e);
+        if (/HTTP 429/.test(msg)) {
+          _tripChainlinkCooldown(`${key}: ${msg}`);
+        } else {
+          console.warn(`[Poly5M-PTB] chainlink-candles fetch failed for ${key}:`, msg);
+        }
+        if (_chainlinkCandleCache[key]) _chainlinkCandleCache[key].inFlight = null;
+        return entry?.candles || null;
+      }
+    })();
+
+    _chainlinkCandleCache[key] = { candles: entry?.candles || [], fetchedAt: entry?.fetchedAt || 0, inFlight: doFetch };
+    return doFetch;
+  }
+
   async function fetchPolymarketChainlinkCandleOpen(sym, horizonTag, boundarySec) {
-    try {
-      const interval = horizonTag === '15m' ? '15m' : '5m';
-      const url = `https://polymarket.com/api/chainlink-candles?symbol=${encodeURIComponent(sym)}&interval=${interval}&limit=30&endTime=${Date.now()}&twapEnabled=true&twapLookbackSeconds=30`;
-      const txt = await textFetch(url, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151 Safari/537.36',
-          'Accept': 'application/json',
-        },
-      });
-      const data = JSON.parse(txt);
-      const candle = Array.isArray(data?.candles) ? data.candles.find(c => c.time === boundarySec) : null;
-      const open = toPositiveFiniteNumber(candle?.open);
-      return open;
-    } catch (e) {
-      console.warn(`[Poly5M-PTB] chainlink-candles lookup failed for ${sym} ${horizonTag} ${boundarySec}:`, e?.message || e);
-      return null;
-    }
+    const interval = horizonTag === '15m' ? '15m' : '5m';
+    const candles = await _fetchChainlinkCandlesCached(sym, interval);
+    const candle = Array.isArray(candles) ? candles.find(c => c.time === boundarySec) : null;
+    return toPositiveFiniteNumber(candle?.open);
+  }
+
+  // Exposed for the (planned) Polymarket 5m resolution tracker to read a
+  // window's settlement close price off the same cache, without issuing any
+  // fetch of its own.
+  function _getCachedChainlinkCandle(sym, horizonTag, boundarySec) {
+    const interval = horizonTag === '15m' ? '15m' : '5m';
+    const entry = _chainlinkCandleCache[`${sym}:${interval}`];
+    if (!entry) return null;
+    return (entry.candles || []).find(c => c.time === boundarySec) || null;
   }
 
   async function fetchPolymarketPriceToBeat(slug) {
