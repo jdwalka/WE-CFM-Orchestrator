@@ -146,8 +146,17 @@
     return { book, analysis };
   }
 
-  function getSecsToKalshiClose(sym) {
-    const close = window.PredictionMarkets?.getCoin?.(sym)?.kalshi15m?.closeTime;
+  // Was getSecsToKalshiClose, reading kalshi15m.closeTime -- always null since
+  // Kalshi trading is disabled, so the "tighten reprice cadence near window
+  // close" behavior below never fired for the Polymarket 5m windows actually
+  // being traded. Repointed at poly5m.closeTime. The threshold band also had
+  // to be rescaled, not just the data source: the old 210s-45s window was
+  // sized for a 900s (15-minute) contract's tail (the last ~23%-5% of the
+  // window); for a 300s (5-minute) window that same absolute band would eat
+  // over half the contract. Scaled proportionally to 70s-15s (same ~23%-5%
+  // fraction of a 300s window).
+  function getSecsToPoly5mClose(sym) {
+    const close = window.PredictionMarkets?.getCoin?.(sym)?.poly5m?.closeTime;
     if (!close) return null;
     const ms = new Date(close).getTime() - Date.now();
     return Number.isFinite(ms) ? ms / 1000 : null;
@@ -157,8 +166,8 @@
     const key = String(sym || '').toUpperCase();
     const state = _liveMicroState[key] || {};
     const now = Date.now();
-    const secsLeft = getSecsToKalshiClose(key);
-    const closeValueWindow = Number.isFinite(secsLeft) && secsLeft <= 210 && secsLeft >= 45;
+    const secsLeft = getSecsToPoly5mClose(key);
+    const closeValueWindow = Number.isFinite(secsLeft) && secsLeft <= 70 && secsLeft >= 15;
     const minGap = closeValueWindow ? LIVE_BOOK_CLOSE_REPRICE_MIN_MS : LIVE_BOOK_REPRICE_MIN_MS;
     const absImb = Math.abs(Number(analysis?.imbalance || 0));
     const delta = Math.abs((Number(analysis?.imbalance || 0)) - (Number(state.lastRepriceImbalance || 0)));
