@@ -394,16 +394,29 @@
   //   2. snipe_plan.enter_side when a tail-risk flip plan is active
   //   3. Regex scrape of notes/rationale text (legacy fallback)
   //   4. Distance from current price to price-to-beat (last resort lean)
+  //
+  // Always returns a binary UP/DOWN direction (falling through to step 4's
+  // price-distance lean when nothing else resolves it) rather than collapsing
+  // to WAIT on a coin-flip/no-edge situation -- previously, coin-flip language
+  // in the model's own notes (step 3) short-circuited straight to 'WAIT',
+  // hiding the directional lean entirely instead of just flagging it as low
+  // conviction. coinFlip is set whenever that language was detected, so
+  // callers can label the call "UP (coin flip)" instead of losing it.
+  // The one case that still yields a real WAIT is an explicit top-level
+  // WAIT/NO_EDGE/HOLD from the schema (step 1) -- the model refusing to call
+  // it at all is a different, honest signal from "it's close but I'll lean."
   function parseCall(output, current, target) {
+    let coinFlip = false;
+
     // 1. Top-level schema keys Grok is instructed to emit directly
     const topCall = String((output && (output.call || output.direction)) || '').toUpperCase().trim();
-    if (topCall === 'UP' || topCall === 'DOWN') return topCall;
-    if (topCall === 'WAIT' || topCall === 'NO_EDGE' || topCall === 'HOLD') return 'WAIT';
+    if (topCall === 'UP' || topCall === 'DOWN') return { direction: topCall, coinFlip };
+    if (topCall === 'WAIT' || topCall === 'NO_EDGE' || topCall === 'HOLD') return { direction: 'WAIT', coinFlip };
 
     // 2. snipe_plan.enter_side when tail-risk flip plan is active
     if (output && output.snipe_plan && output.snipe_plan.should_flip === true) {
       const snipeSide = String(output.snipe_plan.enter_side || '').toUpperCase().trim();
-      if (snipeSide === 'UP' || snipeSide === 'DOWN') return snipeSide;
+      if (snipeSide === 'UP' || snipeSide === 'DOWN') return { direction: snipeSide, coinFlip };
     }
 
     // 3. Regex text-scrape of notes / primary_rationale (legacy fallback)
@@ -411,14 +424,15 @@
       (output && output.suggestions && output.suggestions.notes) ||
       (output && output.ai_wording && output.ai_wording.primary_rationale) || ''
     ).toUpperCase();
-    if (/\bWAIT\b|COIN.?FLIP|NO\s*EDGE|TOO\s*CLOSE/.test(text)) return 'WAIT';
-    if (/BUY\s*UP|SETTLE[S]?\s*ABOVE|\bUP\b|\bLONG\b|\bYES\b/.test(text)) return 'UP';
-    if (/BUY\s*DOWN|SETTLE[S]?\s*BELOW|\bDOWN\b|\bSHORT\b|\bNO\b/.test(text)) return 'DOWN';
+    if (/COIN.?FLIP|NO\s*EDGE|TOO\s*CLOSE/.test(text)) coinFlip = true;
+    if (/BUY\s*UP|SETTLE[S]?\s*ABOVE|\bUP\b|\bLONG\b|\bYES\b/.test(text)) return { direction: 'UP', coinFlip };
+    if (/BUY\s*DOWN|SETTLE[S]?\s*BELOW|\bDOWN\b|\bSHORT\b|\bNO\b/.test(text)) return { direction: 'DOWN', coinFlip };
+    if (/\bWAIT\b/.test(text)) coinFlip = true; // bare "wait" with no direction word -- still fall through to the lean below
 
     // 4. Final lean: distance of current price from price-to-beat
     const dist = pctDistanceToTarget(current, target);
-    if (dist != null) return dist >= 0 ? 'UP' : 'DOWN';
-    return 'WAIT';
+    if (dist != null) return { direction: dist >= 0 ? 'UP' : 'DOWN', coinFlip };
+    return { direction: 'WAIT', coinFlip: false }; // truly nothing to lean on (no target/current price at all)
   }
 
   // ── Live state + loop (renderer only) ────────────────────────────────────────
@@ -471,9 +485,9 @@
       );
       if (res && res.success && res.output) {
         const o = res.output;
-        const resolvedCall = parseCall(o, current, target);
+        const { direction: resolvedCall, coinFlip } = parseCall(o, current, target);
         console.log(
-          `[FiveMinGrok] ${coin} Grok response → call=${resolvedCall}` +
+          `[FiveMinGrok] ${coin} Grok response → call=${resolvedCall}${coinFlip ? ' (coin flip)' : ''}` +
           ` raw.call=${o.call || 'n/a'} raw.dir=${o.direction || 'n/a'}` +
           ` conf=${o.confidence != null ? (Number(o.confidence) * 100).toFixed(0) + '%' : '?'}` +
           ` regime=${o.regime || '?'}`
@@ -484,6 +498,7 @@
           trickyReasons,
           call: resolvedCall,
           direction: resolvedCall,          // alias so consumers have both
+          coinFlip,                         // true = binary call above is a low-conviction lean, not a strong signal
           confidence: Number(o.confidence) || 0,
           regime: o.regime || 'unknown',
           notes: (o.suggestions && o.suggestions.notes) || '',

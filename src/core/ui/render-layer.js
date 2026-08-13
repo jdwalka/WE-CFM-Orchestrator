@@ -1151,7 +1151,27 @@ function renderMarkets5M() {
           <!-- 5M Micro-indicators -->
           ${_render5mIndicators(sym)}
 
-          <!-- Grok lives on Hourly Ranges panel (15m + 1h Kalshi), not 5m tab -->
+          <!-- FiveMinGrok's own per-coin binary call -- computed every cycle
+               (src/llm/five-min-claude-overlay.js) but was never actually
+               rendered anywhere on this tab; only its "broader/systemic"
+               overflow content showed up via _renderGrokBroaderInsights above.
+               coinFlip means the model detected coin-flip/no-edge language and
+               fell through to its price-distance lean instead of hiding the
+               call as WAIT -- shown as a low-conviction qualifier, not
+               suppressed. -->
+          ${(() => {
+          const api = (typeof window !== 'undefined') ? (window.FiveMinGrok || window.FiveMinClaude) : null;
+          const g = api && typeof api.getGuidance === 'function' ? api.getGuidance(sym) : null;
+          if (!g || !g.call || g.call === 'WAIT') return '';
+          const col = g.call === 'UP' ? 'var(--color-green)' : 'var(--color-red)';
+          const confPct = Math.round((Number(g.confidence) || 0) * 100);
+          return `<div style="display:flex;align-items:center;gap:6px;font-size:10px;margin-bottom:6px;">
+            <span style="color:#00e5ff;font-weight:700;">🤖 GROK 5M</span>
+            <span style="color:${col};font-weight:800;">${g.call === 'UP' ? '▲' : '▼'} ${g.call}</span>
+            <span style="color:var(--color-text-faint);">${confPct}%</span>
+            ${g.coinFlip ? `<span style="color:#ff9800;font-weight:700;">· COIN FLIP (low conviction)</span>` : ''}
+          </div>`;
+        })()}
 
           <!-- Rationale (conviction/drivers) and the market-divergence note both
                used to render here, above the embed. Moved below the embed instead,
