@@ -479,6 +479,28 @@
       if (!brief?.sym) continue;
       const ctx = buildMarketContext(brief.sym, brief.horizon);
       if (!ctx) continue;
+
+      // Purge every 5 (or 15) minutes rather than let a brief sit stale forever
+      // once its own window has closed. No info beats wrong info: if the market
+      // context is still stuck on this brief's now-expired window, wipe the
+      // brief instead of continuing to display it indefinitely.
+      const windowSec = WINDOW_SECONDS[brief.horizon];
+      if (ctx.slug && windowSec) {
+        const slugMatch = ctx.slug.match(/-(\d+)$/);
+        const slugBoundary = slugMatch ? Number(slugMatch[1]) : null;
+        const nowSec = Math.floor(Date.now() / 1000);
+        const expectedBoundary = nowSec - (nowSec % windowSec);
+        if (slugBoundary != null && slugBoundary !== expectedBoundary) {
+          delete _briefs[key];
+          changed = true;
+          try {
+            window.dispatchEvent(new CustomEvent('asi1:precontract', { detail: { sym: brief.sym, horizon: brief.horizon, purged: true } }));
+          } catch (_) { /* */ }
+          console.warn(`[ASI1 PreContract] purged stale ${brief.sym} ${brief.horizon} brief (window closed, no fresh data yet)`);
+          continue;
+        }
+      }
+
       // refresh market snapshot on brief
       brief.market = ctx;
       if (!window.InferenceTruthGuard?.gateBrief) continue;
