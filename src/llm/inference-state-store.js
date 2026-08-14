@@ -14,6 +14,7 @@
   const BRIEFS_KEY = 'wecrypto_asi1_briefs_v1';
   const TRUTH_KEY = 'wecrypto_truth_verdicts_v1';
   const GUIDANCE_KEY = 'wecrypto_range_guidance_v1';
+  const ACCURACY_KEY = 'wecrypto_ai_accuracy_v1';
   const MAX_AGE_MS = 6 * 60 * 60 * 1000; // 6h — still useful after restart, not forever
 
   function load(key) {
@@ -129,6 +130,36 @@
 
     loadTruth() {
       return pruneByAge(load(TRUTH_KEY)?.verdicts || {});
+    },
+
+    /**
+     * AI-inference accuracy ledger — separate from the quant model's own
+     * win-rate (tracked elsewhere via TradeJournal/ContractWinRateCalculator).
+     * Compares the AI's call at brief time against the settled outcome.
+     */
+    recordOutcome(sym, horizon, aiCall, actualOutcome) {
+      const coin = String(sym || '').toUpperCase();
+      const call = String(aiCall || '').toUpperCase();
+      const actual = String(actualOutcome || '').toUpperCase();
+      if (!coin || (call !== 'UP' && call !== 'DOWN') || (actual !== 'UP' && actual !== 'DOWN')) return null;
+
+      const correct = call === actual;
+      const data = load(ACCURACY_KEY) || { overall: { wins: 0, losses: 0, total: 0 }, byCoin: {} };
+      data.overall.total++;
+      if (correct) data.overall.wins++; else data.overall.losses++;
+      if (!data.byCoin[coin]) data.byCoin[coin] = { wins: 0, losses: 0, total: 0 };
+      data.byCoin[coin].total++;
+      if (correct) data.byCoin[coin].wins++; else data.byCoin[coin].losses++;
+      save(ACCURACY_KEY, data);
+      return { correct, coin, horizon, aiCall: call, actualOutcome: actual };
+    },
+
+    getAccuracy() {
+      const data = load(ACCURACY_KEY) || { overall: { wins: 0, losses: 0, total: 0 }, byCoin: {} };
+      const pct = (b) => (b && b.total > 0 ? Math.round((b.wins / b.total) * 100) : null);
+      const byCoin = {};
+      for (const [coin, b] of Object.entries(data.byCoin || {})) byCoin[coin] = { ...b, pct: pct(b) };
+      return { overall: { ...data.overall, pct: pct(data.overall) }, byCoin };
     },
   };
 

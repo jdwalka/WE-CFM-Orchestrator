@@ -537,6 +537,26 @@ window.addEventListener('candleWS:1mTick', (e) => { if (e.detail) _push1mToChart
 
 window.addEventListener('candleWS:1mClosed', (e) => { if (e.detail) _push1mToChart(e.detail.sym, e.detail.bucket); });
 
+// poly5m:resolved already carried sym/actualDirection/correct but had zero listeners
+// anywhere in the app — wire it into the same AI-accuracy + multi-drive persistence
+// path as the 15m handler below, so 5m contracts aren't a blind spot.
+window.addEventListener('poly5m:resolved', (e) => {
+  const { sym, actualDirection, correct } = e.detail || {};
+  if (!sym || !actualDirection) return;
+  try {
+    const brief = window.Asi1PreContract?.get?.(sym, '5m');
+    const aiCall = brief?.aiCallOriginal || brief?.call;
+    if (aiCall === 'UP' || aiCall === 'DOWN') {
+      window.InferenceStateStore?.recordOutcome?.(sym, '5m', aiCall, actualDirection);
+    }
+  } catch (_) { /* */ }
+  if (window.MultiDriveCache?.recordSettlement) {
+    try {
+      window.MultiDriveCache.recordSettlement(sym, actualDirection, correct, null);
+    } catch (_) { /* */ }
+  }
+});
+
 window.addEventListener('market15m:resolved', (e) => {
     const {
       sym, outcome, kalshiResult, modelCorrect, marketCorrect, ticker,
@@ -620,6 +640,22 @@ window.addEventListener('market15m:resolved', (e) => {
         regime: entry.quantRegime?.state || 'UNKNOWN',
         predictionDir: entry.modelDir || null,
       });
+
+      // ── AI-inference accuracy (separate from the quant model's own win-rate above) ──
+      try {
+        const brief = window.Asi1PreContract?.get?.(sym, '15m');
+        const aiCall = brief?.aiCallOriginal || brief?.call;
+        if (aiCall === 'UP' || aiCall === 'DOWN') {
+          window.InferenceStateStore?.recordOutcome?.(sym, '15m', aiCall, outcome);
+        }
+      } catch (_) { /* */ }
+
+      // ── Persist settlement to every synced drive (H:\ Google Drive, OneDrive, etc.) ──
+      if (window.MultiDriveCache?.recordSettlement) {
+        try {
+          window.MultiDriveCache.recordSettlement(sym, outcome, entry.modelCorrect, marketCorrect);
+        } catch (_) { /* */ }
+      }
 
       // ── Record trade for adaptive tuning ─────────────────────────
       if (window._adaptiveTuner && entry.modelScore != null && entry.modelCorrect != null) {
