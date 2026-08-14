@@ -17,6 +17,13 @@
   const MIN_TTC_FIRE = 20;
   const MAX_TTC_5M = 8 * 60;
   const MAX_TTC_15M = 22 * 60;
+  // Stagger AI fire away from the exact window-open instant: prediction-markets.js's
+  // boundary-clock rollover locks PTB asynchronously right at open (chainlink-candles
+  // fetch + retry-backed pending lock), and observed cases showed the AI capturing a
+  // stale (pre-rollover) PTB when it fired too close to open. Waiting a few seconds
+  // gives that lock time to land before the AI reads it.
+  const MIN_SECONDS_SINCE_OPEN = Number(window.__ASI1_MIN_SEC_SINCE_OPEN ?? 12); // 5-15s window
+  const WINDOW_SECONDS = { '5m': 300, '15m': 900 };
 
   /** @type {Record<string, object>} key = `${SYM}:5m` | `${SYM}:15m` */
   const _briefs = {};
@@ -363,6 +370,14 @@
     }
     if (ctx.secondsToClose != null && ctx.secondsToClose > maxTtc) {
       return _briefs[briefKey(sym, ctx.horizon)] || null;
+    }
+    // Too close to window open — PTB rollover lock may not have landed yet.
+    const windowSec = WINDOW_SECONDS[ctx.horizon];
+    if (ctx.secondsToClose != null && windowSec) {
+      const secondsSinceOpen = windowSec - ctx.secondsToClose;
+      if (secondsSinceOpen >= 0 && secondsSinceOpen < MIN_SECONDS_SINCE_OPEN) {
+        return _briefs[briefKey(sym, ctx.horizon)] || null;
+      }
     }
 
     const invoke = window.electron?.invoke;
