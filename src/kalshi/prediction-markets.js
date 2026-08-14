@@ -3054,7 +3054,7 @@ function polymarketSentiment(markets, sym) {
         if (currentBoundary > lastBoundarySec && lastBoundarySec > 0) {
           lastBoundarySec = currentBoundary;
           console.info(`[BoundaryClock] 🏁 5-minute boundary rollover hit (${currentBoundary})! Executing instant local rollover.`);
-          
+
           let touched = false;
           Object.keys(POLY_5M_COIN_SLUGS).forEach(sym => {
             const coin = cache[sym];

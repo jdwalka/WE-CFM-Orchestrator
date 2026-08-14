@@ -824,8 +824,11 @@ Use this recall only as context, and prioritize current market snapshot data if 
       `tokenmixKey=${!!TOKENMIX_API_KEY} asi1Key=${Asi1Client.hasAsi1Credentials()} path=${cascade.join('→')}`
     );
 
-    // Dual-fire: pre-contract always hits ASI1 + DeepSeek when both keyed so TokenMix
-    // is not starved by ASI1 winning the cascade every time.
+    // Inference router: pre-contract (15m/60m) always hits both providers when
+    // keyed, TokenMix for the quick short-horizon/order-book read and ASI1 for
+    // the deep regime + pre-contract read, merged into one decisive call.
+    // Set LLM_RELAY_SPECIALIST_SPLIT=0 to revert to the same-prompt dual-fire
+    // vote (_dualFireAsi1AndTokenMix) instead.
     if (
       isPreContractRange
       && process.env.LLM_DUAL_FIRE !== '0'
@@ -833,16 +836,20 @@ Use this recall only as context, and prioritize current market snapshot data if 
       && TOKENMIX_API_KEY
       && this._providerCooldownRemaining('tokenmix') <= 0
     ) {
+      const useSpecialistSplit = process.env.LLM_RELAY_SPECIALIST_SPLIT !== '0';
       try {
-        const dual = await this._dualFireAsi1AndTokenMix(systemPrompt, userPrompt, snapshot, {
+        const meta = {
           coin: String(snapshot?.coin || 'GLOBAL'),
           horizon: String(snapshot?.horizon || snapshot?.horizonMinutes || '15m'),
           promptLength: (systemPrompt || '').length + (userPrompt || '').length,
-        });
+        };
+        const combined = useSpecialistSplit
+          ? await this._relaySpecialistSplit(snapshot, meta)
+          : await this._dualFireAsi1AndTokenMix(systemPrompt, userPrompt, snapshot, meta);
         // Scrub float trails (e.g. $75.44527553043135 → $75.45) before cascade return
-        if (dual) return this.normalizeResponse(dual, snapshot);
+        if (combined) return this.normalizeResponse(combined, snapshot);
       } catch (err) {
-        console.warn(`[LLM] dual-fire failed, falling back to cascade: ${err.message}`);
+        console.warn(`[LLM] relay/dual-fire failed, falling back to cascade: ${err.message}`);
       }
     }
 
@@ -1468,6 +1475,89 @@ Use this recall only as context, and prioritize current market snapshot data if 
       `ensemble=${winner._ensemble || 'single'} asi1=${aCall}@${aConf} deepseek=${bCall}@${bConf}`
     );
     return winner;
+  }
+
+  /**
+   * Specialist-split inference router: TokenMix/DeepSeek handles the quick,
+   * short-horizon/order-book read; ASI1 handles the deep, 15m-60m regime +
+   * pre-contract read. Unlike _dualFireAsi1AndTokenMix (same prompt to both,
+   * then vote), each model gets a role-specific prompt built from
+   * inference-relay.js's microstructure packet, and the two legs are merged
+   * deterministically (InferenceRelay.mergeLegsLocally) into one decisive
+   * binary call — no extra synthesis LLM call needed.
+   */
+  async _relaySpecialistSplit(snapshot, meta = {}) {
+    const InferenceRelay = require('./inference-relay');
+    const coin = meta.coin || snapshot?.coin || 'GLOBAL';
+    const horizon = meta.horizon || '15m';
+    const start = Date.now();
+
+    const packet = InferenceRelay.buildMicrostructurePacket(snapshot);
+
+    const shortPromise = this.callTokenMixAPI(
+      InferenceRelay.specialistSystemShort(),
+      InferenceRelay.buildSpecialistUser(packet, 'short_ob'),
+      { model: TOKENMIX_MODEL, maxTokens: TOKENMIX_MAX_TOKENS, timeoutMs: TOKENMIX_TIMEOUT_MS },
+    ).then((parsed) => ({ ok: true, parsed, ms: Date.now() - start }))
+      .catch((err) => ({ ok: false, error: err, ms: Date.now() - start }));
+
+    const asi1Model = process.env.ASI1_PRECONTRACT_MODEL || process.env.ASI1_MODEL || 'asi1-fast';
+    const longPromise = Asi1Client.chatCompletion(
+      [
+        { role: 'system', content: InferenceRelay.specialistSystemLong() },
+        { role: 'user', content: InferenceRelay.buildSpecialistUser(packet, 'medium_long') },
+      ],
+      {
+        model: asi1Model,
+        candidateModels: [asi1Model, 'asi1-fast', 'asi1-mini', 'asi1'],
+        tier: 'deep-insight',
+        temperature: 0.12,
+        max_tokens: Number(process.env.ASI1_PRECONTRACT_MAX_TOKENS || 1600),
+        response_format: { type: 'json_object' },
+        timeoutMs: Number(process.env.ASI1_PRECONTRACT_TIMEOUT_MS || 55000),
+      },
+    ).then((result) => {
+      const content = String(result.content || '').trim();
+      const parsed = this.parseLlmJsonContent(content, { provider: 'asi1', rawText: content });
+      return { ok: true, parsed, model: result.model || asi1Model, ms: Date.now() - start };
+    }).catch((err) => ({ ok: false, error: err, ms: Date.now() - start }));
+
+    const [shortRes, longRes] = await Promise.all([shortPromise, longPromise]);
+
+    if (!shortRes.ok && !longRes.ok) {
+      throw (longRes.error || shortRes.error || new Error('relay: both specialist legs failed'));
+    }
+
+    const shortLeg = shortRes.ok ? shortRes.parsed : null;
+    const longLeg = longRes.ok ? longRes.parsed : null;
+    const merged = InferenceRelay.mergeLegsLocally(packet, shortLeg, longLeg);
+
+    for (const [provider, res] of [['tokenmix', shortRes], ['asi1', longRes]]) {
+      this._recordQueryExecution({
+        id: `llm-relay-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        timestamp: new Date().toISOString(),
+        ts: Date.now(),
+        coin,
+        horizon,
+        provider,
+        model: provider === 'tokenmix' ? TOKENMIX_MODEL : asi1Model,
+        status: res.ok ? 'SUCCESS' : 'FAILURE',
+        latencyMs: res.ms || 0,
+        resultCall: res.ok ? (res.parsed?.call || null) : null,
+        confidence: res.ok ? (res.parsed?.confidence ?? null) : null,
+        error: res.ok ? null : String(res.error?.message || res.error || 'failed'),
+        relaySpecialistSplit: true,
+        relayRole: provider === 'tokenmix' ? 'short_ob' : 'medium_long',
+      });
+    }
+
+    this._lastProvider = 'relay';
+    this._lastModel = `tokenmix:${TOKENMIX_MODEL}+asi1:${asi1Model}`;
+    console.log(
+      `[LLM relay] ${coin} ${horizon} call=${merged.call} agreement=${merged.relay?.agreement} ` +
+      `short=${shortLeg?.call || 'FAIL'} long=${longLeg?.call || 'FAIL'} primary=${merged.relay?.primaryLeg}`
+    );
+    return merged;
   }
 
   _inferenceStatePath() {
