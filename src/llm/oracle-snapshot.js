@@ -229,6 +229,29 @@
   /**
    * Full oracle-strict packet for ASI1 / TokenMix / relay.
    */
+  /**
+   * Non-authoritative supplementary momentum signal from the Redpanda/Kafka
+   * orbital pipeline (server-side, Firestore-bridged). Never spot/PTB — those
+   * stay Pyth-only / Polymarket-only. Returns null when the pipeline isn't
+   * running or has nothing recent, which is a normal state, not an error.
+   */
+  function getOrbitalMomentum(sym) {
+    try {
+      if (typeof window === 'undefined' || !window.OrbitalSignal?.get) return null;
+      const s = window.OrbitalSignal.get(sym);
+      if (!s) return null;
+      return {
+        structuralState: s.latest_state ?? null,
+        oeq: s.latest_oeq ?? null,
+        confidence: s.latest_confidence ?? null,
+        quantumState: s.quantum_state ?? null,
+        updatedAt: s.updated_at ?? null,
+      };
+    } catch (_) {
+      return null;
+    }
+  }
+
   function buildOraclePacket(sym, preferHorizon) {
     const key = String(sym || '').toUpperCase();
     const pyth = getPythSpot(key);
@@ -280,6 +303,8 @@
       hourlyLadder: hourly.ladder,
       spotBucket: hourly.spotBucket,
       hourlySource: hourly.source,
+      // Supplementary only — never treated as spot/PTB/authoritative.
+      orbitalMomentum: getOrbitalMomentum(key),
       warnings: [
         ...(spot == null ? ['no_pyth_spot'] : []),
         ...(primary && primary.priceToBeatNum == null ? ['no_polymarket_ptb'] : []),
@@ -355,6 +380,9 @@
       rangeLadder: o.hourlyLadder,
       spotBucket: o.spotBucket,
       hourlyRanges: true,
+      // Supplementary momentum context from the orbital pipeline — never
+      // spot/PTB, may be null (pipeline not running is a normal state).
+      orbitalMomentum: o.orbitalMomentum,
       // Explicit PTB block so models cannot invent
       polymarketOracle: {
         slug: o.slug,

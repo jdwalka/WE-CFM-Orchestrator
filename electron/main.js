@@ -3407,6 +3407,22 @@ ipcMain.handle('firebase:status', async () => {
   }
 });
 
+// Renderer read-back of the orbital-matrix synthesis (Redpanda/Kafka -> Firestore
+// pipeline run by scripts/start-runtime.js). Non-authoritative supplementary
+// signal for the LLM inference layer — never spot/PTB. Returns null/unavailable
+// when the pipeline isn't running or Firestore has no doc yet, never throws.
+ipcMain.handle('orbital:getSignal', async (_event, sym) => {
+  if (!OrbitalBroadcaster || typeof OrbitalBroadcaster.getLatestState !== 'function') {
+    return { success: false, error: 'Orbital broadcaster unavailable' };
+  }
+  try {
+    const state = await OrbitalBroadcaster.getLatestState(sym);
+    return { success: true, state };
+  } catch (error) {
+    return { success: false, error: error.message || 'Orbital signal read failed' };
+  }
+});
+
 // Orbital broadcaster: renderer fires-and-forgets after each processInterval().
 ipcMain.on('orbital:push', (_event, orbitalResult) => {
   if (!OrbitalBroadcaster || !orbitalResult) return;

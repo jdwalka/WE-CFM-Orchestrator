@@ -722,6 +722,10 @@ function formatOracleStrictBlock(snapshot) {
   const deltaStr = delta != null
     ? `${delta >= 0 ? '+' : '-'}${formatUsdForCoin(coinKey, Math.abs(delta)).slice(1)}`
     : 'n/a';
+  const om = snapshot.orbitalMomentum || snapshot.polymarketOracle?.orbitalMomentum || null;
+  const orbitalLine = om
+    ? `Orbital momentum (SUPPLEMENTARY ONLY, not spot/PTB, do not quote as price): state=${om.structuralState ?? 'n/a'} oeq=${om.oeq ?? 'n/a'} confidence=${om.confidence ?? 'n/a'}`
+    : null;
   return `## ORACLE STRICT (MANDATORY — quote these numbers, never invent)
 Policy: PTB = Polymarket contract price-to-beat ONLY (Gamma / event page / chainlink-candles).
 Spot = Pyth only for path. Do NOT use Coinbase/Binance/RTI/Gecko as PTB or as a PTB substitute.
@@ -732,7 +736,7 @@ PTB source: ${source || (pending ? 'waiting-for-polymarket' : 'n/a')}
 Pyth spot: ${spotDisp || 'n/a'} (${spotSrc})
 Spot vs Polymarket PTB: ${delta != null ? deltaStr + ' (' + path + ')' : 'n/a'}
 RULE: In notes and rationales you MUST quote Polymarket PTB exactly as shown above (${decimals} decimals, e.g. ${display || '$62,814.80'}). Never write long floats like 62814.80096237142.
-If PTB is PENDING, say "PTB pending" and do not fabricate a dollar level.`.trim();
+If PTB is PENDING, say "PTB pending" and do not fabricate a dollar level.${orbitalLine ? '\n' + orbitalLine : ''}`.trim();
 }
 
 function resolveFiveMinTarget(snapshot) {

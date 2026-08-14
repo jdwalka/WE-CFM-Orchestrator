@@ -8,7 +8,26 @@
  */
 
 const { Kafka } = require('kafkajs');
+const fs = require('fs');
+const path = require('path');
 const OrbitalBroadcaster = require('./orbital-firebase-broadcaster');
+
+const ORBITAL_LOG_DIR = path.join(__dirname, '..', '..', 'logs', 'orbital');
+let _orbitalLogDirReady = false;
+
+function appendOrbitalLog(element) {
+    try {
+        if (!_orbitalLogDirReady) {
+            fs.mkdirSync(ORBITAL_LOG_DIR, { recursive: true });
+            _orbitalLogDirReady = true;
+        }
+        const day = new Date().toISOString().slice(0, 10);
+        const file = path.join(ORBITAL_LOG_DIR, `${day}.jsonl`);
+        fs.appendFileSync(file, JSON.stringify({ loggedAt: Date.now(), ...element }) + '\n');
+    } catch (err) {
+        console.warn('[OrbitalProcessor] Local log append failed:', err.message);
+    }
+}
 
 const KAFKA_BROKERS      = process.env.KAFKA_BROKERS ? process.env.KAFKA_BROKERS.split(',') : ['localhost:9092'];
 const INTERVAL_MS        = 15 * 60 * 1000; // 15 minutes
@@ -249,6 +268,13 @@ function runBarrier() {
         } catch (err) {
             console.error(`[OrbitalProcessor] [${asset}] Dispatch failed:`, err.message);
         }
+
+        // ── 5. Durable local log ────────────────────────────────────────────────
+        // Firestore write above has no reader upstream of the app process, and
+        // this pipeline runs as plain Node (not Electron), so the renderer's
+        // forensics-logger/MultiDriveCache can't be reused here. Cheap, durable,
+        // survives restart: one JSONL line per synthesized element.
+        appendOrbitalLog(element);
     }
 }
 

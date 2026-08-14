@@ -511,6 +511,7 @@ contextBridge.exposeInMainWorld('_orbitalBroadcaster', {
   getDiagnostics: () => ipcRenderer.invoke('orbital:broadcaster:diagnostics'),
   getOrbitalStatus: () => ipcRenderer.invoke('orbital:status'),
   restartOrbitalSystem: () => ipcRenderer.invoke('orbital:restart'),
+  getSignal: (sym) => ipcRenderer.invoke('orbital:getSignal', sym),
 });
 
 // Grok memory bridge — session-memory ticks to Kafka, session snapshots +
