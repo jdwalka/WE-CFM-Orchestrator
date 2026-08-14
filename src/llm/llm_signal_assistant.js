@@ -15,6 +15,10 @@ const {
   generateFiveMinUserPrompt,
   generateRangeSystemPrompt,
   generateRangeUserPrompt,
+  resolveFiveMinTarget,
+  sanitizeOracleSnapshot,
+  scrubMoneyFloatsInText,
+  formatUsdForCoin,
 } = require("./specialized_prompt");
 const Asi1Client = require("../infra/asi1-client");
 
@@ -387,24 +391,9 @@ const LLM_RATE_LIMIT_BASE_COOLDOWN_MS = Number(process.env.LLM_RATE_LIMIT_BASE_C
 const LLM_RATE_LIMIT_MAX_COOLDOWN_MS = Number(process.env.LLM_RATE_LIMIT_MAX_COOLDOWN_MS || 5 * 60 * 1000);
 const LLM_RATE_LIMIT_LOG_DEBOUNCE_MS = Number(process.env.LLM_RATE_LIMIT_LOG_DEBOUNCE_MS || 20000);
 
-// ── 5-minute Polymarket / polycool.app price-to-beat detection ─────────────────
-// xAI Grok is the primary for 5-minute binary PTB contracts. The "price to beat"
-// (immutable, resolved via Chainlink oracle feeds for settlement) is injected
-// into the specialized prompt. 15m Kalshi never carry PTB and never route here.
-
-function resolveFiveMinTarget(snapshot) {
-  if (!snapshot || typeof snapshot !== "object") return null;
-  const m = (snapshot.market && typeof snapshot.market === "object") ? snapshot.market : {};
-  const candidates = [
-    snapshot.priceToBeat, snapshot.price_to_beat, snapshot.targetPrice, snapshot.target,
-    m.priceToBeat, m.price_to_beat, m.targetPrice, m.target,
-  ];
-  for (const c of candidates) {
-    const n = Number(c);
-    if (Number.isFinite(n) && n > 0) return n;
-  }
-  return null;
-}
+// ── 5-minute Polymarket price-to-beat detection ─────────────────
+// resolveFiveMinTarget comes from specialized_prompt (Polymarket-only PTB).
+// PTB may be pending; still route 5m flags/horizon to five-min prompts.
 
 function getHorizonMinutes(snapshot) {
   const h = Number(snapshot?.horizonMinutes ?? snapshot?.horizon);
@@ -413,19 +402,27 @@ function getHorizonMinutes(snapshot) {
 
 function isFiveMinPtbMarket(snapshot) {
   if (!snapshot || typeof snapshot !== "object") return false;
-  // Must carry a price-to-beat target (Polymarket/polycool 5m binaries via Chainlink) — the discriminator.
-  if (resolveFiveMinTarget(snapshot) == null) return false;
-  // …and be a 5-minute market.
   const horizon = getHorizonMinutes(snapshot);
+  // Explicit 5m product flags / horizon — even when PTB still pending
+  if (snapshot.fiveMinute === true || snapshot.isFiveMin === true || horizon === 5) {
+    return true;
+  }
+  // Do not steal 15m/60m range pre-contract traffic
+  if (snapshot.rangePrediction === true || snapshot.rangeHorizon === true) {
+    const rh = Number(snapshot.rangeHorizonMinutes || snapshot.horizonMinutes);
+    if (rh === 15 || rh === 60) return false;
+  }
   const venue = String(
     snapshot.venue || snapshot.marketType || snapshot.market?.venue || ""
   ).toLowerCase();
-  return snapshot.fiveMinute === true
-    || snapshot.isFiveMin === true
-    || horizon === 5
-    || venue.includes("polymarket")
-    || venue.includes("five")
-    || venue.includes("5m");
+  if (venue.includes("5m") || venue.includes("five") || venue.includes("polycool")) {
+    return true;
+  }
+  // Live poly5m contract without 15m active on same snapshot
+  if (snapshot.poly5m?.slug && !snapshot.poly15m?.slug && resolveFiveMinTarget(snapshot) != null) {
+    return true;
+  }
+  return false;
 }
 
 class LLMSignalAssistant {
@@ -562,7 +559,9 @@ class LLMSignalAssistant {
     }
 
     try {
-      const cacheKey = this.getCacheKey(snapshot);
+      // Polymarket-only PTB + Pyth path normalization before any prompt build
+      const snap = sanitizeOracleSnapshot(snapshot);
+      const cacheKey = this.getCacheKey(snap);
       const now = Date.now();
       const cached = this.contextCache.get(cacheKey);
       if (cached && (now - cached.ts) < CONTEXT_CACHE_TTL_MS) {
@@ -572,11 +571,11 @@ class LLMSignalAssistant {
 
       // 5m PTB → five-min prompts; 15m/60m range → range prompts; else generic.
       // Served by xAI (Grok) first when configured; fallback cascade elsewhere.
-      const fiveMin = isFiveMinPtbMarket(snapshot);
-      const rangeHorizon = Number(snapshot.rangeHorizonMinutes || snapshot.horizonMinutes);
+      const fiveMin = isFiveMinPtbMarket(snap);
+      const rangeHorizon = Number(snap.rangeHorizonMinutes || snap.horizonMinutes);
       const isRange = !fiveMin && (
-        snapshot.rangePrediction === true
-        || snapshot.rangeHorizon === true
+        snap.rangePrediction === true
+        || snap.rangeHorizon === true
         || rangeHorizon === 15
         || rangeHorizon === 60
       );
@@ -584,17 +583,30 @@ class LLMSignalAssistant {
         ? generateFiveMinSystemPrompt()
         : isRange
           ? generateRangeSystemPrompt(rangeHorizon === 60 ? 60 : 15)
-          : generateSystemPrompt(getHorizonMinutes(snapshot) || 15);
+          : generateSystemPrompt(getHorizonMinutes(snap) || 15);
       const rawUserPrompt = fiveMin
-        ? generateFiveMinUserPrompt(snapshot)
+        ? generateFiveMinUserPrompt(snap)
         : isRange
-          ? generateRangeUserPrompt(snapshot)
-          : generateUserPrompt(snapshot);
-      const userPrompt = this.enrichPromptWithRecall(snapshot, rawUserPrompt);
+          ? generateRangeUserPrompt(snap)
+          : generateUserPrompt(snap);
+      const userPrompt = this.enrichPromptWithRecall(snap, rawUserPrompt);
 
-      const rawResponse = await this.callAPI(systemPrompt, userPrompt, snapshot);
-      const normalized = this.normalizeResponse(rawResponse);
-      this.recordMarketMemory(snapshot, normalized);
+      const rawResponse = await this.callAPI(systemPrompt, userPrompt, snap);
+      const normalized = this.normalizeResponse(rawResponse, snap);
+      // Surface oracle PTB on output for UI/debug (does not invent numbers)
+      if (snap.priceToBeatNum != null) {
+        normalized.polymarketPtb = snap.priceToBeatNum;
+        normalized.polymarketPtbSource = snap.priceToBeatSource || null;
+        normalized.polymarketPtbDisplay = formatUsdForCoin(snap.coin || snap, snap.priceToBeatNum);
+      }
+      if (snap.modelDirection || snap.modelScore != null) {
+        normalized.modelGuide = {
+          direction: snap.modelDirection || snap.direction || null,
+          score: snap.modelScore ?? snap.score ?? null,
+          confidence: snap.confidence ?? null,
+        };
+      }
+      this.recordMarketMemory(snap, normalized);
       this.contextCache.set(cacheKey, { ts: now, value: normalized });
       this.stats.successes++;
       this.clearRateLimitState();
@@ -827,7 +839,8 @@ Use this recall only as context, and prioritize current market snapshot data if 
           horizon: String(snapshot?.horizon || snapshot?.horizonMinutes || '15m'),
           promptLength: (systemPrompt || '').length + (userPrompt || '').length,
         });
-        if (dual) return dual;
+        // Scrub float trails (e.g. $75.44527553043135 → $75.45) before cascade return
+        if (dual) return this.normalizeResponse(dual, snapshot);
       } catch (err) {
         console.warn(`[LLM] dual-fire failed, falling back to cascade: ${err.message}`);
       }
@@ -1432,7 +1445,7 @@ Use this recall only as context, and prioritize current market snapshot data if 
         model: tmRes.model,
         call: bCall,
         confidence: bConf,
-        notes: String(b.suggestions?.notes || '').slice(0, 220),
+        notes: scrubMoneyFloatsInText(String(b.suggestions?.notes || '').slice(0, 220), snapshot?.coin || ''),
       };
       winner.warnings = [
         ...(Array.isArray(winner.warnings) ? winner.warnings : []),
@@ -2078,9 +2091,11 @@ Use this recall only as context, and prioritize current market snapshot data if 
   }
 
   /**
-   * Normalize and validate LLM response
+   * Normalize and validate LLM response.
+   * @param {object} raw
+   * @param {object} [snapshot] — used to scrub float trails by coin decimals
    */
-  normalizeResponse(raw) {
+  normalizeResponse(raw, snapshot = null) {
     if (!raw) {
       return {
         regime: "unknown",
@@ -2092,6 +2107,14 @@ Use this recall only as context, and prioritize current market snapshot data if 
 
     const regime = this.validateRegime(raw.regime);
     const confidence = Math.max(0, Math.min(1, Number(raw.confidence) || 0));
+    const coinHint = snapshot?.coin
+      || snapshot?.poly5m?.slug
+      || snapshot?.poly15m?.slug
+      || snapshot?.activeContract?.slug
+      || raw?.polyPeg?.slug
+      || '';
+
+    const scrub = (t) => scrubMoneyFloatsInText(t, coinHint);
 
     const increaseWeight = Array.isArray(raw.suggestions?.increase_weight)
       ? raw.suggestions.increase_weight
@@ -2107,14 +2130,16 @@ Use this recall only as context, and prioritize current market snapshot data if 
     const suggestions = {
       increase_weight: increaseWeight.filter(s => typeof s === 'string'),
       decrease_weight: decreaseWeight.filter(s => typeof s === 'string'),
-      notes: typeof raw.suggestions?.notes === 'string' ? raw.suggestions.notes :
-        typeof raw.suggestions?.reasoning === 'string' ? raw.suggestions.reasoning :
-          typeof raw.suggestions?.summary === 'string' ? raw.suggestions.summary : "",
+      notes: typeof raw.suggestions?.notes === 'string' ? scrub(raw.suggestions.notes) :
+        typeof raw.suggestions?.reasoning === 'string' ? scrub(raw.suggestions.reasoning) :
+          typeof raw.suggestions?.summary === 'string' ? scrub(raw.suggestions.summary) : "",
     };
 
     // Prefer longer ASI1 notes from primary_rationale when notes are thin
     if ((!suggestions.notes || suggestions.notes.length < 40) && raw.ai_wording?.primary_rationale) {
-      suggestions.notes = String(raw.ai_wording.primary_rationale);
+      suggestions.notes = scrub(String(raw.ai_wording.primary_rationale));
+    } else if (suggestions.notes) {
+      suggestions.notes = scrub(suggestions.notes);
     }
 
     const warnings = Array.isArray(raw.warnings)
@@ -2123,7 +2148,13 @@ Use this recall only as context, and prioritize current market snapshot data if 
         ? raw.suggestions.issues.map(String).filter(w => w.length > 0)
         : [];
 
-    const ai_wording = raw.ai_wording || {
+    const ai_wording = raw.ai_wording ? {
+      ...raw.ai_wording,
+      primary_rationale: scrub(raw.ai_wording.primary_rationale || ''),
+      wait_rationale: scrub(raw.ai_wording.wait_rationale || ''),
+      high_confidence_rationale: scrub(raw.ai_wording.high_confidence_rationale || ''),
+      market_patterns: scrub(raw.ai_wording.market_patterns || ''),
+    } : {
       primary_rationale: "",
       wait_rationale: "",
       high_confidence_rationale: "",

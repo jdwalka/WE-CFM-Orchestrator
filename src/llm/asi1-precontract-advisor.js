@@ -54,7 +54,50 @@
       .replace(/"/g, '&quot;');
   }
 
+  /** Reject non-Polymarket PTB proxies (RTDS TWAP, title, CEX, etc.). */
+  function isCanonicalPtbSource(src) {
+    const s = String(src || '').toLowerCase();
+    if (!s) return true; // poly market field without tag still ok if number present
+    if (/rtds|twap30|title|provisional|coinbase|binance|gecko|rti|crypto-price|boundary|rejected:/.test(s)) {
+      return false;
+    }
+    return /poly|gamma|chainlink|clob|candle|lock|event|openprice|pricetobeat/.test(s);
+  }
+
   function buildMarketContext(sym, preferHorizon) {
+    // Prefer OracleSnapshot (Pyth spot + Polymarket PTB only)
+    try {
+      if (window.OracleSnapshot?.buildOraclePacket) {
+        const o = window.OracleSnapshot.buildOraclePacket(sym, preferHorizon === '5m' ? '5m' : '15m');
+        const w = o?.active;
+        if (w?.slug) {
+          const ptbOk = w.priceToBeatNum != null && isCanonicalPtbSource(w.priceToBeatSource);
+          return {
+            sym: String(sym).toUpperCase(),
+            horizon: w.horizon || (preferHorizon === '5m' ? '5m' : '15m'),
+            slug: w.slug,
+            live: w.live !== false,
+            yesProb: w.yesProb ?? null,
+            priceToBeatNum: ptbOk ? w.priceToBeatNum : null,
+            priceToBeatSource: ptbOk ? (w.priceToBeatSource || 'polymarket') : null,
+            secondsToClose: w.secondsToClose ?? null,
+            bestBid: w.bestBid ?? null,
+            bestAsk: w.bestAsk ?? null,
+            mid: w.mid ?? null,
+            spread: w.spread ?? null,
+            depthImbalance: w.depthImbalance ?? null,
+            nearTouchNotional: w.nearTouchNotional ?? null,
+            liveDirection: w.liveDirection || o.pathDir || null,
+            spot: o.spot,
+            spotSource: o.spotSource || 'pyth',
+            deltaVsPtb: ptbOk ? o.deltaVsPtb : null,
+            oraclePolicy: o.oraclePolicy,
+            oracleWarnings: o.warnings || [],
+          };
+        }
+      }
+    } catch (_) { /* fall through */ }
+
     const coin = window.PredictionMarkets?.getCoin?.(sym) || {};
     const p15 = coin.poly15m || null;
     const p5 = coin.poly5m || null;
@@ -75,13 +118,23 @@
     }
     if (!m || !m.slug) return null;
 
+    // Spot = Pyth only (never RTI/CEX as AI spot)
     const spot = Number(
       window.PythBrowser?.getPrice?.(sym)
-      || window._rtiPrices?.[sym]?.price
-      || m.currentPriceNum
+      || window._pythPrices?.[String(sym).toUpperCase()]
       || 0
     );
-    const ptb = Number(m.priceToBeatNum || m.targetPriceNum || 0);
+    const rawPtb = Number(m.priceToBeatNum || m.targetPriceNum || 0);
+    const ptbSource = m.priceToBeatSource || m.ptbSource || null;
+    const ptbOk = Number.isFinite(rawPtb) && rawPtb > 0 && isCanonicalPtbSource(ptbSource);
+    // Coin decimals: BTC/SOL=2, XRP=4 — never pass float trails to AI
+    const roundPtb = (n) => {
+      if (!Number.isFinite(n) || n <= 0) return null;
+      const d = /^(XRP|DOGE)$/i.test(sym) ? 4 : 2;
+      const f = 10 ** d;
+      return Math.round(n * f) / f;
+    };
+    const ptb = ptbOk ? roundPtb(rawPtb) : null;
     const ttc = Number(m.secondsToClose);
     const yes = Number(m.probability ?? m.upProbability ?? m.yesProb);
 
@@ -91,7 +144,8 @@
       slug: m.slug,
       live: m.live !== false,
       yesProb: Number.isFinite(yes) ? yes : null,
-      priceToBeatNum: Number.isFinite(ptb) && ptb > 0 ? ptb : null,
+      priceToBeatNum: ptb,
+      priceToBeatSource: ptbOk ? (ptbSource || 'polymarket') : null,
       secondsToClose: Number.isFinite(ttc) ? ttc : null,
       bestBid: m.bestBid ?? null,
       bestAsk: m.bestAsk ?? null,
@@ -101,14 +155,99 @@
       nearTouchNotional: m.nearTouchNotional ?? null,
       liveDirection: m.liveDirection || null,
       spot: Number.isFinite(spot) && spot > 0 ? spot : null,
-      deltaVsPtb: Number.isFinite(spot) && Number.isFinite(ptb) && ptb > 0 ? spot - ptb : null,
+      spotSource: 'pyth',
+      deltaVsPtb: Number.isFinite(spot) && ptb != null ? spot - ptb : null,
+      oraclePolicy: 'pyth_spot_plus_polymarket_ptb_only',
+      oracleWarnings: ptb == null ? ['no_polymarket_ptb'] : [],
     };
   }
 
+  function applyModelPack(snap, pack) {
+    if (!snap || !pack) return snap;
+    snap.direction = pack.direction || snap.direction;
+    snap.modelDirection = pack.direction || snap.modelDirection;
+    snap.score = pack.score ?? snap.score;
+    snap.modelScore = pack.score ?? snap.modelScore;
+    snap.confidence = pack.confidence ?? snap.confidence;
+    snap.regimeLocal = pack.regime || snap.regimeLocal;
+    snap.regime = pack.regime || snap.regime;
+    snap.modelAgreement = pack.agreement || snap.modelAgreement;
+    snap.agreement = pack.agreement || snap.agreement;
+    if (pack.indicators) snap.indicators = pack.indicators;
+    snap.market = {
+      ...(snap.market || {}),
+      modelDirection: pack.direction,
+      modelScore: pack.score,
+      score: pack.score,
+      confidencePct: pack.confidence != null ? Math.round(pack.confidence * 100) : null,
+      regime: pack.regime,
+      agreement: pack.agreement,
+      indicators: pack.indicators,
+    };
+    return snap;
+  }
+
   function buildSnapshot(sym, ctx) {
-    const pred = window.PredictionEngine?.getPrediction?.(sym)
-      || window.predictions?.[sym]
-      || null;
+    const pack = resolvePredPack(sym);
+
+    // Prefer full oracle packet for LLM (includes strict PTB + Pyth)
+    try {
+      if (window.OracleSnapshot?.buildLlmSnapshot) {
+        const snap = window.OracleSnapshot.buildLlmSnapshot(sym, ctx.horizon, { pred: pack });
+        snap.preContract = true;
+        snap.preferAsi1 = true;
+        snap.rangePrediction = true;
+        // Force horizon to the market we actually selected
+        if (ctx.horizon === '5m') {
+          snap.horizon = '5m';
+          snap.horizonMinutes = 5;
+          snap.rangeHorizonMinutes = 15;
+          snap.fiveMinute = true;
+        } else {
+          snap.horizon = '15m';
+          snap.horizonMinutes = 15;
+          snap.rangeHorizonMinutes = 15;
+        }
+        // Overlay live CLOB fields from ctx
+        const block = {
+          slug: ctx.slug,
+          live: true,
+          yesProb: ctx.yesProb,
+          probability: ctx.yesProb,
+          priceToBeatNum: ctx.priceToBeatNum,
+          priceToBeatSource: ctx.priceToBeatSource,
+          secondsToClose: ctx.secondsToClose,
+          bestBid: ctx.bestBid,
+          bestAsk: ctx.bestAsk,
+          mid: ctx.mid,
+          spread: ctx.spread,
+          depthImbalance: ctx.depthImbalance,
+          nearTouchNotional: ctx.nearTouchNotional,
+          liveDirection: ctx.liveDirection,
+          settlementRule: `Polymarket ${ctx.horizon}: Up if finishes above Polymarket PTB at close.`,
+        };
+        if (ctx.horizon === '5m') snap.poly5m = block;
+        else snap.poly15m = block;
+        snap.activeContract = block;
+        snap.currentPrice = ctx.spot;
+        snap.price = ctx.spot;
+        snap.priceSource = ctx.spotSource || 'pyth';
+        snap.polymarketOracle = {
+          slug: ctx.slug,
+          priceToBeatNum: ctx.priceToBeatNum,
+          priceToBeatSource: ctx.priceToBeatSource,
+          pythSpot: ctx.spot,
+          pythSource: ctx.spotSource || 'pyth',
+          pathDir: ctx.liveDirection,
+          deltaVsPtb: ctx.deltaVsPtb,
+          yesProb: ctx.yesProb,
+          secondsToClose: ctx.secondsToClose,
+          rule: 'PTB is Polymarket window open only. Spot is Pyth only. Do not invent PTB.',
+        };
+        return applyModelPack(snap, pack);
+      }
+    } catch (_) { /* fall through */ }
+
     const is5 = ctx.horizon === '5m';
     const polyBlock = {
       slug: ctx.slug,
@@ -116,6 +255,7 @@
       yesProb: ctx.yesProb,
       probability: ctx.yesProb,
       priceToBeatNum: ctx.priceToBeatNum,
+      priceToBeatSource: ctx.priceToBeatSource,
       secondsToClose: ctx.secondsToClose,
       bestBid: ctx.bestBid,
       bestAsk: ctx.bestAsk,
@@ -125,35 +265,92 @@
       nearTouchNotional: ctx.nearTouchNotional,
       liveDirection: ctx.liveDirection,
     };
-    return {
+    const snap = {
       coin: sym,
       preContract: true,
       preferAsi1: true,
-      // 5m PTB path uses five-min prompts when poly5m is set + horizon 5;
-      // force range/ASI1 path for guidance quality on both 5m and 15m.
-      rangePrediction: true,
+      rangePrediction: !is5,
+      fiveMinute: is5,
       rangeHorizonMinutes: 15,
       horizonMinutes: is5 ? 5 : 15,
       horizon: is5 ? '5m' : '15m',
       currentPrice: ctx.spot,
       price: ctx.spot,
-      direction: pred?.signal || pred?.direction || null,
-      modelDirection: pred?.signal || pred?.direction || null,
-      score: pred?.score ?? null,
-      confidence: pred?.confidence != null ? pred.confidence / 100 : null,
+      priceSource: ctx.spotSource || 'pyth',
+      oraclePolicy: ctx.oraclePolicy || 'pyth_spot_plus_polymarket_ptb_only',
+      oracleWarnings: ctx.oracleWarnings || [],
       poly5m: is5 ? polyBlock : null,
       poly15m: !is5 ? polyBlock : (window.PredictionMarkets?.getCoin?.(sym)?.poly15m || null),
       activeContract: {
         slug: ctx.slug,
         yesProb: ctx.yesProb,
         priceToBeatNum: ctx.priceToBeatNum,
+        priceToBeatSource: ctx.priceToBeatSource,
         secondsToClose: ctx.secondsToClose,
       },
+      polymarketOracle: {
+        slug: ctx.slug,
+        priceToBeatNum: ctx.priceToBeatNum,
+        priceToBeatSource: ctx.priceToBeatSource,
+        pythSpot: ctx.spot,
+        pythSource: ctx.spotSource || 'pyth',
+        deltaVsPtb: ctx.deltaVsPtb,
+        rule: 'PTB is Polymarket window open only. Spot is Pyth only. Do not invent PTB.',
+      },
     };
+    return applyModelPack(snap, pack);
   }
 
   function briefKey(sym, horizon) {
     return `${String(sym).toUpperCase()}:${horizon === '5m' ? '5m' : '15m'}`;
+  }
+
+  /** Full PredictionEngine pack for LLM model-guide blocks */
+  function resolvePredPack(sym) {
+    let pred = null;
+    try {
+      pred = window.PredictionEngine?.get?.(sym)
+        || window.PredictionEngine?.getPrediction?.(sym)
+        || window.predictions?.[sym]
+        || window._predictions?.[sym]
+        || null;
+    } catch (_) { pred = null; }
+    if (!pred) return null;
+    const score = Number(pred.score);
+    const conf = Number(pred.confidence);
+    const dir = String(pred.direction || pred.signal || '').toUpperCase();
+    const direction = (dir === 'UP' || dir === 'DOWN')
+      ? dir
+      : (Number.isFinite(score)
+        ? (score > 0.05 ? 'UP' : score < -0.05 ? 'DOWN' : null)
+        : null);
+    // Trim bulky indicator objects to labels the prompt can use
+    let indicators = null;
+    try {
+      const raw = pred.indicators || pred.diagnostics?.components || null;
+      if (raw && typeof raw === 'object') {
+        indicators = {};
+        for (const k of Object.keys(raw).slice(0, 16)) {
+          const row = raw[k];
+          if (row && typeof row === 'object') {
+            indicators[k] = {
+              label: row.label || null,
+              value: row.value != null ? row.value : (row.signal != null ? row.signal : null),
+              signal: row.signal != null ? row.signal : null,
+            };
+          }
+        }
+      }
+    } catch (_) { indicators = null; }
+    return {
+      direction,
+      signal: pred.signal || direction,
+      score: Number.isFinite(score) ? score : null,
+      confidence: Number.isFinite(conf) ? (conf > 1 ? conf / 100 : conf) : null,
+      regime: pred.regime || pred.regimeLocal || null,
+      agreement: pred.agreement || pred.coreAgreement || null,
+      indicators,
+    };
   }
 
   async function fireOne(sym, preferHorizon) {
@@ -176,7 +373,20 @@
       const res = await invoke('llm:analyzeSnapshot', snapshot);
       if (!res?.success || !res.output) return null;
       const o = res.output;
-      const notes = String(o?.suggestions?.notes || o?.ai_wording?.primary_rationale || '').trim();
+      // Client-side float scrub (BTC/SOL 2dp, XRP 4dp) even if main process is stale
+      const scrubLocal = (t) => {
+        let s = String(t || '');
+        s = s.replace(/\$\s*([0-9]{1,3}(?:,[0-9]{3})*|[0-9]+)\.([0-9]{3,})/g, (full, intP, frac) => {
+          const raw = Number(String(intP).replace(/,/g, '') + '.' + frac);
+          if (!Number.isFinite(raw) || raw <= 0) return full;
+          const d = /^(XRP|DOGE)$/i.test(sym) ? 4 : 2;
+          const f = 10 ** d;
+          const n = Math.round(raw * f) / f;
+          return '$' + n.toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
+        });
+        return s;
+      };
+      const notes = scrubLocal(String(o?.suggestions?.notes || o?.ai_wording?.primary_rationale || '').trim());
       const call = String(o?.call || o?.direction || '').toUpperCase();
       let brief = {
         sym: String(sym).toUpperCase(),
@@ -187,7 +397,7 @@
         confidence: clamp(Number(o?.confidence ?? 0), 0, 1),
         regime: o?.regime || null,
         notes,
-        primaryRationale: o?.ai_wording?.primary_rationale || notes,
+        primaryRationale: scrubLocal(o?.ai_wording?.primary_rationale || notes),
         marketPatterns: o?.ai_wording?.market_patterns || o?.market_patterns || null,
         preContract: o?.preContract || null,
         polyPeg: o?.polyPeg || null,
@@ -198,11 +408,11 @@
       };
       // Source-of-truth: raw poly PTB/CLOB/book can nullify wrong AI mid-contract
       if (window.InferenceTruthGuard?.gateBrief) {
-        const pred = window.PredictionEngine?.getPrediction?.(sym);
+        const pack = resolvePredPack(sym);
         brief = window.InferenceTruthGuard.gateBrief(brief, {
           horizon: ctx.horizon,
           market: ctx,
-          modelScore: pred?.score,
+          modelScore: pack?.score,
         });
       }
       _briefs[briefKey(sym, ctx.horizon)] = brief;
@@ -234,12 +444,12 @@
       // refresh market snapshot on brief
       brief.market = ctx;
       if (!window.InferenceTruthGuard?.gateBrief) continue;
-      const pred = window.PredictionEngine?.getPrediction?.(brief.sym);
+      const pack = resolvePredPack(brief.sym);
       // Gate against original AI call so we can flip nullify on/off as path changes
       const rawCall = brief.aiCallOriginal || brief.call;
       const gated = window.InferenceTruthGuard.gateBrief(
         { ...brief, call: rawCall, notes: brief.primaryRationale || brief.notes },
-        { horizon: brief.horizon, market: ctx, modelScore: pred?.score }
+        { horizon: brief.horizon, market: ctx, modelScore: pack?.score }
       );
       const wasNull = !!brief.nullified;
       const nowNull = !!gated.nullified;
@@ -345,11 +555,9 @@
     try {
       if (revalidateCached()) {
         window._markets5mLastRenderTs = 0;
-        if (typeof window.renderMarkets5M === 'function') {
-          const view = window.currentView || document.querySelector('[data-wecrypto-view]')?.dataset?.wecryptoView;
-          if (view === 'markets5m') window.renderMarkets5M();
-        }
-        if (window.PolymarketTerminal?.render) window.PolymarketTerminal.render();
+        const view = window.currentView || document.querySelector('[data-wecrypto-view]')?.dataset?.wecryptoView;
+        if (view === 'markets5m' && typeof window.renderMarkets5M === 'function') window.renderMarkets5M();
+        if (view === 'polymarket' && window.PolymarketTerminal?.render) window.PolymarketTerminal.render();
       }
     } catch (_) { /* */ }
   }, 8000);
@@ -381,13 +589,9 @@
   window.addEventListener('asi1:precontract', () => {
     try {
       window._markets5mLastRenderTs = 0;
-      if (typeof window.renderMarkets5M === 'function') {
-        const view = window.currentView || document.querySelector('[data-wecrypto-view]')?.dataset?.wecryptoView;
-        if (view === 'markets5m') window.renderMarkets5M();
-      }
-      if (window.PolymarketTerminal?.render) {
-        window.PolymarketTerminal.render();
-      }
+      const view = window.currentView || document.querySelector('[data-wecrypto-view]')?.dataset?.wecryptoView;
+      if (view === 'markets5m' && typeof window.renderMarkets5M === 'function') window.renderMarkets5M();
+      if (view === 'polymarket' && window.PolymarketTerminal?.render) window.PolymarketTerminal.render();
     } catch (_) { /* */ }
   });
 

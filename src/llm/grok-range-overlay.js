@@ -69,16 +69,32 @@
   }
 
   function resolvePrice(coin) {
+    // AI path: Pyth only (never RTI/CEX as spot-for-PTB confusion)
     try {
-      if (window._pythPrices && window._pythPrices[coin] > 0) return Number(window._pythPrices[coin]);
+      if (window.OracleSnapshot?.getPythSpot) {
+        const p = window.OracleSnapshot.getPythSpot(coin);
+        if (p?.price > 0) return p.price;
+      }
     } catch (_) {}
     try {
-      if (window.PredictionMarkets && window.PredictionMarkets.getPrice) {
-        const p = Number(window.PredictionMarkets.getPrice(coin));
+      if (window.PythBrowser?.getPrice) {
+        const p = Number(window.PythBrowser.getPrice(coin));
         if (p > 0) return p;
       }
     } catch (_) {}
+    try {
+      if (window._pythPrices && window._pythPrices[coin] > 0) return Number(window._pythPrices[coin]);
+    } catch (_) {}
     return null;
+  }
+
+  function isCanonicalPtbSource(src) {
+    const s = String(src || '').toLowerCase();
+    if (!s) return true;
+    if (/rtds|twap30|title|provisional|coinbase|binance|gecko|rti|crypto-price|boundary|rejected:/.test(s)) {
+      return false;
+    }
+    return /poly|gamma|chainlink|clob|candle|lock|event|openprice|pricetobeat/.test(s);
   }
 
   function resolvePred(coin) {
@@ -97,6 +113,45 @@
       }
     } catch (_) {}
     return null;
+  }
+
+  /** Trim PredictionEngine fields for LLM model-guide blocks */
+  function packPredForLlm(pred) {
+    if (!pred) return null;
+    const score = Number(pred.score);
+    const conf = Number(pred.confidence);
+    let dir = String(pred.direction || pred.signal || '').toUpperCase();
+    if (dir !== 'UP' && dir !== 'DOWN') {
+      dir = Number.isFinite(score)
+        ? (score > 0.05 ? 'UP' : score < -0.05 ? 'DOWN' : null)
+        : null;
+    }
+    let indicators = null;
+    try {
+      const raw = pred.indicators || pred.diagnostics?.components || null;
+      if (raw && typeof raw === 'object') {
+        indicators = {};
+        for (const k of Object.keys(raw).slice(0, 16)) {
+          const row = raw[k];
+          if (row && typeof row === 'object') {
+            indicators[k] = {
+              label: row.label || null,
+              value: row.value != null ? row.value : (row.signal != null ? row.signal : null),
+              signal: row.signal != null ? row.signal : null,
+            };
+          }
+        }
+      }
+    } catch (_) { indicators = null; }
+    return {
+      direction: dir,
+      signal: pred.signal || dir,
+      score: Number.isFinite(score) ? score : null,
+      confidence: Number.isFinite(conf) ? (conf > 1 ? conf / 100 : conf) : null,
+      regime: pred.regime || null,
+      agreement: pred.agreement || pred.coreAgreement || null,
+      indicators,
+    };
   }
 
   function resolveMarket(coin) {
@@ -181,7 +236,12 @@
 
     const secondsToClose = Math.max(0, Math.round((closeMs - Date.now()) / 1000));
     const yesProb = Number.isFinite(Number(p.probability)) ? Number(p.probability) : null;
-    const ptb = Number.isFinite(Number(p.priceToBeatNum)) ? Number(p.priceToBeatNum) : null;
+    const rawPtb = Number.isFinite(Number(p.priceToBeatNum)) ? Number(p.priceToBeatNum) : null;
+    const ptbSource = p.priceToBeatSource || p.ptbSource || null;
+    // AI must only see Polymarket-published PTB — not RTDS/title proxies
+    const ptbOk = rawPtb != null && rawPtb > 0 && isCanonicalPtbSource(ptbSource);
+    const dec = /^(XRP|DOGE)$/i.test(coin) ? 4 : 2;
+    const ptb = ptbOk ? Math.round(rawPtb * (10 ** dec)) / (10 ** dec) : null;
 
     return {
       live: !!(p.slug && yesProb != null),
@@ -193,11 +253,12 @@
       secondsToClose,
       title: p.title || `${coin} Up or Down 15M`,
       priceToBeatNum: ptb,
-      targetPrice: p.targetPrice || (ptb != null ? `$${ptb}` : null),
+      priceToBeatSource: ptbOk ? (ptbSource || 'polymarket') : null,
+      targetPrice: ptb != null ? (p.targetPrice || `$${ptb}`) : null,
       targetPriceNum: ptb,
       volume: p.volume != null ? Number(p.volume) : null,
       tradable: true,
-      settlementRule: `Polymarket resolves "Up" if ${coin} finishes above the window's open price (price-to-beat, TWAP-sourced) at 15m close.`,
+      settlementRule: `Polymarket resolves "Up" if ${coin} finishes above Polymarket's published price-to-beat at 15m close.`,
     };
   }
 
@@ -229,7 +290,8 @@
   }
 
   function buildRangeSnapshot(coin, horizonMinutes) {
-    const pred = resolvePred(coin) || {};
+    const rawPred = resolvePred(coin) || {};
+    const pack = packPredForLlm(rawPred) || {};
     const market = resolveMarket(coin) || {};
     const current = resolvePrice(coin);
     const sessionMemory = mem() ? mem().memoryPackForPrompt(coin) : { sampleCount: 0, sessionMinutes: 0 };
@@ -249,10 +311,18 @@
     } catch (_) {}
 
     const is15 = Number(horizonMinutes) === 15;
-    const modelDir = pred.direction || pred.signal || (Number.isFinite(Number(pred.score)) ? (pred.score > 0.05 ? 'UP' : pred.score < -0.05 ? 'DOWN' : null) : null);
-    const modelScore = Number.isFinite(Number(pred.score)) ? Number(pred.score) : 0;
-    const confidence = pred.confidence != null ? Number(pred.confidence) : null;
+    const modelDir = pack.direction
+      || rawPred.direction
+      || rawPred.signal
+      || (Number.isFinite(Number(rawPred.score)) ? (rawPred.score > 0.05 ? 'UP' : rawPred.score < -0.05 ? 'DOWN' : null) : null);
+    const modelScore = Number.isFinite(Number(pack.score ?? rawPred.score)) ? Number(pack.score ?? rawPred.score) : 0;
+    const confidence = pack.confidence != null
+      ? pack.confidence
+      : (rawPred.confidence != null ? Number(rawPred.confidence) : null);
+    const conf01 = confidence != null && confidence > 1 ? confidence / 100 : confidence;
 
+    const ptb = poly15m.priceToBeatNum;
+    const deltaVsPtb = (current != null && ptb != null) ? current - ptb : null;
     return {
       coin,
       horizonMinutes,
@@ -264,25 +334,46 @@
       hourlyRanges: !is15,
       venue: is15 ? 'polymarket-15m' : 'polymarket-hourly',
       currentPrice: current,
+      price: current,
+      priceSource: 'pyth',
+      oraclePolicy: 'pyth_spot_plus_polymarket_ptb_only',
+      oracleWarnings: is15 && ptb == null ? ['no_polymarket_ptb'] : [],
       direction: modelDir,
       modelDirection: modelDir,
       score: modelScore,
       modelScore: modelScore,
-      confidence: confidence,
-      regimeLocal: pred.regime || null,
+      confidence: conf01,
+      regimeLocal: pack.regime || rawPred.regime || null,
+      regime: pack.regime || rawPred.regime || null,
+      modelAgreement: pack.agreement || null,
+      agreement: pack.agreement || null,
+      indicators: pack.indicators || rawPred.indicators || null,
       sessionMemory,
       analyticsMemory: sessionMemory,
-      // THE contract Grok must analyze for 15m
+      // THE contract Grok/ASI1 must analyze for 15m
       poly15m,
       activeContract: is15 ? poly15m : null,
       rangeLadder: ladder,
       spotBucket,
+      polymarketOracle: {
+        slug: poly15m.slug,
+        priceToBeatNum: ptb,
+        priceToBeatSource: poly15m.priceToBeatSource || null,
+        pythSpot: current,
+        pythSource: 'pyth',
+        pathDir: deltaVsPtb == null ? null : (Math.abs(deltaVsPtb / (ptb || 1)) < 0.00005 ? 'FLAT' : (deltaVsPtb > 0 ? 'UP' : 'DOWN')),
+        deltaVsPtb,
+        yesProb: poly15m.yesProb,
+        secondsToClose: poly15m.secondsToClose,
+        rule: 'PTB is Polymarket window open only. Spot is Pyth only. Do not invent PTB.',
+      },
       higherTF: {
         '15m': {
           prob: poly15m.yesProb ?? null,
           slug: poly15m.slug,
           live: poly15m.live,
           priceToBeatNum: poly15m.priceToBeatNum,
+          priceToBeatSource: poly15m.priceToBeatSource,
           secondsToClose: poly15m.secondsToClose,
           open: sessionMemory.open15m || null,
           closed: sessionMemory.windows15m || null,
@@ -300,9 +391,15 @@
       market: {
         modelDirection: modelDir,
         modelScore: modelScore,
-        confidencePct: confidence != null ? Math.round(confidence * 100) : null,
+        score: modelScore,
+        confidencePct: conf01 != null ? Math.round(conf01 * 100) : null,
+        regime: pack.regime || rawPred.regime || null,
+        agreement: pack.agreement || null,
+        indicators: pack.indicators || null,
         poly15mYes: poly15m.yesProb,
         poly15mSlug: poly15m.slug,
+        priceToBeatNum: ptb,
+        priceToBeatSource: poly15m.priceToBeatSource,
       },
       xaiMaxTokens: 1400,
     };

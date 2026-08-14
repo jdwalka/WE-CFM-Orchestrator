@@ -56,16 +56,28 @@
 
     if (!m) return null;
 
-    const spot = Number(
-      (typeof window !== 'undefined' && (
-        window.PythBrowser?.getPrice?.(sym)
-        || window._rtiPrices?.[sym]?.price
-      ))
-      || m.currentPriceNum
-      || m.currentPrice
-      || 0
-    );
-    const ptb = Number(m.priceToBeatNum || m.targetPriceNum || 0);
+    // Pyth-only spot for truth path (never RTI/CEX as PTB substitute)
+    let spot = NaN;
+    try {
+      if (typeof window !== 'undefined' && window.OracleSnapshot?.getPythSpot) {
+        const p = window.OracleSnapshot.getPythSpot(sym);
+        if (p?.price > 0) spot = p.price;
+      }
+    } catch (_) { /* */ }
+    if (!(spot > 0)) {
+      spot = Number(
+        (typeof window !== 'undefined' && (
+          window.PythBrowser?.getPrice?.(sym)
+          || window._pythPrices?.[String(sym).toUpperCase()]
+        ))
+        || m.currentPriceNum
+        || 0
+      );
+    }
+    const rawPtb = Number(m.priceToBeatNum || m.targetPriceNum || 0);
+    const ptbSrc = String(m.priceToBeatSource || m.ptbSource || '').toLowerCase();
+    const ptbRejected = /rtds|twap30|title|provisional|coinbase|binance|gecko|rti|crypto-price|boundary|rejected:/.test(ptbSrc);
+    const ptb = (!ptbRejected && Number.isFinite(rawPtb) && rawPtb > 0) ? rawPtb : NaN;
     const yes = Number(m.probability ?? m.upProbability ?? m.yesProb ?? m.clobProbability);
     const mid = Number(m.mid);
     const imb = Number(m.depthImbalance);

@@ -115,14 +115,37 @@
     return { fire: false, reason: null };
   }
 
+  function isCanonicalPtbSource(src) {
+    const s = String(src || '').toLowerCase();
+    if (!s) return true;
+    if (/rtds|twap30|title|provisional|coinbase|binance|gecko|rti|crypto-price|boundary|rejected:/.test(s)) {
+      return false;
+    }
+    return /poly|gamma|chainlink|clob|candle|lock|event|openprice|pricetobeat/.test(s);
+  }
+
   function resolvePriceToBeat(market) {
     const p5 = market && market.poly5m;
     if (!p5) return null;
     const t = Number(p5.priceToBeatNum != null ? p5.priceToBeatNum : p5.targetPriceNum);
-    return (Number.isFinite(t) && t > 0) ? t : null;
+    if (!(Number.isFinite(t) && t > 0)) return null;
+    // Only Polymarket-published PTB for AI — never RTDS/title proxies
+    if (!isCanonicalPtbSource(p5.priceToBeatSource || p5.ptbSource)) return null;
+    return t;
   }
 
   function resolveCurrentPrice(pred, market) {
+    // Prefer Pyth for AI path
+    try {
+      if (window.OracleSnapshot?.getPythSpot) {
+        const p = window.OracleSnapshot.getPythSpot(market?.sym || market?.coin || pred?.coin);
+        if (p?.price > 0) return p.price;
+      }
+    } catch (_) {}
+    try {
+      const coin = (pred && pred.coin) || null;
+      if (coin && window._pythPrices && window._pythPrices[coin] > 0) return Number(window._pythPrices[coin]);
+    } catch (_) {}
     const p5 = market && market.poly5m;
     const cands = [p5 && p5.currentPriceNum, pred && pred.price, pred && pred.currentPrice];
     for (const c of cands) {
@@ -314,16 +337,51 @@
       }
     } catch (_) {}
 
+    const p5 = pmCoin.poly5m || {};
+    const ptbSource = (target != null)
+      ? (p5.priceToBeatSource || p5.ptbSource || 'polymarket')
+      : null;
     return {
       coin,
       horizonMinutes: 5,
       venue: 'polymarket',
       fiveMinute: true,
       priceToBeat: target,
+      priceToBeatNum: target,
+      priceToBeatSource: ptbSource,
       currentPrice: current,
+      price: current,
+      priceSource: 'pyth',
+      oraclePolicy: 'pyth_spot_plus_polymarket_ptb_only',
+      poly5m: {
+        slug: p5.slug || null,
+        yesProb: p5.probability ?? p5.upProbability ?? p5.yesProb ?? null,
+        priceToBeatNum: target,
+        priceToBeatSource: ptbSource,
+        secondsToClose: p5.secondsToClose != null ? Number(p5.secondsToClose) : null,
+        bestBid: p5.bestBid ?? null,
+        bestAsk: p5.bestAsk ?? null,
+        depthImbalance: p5.depthImbalance ?? null,
+        liveDirection: p5.liveDirection ?? null,
+      },
+      polymarketOracle: {
+        slug: p5.slug || null,
+        priceToBeatNum: target,
+        priceToBeatSource: ptbSource,
+        pythSpot: current,
+        pythSource: 'pyth',
+        rule: 'PTB is Polymarket window open only. Spot is Pyth only. Do not invent PTB.',
+      },
       direction: pred && (pred.direction != null ? pred.direction : pred.signal) || null,
+      modelDirection: pred && (pred.direction != null ? pred.direction : pred.signal) || null,
+      score: pred && Number.isFinite(Number(pred.score)) ? Number(pred.score) : null,
+      modelScore: pred && Number.isFinite(Number(pred.score)) ? Number(pred.score) : null,
       confidence: normConf(pred && pred.confidence),
       regimeLocal: (pred && pred.regime) || null,
+      regime: (pred && pred.regime) || null,
+      modelAgreement: pred && (pred.agreement || pred.coreAgreement) || null,
+      agreement: pred && (pred.agreement || pred.coreAgreement) || null,
+      indicators: (pred && (pred.indicators || (pred.diagnostics && pred.diagnostics.components))) || {},
       volatility: Number((pred && pred.volatility && pred.volatility.atrPct) != null
         ? pred.volatility.atrPct
         : (pred && pred.volatility) || 0),
