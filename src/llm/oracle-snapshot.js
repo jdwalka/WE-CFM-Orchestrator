@@ -260,9 +260,18 @@
     const poly5 = getPolymarketWindow(key, '5m');
     const poly15 = getPolymarketWindow(key, '15m');
 
+    // A specific preferHorizon means the caller wants THAT window, or nothing —
+    // never silently substitute the other horizon's data. Doing so used to
+    // relabel the result's own .horizon field to whatever DID resolve, which
+    // made 5m requests come back tagged '15m' whenever poly5 was momentarily
+    // invalid (common right around a 5m rollover, since 5m windows churn 3x
+    // more often than 15m) — and callers that key briefs by ctx.horizon (e.g.
+    // asi1-precontract-advisor.js) would then write into the wrong bucket,
+    // leaving the 5m slot silently empty forever. Only fall back across
+    // horizons when no specific one was requested.
     let primary = null;
-    if (preferHorizon === '5m' && poly5?.valid && poly5.slug) primary = poly5;
-    else if (preferHorizon === '15m' && poly15?.valid && poly15.slug) primary = poly15;
+    if (preferHorizon === '5m') primary = (poly5?.valid && poly5.slug) ? poly5 : null;
+    else if (preferHorizon === '15m') primary = (poly15?.valid && poly15.slug) ? poly15 : null;
     else if (poly15?.valid && poly15.slug) primary = poly15;
     else if (poly5?.valid && poly5.slug) primary = poly5;
 

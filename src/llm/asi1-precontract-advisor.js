@@ -110,12 +110,15 @@
     const p5 = coin.poly5m || null;
     let m = null;
     let horizon = '15m';
-    if (preferHorizon === '5m' && p5?.slug) {
-      m = p5;
-      horizon = '5m';
-    } else if (preferHorizon === '15m' && p15?.slug) {
-      m = p15;
-      horizon = '15m';
+    // A specific preferHorizon means this window or nothing — never silently
+    // substitute the other horizon (see the matching fix + comment in
+    // oracle-snapshot.js's buildOraclePacket for the failure this caused:
+    // 5m requests coming back tagged '15m' and never populating the 5m
+    // brief slot). Only cross-substitute when no horizon was requested.
+    if (preferHorizon === '5m') {
+      if (p5?.slug) { m = p5; horizon = '5m'; }
+    } else if (preferHorizon === '15m') {
+      if (p15?.slug) { m = p15; horizon = '15m'; }
     } else if (p15?.slug) {
       m = p15;
       horizon = '15m';
