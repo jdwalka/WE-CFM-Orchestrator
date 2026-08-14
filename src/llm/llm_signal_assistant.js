@@ -316,8 +316,20 @@ const TOKENMIX_BASE_URL = process.env.TOKENMIX_BASE_URL || "https://api.tokenmix
 // Gemini/GLM tiers are 10–70x for similar structured notes. Override with
 // TOKENMIX_MODEL=deepseek/deepseek-v4-pro only if you want heavier reasoning.
 const TOKENMIX_MODEL = process.env.TOKENMIX_MODEL || "deepseek/deepseek-v4-flash";
-// Enough room for {call,confidence,notes,preContract} without blowing cost.
-const TOKENMIX_MAX_TOKENS = Number(process.env.TOKENMIX_MAX_TOKENS || 1400);
+// DeepSeek V4 Flash is a *reasoning* model: with thinking on, completion tokens
+// are spent on hidden reasoning first. If max_tokens is too low, finish_reason
+// becomes "length", content is "", and we throw "Unexpected LLM API response
+// format (tokenmix) keys=[choices…]". Default thinking OFF for market JSON
+// (fast, cheap, reliable content). Override TOKENMIX_ENABLE_THINKING=1 for CoT.
+const TOKENMIX_ENABLE_THINKING = (() => {
+  const v = String(process.env.TOKENMIX_ENABLE_THINKING || '0').toLowerCase();
+  return v === '1' || v === 'true' || v === 'yes';
+})();
+// With thinking off, ~800–1400 is enough. With thinking on, budget must cover
+// reasoning_tokens + JSON (~3–6k). Keep a healthy default either way.
+const TOKENMIX_MAX_TOKENS = Number(
+  process.env.TOKENMIX_MAX_TOKENS || (TOKENMIX_ENABLE_THINKING ? 4500 : 1600)
+);
 const TOKENMIX_TIMEOUT_MS = Number(process.env.TOKENMIX_TIMEOUT_MS || 45000);
 // DeepSeek-via-TokenMix sometimes chokes on response_format; we retry without it.
 const TOKENMIX_FORCE_JSON = process.env.TOKENMIX_FORCE_JSON !== '0';
@@ -1535,42 +1547,92 @@ Use this recall only as context, and prioritize current market snapshot data if 
   }
 
   /**
-   * TokenMix → DeepSeek V4 Flash (default). Retries without response_format if needed.
+   * TokenMix → DeepSeek V4 Flash (default).
+   * Retries: json→plain, and if reasoning ate max_tokens (empty content),
+   * re-calls with enable_thinking:false and a larger budget.
    */
   async callTokenMixAPI(systemPrompt, userPrompt, config = {}) {
     if (!TOKENMIX_API_KEY) throw new Error('TOKENMIX_API_KEY missing');
     const model = config.model || TOKENMIX_MODEL;
-    const maxTokens = Number(config.maxTokens || TOKENMIX_MAX_TOKENS);
+    const baseMaxTokens = Number(config.maxTokens || TOKENMIX_MAX_TOKENS);
     const timeoutMs = Number(config.timeoutMs || TOKENMIX_TIMEOUT_MS);
+    const preferThinking = config.enableThinking != null
+      ? !!config.enableThinking
+      : TOKENMIX_ENABLE_THINKING;
 
-    const attempts = TOKENMIX_FORCE_JSON
+    // Prefer plain first when thinking is off (faster, fewer empty bodies);
+    // with thinking on, try json_object first for structured notes.
+    const jsonFirst = TOKENMIX_FORCE_JSON && preferThinking;
+    const modeAttempts = jsonFirst
       ? [{ jsonMode: true }, { jsonMode: false }]
-      : [{ jsonMode: false }];
+      : TOKENMIX_FORCE_JSON
+        ? [{ jsonMode: false }, { jsonMode: true }]
+        : [{ jsonMode: false }];
+
+    const attempts = [
+      // Primary: env thinking preference
+      ...modeAttempts.map((m) => ({
+        ...m,
+        enableThinking: preferThinking,
+        maxTokens: baseMaxTokens,
+      })),
+      // Rescue: reasoning burned the budget → force no-thinking + headroom
+      {
+        jsonMode: false,
+        enableThinking: false,
+        maxTokens: Math.max(baseMaxTokens, 2000),
+        rescue: true,
+      },
+      {
+        jsonMode: true,
+        enableThinking: false,
+        maxTokens: Math.max(baseMaxTokens, 2000),
+        rescue: true,
+      },
+    ];
+
+    // De-dupe identical attempt shapes
+    const seen = new Set();
+    const uniqueAttempts = attempts.filter((a) => {
+      const k = `${a.jsonMode}|${a.enableThinking}|${a.maxTokens}`;
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    });
 
     let lastErr = null;
-    for (const attempt of attempts) {
+    for (const attempt of uniqueAttempts) {
       try {
         const res = await this.callCompatibleAPI(systemPrompt, userPrompt, {
           url: TOKENMIX_BASE_URL,
           model,
           key: TOKENMIX_API_KEY,
-          maxTokens,
+          maxTokens: attempt.maxTokens,
           timeoutMs,
           stream: false,
-          // DeepSeek on TokenMix: structured output when supported; fallback plain
           responseFormat: attempt.jsonMode ? { type: 'json_object' } : null,
+          enableThinking: attempt.enableThinking,
           providerLabel: 'tokenmix',
         });
         if (res && typeof res === 'object') {
           res._provider = 'tokenmix';
           res._model = model;
+          res._tokenmixThinking = attempt.enableThinking;
         }
         return res;
       } catch (err) {
         lastErr = err;
+        const msg = String(err?.message || err);
+        const reasoningStarve = /empty content|reasoning_tokens|finish=length|Unexpected LLM API response format/i.test(msg);
         console.warn(
-          `[TokenMix] attempt jsonMode=${attempt.jsonMode} failed: ${err.message}`
+          `[TokenMix] attempt json=${attempt.jsonMode} think=${attempt.enableThinking}` +
+            ` maxTok=${attempt.maxTokens}${attempt.rescue ? ' rescue' : ''} failed: ${msg.slice(0, 180)}`
         );
+        // If not a reasoning/format miss and not the last try, still continue
+        // (json_mode can 400). Skip remaining same-thinking attempts only when
+        // auth/payment errors.
+        if (/\b(401|402|403)\b/.test(msg)) break;
+        if (!reasoningStarve && attempt.rescue) continue;
       }
     }
     throw lastErr || new Error('TokenMix DeepSeek failed');
@@ -1617,6 +1679,13 @@ Use this recall only as context, and prioritize current market snapshot data if 
 
     if (config.tools) {
       payload.tools = config.tools;
+    }
+
+    // DeepSeek V4 (TokenMix and direct): disable hidden reasoning so max_tokens
+    // is spent on visible content. Without this, large prompts often return
+    // finish_reason=length with content="" (reasoning_tokens == max_tokens).
+    if (typeof config.enableThinking === 'boolean') {
+      payload.enable_thinking = config.enableThinking;
     }
 
     const controller = new AbortController();
@@ -1682,12 +1751,20 @@ Use this recall only as context, and prioritize current market snapshot data if 
         throw err;
       }
       if (!content) {
-        // Log shape for debugging without dumping full payload
+        const choice = data?.choices?.[0] || null;
+        const finish = choice?.finish_reason || 'unknown';
+        const usage = data?.usage || {};
+        const reasonTok = usage?.completion_tokens_details?.reasoning_tokens
+          ?? usage?.reasoning_tokens
+          ?? null;
         const keys = Object.keys(data || {}).slice(0, 12).join(',');
-        const c0 = data?.choices?.[0] ? Object.keys(data.choices[0]).join(',') : 'none';
-        const m0 = data?.choices?.[0]?.message ? Object.keys(data.choices[0].message).join(',') : 'none';
+        const c0 = choice ? Object.keys(choice).join(',') : 'none';
+        const m0 = choice?.message ? Object.keys(choice.message).join(',') : 'none';
+        // Explicit diagnosis so callTokenMixAPI can rescue (thinking off / more tokens)
         throw new Error(
-          `Unexpected LLM API response format (${providerLabel}) keys=[${keys}] choice=[${c0}] message=[${m0}]`
+          `Unexpected LLM API response format (${providerLabel}) empty content` +
+          ` finish=${finish} reasoning_tokens=${reasonTok} max_tokens=${maxTokens}` +
+          ` keys=[${keys}] choice=[${c0}] message=[${m0}]`
         );
       }
     }
