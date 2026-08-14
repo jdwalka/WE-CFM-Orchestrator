@@ -833,6 +833,7 @@ Use this recall only as context, and prioritize current market snapshot data if 
       isPreContractRange
       && process.env.LLM_DUAL_FIRE !== '0'
       && Asi1Client.hasAsi1Credentials()
+      && process.env.LLM_DISABLE_ASI1 !== '1'
       && TOKENMIX_API_KEY
       && this._providerCooldownRemaining('tokenmix') <= 0
     ) {
@@ -910,7 +911,7 @@ Use this recall only as context, and prioritize current market snapshot data if 
         }
 
         if (p === 'asi1') {
-          if (!Asi1Client.hasAsi1Credentials()) { skipped.push(p); continue; }
+          if (!Asi1Client.hasAsi1Credentials() || process.env.LLM_DISABLE_ASI1 === '1') { skipped.push(p); continue; }
           attempted.push(p);
           // Pre-contract / range: asi1-ultra with room for full guidance notes.
           // 5m ticks: faster mini unless ASI1_5M_MODEL overrides.
