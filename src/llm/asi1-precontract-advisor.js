@@ -23,6 +23,25 @@
   let _timer = null;
   let _running = false;
 
+  // Cold-start: restore last briefs from localStorage
+  try {
+    const restored = window.InferenceStateStore?.loadBriefs?.() || {};
+    let n = 0;
+    for (const [k, b] of Object.entries(restored)) {
+      if (b && b.sym) {
+        _briefs[k] = b;
+        n++;
+      }
+    }
+    if (n) console.info(`[ASI1 PreContract] restored ${n} briefs from localStorage (cold-start)`);
+  } catch (_) { /* */ }
+
+  function _persistBriefs() {
+    try {
+      window.InferenceStateStore?.saveBriefs?.(_briefs);
+    } catch (_) { /* */ }
+  }
+
   function clamp(n, lo, hi) {
     return Math.max(lo, Math.min(hi, n));
   }
@@ -187,6 +206,7 @@
         });
       }
       _briefs[briefKey(sym, ctx.horizon)] = brief;
+      _persistBriefs();
       try {
         window.dispatchEvent(new CustomEvent('asi1:precontract', { detail: brief }));
       } catch (_) { /* */ }
@@ -236,6 +256,7 @@
         _briefs[key] = { ...brief, ...gated, market: ctx };
       }
     }
+    if (changed) _persistBriefs();
     return changed;
   }
 

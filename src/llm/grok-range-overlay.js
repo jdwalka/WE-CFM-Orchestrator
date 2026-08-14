@@ -25,6 +25,28 @@
   const _lastTs = { '15m': {}, '60m': {} };
   const _inFlight = { '15m': {}, '60m': {} };
   const _guidance = { '15m': {}, '60m': {} };
+
+  // Cold-start: restore last range guidance from localStorage
+  try {
+    const restored = window.InferenceStateStore?.loadGuidance?.();
+    if (restored) {
+      if (restored['15m']) _guidance['15m'] = { ...(_guidance['15m'] || {}), ...restored['15m'] };
+      if (restored['60m']) _guidance['60m'] = { ...(_guidance['60m'] || {}), ...restored['60m'] };
+      console.info('[GrokRange] restored guidance from localStorage', {
+        m15: Object.keys(_guidance['15m'] || {}).length,
+        m60: Object.keys(_guidance['60m'] || {}).length,
+      });
+    }
+  } catch (_) { /* */ }
+
+  function _persistGuidance() {
+    try {
+      window.InferenceStateStore?.saveGuidance?.({
+        '15m': _guidance['15m'],
+        '60m': _guidance['60m'],
+      });
+    } catch (_) { /* */ }
+  }
   let _timer = null;
 
   function mem() {
@@ -693,6 +715,7 @@
           raw: o,
         };
         _guidance[key][coin] = guidance;
+        _persistGuidance();
         if (mem() && typeof mem().recordPrediction === 'function') {
           mem().recordPrediction(coin, horizonMinutes, {
             call,

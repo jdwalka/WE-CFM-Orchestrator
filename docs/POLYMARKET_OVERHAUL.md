@@ -50,6 +50,21 @@ Setup: `cloudflared/setup-wecrypto-tunnel.ps1` (config under `%USERPROFILE%\.clo
 
 Keys: `secrets/tokenmix_api_key.txt`, `secrets/ASI1_*.txt`
 
+## TokenMix / DeepSeek traffic
+
+Pre-contract paths **dual-fire** ASI1 + TokenMix (`deepseek/deepseek-v4-flash`) in parallel so DeepSeek is not starved when ASI1 wins. Both appear in the LLM query log. Set `LLM_DUAL_FIRE=0` to disable dual-fire (cascade only).
+
+## Cold-start persistence
+
+| Layer | Store |
+|-------|--------|
+| Main process LLM history / market memory | `WE-CRYPTO-CACHE/llm-inference-state.json` (or Electron `userData`) |
+| ASI1 briefs | `localStorage` `wecrypto_asi1_briefs_v1` |
+| Range guidance | `localStorage` `wecrypto_range_guidance_v1` |
+| Truth verdicts | `localStorage` `wecrypto_truth_verdicts_v1` |
+
+TTL ~6h for renderer stores. Restart should restore last briefs immediately, then refresh.
+
 ## Inference source-of-truth (mid-contract nullify)
 
 Raw Polymarket + spot data is the **source of truth**. If an LLM/ASI1 call fights live data, it is cut off immediately.
