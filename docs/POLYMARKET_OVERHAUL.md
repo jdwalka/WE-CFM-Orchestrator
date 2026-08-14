@@ -50,6 +50,24 @@ Setup: `cloudflared/setup-wecrypto-tunnel.ps1` (config under `%USERPROFILE%\.clo
 
 Keys: `secrets/tokenmix_api_key.txt`, `secrets/ASI1_*.txt`
 
+## Inference source-of-truth (mid-contract nullify)
+
+Raw Polymarket + spot data is the **source of truth**. If an LLM/ASI1 call fights live data, it is cut off immediately.
+
+| Vote | Signal |
+|------|--------|
+| `spot_vs_ptb` | Spot vs price-to-beat (settlement definition) |
+| `clob_mid` | P(Up) / book mid vs 50% |
+| `book_imbalance` | CLOB depth imbalance |
+| `live_direction` | Feed liveDirection field |
+| `model_score` | Non-LLM prediction engine score |
+
+**Nullify** when ≥2 independent votes oppose the AI (or 1 strong path vote in last 120s).  
+Effective call flips to raw truth; AI weight → 0; UI shows **⛔ NULLIFIED**.
+
+Module: `src/llm/inference-truth-guard.js`  
+Wired: ASI1 pre-contract (8s recheck), prediction inference overlay, Grok/ASI1 range finalize.
+
 ## Quick health checks
 
 - Console: `[PolymarketWS]` CLOB connected

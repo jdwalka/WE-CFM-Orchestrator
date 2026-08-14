@@ -4376,37 +4376,86 @@
             || ''
           ).trim();
 
+          const aiCall = String(llmOutput.call || llmOutput.direction || '').toUpperCase();
+          let truth = null;
+          if (window.InferenceTruthGuard?.evaluate) {
+            truth = window.InferenceTruthGuard.evaluate({
+              call: aiCall,
+              confidence: clamp(toFiniteNumber(llmOutput.confidence, 0), 0, 1),
+              sym: coin.sym,
+              horizon: '15m',
+              modelScore: pred.score,
+            });
+          }
+
+          const nullified = !!truth?.nullified;
+          const effectiveCall = truth?.effectiveCall || (aiCall === 'UP' || aiCall === 'DOWN' ? aiCall : null);
+          const effectiveConfPct = truth
+            ? Math.round(clamp(truth.confidence, 0, 1) * 100)
+            : llmConfidencePct;
+          const gatedNotes = nullified
+            ? `⛔ NULLIFIED by raw data (${truth.reason}). Truth=${effectiveCall}. Was AI=${aiCall}. ${llmNotes}`.slice(0, 700)
+            : (truth?.soft
+              ? `⚠ soft raw conflict — ${truth.reason}. ${llmNotes}`.slice(0, 700)
+              : llmNotes);
+
+          // When nullified, zero LLM influence on adaptive weights / notes path
+          if (nullified && Array.isArray(llmOutput.suggestions?.increase_weight)) {
+            llmOutput.suggestions.increase_weight = [];
+          }
+          if (nullified && Array.isArray(llmOutput.suggestions?.decrease_weight)) {
+            llmOutput.suggestions.decrease_weight = [];
+          }
+
           pred.llm = {
             regime: String(llmOutput.regime || 'unknown'),
-            confidence: llmConfidencePct,
+            confidence: effectiveConfPct,
             suggestions: llmOutput.suggestions || {},
-            warnings: Array.isArray(llmOutput.warnings) ? llmOutput.warnings.map(String) : [],
-            notes: llmNotes,
+            warnings: [
+              ...(Array.isArray(llmOutput.warnings) ? llmOutput.warnings.map(String) : []),
+              ...(nullified ? [`truth_nullified:${truth.reason}`] : []),
+              ...(truth?.soft ? [`truth_soft:${truth.reason}`] : []),
+            ],
+            notes: gatedNotes,
             ai_wording: llmOutput.ai_wording || null,
             analysis: llmOutput.analysis || null,
             market_patterns: llmOutput.ai_wording?.market_patterns || llmOutput.market_patterns || null,
             preContract: llmOutput.preContract || null,
             provider: llmOutput.provider || response?.providerStatus?.provider || response?.diagnostics?.lastProvider || response?.diagnostics?.provider || null,
             model: llmOutput.model || response?.providerStatus?.model || response?.diagnostics?.lastModel || null,
-            degraded: llmDegraded,
+            degraded: llmDegraded || nullified,
             cooldownRemainingMs: llmCooldownRemainingMs,
             providerStatus: response?.providerStatus || null,
+            call: effectiveCall,
+            aiCallOriginal: aiCall === 'UP' || aiCall === 'DOWN' ? aiCall : null,
+            nullified,
+            softConflict: !!truth?.soft,
+            truthWeight: truth?.weight ?? 1,
+            sourceOfTruth: truth?.sourceOfTruth || 'llm',
+            truthReason: truth?.reason || null,
+            truthCall: truth?.truthCall || null,
           };
 
           pred.diagnostics = {
             ...(pred.diagnostics || {}),
             llmRegime: pred.llm.regime,
-            llmConfidence: llmConfidencePct,
-            llmWarnings: pred.llm.warnings.slice(0, 3),
-            llmDegraded,
+            llmConfidence: effectiveConfPct,
+            llmWarnings: pred.llm.warnings.slice(0, 5),
+            llmDegraded: llmDegraded || nullified,
+            llmNullified: nullified,
+            llmSourceOfTruth: pred.llm.sourceOfTruth,
             llmCooldownRemainingMs,
-            llmSuggestedIncreases: Array.isArray(pred.llm.suggestions?.increase_weight)
-              ? pred.llm.suggestions.increase_weight.slice(0, 3)
-              : [],
-            llmSuggestedDecreases: Array.isArray(pred.llm.suggestions?.decrease_weight)
-              ? pred.llm.suggestions.decrease_weight.slice(0, 3)
-              : [],
-            llmNotes,
+            llmSuggestedIncreases: nullified
+              ? []
+              : (Array.isArray(pred.llm.suggestions?.increase_weight)
+                ? pred.llm.suggestions.increase_weight.slice(0, 3)
+                : []),
+            llmSuggestedDecreases: nullified
+              ? []
+              : (Array.isArray(pred.llm.suggestions?.decrease_weight)
+                ? pred.llm.suggestions.decrease_weight.slice(0, 3)
+                : []),
+            llmNotes: gatedNotes,
           };
 
           if (window.DataLogger?.logLogicDebug) {

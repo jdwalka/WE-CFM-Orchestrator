@@ -230,7 +230,8 @@ function predictionCard(p) {
     ).toUpperCase();
     const thoughtsModel = asi1Brief?.model || p.llm?.model || '';
     const thoughtsRegime = asi1Brief?.regime || llmRegime || 'Mixed Regime';
-    const preAction = asi1Brief?.preContract?.action || '';
+    const preAction = asi1Brief?.nullified ? 'USE_RAW' : (asi1Brief?.preContract?.action || '');
+    const truthBadge = window.InferenceTruthGuard?.renderBadgeHtml?.(asi1Brief || p.llm) || '';
     let llmPatterns = p.llm?.market_patterns || p.diagnostics?.market_patterns || null;
     if (Array.isArray(llmPatterns)) llmPatterns = llmPatterns.join(', ');
     const llmBadge = llmRegime && llmRegime !== 'unknown'
@@ -519,6 +520,8 @@ function predictionCard(p) {
             ${thoughtsModel ? `<span style="font-size:9px;opacity:0.8;font-weight:600;">${escapeHtml(thoughtsModel)}</span>` : ''}
             <span style="font-size:9px;padding:2px 8px;border-radius:999px;background:rgba(165, 180, 252, 0.15);color:#c7d2fe;letter-spacing:0.5px;">${escapeHtml(String(thoughtsRegime).replace(/_/g, ' '))}</span>
             ${asi1Brief?.call ? `<span style="font-size:9px;padding:2px 8px;border-radius:999px;background:${asi1Brief.call === 'UP' ? 'rgba(0,230,118,0.2)' : 'rgba(255,82,82,0.2)'};color:${asi1Brief.call === 'UP' ? '#00e676' : '#ff8a80'};font-weight:800;">CALL ${escapeHtml(asi1Brief.call)}</span>` : ''}
+            ${asi1Brief?.aiCallOriginal && asi1Brief?.nullified ? `<span style="font-size:9px;color:#fca5a5;text-decoration:line-through;">was ${escapeHtml(asi1Brief.aiCallOriginal)}</span>` : ''}
+            ${truthBadge}
             ${preAction ? `<span style="font-size:9px;padding:2px 8px;border-radius:999px;background:rgba(255,193,7,0.15);color:#ffe082;">${escapeHtml(preAction)}</span>` : ''}
           </div>
           <div style="font-size:13px;color:#f8fafc;line-height:1.6;font-weight:400;white-space:pre-wrap;">${escapeHtml(displayNotes)}</div>

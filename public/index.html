@@ -409,7 +409,8 @@
   <script src="../src/core/forensics-logger.js" defer></script>
   <script src="../src/core/feeds/feed-adapters.js" defer></script>
   <script src="../src/core/ui/render-layer.js" defer></script>
-  <!-- ASI1 pre-contract advisor + Grok session memory / 15m-hourly range (ASI1-primary cascade) -->
+  <!-- Raw-data truth guard (nullifies wrong LLM mid-contract) + ASI1 pre-contract advisor -->
+  <script src="../src/llm/inference-truth-guard.js"></script>
   <script src="../src/llm/asi1-precontract-advisor.js" defer></script>
   <script src="../src/llm/grok-analytics-memory.js" defer></script>
   <script src="../src/llm/grok-range-overlay.js" defer></script>

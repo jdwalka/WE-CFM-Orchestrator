@@ -452,8 +452,41 @@
       } else if (call !== mech.call && mech.confidence >= 0.62) {
         call = mech.call;
       }
-      const conf = Math.max(mech.confidence, 0.52);
-      return { call, confidence: conf, mech };
+      let conf = Math.max(mech.confidence, 0.52);
+      let nullified = false;
+      let truthReason = null;
+      // Source-of-truth guard: raw PTB path / CLOB / book can hard-nullify AI mid-window
+      if (window.InferenceTruthGuard?.evaluate && (grokCall === 'UP' || grokCall === 'DOWN')) {
+        const truth = window.InferenceTruthGuard.evaluate({
+          call: grokCall,
+          confidence: conf,
+          sym: snapshot.coin || snapshot.sym,
+          horizon: '15m',
+          market: {
+            sym: snapshot.coin || snapshot.sym,
+            horizon: '15m',
+            slug: k.slug,
+            spot: snapshot.currentPrice || snapshot.price,
+            ptb: k.priceToBeatNum,
+            yesProb: k.yesProb ?? k.probability,
+            mid: k.mid,
+            depthImbalance: k.depthImbalance,
+            secondsToClose: k.secondsToClose,
+            liveDirection: k.liveDirection,
+          },
+          modelScore: snapshot.score ?? snapshot.modelScore,
+        });
+        if (truth.nullified) {
+          nullified = true;
+          call = truth.effectiveCall || mech.call || call;
+          conf = Math.max(truth.confidence, 0.55);
+          truthReason = truth.reason;
+        } else if (truth.soft) {
+          conf = Math.max(0.4, conf * (truth.weight || 0.25));
+          truthReason = truth.reason;
+        }
+      }
+      return { call, confidence: conf, mech, nullified, truthReason };
     }
     const mech = decideHourlyMechanically(snapshot);
     let call = grokCall === 'UP' || grokCall === 'DOWN' ? grokCall : mech.call;
@@ -461,7 +494,7 @@
       // stick with scored bucket direction when market is clear on a bucket
       call = mech.call;
     }
-    return { call, confidence: Math.max(mech.confidence, 0.52), mech };
+    return { call, confidence: Math.max(mech.confidence, 0.52), mech, nullified: false, truthReason: null };
   }
 
   function parseGrokPriceDir(output, strikeDir = 'above') {
@@ -587,7 +620,8 @@
         const grokConf = Number.isFinite(confRaw)
           ? (confRaw <= 1 ? confRaw : confRaw / 100)
           : null;
-        const confidence = clamp01(Math.max(finalized.confidence, grokConf != null ? grokConf : 0));
+        let confidence = clamp01(Math.max(finalized.confidence, grokConf != null ? grokConf : 0));
+        if (finalized.nullified) confidence = clamp01(Math.max(finalized.confidence, 0.55));
         const k15 = snapshot.poly15m || {};
         // A non-directional call has no side — emitting Up/Down here would
         // assert a trade the model never made.
@@ -603,7 +637,9 @@
               closeTime: k15.closeTime,
               secondsToClose: k15.secondsToClose,
               settlementRule: k15.settlementRule,
-              rationale: `Price ${call} → buy ${side} on ${k15.slug}`,
+              rationale: finalized.nullified
+                ? `TruthGuard nullified AI → price ${call} (${finalized.truthReason || 'raw data'})`
+                : `Price ${call} → buy ${side} on ${k15.slug}`,
               mechReasons: (finalized.mech && finalized.mech.reasons) || [],
             }
           : {
@@ -613,7 +649,7 @@
               rationale: (finalized.mech && finalized.mech.reasons || []).join('; '),
             };
         const notesBase = (o.suggestions && o.suggestions.notes) || '';
-        const notes = horizonMinutes === 15
+        let notes = horizonMinutes === 15
           ? (`${call} ${k15.slug || ''} → ${side}`.trim()
             + ` · mktUp ${k15.yesProb != null ? (k15.yesProb * 100).toFixed(0) + '%' : '?'}`
             + ` · ttc ${k15.secondsToClose ?? '?'}s`
@@ -622,13 +658,18 @@
             + (preferredRange ? ` · bucket $${preferredRange.low}–$${preferredRange.high}` : '')
             + (preferredRange && preferredRange.yesProb != null ? ` · YES ${(preferredRange.yesProb * 100).toFixed(0)}%` : '')
             + (notesBase ? ` — ${notesBase.replace(/^\s*(UP|DOWN)\b\s*/i, '').slice(0, 100)}` : ''));
+        if (finalized.nullified) {
+          notes = `⛔ NULLIFIED — ${finalized.truthReason || 'raw data'} · effective ${call}. ${notes}`.slice(0, 400);
+        }
         const guidance = {
           ts: now,
           // Stamped so render-layer can tell model output from the mechanical
           // fallback (which sets provider:'mechanical'). Note this reports the
           // CONFIGURED provider, not necessarily the one that answered inside the
           // assistant's fallback cascade.
-          provider: (res && res.providerStatus && res.providerStatus.provider) || 'grok',
+          provider: finalized.nullified
+            ? 'raw_data'
+            : ((res && res.providerStatus && res.providerStatus.provider) || 'asi1'),
           horizonMinutes,
           call,
           direction: call,
@@ -640,13 +681,15 @@
           poly15m: k15,
           contractSlug: horizonMinutes === 15 ? k15.slug : (preferredRange && preferredRange.ticker),
           notes,
+          nullified: !!finalized.nullified,
+          truthReason: finalized.truthReason || null,
+          aiCallOriginal: (grokDir === 'UP' || grokDir === 'DOWN') ? grokDir : null,
           rationale: (o.ai_wording && o.ai_wording.primary_rationale) || '',
           marketPatterns: (o.ai_wording && o.ai_wording.market_patterns) || '',
           memory: {
             sampleCount: sc,
             sessionMinutes: snapshot.sessionMemory && snapshot.sessionMemory.sessionMinutes,
           },
-          provider: (res.providerStatus && res.providerStatus.provider) || 'xai',
           raw: o,
         };
         _guidance[key][coin] = guidance;

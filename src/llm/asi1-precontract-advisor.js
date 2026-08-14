@@ -159,7 +159,7 @@
       const o = res.output;
       const notes = String(o?.suggestions?.notes || o?.ai_wording?.primary_rationale || '').trim();
       const call = String(o?.call || o?.direction || '').toUpperCase();
-      const brief = {
+      let brief = {
         sym: String(sym).toUpperCase(),
         ts: Date.now(),
         slug: ctx.slug,
@@ -177,13 +177,24 @@
         market: ctx,
         degraded: !!res.degraded,
       };
+      // Source-of-truth: raw poly PTB/CLOB/book can nullify wrong AI mid-contract
+      if (window.InferenceTruthGuard?.gateBrief) {
+        const pred = window.PredictionEngine?.getPrediction?.(sym);
+        brief = window.InferenceTruthGuard.gateBrief(brief, {
+          horizon: ctx.horizon,
+          market: ctx,
+          modelScore: pred?.score,
+        });
+      }
       _briefs[briefKey(sym, ctx.horizon)] = brief;
       try {
         window.dispatchEvent(new CustomEvent('asi1:precontract', { detail: brief }));
       } catch (_) { /* */ }
       console.log(
         `[ASI1 PreContract] ${brief.sym} ${brief.horizon} ${brief.call || '?'} ` +
-        `conf=${(brief.confidence * 100).toFixed(0)}% via ${brief.provider} ttc=${ctx.secondsToClose}s`
+        `conf=${(brief.confidence * 100).toFixed(0)}% via ${brief.provider}` +
+        (brief.nullified ? ' ⛔NULLIFIED' : '') +
+        ` ttc=${ctx.secondsToClose}s`
       );
       return brief;
     } catch (err) {
@@ -192,17 +203,55 @@
     }
   }
 
+  /** Re-apply truth guard on cached briefs without a new LLM call (cheap mid-contract check). */
+  function revalidateCached() {
+    let changed = false;
+    for (const key of Object.keys(_briefs)) {
+      const brief = _briefs[key];
+      if (!brief?.sym) continue;
+      const ctx = buildMarketContext(brief.sym, brief.horizon);
+      if (!ctx) continue;
+      // refresh market snapshot on brief
+      brief.market = ctx;
+      if (!window.InferenceTruthGuard?.gateBrief) continue;
+      const pred = window.PredictionEngine?.getPrediction?.(brief.sym);
+      // Gate against original AI call so we can flip nullify on/off as path changes
+      const rawCall = brief.aiCallOriginal || brief.call;
+      const gated = window.InferenceTruthGuard.gateBrief(
+        { ...brief, call: rawCall, notes: brief.primaryRationale || brief.notes },
+        { horizon: brief.horizon, market: ctx, modelScore: pred?.score }
+      );
+      const wasNull = !!brief.nullified;
+      const nowNull = !!gated.nullified;
+      if (wasNull !== nowNull || brief.call !== gated.call) {
+        changed = true;
+        _briefs[key] = { ...gated, primaryRationale: brief.primaryRationale || brief.notes };
+        try {
+          window.dispatchEvent(new CustomEvent('asi1:precontract', { detail: _briefs[key] }));
+        } catch (_) { /* */ }
+        if (nowNull) {
+          console.warn(`[ASI1 PreContract] mid-contract nullify ${brief.sym} ${brief.horizon}: ${gated.truthReason}`);
+        }
+      } else {
+        _briefs[key] = { ...brief, ...gated, market: ctx };
+      }
+    }
+    return changed;
+  }
+
   async function tick() {
     if (_running) return;
     _running = true;
     try {
+      // Always re-check raw truth first (instant cut-off if AI goes wrong mid-window)
+      revalidateCached();
       for (const sym of COINS) {
-        // Prefer 5m for short-window cards, then 15m for pre-contract / hourly
         await fireOne(sym, '5m');
         await new Promise((r) => setTimeout(r, 350));
         await fireOne(sym, '15m');
         await new Promise((r) => setTimeout(r, 350));
       }
+      revalidateCached();
     } finally {
       _running = false;
     }
@@ -231,8 +280,8 @@
     const call = brief.call;
     const callColor = call === 'UP' ? 'var(--color-green,#00e676)' : call === 'DOWN' ? 'var(--color-red,#ff5252)' : 'var(--color-text-faint)';
     const confPct = Math.round((brief.confidence || 0) * 100);
-    const action = brief.preContract?.action || '';
-    const sizeHint = brief.preContract?.sizeHint || '';
+    const action = brief.nullified ? 'USE_RAW' : (brief.preContract?.action || '');
+    const sizeHint = brief.nullified ? 'skip_ai' : (brief.preContract?.sizeHint || '');
     const provider = String(brief.provider || 'ASI1').toUpperCase();
     const ttc = brief.market?.secondsToClose;
     const ageSec = Math.round((Date.now() - brief.ts) / 1000);
@@ -240,17 +289,26 @@
     const invalidation = brief.preContract?.invalidation
       ? String(brief.preContract.invalidation).slice(0, 120)
       : '';
+    const truthBadge = window.InferenceTruthGuard?.renderBadgeHtml?.(brief) || '';
+    const border = brief.nullified
+      ? '1px solid rgba(255,82,82,0.55)'
+      : '1px solid rgba(165,180,252,0.28)';
+    const bg = brief.nullified
+      ? 'linear-gradient(135deg,rgba(60,20,25,0.95),rgba(25,10,15,0.98))'
+      : 'linear-gradient(135deg,rgba(30,40,70,0.9),rgba(15,20,35,0.95))';
 
     return `
-      <div class="asi1-precontract-strip" data-sym="${esc(brief.sym)}" data-horizon="${esc(brief.horizon)}" style="
+      <div class="asi1-precontract-strip" data-sym="${esc(brief.sym)}" data-horizon="${esc(brief.horizon)}" data-nullified="${brief.nullified ? '1' : '0'}" style="
         margin-top:8px;padding:8px 10px;border-radius:6px;
-        background:linear-gradient(135deg,rgba(30,40,70,0.9),rgba(15,20,35,0.95));
-        border:1px solid rgba(165,180,252,0.28);
+        background:${bg};
+        border:${border};
       ">
         <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:4px;">
           <span style="font-size:9px;font-weight:800;letter-spacing:0.06em;color:#a5b4fc;">✨ ${esc(provider)} ${esc(brief.horizon.toUpperCase())}</span>
           ${call ? `<span style="font-size:11px;font-weight:800;color:${callColor};">CALL ${esc(call)}</span>` : ''}
+          ${brief.aiCallOriginal && brief.nullified ? `<span style="font-size:9px;color:#fca5a5;text-decoration:line-through;">was ${esc(brief.aiCallOriginal)}</span>` : ''}
           ${confPct ? `<span style="font-size:9px;color:#c7d2fe;">${confPct}%</span>` : ''}
+          ${truthBadge}
           ${action ? `<span style="font-size:8px;padding:1px 6px;border-radius:999px;background:rgba(255,193,7,0.12);color:#ffe082;">${esc(action)}</span>` : ''}
           ${sizeHint ? `<span style="font-size:8px;color:var(--color-text-faint);">size:${esc(sizeHint)}</span>` : ''}
           ${ttc != null ? `<span style="font-size:8px;color:var(--color-text-faint);margin-left:auto;">ttc ${Math.max(0, ttc)}s · ${ageSec}s ago</span>` : ''}
@@ -260,6 +318,20 @@
       </div>
     `;
   }
+
+  // Fast mid-contract revalidation between LLM fires (every 8s)
+  setInterval(() => {
+    try {
+      if (revalidateCached()) {
+        window._markets5mLastRenderTs = 0;
+        if (typeof window.renderMarkets5M === 'function') {
+          const view = window.currentView || document.querySelector('[data-wecrypto-view]')?.dataset?.wecryptoView;
+          if (view === 'markets5m') window.renderMarkets5M();
+        }
+        if (window.PolymarketTerminal?.render) window.PolymarketTerminal.render();
+      }
+    } catch (_) { /* */ }
+  }, 8000);
 
   function start() {
     if (_timer) return;
@@ -278,6 +350,7 @@
     stop,
     tick,
     fireOne,
+    revalidateCached,
     get,
     getAll: () => ({ ..._briefs }),
     renderStripHtml,
