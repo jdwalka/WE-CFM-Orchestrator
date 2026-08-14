@@ -477,29 +477,31 @@
     for (const key of Object.keys(_briefs)) {
       const brief = _briefs[key];
       if (!brief?.sym) continue;
-      const ctx = buildMarketContext(brief.sym, brief.horizon);
-      if (!ctx) continue;
 
-      // Purge every 5 (or 15) minutes rather than let a brief sit stale forever
-      // once its own window has closed. No info beats wrong info: if the market
-      // context is still stuck on this brief's now-expired window, wipe the
-      // brief instead of continuing to display it indefinitely.
+      // Purge purely off the clock — not a re-fetched market context. PTB locks
+      // are immutable per-window by design (_lockPolymarketPriceToBeat), so a
+      // brief's own window boundary, once known, never changes; whether it's
+      // expired is just "has now passed boundary + windowSec," nothing more.
+      // This runs even if buildMarketContext is unavailable/stuck, so a wedged
+      // upstream fetch can't keep a stale brief on screen past its own window.
       const windowSec = WINDOW_SECONDS[brief.horizon];
-      if (ctx.slug && windowSec) {
-        const slugMatch = ctx.slug.match(/-(\d+)$/);
-        const slugBoundary = slugMatch ? Number(slugMatch[1]) : null;
+      const slugMatch = String(brief.market?.slug || brief.slug || '').match(/-(\d+)$/);
+      const briefBoundary = slugMatch ? Number(slugMatch[1]) : null;
+      if (briefBoundary != null && windowSec) {
         const nowSec = Math.floor(Date.now() / 1000);
-        const expectedBoundary = nowSec - (nowSec % windowSec);
-        if (slugBoundary != null && slugBoundary !== expectedBoundary) {
+        if (nowSec >= briefBoundary + windowSec) {
           delete _briefs[key];
           changed = true;
           try {
             window.dispatchEvent(new CustomEvent('asi1:precontract', { detail: { sym: brief.sym, horizon: brief.horizon, purged: true } }));
           } catch (_) { /* */ }
-          console.warn(`[ASI1 PreContract] purged stale ${brief.sym} ${brief.horizon} brief (window closed, no fresh data yet)`);
+          console.warn(`[ASI1 PreContract] purged expired ${brief.sym} ${brief.horizon} brief (window closed at ${briefBoundary + windowSec})`);
           continue;
         }
       }
+
+      const ctx = buildMarketContext(brief.sym, brief.horizon);
+      if (!ctx) continue;
 
       // refresh market snapshot on brief
       brief.market = ctx;
