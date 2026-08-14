@@ -816,9 +816,16 @@ Use this recall only as context, and prioritize current market snapshot data if 
     // LLM_CASCADE_PRIMARY pins one provider to the front without disturbing the
     // fallback order behind it.
     const primaryOverride = String(process.env.LLM_CASCADE_PRIMARY || '').trim().toLowerCase();
-    const cascade = primaryOverride && baseCascade.includes(primaryOverride)
+    let cascade = primaryOverride && baseCascade.includes(primaryOverride)
       ? [primaryOverride, ...baseCascade.filter((p) => p !== primaryOverride)]
       : baseCascade;
+    // LLM_ONLY_PROVIDER restricts the whole session to exactly one provider —
+    // e.g. "only asi1 for this trading session" — instead of disabling every
+    // other provider one at a time. Also suppresses the dual-fire/relay path
+    // below, which otherwise always calls TokenMix alongside ASI1 regardless
+    // of cascade order.
+    const onlyProvider = String(process.env.LLM_ONLY_PROVIDER || '').trim().toLowerCase();
+    if (onlyProvider) cascade = [onlyProvider];
     console.log(
       `[LLM] is5mPtb=${is5mPtb} preContract=${isPreContractRange} useXai=${useXai} ` +
       `tokenmixKey=${!!TOKENMIX_API_KEY} asi1Key=${Asi1Client.hasAsi1Credentials()} path=${cascade.join('→')}`
@@ -831,6 +838,7 @@ Use this recall only as context, and prioritize current market snapshot data if 
     // vote (_dualFireAsi1AndTokenMix) instead.
     if (
       isPreContractRange
+      && !onlyProvider
       && process.env.LLM_DUAL_FIRE !== '0'
       && Asi1Client.hasAsi1Credentials()
       && process.env.LLM_DISABLE_ASI1 !== '1'
