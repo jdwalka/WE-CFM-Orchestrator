@@ -29,6 +29,38 @@
 
   const _watch = {}; // `${sym}:${horizon}` -> last verdict
 
+  // Market/price accessors — default to the live window globals, but overridable
+  // via configure() so the core evaluation path (resolveMarket/collectTruthVotes/
+  // evaluate) doesn't have to be tested or reused against real globals.
+  const _accessors = {
+    getCoin: (sym) => (typeof window !== 'undefined' && window.PredictionMarkets?.getCoin?.(sym)) || {},
+    getPythSpot: (sym) => {
+      try {
+        if (typeof window !== 'undefined' && window.OracleSnapshot?.getPythSpot) {
+          const p = window.OracleSnapshot.getPythSpot(sym);
+          if (p?.price > 0) return p.price;
+        }
+      } catch (_) { /* */ }
+      return null;
+    },
+    getPythPriceFallback: (sym) => {
+      if (typeof window === 'undefined') return null;
+      const v = window.PythBrowser?.getPrice?.(sym) ?? window._pythPrices?.[String(sym).toUpperCase()];
+      return Number.isFinite(Number(v)) ? Number(v) : null;
+    },
+  };
+
+  function configure(overrides = {}) {
+    Object.assign(_accessors, overrides);
+  }
+
+  // Debug logging gate — matches the __TRUTH_MKT_EDGE/__TRUTH_PATH_EDGE
+  // window-config convention above. Defaults to on (preserves prior behavior);
+  // set window.__TRUTH_DEBUG = false to silence in production.
+  function _debugEnabled() {
+    return typeof window === 'undefined' || window.__TRUTH_DEBUG !== false;
+  }
+
   function clamp(n, lo, hi) {
     return Math.max(lo, Math.min(hi, n));
   }
@@ -44,7 +76,7 @@
    * Pull live market context for a symbol (poly5m preferred for short, else 15m).
    */
   function resolveMarket(sym, preferHorizon) {
-    const coin = (typeof window !== 'undefined' && window.PredictionMarkets?.getCoin?.(sym)) || {};
+    const coin = _accessors.getCoin(sym) || {};
     const p5 = coin.poly5m || null;
     const p15 = coin.poly15m || null;
     let m = null;
@@ -57,22 +89,9 @@
     if (!m) return null;
 
     // Pyth-only spot for truth path (never RTI/CEX as PTB substitute)
-    let spot = NaN;
-    try {
-      if (typeof window !== 'undefined' && window.OracleSnapshot?.getPythSpot) {
-        const p = window.OracleSnapshot.getPythSpot(sym);
-        if (p?.price > 0) spot = p.price;
-      }
-    } catch (_) { /* */ }
+    let spot = _accessors.getPythSpot(sym) || NaN;
     if (!(spot > 0)) {
-      spot = Number(
-        (typeof window !== 'undefined' && (
-          window.PythBrowser?.getPrice?.(sym)
-          || window._pythPrices?.[String(sym).toUpperCase()]
-        ))
-        || m.currentPriceNum
-        || 0
-      );
+      spot = Number(_accessors.getPythPriceFallback(sym) || m.currentPriceNum || 0);
     }
     const rawPtb = Number(m.priceToBeatNum || m.targetPriceNum || 0);
     const ptbSrc = String(m.priceToBeatSource || m.ptbSource || '').toLowerCase();
@@ -299,7 +318,7 @@
       }
     } catch (_) { /* */ }
 
-    if (nullified) {
+    if (nullified && _debugEnabled()) {
       console.warn(`[TruthGuard] ${sym} ${reason}`);
     }
 
@@ -372,6 +391,7 @@
     collectTruthVotes,
     getLast,
     renderBadgeHtml,
+    configure,
     constants: { MKT_EDGE, PATH_EDGE_PCT, BOOK_EDGE, NULLIFY_VOTES, SOFT_WEIGHT },
   };
 }));

@@ -550,28 +550,33 @@
     `;
   }
 
-  // Fast mid-contract revalidation between LLM fires (every 8s)
-  setInterval(() => {
-    try {
-      if (revalidateCached()) {
-        window._markets5mLastRenderTs = 0;
-        const view = window.currentView || document.querySelector('[data-wecrypto-view]')?.dataset?.wecryptoView;
-        if (view === 'markets5m' && typeof window.renderMarkets5M === 'function') window.renderMarkets5M();
-        if (view === 'polymarket' && window.PolymarketTerminal?.render) window.PolymarketTerminal.render();
-      }
-    } catch (_) { /* */ }
-  }, 8000);
+  let _revalidateTimer = null;
 
   function start() {
     if (_timer) return;
     setTimeout(() => { tick().catch(() => {}); }, 10_000);
     _timer = setInterval(() => { tick().catch(() => {}); }, REFRESH_MS);
+    if (!_revalidateTimer) {
+      // Fast mid-contract revalidation between LLM fires (every 8s)
+      _revalidateTimer = setInterval(() => {
+        try {
+          if (revalidateCached()) {
+            window._markets5mLastRenderTs = 0;
+            const view = window.currentView || document.querySelector('[data-wecrypto-view]')?.dataset?.wecryptoView;
+            if (view === 'markets5m' && typeof window.renderMarkets5M === 'function') window.renderMarkets5M();
+            if (view === 'polymarket' && window.PolymarketTerminal?.render) window.PolymarketTerminal.render();
+          }
+        } catch (_) { /* */ }
+      }, 8000);
+    }
     console.info('[ASI1 PreContract] advisor started (5m+15m) interval', REFRESH_MS, 'ms');
   }
 
   function stop() {
     if (_timer) clearInterval(_timer);
     _timer = null;
+    if (_revalidateTimer) clearInterval(_revalidateTimer);
+    _revalidateTimer = null;
   }
 
   window.Asi1PreContract = {
