@@ -1,6 +1,6 @@
 // ================================================================
-// WE|||CRYPTO — Kalshi Boundary and Sentiment Logic
-// Orbital shell: prediction-market verification context.
+// WE|||CRYPTO — Market Boundary and Sentiment Logic
+// Polymarket-first verification context (legacy export names retained).
 // ================================================================
 
 (function () {
@@ -48,15 +48,20 @@
 
   function getKalshi15mSettlementContext(sym, fallbackPrice) {
     const key = String(sym || '').toUpperCase();
-    const k15m = window.PredictionMarkets?.getCoin(key)?.kalshi15m ?? null;
-    const kalshiRef = k15m?.targetPriceNum ?? null;
-    const kalshiYes = k15m?.probability ?? null;
-    const kalshiStDir = k15m?.strikeDir ?? 'above';
+    const coin = window.PredictionMarkets?.getCoin(key) ?? null;
+    // Polymarket primary (poly15m → poly5m). kalshi15m kept as last-resort alias only.
+    const mkt = coin?.poly15m || coin?.poly5m || coin?.kalshi15m || null;
+    const kalshiRef = mkt?.priceToBeatNum ?? mkt?.targetPriceNum ?? null;
+    const kalshiYes = mkt?.probability ?? mkt?.upProbability ?? null;
+    // Polymarket Up/Down: Up wins if price settles above PTB → treat as "above"
+    const kalshiStDir = mkt?.strikeDir ?? 'above';
     const rtiData = window._rtiPrices?.[key] ?? null;
     const rtiPrice = rtiData?.price ?? null;
 
     return {
-      k15m,
+      k15m: mkt,
+      poly15m: coin?.poly15m || null,
+      poly5m: coin?.poly5m || null,
       kalshiRef,
       kalshiYes,
       kalshiStDir,
@@ -64,6 +69,7 @@
       rtiData,
       rtiPrice,
       settlementPrice: rtiPrice ?? fallbackPrice,
+      venue: mkt ? (coin?.poly15m || coin?.poly5m ? 'polymarket' : 'legacy') : null,
     };
   }
 

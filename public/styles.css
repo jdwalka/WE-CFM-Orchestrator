@@ -2674,45 +2674,6 @@ input, select { font: inherit; color: inherit; }
 .cex-table .cex-buysell { white-space: nowrap; }
 .cex-table .cex-na td { color: var(--color-text-faint); }
 
-/* Kalshi Badge */
-.kalshi-badge {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 12px;
-  background: rgba(100, 150, 255, 0.08);
-  border: 1px solid rgba(100, 150, 255, 0.2);
-  border-radius: 6px;
-  font-size: 13px;
-  color: #6496ff;
-  font-weight: 600;
-  letter-spacing: 0.3px;
-  transition: all 200ms;
-  margin-right: 12px;
-}
-
-.kalshi-badge:hover {
-  background: rgba(100, 150, 255, 0.12);
-  border-color: rgba(100, 150, 255, 0.4);
-}
-
-.kalshi-label {
-  font-size: 11px;
-  font-weight: 700;
-  opacity: 0.7;
-}
-
-.kalshi-balance {
-  font-family: 'Jetbrains Mono', monospace;
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.kalshi-balance.updating {
-  opacity: 0.6;
-  animation: pulse 500ms ease-in-out infinite;
-}
-
 @keyframes pulse {
   0%, 100% { opacity: 0.6; }
   50% { opacity: 1; }

@@ -23,7 +23,7 @@
 (function () {
   'use strict';
 
-  const PORT_CASCADE = [3010, 3011, 3012, 3013, 3014, 3015, 3016, 3017, 3018, 3019, 3020];
+  const PORT_CASCADE = [8080, 3010, 3011, 3012, 3013, 3014, 3015, 3016, 3017, 3018, 3019, 3020];
 
   // Start in direct mode; enable proxy only after positive health discovery.
   let PROXY_ORIGIN = null;
@@ -55,7 +55,6 @@
 
   // ── Bucket C: open / first-party APIs — direct ok in Electron ───────────
   // (still proxied in browser so the CORS bouncer doesn't fire)
-  // api.elections.kalshi.com
 
   // hostname → proxy exchange prefix (config.toml keys)
   const HOST_MAP = {
@@ -71,9 +70,9 @@
     'api.bybit.com': 'bybit',
     'api.bytick.com': 'bybit',   // EU mirror — same proxy route
     'www.okx.com': 'okx',
-    'api.elections.kalshi.com': 'kalshi',
     'gamma-api.polymarket.com': 'polymarket',
     'clob.polymarket.com': 'polymarket-clob',
+    'data-api.polymarket.com': 'polymarket-data',
     'api-pub.bitfinex.com': 'bitfinex',
     'api.kucoin.com': 'kucoin',
     'api.mexc.com': 'mexc',

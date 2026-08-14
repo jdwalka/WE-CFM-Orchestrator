@@ -68,10 +68,10 @@
   var F_ANOMALY_FLOOR   = 0.5;     // prevent extreme dampening on thin candles
   var F_ANOMALY_CEIL    = 5.0;
 
-  // Kalshi V2 payload defaults (overridable via env).
+  // Legacy Kalshi V2 payload defaults — venue disabled (Polymarket-only trading path).
   var KALSHI_DEFAULT_COUNT     = 10;
-  var KALSHI_DEFAULT_NO_PRICE  = 0.45;  // max fill for NO leg (buy NO bid)
-  var KALSHI_BASE_URL          = 'https://trading-api.kalshi.com/trade-api/v2';
+  var KALSHI_DEFAULT_NO_PRICE  = 0.45;
+  var KALSHI_BASE_URL          = ''; // was trading-api.kalshi.com — no live Kalshi network
 
   // Rolling window for p (mean reversion) and d (realized vol) computations.
   var WINDOW_SIZE = 12;

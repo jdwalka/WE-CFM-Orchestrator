@@ -133,7 +133,6 @@
             // Fire all streams in parallel — they run independently and never block startup.
             void this.streamPredictions(currentRunId).catch(err => console.error('[AsyncRefreshEngine] predictions stream failed:', err));
             void this.streamOrderBookImbalance(currentRunId).catch(err => console.error('[AsyncRefreshEngine] order-book stream failed:', err));
-            // void this.streamKalshiBalance(currentRunId).catch(err => console.error('[AsyncRefreshEngine] balance stream failed:', err));
             void this.streamMarketData(currentRunId).catch(err => console.error('[AsyncRefreshEngine] market stream failed:', err));
             void this.streamSettlementPulse(currentRunId).catch(err => console.error('[AsyncRefreshEngine] settlement stream failed:', err));
 
@@ -479,71 +478,6 @@
                         detail: err.message,
                     });
                     await this.sleep(3000);
-                }
-            }
-        }
-
-        /**
-         * STREAM 2: Kalshi Balance (5s cycle)
-         * Polls balance independently, emits updates for UI badge refresh.
-         */
-        async streamKalshiBalance(runId) {
-            const streamId = 'kalshi-balance';
-            let cycle = 0;
-            let nextRunAt = this.nextAlignedAt(5_000);
-
-            while (this.running && this.runId === runId) {
-                try {
-                    await this.sleepUntil(nextRunAt);
-                    if (!this.running || this.runId !== runId) break;
-
-                    cycle++;
-                    const start = this.nowMs();
-
-                    if (window.Kalshi?.getBalance) {
-                        const res = await Promise.race([
-                            window.Kalshi.getBalance(),
-                            new Promise((_, reject) =>
-                                setTimeout(() => reject(new Error('Balance fetch timeout')), 20000)
-                            )
-                        ]);
-
-                        if (res.success && res.data) {
-                            window._kalshiBalance = {
-                                balance: res.data.balance,
-                                portfolio_value: res.data.portfolio_value,
-                                timestamp: this.nowMs(),
-                            };
-
-                            const elapsedMs = this.nowMs() - start;
-
-                            this.bus.emit('kalshi:balance-updated', {
-                                balance: res.data.balance,
-                                portfolio_value: res.data.portfolio_value,
-                                elapsedMs,
-                                timestamp: this.nowMs()
-                            });
-
-                            this.setStreamState(streamId, {
-                                status: 'ok',
-                                cycle,
-                                detail: `$${(res.data.balance / 100).toFixed(2)}`,
-                            });
-                        }
-                    }
-
-                    nextRunAt = this.nextAlignedAt(5_000, nextRunAt + 5_000);
-                } catch (err) {
-                    if (!String(err?.message || err).includes('Electron IPC not available')) {
-                        console.warn(`[Stream:KalshiBalance] Error:`, err.message);
-                    }
-                    this.setStreamState(streamId, {
-                        status: 'error',
-                        cycle,
-                        detail: err.message,
-                    });
-                    await this.sleepUntil(this.nowMs() + 5_000);
-                    nextRunAt = this.nextAlignedAt(5_000);
                 }
             }
         }

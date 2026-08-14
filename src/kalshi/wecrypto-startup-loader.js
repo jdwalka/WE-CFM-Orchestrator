@@ -83,10 +83,10 @@
     return false;
   }
 
-  // ── Phase 3: Load CSV Historical Data (parallelized, non-blocking) ──────────
+  // ── Phase 3: Load Historical Contract Data (parallelized, non-blocking) ──────────
   async function phaseDisplayDebugPanel() {
     const phase3Start = Date.now();
-    log('Phase 3: Loading CSV historical contracts with resolution data...');
+    log('Phase 3: Loading historical contracts with resolution data...');
 
     if (typeof window === 'undefined') {
       log('ℹ Not in browser - skipping debug panel');
@@ -134,22 +134,22 @@
       ]);
 
       if (!calc) return false;
+      void resolutionLog; // resolution log is read by calculateAccuracy() via window._lastPrediction, not passed directly
 
-      // Load CSV trades with merged resolution data
-      log('  → Loading CSV trades with settlement outcomes...');
-      const csvTrades = await calc.loadFromKalshiCSV(resolutionLog || []);
+      // Load contracts (cache + Polymarket/Coinbase historical settlements)
+      log('  → Loading historical contracts with settlement outcomes...');
+      const contracts = await calc.loadAllContracts();
 
-      if (csvTrades.length === 0) {
+      if (contracts.length === 0) {
         log('✓ Phase 3 complete (no historical data yet)');
         return true;
       }
 
-      log(`  ✓ Loaded ${csvTrades.length} CSV trades`);
-      const withOutcome = csvTrades.filter(t => t.outcome || t.modelCorrect !== null).length;
-      log(`  ✓ ${withOutcome}/${csvTrades.length} trades have outcomes`);
+      log(`  ✓ Loaded ${contracts.length} contracts`);
+      const withOutcome = contracts.filter(t => t.outcome || t.modelCorrect !== null).length;
+      log(`  ✓ ${withOutcome}/${contracts.length} trades have outcomes`);
 
-      // Set and calculate accuracy
-      calc.contracts = csvTrades;
+      // Calculate accuracy
       calc.calculateAccuracy();
       log(`  ✓ Accuracy: ${calc.stats.overall.wins}W/${calc.stats.overall.losses}L (${Math.round(calc.stats.overall.winRate)}%)`);
 

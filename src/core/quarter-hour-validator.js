@@ -84,8 +84,8 @@
     return { aligned: true, closeTime };
   }
 
-  // ── Validate Kalshi settlement alignment ──
-  function validateKalshiSettlement(closeTimeStr) {
+  // ── Validate Polymarket settlement alignment ──
+  function validateSettlement(closeTimeStr) {
     const tsMs = new Date(closeTimeStr).getTime();
     if (!isQuarterHourAligned(tsMs)) {
       return {
@@ -98,18 +98,18 @@
   }
 
   // ── Main validation: Check prediction vs settlement ──
-  function validatePredictionTiming(predictionCoin, predictionTimestampMs, kalshiSettlementTimeStr) {
-    const kalshiCheck = validateKalshiSettlement(kalshiSettlementTimeStr);
-    if (!kalshiCheck.aligned) {
+  function validatePredictionTiming(predictionCoin, predictionTimestampMs, settlementTimeStr) {
+    const check = validateSettlement(settlementTimeStr);
+    if (!check.aligned) {
       return {
         valid: false,
-        reason: kalshiCheck.reason,
-        details: kalshiCheck
+        reason: check.reason,
+        details: check
       };
     }
 
     // Prediction should close within 10s before settlement
-    const settlementMs = kalshiCheck.tsMs;
+    const settlementMs = check.tsMs;
     const timeDiffMs = settlementMs - predictionTimestampMs;
 
     if (timeDiffMs < -5000) {
@@ -137,9 +137,9 @@
   }
 
   // ── Log prediction alignment for debugging ──
-  function logAlignmentCheck(sym, candle, kalshiSettlementStr) {
+  function logAlignmentCheck(sym, candle, settlementStr) {
     const candleCheck = validateCandleAlignment(candle);
-    const settlementCheck = validateKalshiSettlement(kalshiSettlementStr);
+    const settlementCheck = validateSettlement(settlementStr);
     
     console.log(`[QuarterHourValidator] ${sym}:`);
     console.log(`  Candle: ${candleCheck.aligned ? '✓' : '❌'} ${candleCheck.reason || 'Aligned'}`);
@@ -158,7 +158,8 @@
     getCurrentQuarter: getCurrentQuarterHour,
     snapToQuarter: snapToQuarterHour,
     validateCandle: validateCandleAlignment,
-    validateSettlement: validateKalshiSettlement,
+    validateSettlement,
+    validateKalshiSettlement: validateSettlement,
     validateTiming: validatePredictionTiming,
     logCheck: logAlignmentCheck
   };

@@ -1,21 +1,23 @@
-// Kalshi Orderbook & Routing Logic
+// Polymarket Orderbook & Prediction Routing Logic
 (function() {
+  'use strict';
 
-  const KALSHI_VERIFY_ONLY = true;
+  const POLYMARKET_VERIFY_ONLY = true;
 
   function getKalshiNextBoundaryMinutes() {
     const now = new Date();
     const minutes = now.getMinutes();
     const seconds = now.getSeconds();
     const currentFractionalMinute = minutes + (seconds / 60);
-    let nextBoundary = Math.ceil(currentFractionalMinute / 15) * 15;
-    if (nextBoundary === currentFractionalMinute) nextBoundary += 15;
+    let nextBoundary = Math.ceil(currentFractionalMinute / 5) * 5;
+    if (nextBoundary === currentFractionalMinute) nextBoundary += 5;
     let remaining = Math.round(nextBoundary - currentFractionalMinute);
-    return Math.max(1, Math.min(15, remaining));
+    return Math.max(1, Math.min(5, remaining));
   }
 
   function getSecsToKalshiClose(sym) {
-    const close = window.PredictionMarkets?.getCoin?.(sym)?.kalshi15m?.closeTime;
+    const coin = window.PredictionMarkets?.getCoin?.(sym);
+    const close = coin?.poly5m?.closeTime || coin?.poly15m?.closeTime;
     if (!close) return null;
     const ms = new Date(close).getTime() - Date.now();
     return Number.isFinite(ms) ? ms / 1000 : null;
@@ -29,8 +31,7 @@
     return z >= 0 ? p : 1 - p;
   }
 
-  function buildRationale(sigVec, regime, kalshiProb, coin) {
-    // Find top 3 contributing signals by weighted magnitude
+  function buildRationale(sigVec, regime, polyProb, coin) {
     const sorted = [...sigVec]
       .filter(s => Math.abs(s.value) > 0.1)
       .sort((a, b) => Math.abs(b.value * b.weight) - Math.abs(a.value * a.weight));
@@ -52,11 +53,11 @@
       }).join(', ')}`);
     }
 
-    // Kalshi alignment
-    if (kalshiProb !== null && kalshiProb !== undefined) {
-      const kalshiDir = kalshiProb > 0.52 ? 'YES (UP)' : kalshiProb < 0.48 ? 'NO (DOWN)' : 'NEUTRAL';
-      const aligned = (dirLabel === 'UP' && kalshiProb > 0.52) || (dirLabel === 'DOWN' && kalshiProb < 0.48);
-      lines.push(`Kalshi ${(kalshiProb * 100).toFixed(0)}% ${kalshiDir} — ${aligned ? '✓ ALIGNED with model' : '⚡ DIVERGES from model'}`);
+    // Polymarket alignment
+    if (polyProb !== null && polyProb !== undefined) {
+      const polyDir = polyProb > 0.52 ? 'YES (UP)' : polyProb < 0.48 ? 'NO (DOWN)' : 'NEUTRAL';
+      const aligned = (dirLabel === 'UP' && polyProb > 0.52) || (dirLabel === 'DOWN' && polyProb < 0.48);
+      lines.push(`Polymarket ${(polyProb * 100).toFixed(0)}% ${polyDir} — ${aligned ? '✓ ALIGNED with model' : '⚡ DIVERGES from model'}`);
     }
 
     // Regime-adjusted conviction
@@ -65,7 +66,6 @@
 
     lines.push(`Conviction: ${convLabel} (${(conviction * 100).toFixed(0)}%)`);
 
-    // Pre-prediction lock — if conviction HIGH, lock in direction early
     const preLocked = conviction > 0.55 && regime.confidence > 0.6;
     if (preLocked) {
       lines.push(`⚡ PRE-LOCKED ${dirLabel} — ${top3[0]?.name || 'model'} + ${regime.emaCross} EMA + ${regime.bookBias}`);
@@ -83,7 +83,7 @@
   }
 
   function buildExecutionGuard(model, cache) {
-    const closeTimeMs = model?.projections?.p15?.kalshiAlign?.closeTimeMs;
+    const closeTimeMs = model?.projections?.p15?.polyAlign?.closeTimeMs || model?.projections?.p15?.kalshiAlign?.closeTimeMs;
     if (!Number.isFinite(closeTimeMs)) return null;
     const now = Date.now();
     const msToClose = closeTimeMs - now;
@@ -105,12 +105,17 @@
     };
   }
 
-window.PREDICTIONS_KALSHI_ROUTING = {
-  KALSHI_VERIFY_ONLY,
-  getKalshiNextBoundaryMinutes,
-  getSecsToKalshiClose,
-  normalCDF,
-  buildRationale,
-  buildExecutionGuard
-};
+  const routingObj = {
+    KALSHI_VERIFY_ONLY: POLYMARKET_VERIFY_ONLY,
+    POLYMARKET_VERIFY_ONLY,
+    getKalshiNextBoundaryMinutes,
+    getSecsToKalshiClose,
+    getSecsToPolyClose: getSecsToKalshiClose,
+    normalCDF,
+    buildRationale,
+    buildExecutionGuard
+  };
+
+  window.PREDICTIONS_KALSHI_ROUTING = routingObj;
+  window.PREDICTIONS_POLYMARKET_ROUTING = routingObj;
 })();

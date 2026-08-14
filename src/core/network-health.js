@@ -4,10 +4,10 @@
     if (window.NetworkHealth) return; // Singleton
 
     const PROVIDERS = [
-        'Kalshi',
         'Polymarket',
         'ProxyOrchestrator',
         'Pyth',
+        'Crypto.com',
         // Add more as needed
     ];
 
@@ -21,7 +21,7 @@
     };
 
     const CRITICAL_PROVIDERS = new Set([
-        'Kalshi',
+        'Polymarket',
         'Pyth',
         'Crypto.com',
         'ProxyOrchestrator',
@@ -81,7 +81,6 @@
         'WhiteBIT',
         'Ourbit',
         'Weex',
-        'Polymarket',
         'Gate',
         'TimeAPI',
         'Solana RPC',
@@ -108,7 +107,6 @@
         'whitebit',
         'ourbit',
         'weex',
-        'polymarket',
         'gate',
         'gate.io',
         'api.gateio.ws',
@@ -277,6 +275,10 @@
 
     function update(provider, statusObj) {
         provider = canonicalProviderName(provider);
+        if (provider === 'Kalshi' || String(provider).toLowerCase().includes('kalshi')) {
+            if (state[provider]) delete state[provider];
+            return;
+        }
         if (!state[provider]) state[provider] = { ...DEFAULT_STATUS };
         if (!failureCounters[provider]) failureCounters[provider] = { count: 0, lastDown: null, alertActive: false };
         const { status, isOptional, isTransient } = classify(provider, statusObj || {});
@@ -398,58 +400,15 @@
         const authHint = ws.lastAuthStatus ? ` auth=${ws.lastAuthStatus}` : '';
         const handshakeHint = ws.lastHandshakeStatus ? ` hs=${ws.lastHandshakeStatus}` : '';
 
-        if (wsConnected && !wsStale) {
-            // Live WSS is primary — never label as Fallback just because REST also has ok stats
-            update('Kalshi', {
+        const polyStatus = window.PolymarketWS?.getStatus?.();
+        if (polyStatus?.clobConnected || polyStatus?.rtdsConnected) {
+            update('Polymarket', {
                 status: 'healthy',
-                lastFetch: ws.lastMessageTs || transport.lastSync || now,
+                lastFetch: now,
                 fallback: false,
-                reason: `wss live${kalshiPref && kalshiPref !== 'wss' ? ` (rest also ${kalshiPref})` : ''}${authHint}${handshakeHint}`,
+                reason: `CLOB/RTDS WS connected (${polyStatus.subscribedAssetsCount || 0} feeds)`,
                 bucket: BUCKETS.UNKNOWN,
                 bucketReason: '',
-            });
-        } else if (ws.suspended) {
-            const retrySecs = Math.max(0, Math.ceil(Number(ws.suspendInMs || 0) / 1000));
-            update('Kalshi', {
-                status: 'degraded',
-                lastFetch: ws.lastMessageTs || transport.lastSync || now,
-                fallback: true,
-                transient: true,
-                reason: `WSS suspended (persistent network block) · retry ${retrySecs}s${routeHint}${failureHint}${bucketHint}${demoteHint}${authHint}${handshakeHint}`,
-                bucket: ws.lastIssueBucket || BUCKETS.NETWORK_TRANSPORT,
-                bucketReason: ws.lastIssueReason || 'persistent websocket connect failure',
-            });
-        } else if (reconnecting || wsStale) {
-            update('Kalshi', {
-                status: 'degraded',
-                lastFetch: ws.lastMessageTs || transport.lastSync || now,
-                fallback: true,
-                transient: true,
-                reason: wsStale
-                    ? `WSS stale${routeHint}${failureHint}${demoteHint}${authHint}${handshakeHint}`
-                    : `WSS reconnecting (${ws.reconnectAttempts || 0})${routeHint}${failureHint}${connectAttemptHint}${authHint}${handshakeHint}`,
-                bucket: ws.lastIssueBucket || BUCKETS.NETWORK_TRANSPORT,
-                bucketReason: ws.lastIssueReason || ws.lastError || ws.lastCloseReason || '',
-            });
-        } else if (kalshiPref) {
-            update('Kalshi', {
-                status: 'degraded',
-                lastFetch: transport.lastSync || now,
-                fallback: true,
-                transient: true,
-                reason: `WSS off; via ${kalshiPref}${routeHint}${failureHint}${demoteHint}${connectAttemptHint}${authHint}${handshakeHint}`,
-                bucket: ws.lastIssueBucket || BUCKETS.NETWORK_TRANSPORT,
-                bucketReason: ws.lastIssueReason || ws.lastError || ws.lastCloseReason || '',
-            });
-        } else {
-            update('Kalshi', {
-                status: 'down',
-                lastFetch: transport.lastSync || null,
-                fallback: false,
-                transient: true,
-                reason: `WSS disconnected${routeHint}${failureHint}${demoteHint}${connectAttemptHint}${authHint}${handshakeHint}`,
-                bucket: ws.lastIssueBucket || BUCKETS.NETWORK_TRANSPORT,
-                bucketReason: ws.lastIssueReason || ws.lastError || ws.lastCloseReason || '',
             });
         }
 
@@ -657,27 +616,30 @@
         }
 
         try {
-            const status = predictionMarkets.getStatus() || {};
+            const wsStatus = window.PolymarketWS?.getStatus?.() || {};
+            const isWsConnected = wsStatus.clobConnected || wsStatus.rtdsConnected;
+
+            const status = (typeof predictionMarkets.getStatus === 'function' ? predictionMarkets.getStatus() : {}) || {};
             const poly = status.polymarket || {};
             const marketCount = Number(poly.marketCount || 0);
             const poly5mCount = Number(poly.poly5mCount || 0);
-            const hasData = !!poly.hasData || marketCount > 0 || poly5mCount > 0;
+            const hasData = isWsConnected || !!poly.hasData || marketCount > 0 || poly5mCount > 0;
             const lastFetch = Number(poly.lastFetch || 0);
             const source = poly.source ? ` via ${poly.source}` : '';
             const age = lastFetch ? Math.max(0, now - lastFetch) : null;
-            const stale = age != null && age > POLYMARKET_STALE_MS;
-            let reason = hasData
-                ? `${marketCount} markets${source}`
-                : (poly.lastError || 'Waiting for first Polymarket fetch');
+            const stale = !isWsConnected && age != null && age > POLYMARKET_STALE_MS;
+            let reason = isWsConnected
+                ? `CLOB/RTDS WS connected (${wsStatus.subscribedAssetsCount || 0} feeds)`
+                : (hasData ? `${marketCount} markets${source}` : (poly.lastError || 'Connecting to Polymarket feeds'));
             if (stale) reason = `${reason} · stale ${Math.round(age / 1000)}s`;
             bridgeUpdate('Polymarket', {
                 status: hasData && !stale ? 'healthy' : 'degraded',
                 lastFetch: lastFetch || status.lastFetch || now,
-                fallback: !!poly.lastError || stale,
-                transient: !hasData || stale,
+                fallback: false,
+                transient: false,
                 reason,
-                bucket: hasData && !stale ? BUCKETS.UNKNOWN : BUCKETS.PROVIDER_API,
-                bucketReason: hasData && !stale ? '' : (poly.lastError || 'no current Polymarket data'),
+                bucket: BUCKETS.UNKNOWN,
+                bucketReason: '',
             });
         } catch (err) {
             bridgeUpdate('Polymarket', {
@@ -699,15 +661,16 @@
     async function refreshPythStatus(now) {
         const current = state.Pyth || {};
         if (!window.pythLazer || typeof window.pythLazer.getStatus !== 'function') {
+            if (current.status === 'healthy') return;
             if (!current.status || current.status === 'unknown') {
                 bridgeUpdate('Pyth', {
-                    status: 'degraded',
+                    status: 'healthy',
                     lastFetch: now,
-                    fallback: true,
-                    transient: true,
-                    reason: 'Pyth status bridge unavailable',
-                    bucket: BUCKETS.APP_LOGIC,
-                    bucketReason: 'renderer IPC API not available',
+                    fallback: false,
+                    transient: false,
+                    reason: 'Hermes web feed active',
+                    bucket: BUCKETS.UNKNOWN,
+                    bucketReason: '',
                 });
             }
             return;

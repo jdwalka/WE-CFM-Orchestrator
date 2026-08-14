@@ -32,7 +32,7 @@
     BTC: { minAbsScore: 0.05, minAgreement: 0.45, minConfidence: 20, medAbsScore: 0.14, medAgreement: 0.52 },
     ETH: { minAbsScore: 0.05, minAgreement: 0.45, minConfidence: 20, medAbsScore: 0.14, medAgreement: 0.52 },
     XRP: { minAbsScore: 0.05, minAgreement: 0.45, minConfidence: 20, medAbsScore: 0.14, medAgreement: 0.52 },
-    SOL: { minAbsScore: 0.05, minAgreement: 0.45, minConfidence: 20, medAbsScore: 0.14, medAgreement: 0.52 },
+    SOL: { minAbsScore: 0.20, minAgreement: 0.60, minConfidence: 45, medAbsScore: 0.35, medAgreement: 0.65 },
     BNB: { minAbsScore: 0.06, minAgreement: 0.45, minConfidence: 22, medAbsScore: 0.15, medAgreement: 0.52 },
     DOGE: { minAbsScore: 0.04, minAgreement: 0.42, minConfidence: 18, medAbsScore: 0.12, medAgreement: 0.50 },
     HYPE: { minAbsScore: 0.04, minAgreement: 0.42, minConfidence: 18, medAbsScore: 0.12, medAgreement: 0.50 },

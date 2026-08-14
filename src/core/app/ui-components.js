@@ -222,6 +222,15 @@ function predictionCard(p) {
     const llmRegime = p.llm?.regime || p.diagnostics?.llmRegime || null;
     const llmConfidence = Number(p.llm?.confidence || p.diagnostics?.llmConfidence || 0);
     const llmNotes = String(p.llm?.notes || p.diagnostics?.llmNotes || '').trim();
+    const asi1Brief = window.Asi1PreContract?.get?.(p.sym);
+    const asi1Notes = String(asi1Brief?.notes || asi1Brief?.primaryRationale || '').trim();
+    const displayNotes = asi1Notes || llmNotes;
+    const thoughtsProvider = String(
+      asi1Brief?.provider || p.llm?.provider || p.diagnostics?.llmProvider || 'ASI1'
+    ).toUpperCase();
+    const thoughtsModel = asi1Brief?.model || p.llm?.model || '';
+    const thoughtsRegime = asi1Brief?.regime || llmRegime || 'Mixed Regime';
+    const preAction = asi1Brief?.preContract?.action || '';
     let llmPatterns = p.llm?.market_patterns || p.diagnostics?.market_patterns || null;
     if (Array.isArray(llmPatterns)) llmPatterns = llmPatterns.join(', ');
     const llmBadge = llmRegime && llmRegime !== 'unknown'
@@ -494,26 +503,31 @@ function predictionCard(p) {
       <div class="pred-card ${p.signal} ${expanded ? 'expanded' : ''}" data-testid="pred-${p.sym}" data-pred-toggle="${p.sym}"
            style="border-left: 4px solid ${verdictDir === 'up' ? 'var(--color-green)' : verdictDir === 'down' ? 'var(--color-red)' : 'var(--color-border)'}">
 
-        ${llmNotes ? `
+        ${displayNotes ? `
         <div class="ai-thoughts-popup" style="
           margin: 0 0 12px 0;
           padding: 16px;
           border-radius: 8px;
           background: linear-gradient(135deg, rgba(25, 30, 45, 0.95), rgba(15, 20, 30, 0.98));
-          border: 1px solid rgba(143, 168, 255, 0.25);
+          border: 1px solid rgba(143, 168, 255, 0.35);
           box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
           font-family: 'Inter', 'Outfit', 'Segoe UI', sans-serif;
           position: relative;
         ">
-          <div style="font-size:11px;font-weight:800;letter-spacing:1px;color:#a5b4fc;margin-bottom:8px;display:flex;align-items:center;gap:8px;">
-            <span style="font-size:14px;">✨</span> <span>ASI1 THOUGHTS</span>
-            <span style="font-size:9px;padding:2px 8px;border-radius:999px;background:rgba(165, 180, 252, 0.15);color:#c7d2fe;letter-spacing:0.5px;">${escapeHtml((llmRegime || 'Mixed Regime').replace(/_/g, ' '))}</span>
+          <div style="font-size:11px;font-weight:800;letter-spacing:1px;color:#a5b4fc;margin-bottom:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+            <span style="font-size:14px;">✨</span> <span>${escapeHtml(thoughtsProvider)} PRE-CONTRACT</span>
+            ${thoughtsModel ? `<span style="font-size:9px;opacity:0.8;font-weight:600;">${escapeHtml(thoughtsModel)}</span>` : ''}
+            <span style="font-size:9px;padding:2px 8px;border-radius:999px;background:rgba(165, 180, 252, 0.15);color:#c7d2fe;letter-spacing:0.5px;">${escapeHtml(String(thoughtsRegime).replace(/_/g, ' '))}</span>
+            ${asi1Brief?.call ? `<span style="font-size:9px;padding:2px 8px;border-radius:999px;background:${asi1Brief.call === 'UP' ? 'rgba(0,230,118,0.2)' : 'rgba(255,82,82,0.2)'};color:${asi1Brief.call === 'UP' ? '#00e676' : '#ff8a80'};font-weight:800;">CALL ${escapeHtml(asi1Brief.call)}</span>` : ''}
+            ${preAction ? `<span style="font-size:9px;padding:2px 8px;border-radius:999px;background:rgba(255,193,7,0.15);color:#ffe082;">${escapeHtml(preAction)}</span>` : ''}
           </div>
-          <div style="font-size:13px;color:#f8fafc;line-height:1.6;font-weight:400;white-space:pre-wrap;">${escapeHtml(llmNotes)}</div>
-          ${llmPatterns ? `
+          <div style="font-size:13px;color:#f8fafc;line-height:1.6;font-weight:400;white-space:pre-wrap;">${escapeHtml(displayNotes)}</div>
+          ${asi1Brief?.preContract?.invalidation ? `
+          <div style="margin-top:8px;font-size:11px;color:#fca5a5;">Invalidation: ${escapeHtml(String(asi1Brief.preContract.invalidation))}</div>` : ''}
+          ${(llmPatterns || asi1Brief?.marketPatterns) ? `
           <div style="margin-top:10px;font-size:11px;color:#cbd5e1;background:rgba(165,180,252,0.08);padding:8px 12px;border-radius:6px;border-left:3px solid #a5b4fc;">
             <strong style="color:#a5b4fc;text-transform:uppercase;letter-spacing:0.5px;">Detected Patterns:</strong><br>
-            <span style="font-family:var(--font-mono);">${escapeHtml(llmPatterns)}</span>
+            <span style="font-family:var(--font-mono);">${escapeHtml(String(asi1Brief?.marketPatterns || llmPatterns))}</span>
           </div>` : ''}
         </div>` : ''}
 
@@ -1173,9 +1187,9 @@ function buildKalshiDebugPanel() {
       const pendingN = window.MarketResolver?.getPending?.()?.length ?? 0;
 
       return `
-      <details id="kalshi-debug-panel" style="margin:8px 0 14px;background:#111;border:1px solid #2a2a2a;border-radius:8px">
-        <summary style="cursor:pointer;padding:8px 14px;font-size:12px;font-weight:700;color:#ffc107;letter-spacing:.5px;display:flex;align-items:center;gap:8px;user-select:none">
-          🔬 KALSHI CONTRACT DEBUG
+      <details id="kalshi-debug-panel" class="poly-debug-panel" style="margin:8px 0 14px;background:#111;border:1px solid #2a2a2a;border-radius:8px">
+        <summary style="cursor:pointer;padding:8px 14px;font-size:12px;font-weight:700;color:#00e5ff;letter-spacing:.5px;display:flex;align-items:center;gap:8px;user-select:none">
+          🔬 POLYMARKET CONTRACT DEBUG
           <span style="font-size:10px;color:#666;font-weight:400;margin-left:auto">
             snap:${Object.keys(snaps).length} log:${(window._kalshiLog || []).length} trail:${Object.keys(window._kalshiPredictionTrail || {}).length} err:${errors.length} res:${resLog.length} pending:${pendingN} orch:${(window._orchLog || []).length}
           </span>
@@ -1197,16 +1211,16 @@ function buildKalshiDebugPanel() {
           <div style="overflow-x:auto"><table style="${tbl}">
             <thead><tr>
               <th ${th}>SYM</th><th ${th}>N</th><th ${th}>MODEL%</th>
-              <th ${th}>MKT%</th><th ${th}>FADE✓</th><th ${th}>TREND</th>
+              <th ${th}>POLY%</th><th ${th}>FADE✓</th><th ${th}>TREND</th>
             </tr></thead>
             <tbody>${scorecardRows}</tbody>
           </table></div>
 
-          <div style="font-size:10px;color:#ffc107;font-weight:700;margin:10px 0 4px;letter-spacing:.5px">▸ CURRENT SNAPSHOTS</div>
+          <div style="font-size:10px;color:#00e5ff;font-weight:700;margin:10px 0 4px;letter-spacing:.5px">▸ CURRENT SNAPSHOTS</div>
           <div style="overflow-x:auto"><table style="${tbl}">
             <thead><tr>
               <th ${th}>SYM</th><th ${th}>FLOOR</th><th ${th}>STRIKE</th>
-              <th ${th}>MODEL</th><th ${th}>mYes%</th><th ${th}>kYes%</th>
+              <th ${th}>MODEL</th><th ${th}>mYes%</th><th ${th}>polyYes%</th>
               <th ${th}>CDF</th><th ${th}>FADE</th><th ${th}>CLOSES</th>
             </tr></thead>
             <tbody>${snapRows}</tbody>

@@ -392,7 +392,36 @@
     fetchCBExchCandles, fetchCBExchBook, fetchCBExchTrades,
     fetchKrakenCandles, fetchKrakenBook, fetchKrakenTrades,
     anchoredPoolCandles, bucketCandles,
+    geckoBucketMs, bucketGeckoSeries,
   } = window.PREDICTIONS_DATA_FETCHERS;
+
+  // Fallbacks if data-fetchers is older / partially loaded (prevents BNB load crash)
+  function _geckoBucketMsLocal(tf) {
+    switch (tf) {
+      case '15m': return 15 * 60 * 1000;
+      case '1h': return 60 * 60 * 1000;
+      default: return 5 * 60 * 1000;
+    }
+  }
+  function _bucketGeckoSeriesLocal(prices, volumes, bucketMs) {
+    const buckets = new Map();
+    (prices || []).forEach((point, idx) => {
+      const ts = Number(point[0]);
+      const price = Number(point[1]);
+      const vol = Number(volumes?.[idx]?.[1] || 0);
+      if (!Number.isFinite(ts) || !Number.isFinite(price)) return;
+      const bucketStart = Math.floor(ts / bucketMs) * bucketMs;
+      const bucket = buckets.get(bucketStart) || { t: bucketStart, o: price, h: price, l: price, c: price, v: 0 };
+      bucket.h = Math.max(bucket.h, price);
+      bucket.l = Math.min(bucket.l, price);
+      bucket.c = price;
+      bucket.v += Number.isFinite(vol) ? vol : 0;
+      buckets.set(bucketStart, bucket);
+    });
+    return Array.from(buckets.values()).sort((a, b) => a.t - b.t);
+  }
+  const _geckoBucketMs = typeof geckoBucketMs === 'function' ? geckoBucketMs : _geckoBucketMsLocal;
+  const _bucketGeckoSeries = typeof bucketGeckoSeries === 'function' ? bucketGeckoSeries : _bucketGeckoSeriesLocal;
 
   const CORE_SIGNAL_KEYS = ['hma', 'vwma', 'rsi', 'ema', 'sma', 'obv', 'volume', 'momentum', 'bands', 'persistence', 'structure', 'macd', 'stochrsi', 'adx', 'ichimoku', 'williamsR', 'mfi', 'vwap', 'supertrend', 'cci', 'cmf', 'fisher', 'keltner'];
   const MICRO_SIGNAL_KEYS = ['book', 'flow', 'toxicity', 'spoof', 'iceberg', 'orderBookImbalance', 'imbalanceVelocity', 'liquidityDepth', 'liquidityVacuum', 'fundingRate'];
@@ -444,14 +473,14 @@
   window.ALWAYS_TRADE_MODE = ALWAYS_TRADE_MODE;
 
   const BACKTEST_FILTER_OVERRIDES = {
-    // High-coverage: fire often on all books.
-    BTC: { h1: { entryThreshold: 0.08, minAgreement: 0.50 }, h5: { entryThreshold: 0.08, minAgreement: 0.50 }, h10: { entryThreshold: 0.08, minAgreement: 0.50 }, h15: { entryThreshold: 0.08, minAgreement: 0.50 } },
-    ETH: { h1: { entryThreshold: 0.06, minAgreement: 0.48 }, h5: { entryThreshold: 0.06, minAgreement: 0.48 }, h10: { entryThreshold: 0.06, minAgreement: 0.48 }, h15: { entryThreshold: 0.06, minAgreement: 0.48 } },
-    XRP: { h1: { entryThreshold: 0.08, minAgreement: 0.50 }, h5: { entryThreshold: 0.08, minAgreement: 0.50 }, h10: { entryThreshold: 0.08, minAgreement: 0.50 }, h15: { entryThreshold: 0.08, minAgreement: 0.50 } },
-    SOL: { h1: { entryThreshold: 0.08, minAgreement: 0.50 }, h5: { entryThreshold: 0.08, minAgreement: 0.50 }, h10: { entryThreshold: 0.08, minAgreement: 0.50 }, h15: { entryThreshold: 0.08, minAgreement: 0.50 } },
-    BNB: { h1: { entryThreshold: 0.10, minAgreement: 0.50 }, h5: { entryThreshold: 0.10, minAgreement: 0.50 }, h10: { entryThreshold: 0.10, minAgreement: 0.50 }, h15: { entryThreshold: 0.10, minAgreement: 0.50 } },
-    DOGE: { h1: { entryThreshold: 0.06, minAgreement: 0.48 }, h5: { entryThreshold: 0.06, minAgreement: 0.48 }, h10: { entryThreshold: 0.06, minAgreement: 0.48 }, h15: { entryThreshold: 0.06, minAgreement: 0.48 } },
-    HYPE: { h1: { entryThreshold: 0.06, minAgreement: 0.48 }, h5: { entryThreshold: 0.06, minAgreement: 0.48 }, h10: { entryThreshold: 0.06, minAgreement: 0.48 }, h15: { entryThreshold: 0.06, minAgreement: 0.48 } },
+    // Calibrated via Walk-Forward Backtest (2026-08-13): tight filters prevent noise flips on 5m candles.
+    BTC: { h1: { entryThreshold: 0.30, minAgreement: 0.58 }, h5: { entryThreshold: 0.30, minAgreement: 0.58 }, h10: { entryThreshold: 0.30, minAgreement: 0.58 }, h15: { entryThreshold: 0.28, minAgreement: 0.58 } },
+    ETH: { h1: { entryThreshold: 0.30, minAgreement: 0.58 }, h5: { entryThreshold: 0.30, minAgreement: 0.58 }, h10: { entryThreshold: 0.30, minAgreement: 0.58 }, h15: { entryThreshold: 0.28, minAgreement: 0.58 } },
+    XRP: { h1: { entryThreshold: 0.30, minAgreement: 0.58 }, h5: { entryThreshold: 0.30, minAgreement: 0.58 }, h10: { entryThreshold: 0.28, minAgreement: 0.58 }, h15: { entryThreshold: 0.25, minAgreement: 0.58 } },
+    SOL: { h1: { entryThreshold: 0.30, minAgreement: 0.58 }, h5: { entryThreshold: 0.30, minAgreement: 0.58 }, h10: { entryThreshold: 0.30, minAgreement: 0.58 }, h15: { entryThreshold: 0.25, minAgreement: 0.58 } },
+    BNB: { h1: { entryThreshold: 0.30, minAgreement: 0.58 }, h5: { entryThreshold: 0.30, minAgreement: 0.58 }, h10: { entryThreshold: 0.30, minAgreement: 0.58 }, h15: { entryThreshold: 0.28, minAgreement: 0.58 } },
+    DOGE: { h1: { entryThreshold: 0.30, minAgreement: 0.58 }, h5: { entryThreshold: 0.30, minAgreement: 0.58 }, h10: { entryThreshold: 0.30, minAgreement: 0.58 }, h15: { entryThreshold: 0.28, minAgreement: 0.58 } },
+    HYPE: { h1: { entryThreshold: 0.30, minAgreement: 0.58 }, h5: { entryThreshold: 0.30, minAgreement: 0.58 }, h10: { entryThreshold: 0.30, minAgreement: 0.58 }, h15: { entryThreshold: 0.28, minAgreement: 0.58 } },
   };
   const ORBITAL_ROUTER_PROFILES = {
     core: {
@@ -639,8 +668,8 @@
         ]);
         const prices = Array.isArray(market?.prices) ? market.prices : [];
         const volumes = Array.isArray(market?.total_volumes) ? market.total_volumes : [];
-        const gecko5m = bucketGeckoSeries(prices, volumes, geckoBucketMs('5m'));
-        const gecko15m = bucketGeckoSeries(prices, volumes, geckoBucketMs('15m'));
+        const gecko5m = _bucketGeckoSeries(prices, volumes, _geckoBucketMs('5m'));
+        const gecko15m = _bucketGeckoSeries(prices, volumes, _geckoBucketMs('15m'));
         const ws15m = window.CandleWS ? window.CandleWS.getClosedBuckets15m(coin.sym) : [];
         const ws1m = window.CandleWS ? window.CandleWS.getClosedBuckets1m(coin.sym) : [];
         const candles = anchoredPoolCandles(cb5m, bin5m, gecko5m);
@@ -2852,32 +2881,9 @@
     vmaSig = clamp(vmaSig, -1, 1);
 
     // --- Trend Regime Modulation ---
-    // In a strong trend, oscillator "overbought/oversold" signals are continuation
-    // cues, not reversal cues. Suppress contrarian oscillator signals proportionally
-    // to trend strength so they don't cancel out the trend-following signals.
-    // HMA slope used as primary trend confirmation — more lag-free than emaCross
-    const isBullTrend = hmaSlope > 0.04 && adxResult.pdi > adxResult.mdi && adxResult.adx > 22;
-    const isBearTrend = hmaSlope < -0.04 && adxResult.mdi > adxResult.pdi && adxResult.adx > 22;
-    if (isBullTrend || isBearTrend) {
-      const suppressFactor = clamp((adxResult.adx - 22) / 28, 0, 0.80);
-      if (isBullTrend) {
-        // Dampen bearish readings from contrarian oscillators during bull trends
-        if (rsiSig < 0) rsiSig *= (1 - suppressFactor);
-        if (stochSig < 0) stochSig *= (1 - suppressFactor);
-        if (wRSig < 0) wRSig *= (1 - suppressFactor);
-        if (bandSig < 0) bandSig *= (1 - suppressFactor * 0.75);
-        if (mfiSig < 0) mfiSig *= (1 - suppressFactor * 0.75);
-        if (vwapSig < 0) vwapSig *= (1 - suppressFactor * 0.70);
-      } else {
-        // Dampen bullish readings from contrarian oscillators during bear trends
-        if (rsiSig > 0) rsiSig *= (1 - suppressFactor);
-        if (stochSig > 0) stochSig *= (1 - suppressFactor);
-        if (wRSig > 0) wRSig *= (1 - suppressFactor);
-        if (bandSig > 0) bandSig *= (1 - suppressFactor * 0.75);
-        if (mfiSig > 0) mfiSig *= (1 - suppressFactor * 0.75);
-        if (vwapSig > 0) vwapSig *= (1 - suppressFactor * 0.70);
-      }
-    }
+    // In a strong trend (bear dump or bull pump), contrarian oscillator signals (oversold bounces in a dump,
+    // or overbought fades in a pump) are destructive counter-trend traps.
+    // Damping applied directly before signal vector construction below.
 
     // --- Book & Trade Flow ---
     const bookAnalysis = analyzeBook(book);
@@ -2948,8 +2954,6 @@
 
     // Fisher Transform
     // FIX (2026-05-04 CRITICAL): Remove negation that inverts Fisher signal 100% of the time
-    // BEFORE: const fisherSig = clamp(-fisherVal / 2.5, -1, 1);  // ← Inverted always
-    // AFTER: const fisherSig = clamp(fisherVal / 2.5, -1, 1);   // ← Correct: +Fisher → +signal (bullish)
     const fisherVal = calcFisher(candles, 10);
     const fisherSig = clamp(fisherVal / 2.5, -1, 1);  // ✅ FIXED: Removed negation
 
@@ -3071,6 +3075,37 @@
         window._cmcProFeed.startPolling(['BTC', 'ETH', 'SOL', 'XRP', 'BNB', 'DOGE', 'HYPE'], 3600000);
         window._cmcProFeed._pollingStarted = true;
       }
+    }
+
+    // --- Trend Regime Modulation ---
+    // In a strong trend (bear dump or bull pump), contrarian oscillator signals (oversold bounces in a dump,
+    // or overbought fades in a pump) are destructive counter-trend traps. Suppress contrarian signals
+    // proportionally to trend and momentum strength so they do not overpower the trend.
+    const isStrongBear = (supertrendSig === -1 || hmaSlope < -0.02 || mom < -0.20 || vmaSig < -0.15) && (adxResult.mdi > adxResult.pdi || adxResult.adx > 18 || mom < -0.30);
+    const isStrongBull = (supertrendSig === 1 || hmaSlope > 0.02 || mom > 0.20 || vmaSig > 0.15) && (adxResult.pdi > adxResult.mdi || adxResult.adx > 18 || mom > 0.30);
+
+    if (isStrongBear) {
+      // Dump regime: Suppress all false oversold bounce signals
+      if (rsiSig > 0) rsiSig = 0;
+      if (stochSig > 0) stochSig = 0;
+      if (wRSig > 0) wRSig = 0;
+      if (bandSig > 0) bandSig = 0;
+      if (mfiSig > 0) mfiSig = 0;
+      if (vwapSig > 0) vwapSig = 0;
+      if (cciSig > 0) cciSig = 0;
+      if (keltSig > 0) keltSig = 0;
+      if (fisherSig > 0) fisherSig = 0;
+    } else if (isStrongBull) {
+      // Pump regime: Suppress all false overbought fade signals
+      if (rsiSig < 0) rsiSig = 0;
+      if (stochSig < 0) stochSig = 0;
+      if (wRSig < 0) wRSig = 0;
+      if (bandSig < 0) bandSig = 0;
+      if (mfiSig < 0) mfiSig = 0;
+      if (vwapSig < 0) vwapSig = 0;
+      if (cciSig < 0) cciSig = 0;
+      if (keltSig < 0) keltSig = 0;
+      if (fisherSig < 0) fisherSig = 0;
     }
 
     const signalVector = {
@@ -4085,9 +4120,20 @@
     const winRatePct = Number.isFinite(summary.winRate) ? summary.winRate : 50;
     const avgSignedReturn = toFiniteNumber(summary.avgSignedReturn, 0);
 
+    const polyCoin = window.PredictionMarkets?.getCoin?.(coin.sym) || {};
+    const poly15 = polyCoin.poly15m || null;
+    const poly5 = polyCoin.poly5m || null;
     return {
       coin: coin.sym,
       horizon: 'h15',
+      // Prefer ASI1 pre-contract analysis on prediction-card inference overlay
+      preContract: true,
+      preferAsi1: true,
+      rangePrediction: true,
+      rangeHorizonMinutes: 15,
+      horizonMinutes: 15,
+      poly15m: poly15,
+      poly5m: poly5,
       volatility: Math.max(0, toFiniteNumber(pred?.volatility?.atrPct, 0) / 100),
       orderbook: {
         imbalance: normalizedImbalance,
@@ -4339,7 +4385,9 @@
             ai_wording: llmOutput.ai_wording || null,
             analysis: llmOutput.analysis || null,
             market_patterns: llmOutput.ai_wording?.market_patterns || llmOutput.market_patterns || null,
-            provider: response?.diagnostics?.provider || null,
+            preContract: llmOutput.preContract || null,
+            provider: llmOutput.provider || response?.providerStatus?.provider || response?.diagnostics?.lastProvider || response?.diagnostics?.provider || null,
+            model: llmOutput.model || response?.providerStatus?.model || response?.diagnostics?.lastModel || null,
             degraded: llmDegraded,
             cooldownRemainingMs: llmCooldownRemainingMs,
             providerStatus: response?.providerStatus || null,
@@ -5402,27 +5450,6 @@
       }
     }
 
-    // ★ Prediction-market cross-venue divergence (Kalshi YES vs Polymarket YES).
-    // Relative-value edge: fade the venue that is richer on YES. gapPp>0 → Kalshi richer → fade up.
-    if (typeof window !== 'undefined' && window.PredictionMarketEdge?.get) {
-      const edge = window.PredictionMarketEdge.get(context.coin.sym);
-      const dv = edge?.divergence;
-      if (dv && dv.actionable && Number.isFinite(dv.gapPp)) {
-        packets.push(applyRouterProfile({
-          family: 'pm-divergence',
-          category: 'prediction-market',
-          role: 'driver',
-          label: 'Cross-venue divergence',
-          detail: `Kalshi ${(dv.kalshiYes * 100).toFixed(0)}% vs Poly ${(dv.polyYes * 100).toFixed(0)}% (${dv.gapPp >= 0 ? '+' : ''}${dv.gapPp.toFixed(1)}pp)`,
-          direction: dv.gapPp > 0 ? -1 : 1,
-          strength: clamp(Math.abs(dv.gapPp) / 15, 0, 1),
-          freshness: 0.85,
-          trust: 0.55,
-          relevance: 0.5,
-        }, routerProfile));
-      }
-    }
-
     if (backtest?.summary) {
       packets.push(applyRouterProfile({
         family: 'history',
@@ -5900,27 +5927,45 @@
       // of a recency-weighted blend) over the last 30s, matching the contract's own
       // TWAP window; fall back to the plain candle price (also RTI-free) rather
       // than the RTI blend if the TWAP buffer has not warmed up yet.
-      const twapPx = window.Microstructure?.getTwap?.(coin.sym, 30_000);
+      const rtdsLive = window.PredictionMarkets?.getFreshRtdsTwap?.(coin.sym, 15_000);
+      const twapPx = rtdsLive?.price ?? window.Microstructure?.getTwap?.(coin.sym, 30_000);
       const livePx = Number(twapPx || timed.price || 0);
       if (p5m && Number.isFinite(ptb) && ptb > 0 && Number.isFinite(livePx) && livePx > 0) {
         const closeTimeMs = p5m.closeTime ? new Date(p5m.closeTime).getTime() : null;
         const remainingMs = Number.isFinite(closeTimeMs) ? Math.max(0, closeTimeMs - Date.now()) : 5 * 60_000;
         const remainingFrac = clamp(remainingMs / (5 * 60_000), 0.08, 1);
-        const atrPct = Number(timed.volatility?.atrPct);
-        const atrDollar = (Number.isFinite(atrPct) && atrPct > 0)
-          ? livePx * (atrPct / 100)
-          : livePx * 0.0017;
-        const expectedMove = normalizedScore * atrDollar * 0.55 * remainingFrac;
-        const liveDrift1m = liveTimingGuard?.drift1mPct != null
-          ? (liveTimingGuard.drift1mPct / 100) * livePx * 0.5
-          : 0;
-        const meanFinal = livePx + expectedMove + liveDrift1m;
-        const sigma = Math.max(livePx * 0.00004, atrDollar * 0.42 * Math.sqrt(remainingFrac));
-        const z = (meanFinal - ptb) / sigma;
-        const pUp = normalCDF(z);
+        const atrPctRaw = Number(timed.volatility?.atrPct);
+        const atrPct = (Number.isFinite(atrPctRaw) && atrPctRaw > 0) ? (atrPctRaw / 100) : 0.0035;
+        const atrDollar = livePx * atrPct;
+        const expectedMove = normalizedScore * atrDollar * 0.40 * remainingFrac;
+        const gap = livePx - ptb;
+        const gapFrac = gap / ptb;
+        const liveDir = liveTimingGuard?.liveDir || (gap >= 0 ? (liveTimingGuard?.drift1mPct > 0 ? 1 : 0) : (liveTimingGuard?.drift1mPct < 0 ? -1 : 0));
+
+        let effectiveExpectedMove = expectedMove;
+        if (gap < 0 && effectiveExpectedMove > 0 && liveDir <= 0) {
+          // If currently below PTB and tape is not driving upward, expected move cannot cross PTB
+          effectiveExpectedMove = Math.min(effectiveExpectedMove, Math.abs(gap) * 0.2);
+        } else if (gap > 0 && effectiveExpectedMove < 0 && liveDir >= 0) {
+          effectiveExpectedMove = Math.max(effectiveExpectedMove, -Math.abs(gap) * 0.2);
+        }
+
+        const meanFinal = livePx + effectiveExpectedMove + liveDrift1m;
+        const sigma = Math.max(livePx * 0.0015, atrDollar * Math.sqrt(remainingFrac));
+        const z = (meanFinal - ptb) / (sigma || 1);
+        let pUp = normalCDF(z);
+
+        // Strict State Anchor:
+        // If price is BELOW PTB and not actively breaking up, pUp MUST NOT be >= 50%
+        if (gap < 0 && liveDir <= 0 && pUp > 0.45) {
+          pUp = Math.min(pUp, 0.40);
+        }
+        // If price is ABOVE PTB and not actively breaking down, pUp MUST NOT be <= 50%
+        if (gap > 0 && liveDir >= 0 && pUp < 0.55) {
+          pUp = Math.max(pUp, 0.60);
+        }
+
         const modelYesPct = Math.round(pUp * 100);
-        const gapFrac = (livePx - ptb) / ptb;
-        const liveDir = liveTimingGuard?.liveDir || 0;
         // Map P(UP) → score in [-1,1]; 50% → 0
         const ptbScore = clamp((pUp - 0.5) * 2.0, -1, 1);
         // Hard veto: don't "flip UP" when already below/at PTB without live up-tape.

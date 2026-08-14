@@ -24,7 +24,6 @@ function assertBefore(before, after) {
 
 const splitModules = [
   '../src/core/app/observability.js',
-  '../src/core/app/kalshi-polling.js',
   '../src/core/app/orderbook-hud.js',
   '../src/core/app/ui-components.js',
 ];
@@ -37,7 +36,6 @@ for (const modulePath of splitModules) {
 
 const moduleExports = [
   ['src/core/app/observability.js', 'window.APP_OBSERVABILITY'],
-  ['src/core/app/kalshi-polling.js', 'window.APP_KALSHI_POLLING'],
   ['src/core/app/orderbook-hud.js', 'window.APP_ORDERBOOK_HUD'],
   ['src/core/app/ui-components.js', 'window.APP_UI_COMPONENTS'],
 ];

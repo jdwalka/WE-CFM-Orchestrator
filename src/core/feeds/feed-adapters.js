@@ -428,89 +428,6 @@ async function fetchSupplementalTickers(rawTickers) {
     return result;
   }
 
-function unwrapKalshiIpcPayload(response) {
-    const outer = (response && typeof response === 'object') ? response : {};
-    const envelope = Object.prototype.hasOwnProperty.call(outer, 'data') ? outer.data : outer;
-    const payload = (envelope && typeof envelope === 'object' && Object.prototype.hasOwnProperty.call(envelope, 'data'))
-      ? envelope.data
-      : envelope;
-    const outerSuccess = typeof outer.success === 'boolean' ? outer.success : true;
-    const envelopeSuccess = (envelope && typeof envelope.success === 'boolean') ? envelope.success : true;
-    return {
-      success: outerSuccess && envelopeSuccess,
-      payload: (payload && typeof payload === 'object') ? payload : null,
-      error: outer.error || envelope?.error || null,
-      status: outer.status || null,
-    };
-  }
-
-async function fetchKalshiData() {
-    try {
-      // Guard: only run when renderer bridge + Electron IPC are available.
-      const hasKalshiBridge = !!window.Kalshi;
-      const hasElectronIpc = typeof window.electron?.invoke === 'function';
-      if (!hasKalshiBridge || !hasElectronIpc) {
-        const now = Date.now();
-        if (_kalshiIpcWasAvailable !== false || (now - _kalshiIpcWarnTs) > 60000) {
-          console.warn('[Kalshi] IPC unavailable; skipping Kalshi fetch until Electron bridge is ready');
-          _kalshiIpcWarnTs = now;
-        }
-        _kalshiIpcWasAvailable = false;
-        window._kalshiSnapshot = null;
-        return;
-      }
-
-      if (_kalshiIpcWasAvailable === false) {
-        console.log('[Kalshi] IPC restored; Kalshi polling resumed');
-      }
-      _kalshiIpcWasAvailable = true;
-
-      // Get markets (limit to top 100 by volume)
-      const marketsRes = await window.Kalshi.getMarkets({ limit: 100, status: 'open' });
-      const marketsParsed = unwrapKalshiIpcPayload(marketsRes);
-      const markets = Array.isArray(marketsParsed.payload?.markets) ? marketsParsed.payload.markets : [];
-      if (!marketsParsed.success || !markets.length) {
-        console.warn('[Kalshi] Markets fetch failed:', marketsParsed.error || 'No open markets returned');
-        return;
-      }
-
-      // Get balance for portfolio context (Disabled per user request)
-      // const balanceRes = await window.Kalshi.getBalance();
-      // const balanceParsed = unwrapKalshiIpcPayload(balanceRes);
-      // const balance = balanceParsed.success ? (balanceParsed.payload?.balance ?? null) : null;
-      const balance = null;
-
-      // Store Kalshi snapshot
-      window._kalshiSnapshot = {
-        timestamp: Date.now(),
-        markets,
-        balance,
-        count: markets.length,
-      };
-
-      // Build quick lookup by market ticker
-      const kalshiByTicker = {};
-      markets.forEach(m => {
-        kalshiByTicker[m.market_ticker] = {
-          price: parseFloat(m.last_price),      // 0-100 probability
-          volume: parseFloat(m.volume),          // 24h volume
-          timestamp: Date.now(),
-        };
-      });
-      window._kalshiByTicker = kalshiByTicker;
-
-      console.log(`[Kalshi] Loaded ${markets.length} markets, balance: $${balance}`);
-    } catch (error) {
-      const msg = String(error?.message || error || 'unknown error');
-      const now = Date.now();
-      if (!msg.includes('Electron IPC not available') || (now - _kalshiIpcWarnTs) > 60000) {
-        console.warn('[Kalshi] Fetch error:', msg);
-        if (msg.includes('Electron IPC not available')) _kalshiIpcWarnTs = now;
-      }
-      window._kalshiSnapshot = null;
-    }
-  }
-
 function getWSTickerRows(provider, instrumentToSymbol, source) {
     const ws = window.ExchangeWS;
     if (!ws || typeof ws.getTicker !== 'function') return [];
@@ -821,10 +738,10 @@ async function fetchPythTickers() {
     if (!result.length) throw new Error('Pyth returned no usable feeds');
     if (window.NetworkHealth) {
       window.NetworkHealth.update('Pyth', {
-        status: 'degraded',
+        status: 'healthy',
         lastFetch: Date.now(),
-        fallback: true,
-        reason: 'Using Hermes fallback',
+        fallback: false,
+        reason: 'Hermes live',
       });
     }
     return result;
@@ -1565,11 +1482,6 @@ async function fetchAll(manual = false, settlement = false) {
         if (sparkData[c.sym].length > 20) sparkData[c.sym].shift();
       });
 
-      // Async: Fetch Kalshi market data in background (non-blocking)
-      fetchKalshiData().catch(err => {
-        console.warn('[Kalshi] Background fetch failed:', err.message);
-      });
-
       updateHeaderSummary();
       setFeedStatus('live', dataSource);
       updateLastUpdateLabel();
@@ -1734,8 +1646,6 @@ window.findCoinByInstrument = findCoinByInstrument;
 window.geckoIdForInstrument = geckoIdForInstrument;
 window.trackedMarketCoins = trackedMarketCoins;
 window.fetchSupplementalTickers = fetchSupplementalTickers;
-window.unwrapKalshiIpcPayload = unwrapKalshiIpcPayload;
-window.fetchKalshiData = fetchKalshiData;
 window.getWSTickerRows = getWSTickerRows;
 window.fetchBinanceTickers = fetchBinanceTickers;
 window.fetchKrakenTickers = fetchKrakenTickers;

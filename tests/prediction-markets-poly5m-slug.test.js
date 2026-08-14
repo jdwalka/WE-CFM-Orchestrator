@@ -33,7 +33,7 @@ async function testAsync(name, fn) {
 }
 
 function loadPredictionMarkets({ fetchImpl, nowMs } = {}) {
-  const modulePath = path.resolve(__dirname, '../../src/kalshi/prediction-markets.js');
+  const modulePath = path.resolve(__dirname, '../src/kalshi/prediction-markets.js');
   delete require.cache[modulePath];
 
   global.window = {

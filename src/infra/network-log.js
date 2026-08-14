@@ -230,7 +230,7 @@
     const failureClass = String(detail.failureClass || '').toLowerCase();
     const text = `${detail.error || ''} ${detail.statusText || ''} ${detail.reason || ''}`.toLowerCase();
 
-    if (fc === 'stale-reconnect' || fc === 'lifecycle-reconnect' || /stale[-\s]*watchdog|demote|hysteresis|scheduler|circuit|oscillat|internal|code=1000|code=1001|code=1005/.test(text)) {
+    if (failureClass === 'stale-reconnect' || failureClass === 'lifecycle-reconnect' || /stale[-\s]*watchdog|demote|hysteresis|scheduler|circuit|oscillat|internal|code=1000|code=1001|code=1005/.test(text)) {
       return {
         bucket: 'app/logic',
         reason: detail.error || detail.reason || 'internal WSS lifecycle/watchdog reconnect',

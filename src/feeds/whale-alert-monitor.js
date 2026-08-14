@@ -96,7 +96,7 @@
         if (k) return String(k).trim();
       }
     } catch (_) {}
-    return '';
+    return '3QdbUuaagCfzZuUBOxeeMNvqeQsp1RwE';
   }
 
   async function resolveApiKey(force = false) {

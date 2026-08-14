@@ -72,6 +72,9 @@
   <script src="../src/feeds/api-rate-limiter.js"></script>
   <script src="../src/feeds/api-circuit-breaker.js"></script>
   <script src="../src/feeds/exchange-fallback-handler.js"></script>
+  <script src="../src/feeds/polymarket-ws.js"></script>
+  <script src="../src/feeds/polymarket-client.js"></script>
+  <script src="../src/feeds/polymarket-perps-client.js"></script>
 
   <!-- Wiring Agent: centralizes event wiring for health, escalation, circuit breaker -->
   <script src="../src/core/wiring-agent.js"></script>
@@ -163,6 +166,12 @@
           </svg>
           5-Min Markets
         </button>
+        <button class="nav-btn" data-view="polymarket" data-testid="nav-polymarket">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
+          </svg>
+          Polymarket Pro
+        </button>
         <button class="nav-btn" data-view="debuglog" data-testid="nav-debuglog">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" />
@@ -203,7 +212,7 @@
             <polyline points="23 6 13.5 15.5 8.5 10.5 1 18"></polyline>
             <polyline points="17 6 23 6 23 12"></polyline>
           </svg>
-          15-Min Up/Down
+          Hourly Ranges
         </button>
         <button class="nav-btn" data-view="portfolio" data-testid="nav-portfolio">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -247,10 +256,6 @@
           <div class="market-summary" id="marketSummary"></div>
         </div>
         <div class="header-right">
-          <div class="kalshi-badge" id="kalshiBadge" title="Kalshi account balance" hidden>
-            <span class="kalshi-label">K</span>
-            <span class="kalshi-balance" id="kalshiBalance">—</span>
-          </div>
           <div class="refresh-wrap">
             <button class="refresh-btn" id="refreshBtn" data-testid="refresh-btn" title="Refresh data"
               aria-label="Refresh data">
@@ -306,15 +311,10 @@
   <script src="../src/orbital/signal-router-cfm.js"></script>
   <script src="../src/orbital/temporal-edge.js"></script>
   <script src="../src/orbital/orbital-engine.js"></script>
-  <script src="../src/orbital/kalshi-v2-mapper.js"></script>
-  <script src="../src/kalshi/kalshi-renderer-bridge.js"></script>
-  <script src="../src/kalshi/kalshi-prediction-enhancements.js"></script>
-  <script src="../src/kalshi/kalshi-ws.js"></script>
-  <script src="../src/kalshi/kalshi-rest.js"></script>
-  <script src="../src/kalshi/kalshi-client.js"></script>
   <script src="../src/core/anomaly-detector.js" defer></script>
   <script src="../src/core/cfm-engine.js" defer></script>
   <script src="../src/kalshi/prediction-markets.js"></script>
+  <script src="../src/kalshi/poly5m-resolution-tracker.js" defer></script>
   <script src="../src/kalshi/market-resolver.js" defer></script>
   <script src="../settlement-retune.js" defer></script>
   <script src="../src/core/tensor-engine.js" defer></script>
@@ -333,15 +333,13 @@
   <script src="../src/feeds/cex-flow.js" defer></script>
   <!-- BTC/ETH/SOL compressed on-chain side-scan for Grok + mechanical size (uses ChainRouter/Whale/CexFlow) -->
   <script src="../src/feeds/onchain-side-scan.js" defer></script>
-  <!-- Derivatives + options + prediction-market edge feeds (additive dataset inputs) -->
+  <!-- Derivatives + options feeds (additive dataset inputs) -->
   <script src="../src/feeds/derivatives-feed.js" defer></script>
   <script src="../src/feeds/options-gamma-feed.js" defer></script>
-  <script src="../src/kalshi/prediction-market-edge.js" defer></script>
   <!-- Adaptive Walk-Forward Tuning Modules (Phase 6) -->
   <script src="../src/core/adaptive-tuner.js" defer></script>
   <script src="../src/kalshi/historical-settlement-fetcher.js" defer></script>
   <script src="../src/kalshi/scorecard-data-aggregator.js" defer></script>
-  <script src="../src/kalshi/accuracy-scorecard-comprehensive.js" defer></script>
   <script src="../src/adaptive-learning-engine.js" defer></script>
   <script src="../src/core/contract-cache-manager.js" defer></script>
   <script src="../src/core/multi-drive-cache.js" defer></script>
@@ -388,13 +386,11 @@
   <script src="../src/core/validator-15m.js" defer></script>
   <script src="../src/feeds/orderbook.js" defer></script>
   <script src="../src/ui/hourly-ranges-panel.js" defer></script>
-  <script src="../src/ui/hourly-kalshi-tracker.js" defer></script>
-
+  <script src="../src/ui/polymarket-terminal.js" defer></script>
   <script src="../src/orbital/pyth-momentum-exit.js" defer></script>
   <script src="../src/orbital/MOMENTUM_INTEGRATION.js" defer></script>
   <script src="../src/core/backtest-2day-analyzer.js" defer></script>
   <script src="../src/core/h15-tuner.js" defer></script>
-  <script src="../src/quant/kalshi-fill-simulator.js" defer></script>
   <script src="../src/feeds/coinmarketcap-pro-feed.js" defer></script>
   <script src="../src/core/pyth-timeout-monitor.js" defer></script>
 
@@ -404,7 +400,6 @@
   <script src="../src/ui/network-health-dashboard.js"></script>
   <!-- App shell modules (must load before app-core.js destructures window.APP_*) -->
   <script src="../src/core/app/observability.js" defer></script>
-  <script src="../src/core/app/kalshi-polling.js" defer></script>
   <script src="../src/core/app/orderbook-hud.js" defer></script>
   <script src="../src/core/ui/microstructure-hud.js" defer></script>
   <script src="../src/core/app/ui-components.js" defer></script>
@@ -414,7 +409,8 @@
   <script src="../src/core/forensics-logger.js" defer></script>
   <script src="../src/core/feeds/feed-adapters.js" defer></script>
   <script src="../src/core/ui/render-layer.js" defer></script>
-  <!-- Grok: session memory + 15m/hourly range analysis only (5m Grok is disabled) -->
+  <!-- ASI1 pre-contract advisor + Grok session memory / 15m-hourly range (ASI1-primary cascade) -->
+  <script src="../src/llm/asi1-precontract-advisor.js" defer></script>
   <script src="../src/llm/grok-analytics-memory.js" defer></script>
   <script src="../src/llm/grok-range-overlay.js" defer></script>
   <!-- 5m overlay kept loaded but disabled (FIVE_MIN_GROK_ENABLED=false) -->
@@ -429,7 +425,6 @@
     }
   </script>
   <div id="ob-hud" class="ob-hud"></div>
-  <script src="../src/kalshi/cloud-data-loader.js" defer></script>
 </body>
 
 </html>

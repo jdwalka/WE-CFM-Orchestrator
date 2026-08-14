@@ -71,57 +71,79 @@
   function buildOutcomeCalibration(sym, n = 24) {
 
     // ---- Source A: candle-based _predLog -------------------------
+    // Internally-graded against this app's own 15-minute candle bucket
+    // (src/feeds/candle-ws.js), not any venue's real settlement.
     const candleLog = (window._predLog || [])
       .filter(e => e.sym === sym && e.predDir !== 'FLAT');
 
     // ---- Source B: Kalshi market-settled _15mResolutionLog -------
-    // MarketResolver writes this when Kalshi 15M markets settle.
+    // MarketResolver writes this when Kalshi 15M markets settle. Dead in
+    // practice since Kalshi trading was disabled -- kept for when/if it's
+    // ever re-enabled; always empty today, so this blend term is inert now.
     // Each entry has { sym, modelCorrect (bool|null), ... }
     const resolvedLog = (window._15mResolutionLog || [])
       .filter(e => e.sym === sym && e.modelCorrect !== null);
 
+    // ---- Source C: Polymarket-settled _5mResolutionLog -----------
+    // src/kalshi/poly5m-resolution-tracker.js -- graded against the actual
+    // Chainlink TWAP-30s settlement of the actual 5-minute contracts traded,
+    // not an internal proxy. Weighted highest of the three: it's genuine
+    // ground truth for the venue/horizon actually in play.
+    const poly5mLog = (window._5mResolutionLog || [])
+      .filter(e => e.sym === sym && typeof e.correct === 'boolean');
+
     const hasCandle = candleLog.length >= 2;
     const hasResolved = resolvedLog.length >= 2;
-    if (!hasCandle && !hasResolved) {
+    const hasPoly5m = poly5mLog.length >= 2;
+    if (!hasCandle && !hasResolved && !hasPoly5m) {
       return { multiplier: 1.0, accuracy: null, streak: 0, trend: 'cold', n: 0, source: 'none' };
     }
 
     // ---- Per-source accuracy ------------------------------------
     const candleRecent = candleLog.slice(-n);
     const resolvedRecent = resolvedLog.slice(-Math.ceil(n * 0.75));
+    const poly5mRecent = poly5mLog.slice(-n);
 
     const candleAcc = hasCandle
       ? candleRecent.filter(e => e.correct).length / candleRecent.length : null;
     const resolvedAcc = hasResolved
       ? resolvedRecent.filter(e => e.modelCorrect).length / resolvedRecent.length : null;
+    const poly5mAcc = hasPoly5m
+      ? poly5mRecent.filter(e => e.correct).length / poly5mRecent.length : null;
 
-    // ---- Blend: resolved data at 1.5x weight --------------------
+    // ---- Blend: poly5m (real settlement) at 2x, resolved at 1.5x --
     let accuracy, blendedN;
-    if (candleAcc !== null && resolvedAcc !== null) {
-      const wC = 1.0, wR = 1.5;
-      accuracy = (candleAcc * wC * candleRecent.length + resolvedAcc * wR * resolvedRecent.length)
-        / (wC * candleRecent.length + wR * resolvedRecent.length);
-      blendedN = candleRecent.length + resolvedRecent.length;
+    const parts = [
+      hasCandle ? { acc: candleAcc, w: 1.0, n: candleRecent.length } : null,
+      hasResolved ? { acc: resolvedAcc, w: 1.5, n: resolvedRecent.length } : null,
+      hasPoly5m ? { acc: poly5mAcc, w: 2.0, n: poly5mRecent.length } : null,
+    ].filter(Boolean);
+    if (parts.length > 1) {
+      const wSum = parts.reduce((s, p) => s + p.w * p.n, 0);
+      accuracy = parts.reduce((s, p) => s + p.acc * p.w * p.n, 0) / wSum;
+      blendedN = parts.reduce((s, p) => s + p.n, 0);
     } else {
-      accuracy = candleAcc ?? resolvedAcc;
-      blendedN = hasCandle ? candleRecent.length : resolvedRecent.length;
+      accuracy = parts[0].acc;
+      blendedN = parts[0].n;
     }
 
+    // ---- Best available log for trend/streak, poly5m preferred ---
+    // (real settlement > dead-Kalshi resolved > internal candle proxy)
+    const bestLog = (hasPoly5m && poly5mLog.length >= 6) ? { log: poly5mLog, ok: e => e.correct }
+      : (hasResolved && resolvedLog.length >= 6) ? { log: resolvedLog, ok: e => e.modelCorrect }
+        : { log: candleLog, ok: e => e.correct };
+
     // ---- Accuracy trend: last 6 vs prior 6 ----------------------
-    const trendLog = (hasResolved && resolvedLog.length >= 6) ? resolvedLog : candleLog;
-    const last6 = trendLog.slice(-6);
-    const prior6 = trendLog.slice(-12, -6);
-    const l6ok = e => hasResolved ? e.modelCorrect : e.correct;
-    const l6acc = last6.length ? last6.filter(l6ok).length / last6.length : 0.5;
-    const p6acc = prior6.length ? prior6.filter(l6ok).length / prior6.length : 0.5;
+    const last6 = bestLog.log.slice(-6);
+    const prior6 = bestLog.log.slice(-12, -6);
+    const l6acc = last6.length ? last6.filter(bestLog.ok).length / last6.length : 0.5;
+    const p6acc = prior6.length ? prior6.filter(bestLog.ok).length / prior6.length : 0.5;
     const accDelta = l6acc - p6acc;
 
     // ---- Streak from best available log -------------------------
-    const streakLog = hasResolved ? resolvedLog : candleLog;
-    const streakOk = e => hasResolved ? e.modelCorrect : e.correct;
     let streak = 0;
-    for (let i = streakLog.length - 1; i >= 0; i--) {
-      const ok = streakOk(streakLog[i]);
+    for (let i = bestLog.log.length - 1; i >= 0; i--) {
+      const ok = bestLog.ok(bestLog.log[i]);
       if (streak === 0) { streak = ok ? 1 : -1; continue; }
       if ((streak > 0) === ok) streak += ok ? 1 : -1;
       else break;
@@ -139,10 +161,12 @@
       candleAccuracy: candleAcc !== null ? +(candleAcc * 100).toFixed(1) : null,
       resolvedAccuracy: resolvedAcc !== null ? +(resolvedAcc * 100).toFixed(1) : null,
       resolvedN: resolvedRecent.length,
+      poly5mAccuracy: poly5mAcc !== null ? +(poly5mAcc * 100).toFixed(1) : null,
+      poly5mN: poly5mRecent.length,
       streak,
       trend: accDelta > 0.10 ? 'improving' : accDelta < -0.10 ? 'declining' : 'stable',
       n: blendedN,
-      source: hasResolved && hasCandle ? 'blended' : hasResolved ? 'resolved' : 'candle',
+      source: parts.length > 1 ? 'blended' : hasPoly5m ? 'poly5m' : hasResolved ? 'resolved' : 'candle',
     };
   }
 
@@ -249,30 +273,27 @@
       });
     }
 
-    // ── Packet E: Kalshi Probability Drift (leading indicator) ───────────
-    // When Kalshi's YES price is trending directionally it signals smart-money
-    // positioning BEFORE the CFM model fully catches up. This is the pre-snipe
-    // signal: inject early so the model leads Kalshi, not follows.
-    // Trust = 0.82 (Kalshi is the settlement oracle, its drift is actionable).
-    const kVel = window.PredictionMarkets?.getVelocity?.(sym);
-    if (kVel && kVel.trend !== 'flat' && Math.abs(kVel.velCentsPerMin) >= 1.0 && kVel.samples >= 3) {
-      const kDir = kVel.trend === 'rising' ? 1 : -1;
-      const kStrength = clamp(Math.abs(kVel.velCentsPerMin) / 8.0, 0.15, 0.82);
-      // Boost strength when acceleration confirms the drift direction
-      const accelBoost = (kVel.acceleration > 0 && kDir === 1) || (kVel.acceleration < 0 && kDir === -1)
-        ? Math.min(0.10, Math.abs(kVel.acceleration) / 5.0) : 0;
+    // ── Packet E: Polymarket Probability Drift (leading indicator) ───────
+    // When Polymarket's YES price is trending directionally it signals smart-money
+    // positioning BEFORE the CFM model fully catches up.
+    const pVel = window.PolymarketWS?.getVelocity?.(sym) || window.PredictionMarkets?.getVelocity?.(sym);
+    if (pVel && pVel.trend !== 'flat' && Math.abs(pVel.velCentsPerMin || 0) >= 1.0 && (pVel.samples || 0) >= 3) {
+      const pDir = pVel.trend === 'rising' ? 1 : -1;
+      const pStrength = clamp(Math.abs(pVel.velCentsPerMin) / 8.0, 0.15, 0.85);
+      const accelBoost = ((pVel.acceleration || 0) > 0 && pDir === 1) || ((pVel.acceleration || 0) < 0 && pDir === -1)
+        ? Math.min(0.10, Math.abs(pVel.acceleration) / 5.0) : 0;
       packets.push({
-        family: 'kalshi_drift',
+        family: 'polymarket_drift',
         category: 'market',
         role: 'driver',
-        label: 'Kalshi probability drift',
-        detail: `${kVel.trend} ${kVel.velCentsPerMin > 0 ? '+' : ''}${kVel.velCentsPerMin.toFixed(1)}¢/min · accel ${kVel.acceleration > 0 ? '+' : ''}${kVel.acceleration.toFixed(1)}¢ · ${kVel.samples} pts · latest ${Math.round((kVel.latestProb ?? 0) * 100)}¢`,
-        direction: kDir,
-        strength: clamp(kStrength + accelBoost, 0.15, 0.85),
-        freshness: 0.97,
-        trust: 0.82,
-        relevance: 0.91,
-        source: 'kalshi',
+        label: 'Polymarket probability drift',
+        detail: `${pVel.trend} ${pVel.velCentsPerMin > 0 ? '+' : ''}${pVel.velCentsPerMin.toFixed(1)}¢/min · ${pVel.samples} pts · latest ${Math.round((pVel.latestProb ?? 0) * 100)}¢`,
+        direction: pDir,
+        strength: clamp(pStrength + accelBoost, 0.15, 0.85),
+        freshness: 0.98,
+        trust: 0.92,
+        relevance: 0.94,
+        source: 'polymarket',
       });
     }
 

@@ -232,17 +232,9 @@ if (refreshSel) refreshSel.value = String(refreshSecs);
 
 window._sharedTickerCache = { data: null, age: 0 };
 
-startKalshiPolling();
+if (typeof startKalshiPolling === 'function') startKalshiPolling();
 
-startHistoricalPolling();
-
-if (typeof KalshiAccuracyDebug !== 'undefined' && KalshiAccuracyDebug.syncDriveCacheToMemory) {
-    setTimeout(() => {
-      KalshiAccuracyDebug.syncDriveCacheToMemory().catch(err =>
-        console.warn('[App] Drive cache sync failed:', err.message)
-      );
-    }, 2000); // defer slightly to let app settle
-  }
+if (typeof startHistoricalPolling === 'function') startHistoricalPolling();
 
 window.addEventListener('predictionadvancedready', () => {
     if (currentView !== 'predictions' || !predsLoaded || predictionRunInFlight) return;
@@ -1199,7 +1191,6 @@ fetchAll().then(() => {
     }, 5000);
     setTimeout(() => { if (window.DerivativesFeed) window.DerivativesFeed.start(); }, 3500);
     setTimeout(() => { if (window.OptionsGammaFeed) window.OptionsGammaFeed.start(); }, 4000);
-    setTimeout(() => { if (window.PredictionMarketEdge) window.PredictionMarketEdge.start(); }, 6000);
   }).catch(err => {
     console.warn('[boot] initial fetchAll failed:', err.message);
     clearTimeout(_bootGuard);

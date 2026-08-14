@@ -1094,9 +1094,9 @@
 
   function translate(sym, pred, cfm) {
     var pm = window.PredictionMarkets && window.PredictionMarkets.getCoin && window.PredictionMarkets.getCoin(sym);
-    var k15 = (pm && pm.kalshi15m) || null;
-    var kAlign = pred && pred.projections && pred.projections.p15 && pred.projections.p15.kalshiAlign ? pred.projections.p15.kalshiAlign : null;
-    var strikeDirRaw = (kAlign && kAlign.strikeDir) || (k15 && k15.strikeDir) || 'above';
+    var polyMarket = (pm && (pm.poly15m || pm.poly5m || pm.poly)) || null;
+    var kAlign = pred && pred.projections && pred.projections.p15 && (pred.projections.p15.polyAlign || pred.projections.p15.kalshiAlign) ? (pred.projections.p15.polyAlign || pred.projections.p15.kalshiAlign) : null;
+    var strikeDirRaw = (kAlign && kAlign.strikeDir) || (polyMarket && polyMarket.strikeDir) || 'above';
     var strikeDir = strikeDirRaw === 'below' ? 'below' : 'above';
     var dirs = yesNoFromStrikeDir(strikeDir);
     var modelScore = (pred && pred.score) || 0;
@@ -1108,28 +1108,32 @@
       : '';
     var modelHardVeto = modelVetoSeverity === 'hard' || !!(pred && pred.diagnostics && pred.diagnostics.hardVeto);
     var modelSoftVeto = !modelHardVeto && (modelVetoed || !!(pred && pred.diagnostics && pred.diagnostics.softVeto));
-    var modelProbUpRaw = scoreToProbUp(modelScore);
+    var modelProbUpRaw = (kAlign && Number.isFinite(kAlign.modelYesPct))
+      ? (kAlign.modelYesPct / 100)
+      : (pred && pred.diagnostics && pred.diagnostics.ptbAnchor && Number.isFinite(pred.diagnostics.ptbAnchor.modelYesPct))
+        ? (pred.diagnostics.ptbAnchor.modelYesPct / 100)
+        : scoreToProbUp(modelScore);
     var signalGate = (pred && pred.gate) || (pred && pred.diagnostics && pred.diagnostics.signalGate) || null;
     var signalGateBlocked = !!(signalGate && signalGate.gated);
     var signalGateReasons = signalGate && Array.isArray(signalGate.reasons) ? signalGate.reasons : [];
-    // Model probability from raw blockchain signals only
+    // Model probability from calibrated signals
     var modelProbUp = modelProbUpRaw;
     // Map model's UP/DOWN probability to YES/NO based on contract structure
     var modelYesProb = strikeDir === 'below' ? (1 - modelProbUpRaw) : modelProbUpRaw;
     // Keep CDF reference available for diagnostics but NOT for direction
     var hasBinaryCdf = !!(kAlign && Number.isFinite(kAlign.modelYesPct));
     var scoreActive = Math.abs(modelScore) >= MODEL_THRESHOLD;
-    var kalshiYesPrice = k15 ? k15.probability : null;
-    var kalshiActive = kalshiYesPrice !== null && kalshiYesPrice !== undefined;
-    var kalshiYesProb = kalshiActive ? kalshiYesPrice : 0.5;
+    var polyYesPrice = polyMarket ? (polyMarket.probability ?? polyMarket.yes ?? null) : null;
+    var polyActive = polyYesPrice !== null && polyYesPrice !== undefined;
+    var polyYesProb = polyActive ? polyYesPrice : 0.5;
 
-    var evYesEdge = modelYesProb - kalshiYesProb;
-    var evNoEdge = (1 - modelYesProb) - (1 - kalshiYesProb);
-    var payoutYes = kalshiYesProb > 0 ? 1 / kalshiYesProb : 0;
-    var payoutNo = (1 - kalshiYesProb) > 0 ? 1 / (1 - kalshiYesProb) : 0;
+    var evYesEdge = modelYesProb - polyYesProb;
+    var evNoEdge = (1 - modelYesProb) - (1 - polyYesProb);
+    var payoutYes = polyYesProb > 0 ? 1 / polyYesProb : 0;
+    var payoutNo = (1 - polyYesProb) > 0 ? 1 / (1 - polyYesProb) : 0;
 
     // EV triggers for edge sizing only — do NOT use for direction override
-    var yesEVTrigger = false;  // disabled: Kalshi odds must not override model direction
+    var yesEVTrigger = false;
     var noEVTrigger = false;
 
     var cdfActive = hasBinaryCdf
@@ -1138,18 +1142,18 @@
     var confidenceActive = (calibratedConfidence != null ? calibratedConfidence : 0) >= FINAL_MODEL_CONF_MIN_TRADE;
     var modelActive = !modelHardVeto && !signalGateBlocked && scoreActive && confidenceActive;
 
-    // DIRECTION FROM RAW MODEL ONLY — blockchain signals, not Kalshi odds
+    // DIRECTION FROM RAW MODEL ONLY — blockchain signals, not venue crowd odds
     var modelDir = null;
     if (modelScore > MODEL_THRESHOLD) modelDir = 'UP';
     else if (modelScore < -MODEL_THRESHOLD) modelDir = 'DOWN';
     var modelBullish = modelDir === 'UP';
-    var kalshiDirHint = !kalshiActive ? null
-      : kalshiYesPrice >= 0.55 ? dirs.yesDir
-        : kalshiYesPrice <= 0.45 ? dirs.noDir
+    var venueDirHint = !polyActive ? null
+      : polyYesPrice >= 0.55 ? dirs.yesDir
+        : polyYesPrice <= 0.45 ? dirs.noDir
           : null;
-    var kalshiBullish = kalshiDirHint === 'UP';
-    var kalshiBearish = kalshiDirHint === 'DOWN';
-    var kalshiNeutral = kalshiDirHint === null;
+    var venueBullish = venueDirHint === 'UP';
+    var venueBearish = venueDirHint === 'DOWN';
+    var venueNeutral = venueDirHint === null;
     var nowMs = Date.now();
     var closeTimeMs = k15 && k15.closeTime ? new Date(k15.closeTime).getTime() : null;
     var msLeft = closeTimeMs != null ? Math.max(0, closeTimeMs - nowMs) : null;

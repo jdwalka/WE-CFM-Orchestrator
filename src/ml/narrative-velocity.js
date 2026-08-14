@@ -80,29 +80,42 @@
     };
   }
 
-  async function fetchAsi1Mini(sym, context = {}) {
+  async function fetchAsi1Overlay(sym, context = {}, options = {}) {
     const key = ensure(sym);
-    const cached = asi1Cache[key];
-    if (cached && Date.now() - cached.ts < 120_000) return cached.value;
+    const isDeep = options.deep === true || options.tier === 'deep-insight' || options.model === 'asi1-ultra';
+    const model = isDeep ? 'asi1-ultra' : 'asi1-mini';
+    const cacheKey = `${key}:${model}`;
+    const cached = asi1Cache[cacheKey];
+    const ttl = isDeep ? 300_000 : 60_000;
+    if (cached && Date.now() - cached.ts < ttl) return cached.value;
 
     const invoke = window.electron?.invoke || window.electronAPI?.invoke;
     if (typeof invoke !== 'function') return null;
 
     try {
+      const poly = context.poly || {};
       const prompt = [
-        `Coin: ${sym}.`,
-        `Social score: ${context.socialScore ?? 'n/a'}.`,
-        `Price bias: ${context.score ?? 0}.`,
-        'Reply JSON only: {"velocity":-1..1,"narrative":"short phrase"}',
-      ].join(' ');
-      const res = await invoke('asi1:mini-narrative', { sym, prompt, model: 'asi1-mini' });
+        `You are ASI1 analyzing narrative velocity for ${sym} crypto vs Polymarket Up/Down.`,
+        `Social score (-1..1): ${context.socialScore ?? 'n/a'}.`,
+        `Model price bias score: ${context.score ?? 0}.`,
+        poly.yesProb != null ? `Polymarket P(Up)=${(Number(poly.yesProb) * 100).toFixed(1)}%.` : '',
+        poly.priceToBeatNum != null ? `PTB=${poly.priceToBeatNum}.` : '',
+        poly.secondsToClose != null ? `TTC=${poly.secondsToClose}s.` : '',
+        poly.depthImbalance != null ? `Book depthImbalance=${poly.depthImbalance}.` : '',
+        isDeep
+          ? 'Deep pre-contract insight: who is winning the narrative, will it flip odds before settlement?'
+          : 'Quick tick: narrative push up or down?',
+        'Reply JSON only: {"velocity":-1..1,"narrative":"one short actionable phrase for the trader"}',
+      ].filter(Boolean).join(' ');
+      const res = await invoke(isDeep ? 'asi1:deep-narrative' : 'asi1:quick-narrative', { sym, prompt, model });
       const parsed = typeof res === 'string' ? JSON.parse(res) : res;
       const value = {
         velocity: clamp(Number(parsed?.velocity ?? 0), -1, 1),
-        narrative: String(parsed?.narrative || '').slice(0, 120),
-        source: 'asi1-mini',
+        narrative: String(parsed?.narrative || '').slice(0, 140),
+        source: isDeep ? 'asi1-ultra-deep' : 'asi1-mini-quick',
+        model,
       };
-      asi1Cache[key] = { ts: Date.now(), value };
+      asi1Cache[cacheKey] = { ts: Date.now(), value };
       return value;
     } catch (_) {
       return null;
@@ -121,14 +134,23 @@
     if (social?.momentum === 'falling') velocity = clamp(velocity - 0.08, -1, 1);
 
     if (ctx.useAsi1 !== false) {
-      const asi1 = await fetchAsi1Mini(key, {
+      // Hybrid blend: asi1-mini handles quick ticks; asi1-ultra handles deep future insights
+      const polyCoin = window.PredictionMarkets?.getCoin?.(key);
+      const polyM = polyCoin?.poly15m || polyCoin?.poly5m || null;
+      const asi1 = await fetchAsi1Overlay(key, {
         socialScore: social?.score,
         score: ctx.score,
-      });
+        poly: polyM ? {
+          yesProb: polyM.probability ?? polyM.upProbability ?? polyM.yesProb,
+          priceToBeatNum: polyM.priceToBeatNum,
+          secondsToClose: polyM.secondsToClose,
+          depthImbalance: polyM.depthImbalance,
+        } : null,
+      }, { deep: !!ctx.deep || !!ctx.preContract, tier: ctx.tier || (ctx.preContract ? 'deep-insight' : undefined), model: ctx.model });
       if (asi1) {
         velocity = clamp(velocity * 0.55 + asi1.velocity * 0.45, -1, 1);
         narrative = asi1.narrative;
-        source = 'social+asi1-mini';
+        source = `social+${asi1.source}`;
       }
     }
 

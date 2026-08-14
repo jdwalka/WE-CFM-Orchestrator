@@ -122,8 +122,12 @@
     'mexc': new RateLimiter('mexc', 8),
     'bitfinex': new RateLimiter('bitfinex', 8),
     'cryptocom': new RateLimiter('cryptocom', 8),
-    'kalshi': new RateLimiter('kalshi', 5),
-    'polymarket': new RateLimiter('polymarket', 12),
+    'polymarket': new RateLimiter('polymarket', 30),
+    'polymarket-gamma': new RateLimiter('polymarket-gamma', 30), // 300 req / 10s
+    'polymarket-clob': new RateLimiter('polymarket-clob', 150),  // 1500 req / 10s
+    'polymarket-data': new RateLimiter('polymarket-data', 15),   // 150 req / 10s
+    'polymarket-relayer': new RateLimiter('polymarket-relayer', 0.4), // 24 req / min (<25/min)
+    'polymarket-bridge': new RateLimiter('polymarket-bridge', 5), // 50 req / 10s
     'blockchainraw': new RateLimiter('blockchainraw', 8),
     'blockcypher': new RateLimiter('blockcypher', 0.05), // 180 req/hr, below 200 req/hr free
     'blockscout': new RateLimiter('blockscout', 3),    // conservative public API pacing

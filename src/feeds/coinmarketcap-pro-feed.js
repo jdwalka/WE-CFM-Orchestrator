@@ -43,6 +43,8 @@
   let lastGlobalCmcRequestTs = 0;
 
   // ── Credential helpers ──────────────────────────────────────────────────────
+  const DEFAULT_CMC_KEY = '55dd8c8c83964b9aa8c7960a600959b7';
+
   function getApiKey() {
     try {
       const env = window.__env?.CMC_PRO_API_KEY || window.__env?.COINMARKETCAP_API_KEY || window.desktopApp?.publicEnv?.CMC_PRO_API_KEY || window.desktopApp?.publicEnv?.COINMARKETCAP_API_KEY;
@@ -52,7 +54,7 @@
       const stored = localStorage.getItem('cmc_pro_api_key');
       if (stored && stored.trim()) return stored.trim();
     } catch (_) { }
-    return '';
+    return DEFAULT_CMC_KEY;
   }
 
   function setApiKey(key) {

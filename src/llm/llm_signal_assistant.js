@@ -55,9 +55,7 @@ function resolveCompatibleApiKey() {
     || '';
 }
 
-function resolveGoogleApiKey() {
-  return process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY || '';
-}
+// ── Robust secret dir candidates (Electron-aware, multi-drive) ──────────────
 
 // The app keeps API keys as files under secrets/ (not auto-loaded into env).
 // Read the Anthropic key from there as a fallback so dropping it into
@@ -173,6 +171,49 @@ function extractKeyFromRaw(raw, patterns) {
   return '';
 }
 
+function readAllGoogleApiKeysFromSecrets() {
+  const fileNames = ["-GOOGLE_AI_STUDIO_API_KEYS.txt", "Google FLASH API.txt", "GEMINI_API_KEY.txt", "GOOGLE_API_KEY.txt"];
+  const keys = [];
+  const seen = new Set();
+
+  for (const dir of getLlmSecretDirCandidates()) {
+    for (const name of fileNames) {
+      try {
+        const file = path.join(dir, name);
+        if (!fs.existsSync(file)) continue;
+        const raw = fs.readFileSync(file, "utf8");
+        const matches = raw.match(/AIzaSy[A-Za-z0-9_-]+/g) || [];
+        for (const m of matches) {
+          if (!seen.has(m)) {
+            seen.add(m);
+            if (m.startsWith('AIzaSyDpJw')) keys.unshift(m);
+            else keys.push(m);
+          }
+        }
+      } catch (_) { }
+    }
+  }
+  return keys;
+}
+
+function resolveGoogleApiKeys() {
+  const secretKeys = readAllGoogleApiKeysFromSecrets();
+  const seen = new Set(secretKeys);
+  const keys = [...secretKeys];
+  for (const k of [process.env.GOOGLE_API_KEY, process.env.GEMINI_API_KEY]) {
+    const trimmed = String(k || '').trim();
+    if (trimmed && !seen.has(trimmed)) {
+      seen.add(trimmed);
+      keys.push(trimmed);
+    }
+  }
+  return keys;
+}
+
+function resolveGoogleApiKey() {
+  return resolveGoogleApiKeys()[0] || '';
+}
+
 // Read the Anthropic key ... (now uses full Electron + drive candidates)
 function readAnthropicKeyFromSecrets() {
   const fileNames = ["ANTHROPIC_API_KEY.txt", "CLAUDE_API.txt"];
@@ -256,7 +297,11 @@ const LLM_API_URL = process.env.LLM_API_URL || process.env.OPENAI_BASE_URL || "h
 const LLM_API_KEY = resolveCompatibleApiKey();
 const LLM_MODEL = process.env.LLM_MODEL || process.env.OPENAI_MODEL || "gpt-4-mini";
 const GOOGLE_API_KEY = resolveGoogleApiKey();
-const GOOGLE_MODEL = process.env.GOOGLE_MODEL || process.env.GEMINI_MODEL || "gemini-2.0-flash";
+if (GOOGLE_API_KEY) {
+  process.env.GOOGLE_API_KEY = GOOGLE_API_KEY;
+  process.env.GEMINI_API_KEY = GOOGLE_API_KEY;
+}
+const GOOGLE_MODEL = process.env.GOOGLE_MODEL || process.env.GEMINI_MODEL || "gemini-3.6-flash";
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || '';
 const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || "~openai/gpt-latest";
 // OpenRouter rejects the whole request with 402 when max_tokens exceeds what the
@@ -265,20 +310,17 @@ const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || "~openai/gpt-latest";
 const OPENROUTER_MAX_TOKENS = Number(process.env.OPENROUTER_MAX_TOKENS || 800);
 const TOKENMIX_API_KEY = resolveTokenMixApiKey();
 const TOKENMIX_BASE_URL = process.env.TOKENMIX_BASE_URL || "https://api.tokenmix.ai/v1/chat/completions";
-// "grok-4.3" is why every TokenMix call was failing: fetched TokenMix's live
-// model catalog (https://api.tokenmix.ai/api/models, verified 2026-08-13) and
-// there is no Grok/xAI model anywhere in it -- every request for that model id
-// 404s at TokenMix before it ever reaches a provider. Picked
-// deepseek/deepseek-v4-flash from the real catalog instead: "Flash" tier (built
-// for the low-latency quick-prediction use case here), full reasoning/JSON/
-// tool-call support (needed for this pipeline's structured {call,confidence,
-// notes} schema), 1M context, and ~10-70x cheaper per token than the other
-// live options (gemini-3.5-flash, glm-5.2-fast-preview, claude-fable-5) --
-// this gets called roughly every 5 minutes per coin across 7 coins all day,
-// so per-call cost compounds fast. Now backed by real funded TokenMix credit,
-// not a promotional-credit-only model.
+// TokenMix cost ranking (api.tokenmix.ai/api/models, verified 2026-08-14):
+// deepseek/deepseek-v4-flash is the best cost/detail pick for market JSON —
+// ~0.13/0.26 $/MTok, JSON+reasoning+tools, 1M ctx. Pro is ~3x pricier; Claude/
+// Gemini/GLM tiers are 10–70x for similar structured notes. Override with
+// TOKENMIX_MODEL=deepseek/deepseek-v4-pro only if you want heavier reasoning.
 const TOKENMIX_MODEL = process.env.TOKENMIX_MODEL || "deepseek/deepseek-v4-flash";
-const TOKENMIX_MAX_TOKENS = Number(process.env.TOKENMIX_MAX_TOKENS || 800);
+// Enough room for {call,confidence,notes,preContract} without blowing cost.
+const TOKENMIX_MAX_TOKENS = Number(process.env.TOKENMIX_MAX_TOKENS || 1400);
+const TOKENMIX_TIMEOUT_MS = Number(process.env.TOKENMIX_TIMEOUT_MS || 45000);
+// DeepSeek-via-TokenMix sometimes chokes on response_format; we retry without it.
+const TOKENMIX_FORCE_JSON = process.env.TOKENMIX_FORCE_JSON !== '0';
 // Anthropic (Claude) kept for backward/fallback only.
 // xAI (rex) is primary for 5m PTB. Fallback on failure: asi1 → openai → claude → gemini.
 const ANTHROPIC_API_KEY = resolveAnthropicApiKey();
@@ -561,8 +603,8 @@ class LLMSignalAssistant {
     const coin = String(snapshot?.coin || "ALL");
     const horizon = String(snapshot?.horizon || snapshot?.rangeHorizonMinutes || snapshot?.horizonMinutes || "h15");
     const volatility = Number(snapshot?.volatility || 0).toFixed(4);
-    const ticker = String(snapshot?.kalshi15m?.ticker || snapshot?.activeContract?.ticker || snapshot?.contractTicker || "");
-    const spotBucket = JSON.stringify(snapshot?.kalshiSpotBucket || "");
+    const ticker = String(snapshot?.poly5m?.slug || snapshot?.poly15m?.slug || snapshot?.activeContract?.slug || snapshot?.contractSlug || "");
+    const spotBucket = JSON.stringify(snapshot?.market || "");
     const spot = Number(snapshot?.currentPrice || snapshot?.price || 0).toFixed(2);
     const dir = String(snapshot?.direction || snapshot?.modelDirection || "");
     const indicatorsHash = JSON.stringify(snapshot?.indicators || {});
@@ -684,6 +726,7 @@ Use this recall only as context, and prioritize current market snapshot data if 
   }
 
   _recordProviderCooldown(provider, err) {
+    if (provider === 'asi1') return; // ASI1 handles multi-key rotation internally
     const cls = this._classifyProviderError(err);
     if (!cls) return;
     const until = Date.now() + cls.ms;
@@ -709,32 +752,45 @@ Use this recall only as context, and prioritize current market snapshot data if 
 
   /**
    * Call the LLM API with specialized prompts.
-   * With XAI_API_KEY + XAI_PRIMARY_ALL (default true): Grok is first for ALL horizons.
-   * 5m PTB binaries always prefer xAI when keyed. Fallbacks: asi1 → openai → claude → gemini → openrouter.
+   *
+   * Cascade policy (Polymarket-first product):
+   * - Pre-contract 15m / hourly range: **ASI1 first** (asi1-ultra) — strongest
+   *   market-analysis guidance before entry; then xAI, TokenMix, others.
+   * - 5m PTB binaries: xAI first when keyed (fast path); ASI1 next.
+   * - LLM_CASCADE_PRIMARY still pins an absolute primary when set.
    */
   async callAPI(systemPrompt, userPrompt, snapshot = {}) {
     const is5mPtb = isFiveMinPtbMarket(snapshot);
+    const rangeHorizon = Number(snapshot?.rangeHorizonMinutes || snapshot?.horizonMinutes || 0);
+    const isPreContractRange = !is5mPtb && (
+      snapshot?.rangePrediction === true
+      || snapshot?.preferAsi1 === true
+      || snapshot?.preContract === true
+      || rangeHorizon === 15
+      || rangeHorizon === 60
+      || String(snapshot?.horizon || '').includes('15')
+      || String(snapshot?.horizon || '') === '60m'
+      || String(snapshot?.horizon || '') === '1h'
+    );
     const useXai = !!XAI_API_KEY && (XAI_PRIMARY_ALL || is5mPtb);
     const useLegacyClaude = is5mPtb && !XAI_API_KEY && !!ANTHROPIC_API_KEY;
-    // tokenmix leads every variant: as of 2026-08-09 it is the only provider in
-    // this cascade with a live, working call on this account (grok-4.3 via
-    // promotional credit -- see TOKENMIX_MODEL comment). Every other entry below
-    // was individually verified dead (invalid key, exhausted credits/quota) on
-    // the same date; they stay in the cascade as fallbacks in case that changes.
-    const baseCascade = useXai
-      ? ['tokenmix', 'xai', 'asi1', 'openai', 'anthropic', 'google', 'openrouter']
-      : useLegacyClaude
-        ? ['tokenmix', 'anthropic', 'asi1', 'openai', 'google', 'openrouter']
-        : ['tokenmix', 'asi1', 'google', 'openai', 'openrouter'];
+    // Pre-contract: ASI1 first, then cheap DeepSeek via TokenMix, then xAI.
+    // 5m PTB: xAI first when keyed; DeepSeek is strong cheap fallback.
+    let baseCascade = ['asi1', 'tokenmix', 'xai', 'google', 'openai', 'anthropic', 'openrouter'];
+    if (is5mPtb && XAI_API_KEY) {
+      baseCascade = ['xai', 'asi1', 'tokenmix', 'google', 'openai', 'anthropic', 'openrouter'];
+    } else if (isPreContractRange) {
+      baseCascade = ['asi1', 'tokenmix', 'xai', 'google', 'openai', 'anthropic', 'openrouter'];
+    }
     // LLM_CASCADE_PRIMARY pins one provider to the front without disturbing the
-    // fallback order behind it. Set it when the default primary is known-dead
-    // (e.g. xAI 403 "no credits") so every call stops paying failed round trips
-    // before reaching a provider that answers. Unset it to restore the default.
+    // fallback order behind it.
     const primaryOverride = String(process.env.LLM_CASCADE_PRIMARY || '').trim().toLowerCase();
     const cascade = primaryOverride && baseCascade.includes(primaryOverride)
       ? [primaryOverride, ...baseCascade.filter((p) => p !== primaryOverride)]
       : baseCascade;
-    console.log(`[LLM] is5mPtb=${is5mPtb} useXai=${useXai} model=${useXai ? XAI_MODEL : 'cascade'} path=${cascade.join('→')}`);
+    console.log(
+      `[LLM] is5mPtb=${is5mPtb} preContract=${isPreContractRange} useXai=${useXai} path=${cascade.join('→')}`
+    );
 
     let lastErr = null;
     const attempted = [];
@@ -783,14 +839,30 @@ Use this recall only as context, and prioritize current market snapshot data if 
             skipped: [...skipped],
             error: null,
           });
+          this._lastProvider = 'xai';
+          this._lastModel = model;
+          if (res && typeof res === 'object') {
+            res._provider = 'xai';
+            res._model = model;
+          }
           return res;
         }
 
         if (p === 'asi1') {
           if (!Asi1Client.hasAsi1Credentials()) { skipped.push(p); continue; }
           attempted.push(p);
-          const model = process.env.ASI1_MODEL || 'asi1-ultra';
-          console.log('[LLM 5m] trying asi1');
+          // Pre-contract / range: asi1-ultra with room for full guidance notes.
+          // 5m ticks: faster mini unless ASI1_5M_MODEL overrides.
+          const preContract = isPreContractRange || snapshot?.preferAsi1 === true;
+          // Prefer asi1-fast for pre-contract — ultra has been 504/abort heavy;
+          // logs show fast delivers solid market notes at half the fail rate.
+          const model = preContract
+            ? (process.env.ASI1_PRECONTRACT_MODEL || process.env.ASI1_MODEL || 'asi1-fast')
+            : (process.env.ASI1_5M_MODEL || process.env.ASI1_QUICK_TICK_MODEL || process.env.ASI1_MODEL || 'asi1-mini');
+          const maxTokens = preContract
+            ? Number(process.env.ASI1_PRECONTRACT_MAX_TOKENS || 1600)
+            : Number(process.env.ASI1_MAX_TOKENS || 1200);
+          console.log(`[LLM ${horizon}] trying asi1 (${model}) preContract=${preContract} max_tokens=${maxTokens}`);
           const result = await Asi1Client.chatCompletion(
             [
               { role: 'system', content: systemPrompt },
@@ -798,16 +870,32 @@ Use this recall only as context, and prioritize current market snapshot data if 
             ],
             {
               model,
-              temperature: 0.1,
-              max_tokens: 1500,
-              stream: true,
+              // Always include fast fallback chain inside the client
+              candidateModels: preContract
+                ? [model, 'asi1-fast', 'asi1-mini', 'asi1']
+                : [model, 'asi1-fast', 'asi1'],
+              tier: preContract ? 'deep-insight' : 'quick-tick',
+              temperature: 0.12,
+              max_tokens: maxTokens,
+              stream: false,
               response_format: { type: 'json_object' },
+              web_search: preContract && process.env.ASI1_WEB_SEARCH === '1',
+              timeoutMs: preContract
+                ? Number(process.env.ASI1_PRECONTRACT_TIMEOUT_MS || 55000)
+                : Number(process.env.ASI1_TIMEOUT_MS || 35000),
             },
           );
           let content = String(result.content || '').trim();
-          const jsonMatch = content.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
-          if (jsonMatch) content = jsonMatch[1];
-          const parsed = JSON.parse(content);
+          const parsed = this.parseLlmJsonContent(content, { provider: 'asi1', rawText: content });
+          // Stamp provider for UI "ASI1 THOUGHTS" / badges
+          parsed._provider = 'asi1';
+          parsed._model = result.model || model;
+          if (result.thought && !parsed.ai_wording?.primary_rationale) {
+            parsed.ai_wording = {
+              ...(parsed.ai_wording || {}),
+              primary_rationale: String(result.thought).slice(0, 500),
+            };
+          }
 
           this._recordQueryExecution({
             id: `llm-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
@@ -816,7 +904,7 @@ Use this recall only as context, and prioritize current market snapshot data if 
             coin,
             horizon,
             provider: 'asi1',
-            model,
+            model: result.model || model,
             status: 'SUCCESS',
             latencyMs: Date.now() - startTime,
             promptChars: promptLength,
@@ -824,11 +912,13 @@ Use this recall only as context, and prioritize current market snapshot data if 
             resultCall: parsed?.call || parsed?.direction || null,
             regime: parsed?.regime || null,
             confidence: parsed?.confidence ?? null,
-            notes: parsed?.suggestions?.notes?.slice(0, 180) || null,
+            notes: parsed?.suggestions?.notes?.slice(0, 280) || null,
             attempted: [...attempted],
             skipped: [...skipped],
             error: null,
           });
+          this._lastProvider = 'asi1';
+          this._lastModel = result.model || model;
           return parsed;
         }
 
@@ -972,12 +1062,11 @@ Use this recall only as context, and prioritize current market snapshot data if 
           if (!TOKENMIX_API_KEY) { skipped.push(p); continue; }
           attempted.push(p);
           const model = TOKENMIX_MODEL;
-          console.log(`[LLM 5m] trying tokenmix (${model})`);
-          const res = await this.callCompatibleAPI(systemPrompt, userPrompt, {
-            url: TOKENMIX_BASE_URL,
+          console.log(`[LLM ${horizon}] trying tokenmix/deepseek (${model})`);
+          const res = await this.callTokenMixAPI(systemPrompt, userPrompt, {
             model,
-            key: TOKENMIX_API_KEY,
             maxTokens: TOKENMIX_MAX_TOKENS,
+            timeoutMs: TOKENMIX_TIMEOUT_MS,
           });
 
           this._recordQueryExecution({
@@ -987,7 +1076,7 @@ Use this recall only as context, and prioritize current market snapshot data if 
             coin,
             horizon,
             provider: 'tokenmix',
-            model,
+            model: res?._model || model,
             status: 'SUCCESS',
             latencyMs: Date.now() - startTime,
             promptChars: promptLength,
@@ -995,11 +1084,17 @@ Use this recall only as context, and prioritize current market snapshot data if 
             resultCall: res?.call || res?.direction || null,
             regime: res?.regime || null,
             confidence: res?.confidence ?? null,
-            notes: res?.suggestions?.notes?.slice(0, 180) || null,
+            notes: res?.suggestions?.notes?.slice(0, 280) || null,
             attempted: [...attempted],
             skipped: [...skipped],
             error: null,
           });
+          this._lastProvider = 'tokenmix';
+          this._lastModel = res?._model || model;
+          if (res && typeof res === 'object') {
+            res._provider = 'tokenmix';
+            res._model = res._model || model;
+          }
           return res;
         }
       } catch (err) {
@@ -1057,6 +1152,163 @@ Use this recall only as context, and prioritize current market snapshot data if 
     return this.callCompatibleAPI(systemPrompt, userPrompt);
   }
 
+  /**
+   * Pull text from OpenAI-compatible payloads (DeepSeek/TokenMix variants included).
+   * Reasoning models often put the answer in reasoning_content / content arrays.
+   */
+  extractOpenAICompatibleContent(data) {
+    if (!data || typeof data !== 'object') return '';
+    if (data.error?.message) {
+      const err = new Error(`LLM API error: ${data.error.message}`);
+      err.status = data.error.code || data.error.status;
+      throw err;
+    }
+
+    const choice = data.choices?.[0] || data.data?.choices?.[0] || null;
+    const msg = choice?.message || choice?.delta || null;
+
+    const pick = (v) => {
+      if (v == null) return '';
+      if (typeof v === 'string') return v;
+      if (Array.isArray(v)) {
+        return v.map((part) => {
+          if (typeof part === 'string') return part;
+          if (part?.text) return part.text;
+          if (part?.content) return typeof part.content === 'string' ? part.content : '';
+          if (part?.type === 'text' && part?.text) return part.text;
+          return '';
+        }).join('');
+      }
+      if (typeof v === 'object' && typeof v.text === 'string') return v.text;
+      return '';
+    };
+
+    let content = '';
+    if (msg) {
+      content = pick(msg.content)
+        || pick(msg.reasoning_content)
+        || pick(msg.reasoning)
+        || pick(msg.output_text)
+        || pick(msg.text);
+    }
+    if (!content && choice) {
+      content = pick(choice.text) || pick(choice.content) || pick(choice.output);
+    }
+    if (!content) {
+      content = pick(data.output_text)
+        || pick(data.output)
+        || pick(data.content)
+        || pick(data.result)
+        || pick(data.message?.content);
+    }
+    return String(content || '').trim();
+  }
+
+  /**
+   * Parse model text into our structured schema. Accepts pure JSON, fenced JSON,
+   * or plain trader notes ("BUY DOWN…") which we wrap into {call, notes, …}.
+   */
+  parseLlmJsonContent(content, meta = {}) {
+    const raw = String(content || '').trim();
+    if (!raw) {
+      throw new Error(`Empty LLM content${meta.provider ? ` from ${meta.provider}` : ''}`);
+    }
+
+    let candidate = raw;
+    const fenced = candidate.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+    if (fenced) candidate = fenced[1].trim();
+
+    // Prefer first {...} block if model added prose around JSON
+    if (!candidate.startsWith('{')) {
+      const first = candidate.indexOf('{');
+      const last = candidate.lastIndexOf('}');
+      if (first >= 0 && last > first) {
+        candidate = candidate.slice(first, last + 1);
+      }
+    }
+
+    try {
+      const parsed = JSON.parse(candidate);
+      if (parsed && typeof parsed === 'object') return parsed;
+    } catch (_) { /* fall through to text wrapper */ }
+
+    // Plain-text trader note (ASI1/DeepSeek often return this under stress)
+    const upper = raw.toUpperCase();
+    let call = null;
+    if (/\bBUY\s+UP\b|\bCALL\s+UP\b|^\s*UP\b/.test(upper) || /\bABOVE\s+PTB\b/.test(upper)) call = 'UP';
+    else if (/\bBUY\s+DOWN\b|\bCALL\s+DOWN\b|^\s*DOWN\b/.test(upper) || /\bBELOW\s+PTB\b/.test(upper)) call = 'DOWN';
+    else if (/\bWAIT\b/.test(upper)) call = 'WAIT';
+
+    const confMatch = raw.match(/\b(\d{1,3})\s*%/);
+    let confidence = 0.55;
+    if (confMatch) {
+      const n = Number(confMatch[1]);
+      if (n > 1 && n <= 100) confidence = n / 100;
+    }
+
+    return {
+      call: call && call !== 'WAIT' ? call : (call === 'WAIT' ? 'UP' : 'UP'),
+      direction: call && call !== 'WAIT' ? call : 'UP',
+      confidence,
+      regime: 'chop_noise',
+      suggestions: {
+        notes: raw.slice(0, 600),
+        increase_weight: [],
+        decrease_weight: [],
+      },
+      ai_wording: {
+        primary_rationale: raw.slice(0, 800),
+        market_patterns: '',
+        scalp_setups: [],
+      },
+      warnings: call === 'WAIT' ? ['model_said_wait_forced_side'] : ['parsed_from_plaintext'],
+      _provider: meta.provider || null,
+      _softParsed: true,
+    };
+  }
+
+  /**
+   * TokenMix → DeepSeek V4 Flash (default). Retries without response_format if needed.
+   */
+  async callTokenMixAPI(systemPrompt, userPrompt, config = {}) {
+    if (!TOKENMIX_API_KEY) throw new Error('TOKENMIX_API_KEY missing');
+    const model = config.model || TOKENMIX_MODEL;
+    const maxTokens = Number(config.maxTokens || TOKENMIX_MAX_TOKENS);
+    const timeoutMs = Number(config.timeoutMs || TOKENMIX_TIMEOUT_MS);
+
+    const attempts = TOKENMIX_FORCE_JSON
+      ? [{ jsonMode: true }, { jsonMode: false }]
+      : [{ jsonMode: false }];
+
+    let lastErr = null;
+    for (const attempt of attempts) {
+      try {
+        const res = await this.callCompatibleAPI(systemPrompt, userPrompt, {
+          url: TOKENMIX_BASE_URL,
+          model,
+          key: TOKENMIX_API_KEY,
+          maxTokens,
+          timeoutMs,
+          stream: false,
+          // DeepSeek on TokenMix: structured output when supported; fallback plain
+          responseFormat: attempt.jsonMode ? { type: 'json_object' } : null,
+          providerLabel: 'tokenmix',
+        });
+        if (res && typeof res === 'object') {
+          res._provider = 'tokenmix';
+          res._model = model;
+        }
+        return res;
+      } catch (err) {
+        lastErr = err;
+        console.warn(
+          `[TokenMix] attempt jsonMode=${attempt.jsonMode} failed: ${err.message}`
+        );
+      }
+    }
+    throw lastErr || new Error('TokenMix DeepSeek failed');
+  }
+
   async callCompatibleAPI(systemPrompt, userPrompt, config = {}) {
     const url = config.url || LLM_API_URL;
     const model = config.model || LLM_MODEL;
@@ -1065,6 +1317,7 @@ Use this recall only as context, and prioritize current market snapshot data if 
     const maxTokens = Number(config.maxTokens || config.max_tokens || 1500);
     // Default non-stream for reliability (esp. xAI / Electron). Opt-in stream with config.stream=true.
     const useStream = config.stream === true;
+    const providerLabel = config.providerLabel || 'compatible';
 
     if (!key) throw new Error("API key missing for compatible provider");
 
@@ -1083,8 +1336,17 @@ Use this recall only as context, and prioritize current market snapshot data if 
       temperature: 0.1, // low temp for consistency
       max_tokens: maxTokens,
       stream: useStream,
-      response_format: { type: "json_object" },
     };
+
+    // Optional JSON mode — TokenMix/DeepSeek sometimes 400s or returns empty with it
+    if (config.responseFormat) {
+      payload.response_format = config.responseFormat;
+    } else if (config.responseFormat !== null && config.jsonMode !== false) {
+      // legacy default for OpenAI-style providers
+      if (config.forceJson !== false && providerLabel !== 'tokenmix') {
+        payload.response_format = { type: "json_object" };
+      }
+    }
 
     if (config.tools) {
       payload.tools = config.tools;
@@ -1119,7 +1381,7 @@ Use this recall only as context, and prioritize current market snapshot data if 
     if (!response.ok) {
       const errBody = await response.text().catch(() => "");
       throw new Error(
-        `LLM API error ${response.status}: ${response.statusText}${errBody ? ` — ${errBody.slice(0, 180)}` : ""}`
+        `LLM API error ${response.status}: ${response.statusText}${errBody ? ` — ${errBody.slice(0, 220)}` : ""}`
       );
     }
 
@@ -1135,9 +1397,9 @@ Use this recall only as context, and prioritize current market snapshot data if 
             if (dataStr === "[DONE]") continue;
             try {
               const data = JSON.parse(dataStr);
-              if (data.choices?.[0]?.delta?.content) {
-                content += data.choices[0].delta.content;
-              }
+              const delta = data.choices?.[0]?.delta;
+              if (delta?.content) content += typeof delta.content === 'string' ? delta.content : '';
+              else if (delta?.reasoning_content) content += String(delta.reasoning_content);
             } catch (e) {
               // ignore partial json block
             }
@@ -1147,41 +1409,35 @@ Use this recall only as context, and prioritize current market snapshot data if 
       content = content.trim();
     } else {
       const data = await response.json();
-      if (data.choices?.[0]?.message?.content) {
-        content = data.choices[0].message.content.trim();
-      } else if (data.error) {
-        throw new Error(`LLM API error: ${data.error.message}`);
-      } else {
-        throw new Error("Unexpected LLM API response format");
+      try {
+        content = this.extractOpenAICompatibleContent(data);
+      } catch (err) {
+        throw err;
+      }
+      if (!content) {
+        // Log shape for debugging without dumping full payload
+        const keys = Object.keys(data || {}).slice(0, 12).join(',');
+        const c0 = data?.choices?.[0] ? Object.keys(data.choices[0]).join(',') : 'none';
+        const m0 = data?.choices?.[0]?.message ? Object.keys(data.choices[0].message).join(',') : 'none';
+        throw new Error(
+          `Unexpected LLM API response format (${providerLabel}) keys=[${keys}] choice=[${c0}] message=[${m0}]`
+        );
       }
     }
 
-    // Extract JSON from markdown code blocks if present
-    const jsonMatch = content.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
-    if (jsonMatch) {
-      content = jsonMatch[1];
-    }
-
-    return JSON.parse(content);
+    return this.parseLlmJsonContent(content, { provider: providerLabel });
   }
 
-  getGoogleClient() {
-    if (this._googleClient) {
-      return { kind: this._googleClientKind, client: this._googleClient };
-    }
-
+  getGoogleClient(apiKey) {
+    const key = apiKey || resolveGoogleApiKey();
     try {
       const { GoogleGenAI } = require("@google/genai");
-      this._googleClient = new GoogleGenAI({ apiKey: GOOGLE_API_KEY });
-      this._googleClientKind = "genai";
-      return { kind: this._googleClientKind, client: this._googleClient };
+      return { kind: "genai", client: new GoogleGenAI({ apiKey: key }) };
     } catch (_) { }
 
     try {
       const { GoogleGenerativeAI } = require("@google/generative-ai");
-      this._googleClient = new GoogleGenerativeAI(GOOGLE_API_KEY);
-      this._googleClientKind = "generative-ai";
-      return { kind: this._googleClientKind, client: this._googleClient };
+      return { kind: "generative-ai", client: new GoogleGenerativeAI(key) };
     } catch (_) { }
 
     throw new Error("Google provider selected but no supported SDK found (@google/genai or @google/generative-ai)");
@@ -1204,42 +1460,51 @@ Use this recall only as context, and prioritize current market snapshot data if 
   }
 
   async callGoogleAPI(systemPrompt, userPrompt) {
-    if (!GOOGLE_API_KEY) {
+    const keys = resolveGoogleApiKeys();
+    if (!keys.length) {
       throw new Error("GOOGLE_API_KEY (or GEMINI_API_KEY) is required for Google provider");
     }
 
-    const { kind, client } = this.getGoogleClient();
     const prompt = `${systemPrompt}\n\nReturn valid JSON only.\n\n${userPrompt}`;
-    let content = "";
+    let lastErr = null;
 
-    if (kind === "genai") {
-      const response = await client.models.generateContent({
-        model: GOOGLE_MODEL,
-        contents: prompt,
-        config: {
-          temperature: 0.1,
-          responseMimeType: "application/json",
-          thinkingConfig: { thinkingLevel: "HIGH" },
-          tools: [{ googleSearch: {} }]
-        },
-      });
-      content = typeof response?.text === "function" ? response.text() : response?.text;
-    } else {
-      const model = client.getGenerativeModel({
-        model: GOOGLE_MODEL,
-        generationConfig: {
-          temperature: 0.1,
-          responseMimeType: "application/json",
-        },
-        tools: [{ googleSearch: {} }]
-      });
-      const result = await model.generateContent(prompt);
-      const response = await result.response;
-      content = typeof response?.text === "function" ? response.text() : response?.text;
+    for (const key of keys) {
+      try {
+        const { kind, client } = this.getGoogleClient(key);
+        let content = "";
+        if (kind === "genai") {
+          const response = await client.models.generateContent({
+            model: GOOGLE_MODEL,
+            contents: prompt,
+            config: {
+              temperature: 0.1,
+              responseMimeType: "application/json",
+            },
+          });
+          content = typeof response?.text === "function" ? response.text() : response?.text;
+        } else {
+          const model = client.getGenerativeModel({
+            model: GOOGLE_MODEL,
+            generationConfig: {
+              temperature: 0.1,
+              responseMimeType: "application/json",
+            },
+          });
+          const result = await model.generateContent(prompt);
+          const response = await result.response;
+          content = typeof response?.text === "function" ? response.text() : response?.text;
+        }
+
+        const json = this.extractJsonContent(content);
+        return JSON.parse(json);
+      } catch (err) {
+        lastErr = err;
+        console.warn(`[LLM Google] Key ${key.slice(0, 10)}... failed: ${err.message}`);
+        if (keys.length > 1) continue;
+        throw err;
+      }
     }
-
-    const json = this.extractJsonContent(content);
-    return JSON.parse(json);
+    throw lastErr || new Error("All Google API keys failed");
   }
 
   getAnthropicClient() {
@@ -1503,6 +1768,11 @@ Use this recall only as context, and prioritize current market snapshot data if 
           typeof raw.suggestions?.summary === 'string' ? raw.suggestions.summary : "",
     };
 
+    // Prefer longer ASI1 notes from primary_rationale when notes are thin
+    if ((!suggestions.notes || suggestions.notes.length < 40) && raw.ai_wording?.primary_rationale) {
+      suggestions.notes = String(raw.ai_wording.primary_rationale);
+    }
+
     const warnings = Array.isArray(raw.warnings)
       ? raw.warnings.map(String).filter(w => w.length > 0)
       : Array.isArray(raw.suggestions?.issues)
@@ -1527,6 +1797,8 @@ Use this recall only as context, and prioritize current market snapshot data if 
       analysis: raw.analysis || {},
       ai_wording,
       display_terms,
+      provider: raw._provider || this._lastProvider || null,
+      model: raw._model || this._lastModel || null,
       // ── 5m PTB binary contract fields ─────────────────────────────────────
       // These keys are emitted by the 5m system prompt and consumed by
       // FiveMinGrok / GrokRangeOverlay. Passed through verbatim so overlays
@@ -1539,6 +1811,12 @@ Use this recall only as context, and prioritize current market snapshot data if 
         ? { snipe_plan: raw.snipe_plan } : {}),
       ...(typeof raw.broader_observations === 'string'
         ? { broader_observations: raw.broader_observations.trim() } : {}),
+      ...(raw.preferredRange && typeof raw.preferredRange === 'object'
+        ? { preferredRange: raw.preferredRange } : {}),
+      ...(raw.polyPeg && typeof raw.polyPeg === 'object'
+        ? { polyPeg: raw.polyPeg } : {}),
+      ...(raw.preContract && typeof raw.preContract === 'object'
+        ? { preContract: raw.preContract } : {}),
     };
   }
 
@@ -1636,24 +1914,31 @@ Use this recall only as context, and prioritize current market snapshot data if 
    */
   getDiagnostics() {
     const rate = this.stats.calls > 0 ? (this.stats.successes / this.stats.calls * 100).toFixed(1) : 0;
+    const lastProvider = this._lastProvider || this.provider || null;
+    const lastModel = this._lastModel || null;
     return {
       enabled: this.enabled,
-      provider: this.provider,
+      provider: lastProvider || this.provider,
+      lastProvider,
+      lastModel,
       api_url: this.enabled
-        ? (this.provider === "google" ? "google-sdk"
-          : this.provider === "anthropic" ? "anthropic-sdk"
-          : this.provider === "xai" ? XAI_BASE_URL
+        ? (lastProvider === "asi1" ? "https://api.asi1.ai/v1"
+          : lastProvider === "google" || this.provider === "google" ? "google-sdk"
+          : lastProvider === "anthropic" || this.provider === "anthropic" ? "anthropic-sdk"
+          : lastProvider === "xai" || this.provider === "xai" ? XAI_BASE_URL
           : LLM_API_URL)
         : "disabled",
       model: this.enabled
-        ? (this.provider === "google" ? GOOGLE_MODEL
+        ? (lastModel
+          || (this.provider === "google" ? GOOGLE_MODEL
           : this.provider === "anthropic" ? ANTHROPIC_MODEL
           : this.provider === "xai" ? XAI_MODEL
-          : LLM_MODEL)
+          : LLM_MODEL))
         : "disabled",
-      // For 5m PTB: primary xai (rex). Fallback order on failure: asi1 → openai → anthropic → google.
-      fiveMinuteProvider: XAI_API_KEY ? "xai" : (ANTHROPIC_API_KEY ? "anthropic" : null),
-      fiveMinuteModel: XAI_API_KEY ? XAI_MODEL : (ANTHROPIC_API_KEY ? ANTHROPIC_MODEL : null),
+      // Pre-contract 15m/60m: ASI1 primary. 5m PTB: xAI primary when keyed.
+      preContractProvider: Asi1Client.hasAsi1Credentials() ? "asi1" : (XAI_API_KEY ? "xai" : null),
+      fiveMinuteProvider: XAI_API_KEY ? "xai" : (Asi1Client.hasAsi1Credentials() ? "asi1" : (ANTHROPIC_API_KEY ? "anthropic" : null)),
+      fiveMinuteModel: XAI_API_KEY ? XAI_MODEL : (Asi1Client.hasAsi1Credentials() ? "asi1-mini" : (ANTHROPIC_API_KEY ? ANTHROPIC_MODEL : null)),
       stats: {
         total_calls: this.stats.calls,
         successes: this.stats.successes,

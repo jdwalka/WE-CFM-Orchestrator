@@ -1,50 +1,76 @@
 // ================================================================
-// WE|||CRYPTO — 15M Market Resolver v1
+// WE|||CRYPTO — Polymarket 5M/15M Market Resolver v2
 //
-// Watches active Kalshi 15M market snapshots before expiry.
-// After close_time passes, polls Kalshi for the settled result.
-// Polymarket: resolved state detected via outcomePrices reaching 0/1.
+// Watches active Polymarket Up/Down market snapshots (5m + 15m) before
+// expiry. Settlements resolve via two paths (both write the same log):
+//
+//   1. PUSH (preferred): CLOB WS `market_resolved` → CustomEvent
+//      `polymarket:market_resolved` (emitted by polymarket-ws.js). Match
+//      pending by slug or conditionId and settle immediately.
+//   2. POLL (fallback): After close + grace, Gamma API by slug for
+//      outcomePrices (UMA-oracle-backed). Unchanged from v2 baseline.
+//
+// Idempotent by slug: each slug is recorded at most once (push vs poll
+// race cannot double-write). 5m and 15m share _15mResolutionLog (name is
+// historical; type field distinguishes horizons).
+//
+// Coinbase is used ONLY as a non-authoritative, informational sanity
+// note in the audit trail -- never as a resolution input. Polymarket's
+// crypto Up/Down markets resolve against a TWAP window (see Polymarket's
+// Chainlink TWAP feeds), not a raw spot tick, so a Coinbase candle can
+// legitimately disagree with the resolved outcome near a close boundary
+// without either being "wrong". Treat any CB/Pyth note here as macro
+// context, not a correctness check.
 //
 // Writes:
-//   window._15mResolutionLog — array of settled market outcomes
+//   window._15mResolutionLog — array of settled market outcomes (5m + 15m)
 //   window._resolutionMap    — sym → latest resolution (quick lookup)
 //
 // Dispatches:
-//   CustomEvent 'market15m:resolved' — { sym, outcome, modelCorrect, prob, pctMove }
+//   CustomEvent 'market15m:resolved' — { sym, outcome, type, slug,
+//     settlementAuthority, modelCorrect, ... }  (shape preserved for consumers)
 //
 // Used by:
 //   signal-router-cfm.js → buildOutcomeCalibration()
-//     Kalshi settlement data is 1.5× weighted vs candle log —
+//     Market-settled data is 1.5× weighted vs candle log —
 //     it is a clean external binary oracle, not intra-bar noise.
 //
-// Load order: after prediction-markets.js, before app.js
+// Companion (separate log, do not merge):
+//   poly5m-resolution-tracker.js grades model calls via chainlink candles
+//   into window._5mResolutionLog — candle-based, not Polymarket-oracle.
+//
+// Load order: after prediction-markets.js / polymarket-ws.js, before app.js
 // ================================================================
 
 (function () {
   'use strict';
 
-  const KALSHI_BASE = 'https://api.elections.kalshi.com/trade-api/v2';
   const POLY_GAMMA = 'https://gamma-api.polymarket.com';
   const CB_BASE = 'https://api.exchange.coinbase.com';
 
-  // Coinbase product IDs — used for post-settlement divergence diagnostics.
+  // Coinbase product IDs — used for post-settlement context notes only.
   const CB_PRODUCTS = {
     BTC: 'BTC-USD', ETH: 'ETH-USD', SOL: 'SOL-USD',
     XRP: 'XRP-USD', DOGE: 'DOGE-USD', BNB: 'BNB-USD', HYPE: 'HYPE-USD',
   };
 
   const LOG_MAX = 300;   // max entries in _15mResolutionLog
-  const SETTLE_GRACE = 120_000; // 2 min after close_time before we poll
+  const SETTLE_GRACE = 90_000;   // grace after close before first poll (UMA proposal can land within ~2min, but often takes longer)
   const POLL_INTERVAL = 60_000;  // poll for settlements every 60s
-  const MAX_PENDING = 50;      // max pending snapshots queued at once
+  const MAX_PENDING = 60;      // max pending snapshots queued at once (5m + 15m combined)
   const PERSIST_KEY = 'beta1_15m_resolution_log';
   const AUDIT_KEY = 'beta1_contract_audit';
   const AUDIT_MAX = 300;
+  const RESOLVED_THRESHOLD = 0.98; // outcomePrice at/above this (or at/below 1-this) counts as resolved
 
   // ── State ────────────────────────────────────────────────────────
-  // Pending: markets we've snapshotted and are waiting to settle
+  // Pending: markets we've snapshotted and are waiting to settle. Keyed by slug.
   const _pending = new Map();
+  // Slugs already written to _15mResolutionLog this session (push/poll dedupe).
+  // Seeded from persisted log so restarts also stay idempotent.
+  const _settledSlugs = new Set();
   let _pollTimer = null;
+  let _pushInFlight = new Set(); // slugs currently being finalized via push
 
   // Initialise global stores
   window._15mResolutionLog = window._15mResolutionLog || [];
@@ -55,6 +81,13 @@
   try { const s = localStorage.getItem(PERSIST_KEY); if (s) window._15mResolutionLog = JSON.parse(s); } catch (_) { }
   try { const s = localStorage.getItem(AUDIT_KEY); if (s) window._contractAuditLog = JSON.parse(s); } catch (_) { }
 
+  // Seed slug dedupe set from restored log (5m + 15m)
+  try {
+    for (const e of window._15mResolutionLog || []) {
+      if (e?.slug) _settledSlugs.add(e.slug);
+    }
+  } catch (_) { }
+
   function saveLog() {
     try { localStorage.setItem(PERSIST_KEY, JSON.stringify(window._15mResolutionLog.slice(-LOG_MAX))); } catch (_) { }
   }
@@ -63,9 +96,9 @@
   }
 
   // Per-contract audit trail — every snapshot, poll, settle, and error is recorded.
-  // Inspect via: KalshiDebug.audit(sym) or KalshiDebug.audit() for all entries.
-  function addAudit(ticker, event, data) {
-    window._contractAuditLog.push({ ticker, event, ts: Date.now(), tsIso: new Date().toISOString(), ...data });
+  // Inspect via: MarketDebug.audit(sym) or MarketDebug.audit() for all entries.
+  function addAudit(slug, event, data) {
+    window._contractAuditLog.push({ ticker: slug, slug, event, ts: Date.now(), tsIso: new Date().toISOString(), ...data });
     if (window._contractAuditLog.length > AUDIT_MAX) window._contractAuditLog.shift();
     saveAudit();
   }
@@ -103,31 +136,70 @@
       .catch(e => { clearTimeout(tid); throw e; });
   }
 
-  async function kalshiFetch(url) {
-    const tickerMatch = url.match(/\/markets\/([^/?]+)/);
-    const ticker = tickerMatch ? decodeURIComponent(tickerMatch[1]) : null;
-    if (ticker && window.EndpointTransport?.fetchKalshiMarket) {
-      const hit = await window.EndpointTransport.fetchKalshiMarket(ticker, {
-        endpoint: 'kalshi-settlement',
-        cacheType: 'settlement',
-      });
-      if (hit?.data) return hit.data;
-    }
+  async function gammaFetchJson(url, ms = 8000) {
     try {
-      const r = await fetchWithTimeout(url);
+      const r = await fetchWithTimeout(url, ms);
       if (!r.ok) return null;
-      return r.json();
+      return await r.json();
     } catch { return null; }
   }
 
-  // ── Coinbase settlement price ────────────────────────────────────
-  // Fetches the 1-min candle that covers the Kalshi close_time.
-  // CF Benchmarks = 60-second avg at T+15 → we want the close of the
-  // candle whose open is at closeTimeMs-60s.
-  async function fetchCoinbaseSettlement(sym, closeTimeMs) {
+  // Fetch the Polymarket Gamma market object for an exact known slug. This
+  // module stays self-contained (prediction-markets.js doesn't expose its
+  // internal slug-fetch helpers on window.PredictionMarkets), so it mirrors
+  // the same gamma markets?slug= / events?slug= fallback pattern locally.
+  async function fetchPolymarketMarketBySlug(slug) {
+    const byMarket = await gammaFetchJson(`${POLY_GAMMA}/markets?slug=${encodeURIComponent(slug)}`);
+    const marketsArr = Array.isArray(byMarket) ? byMarket : (Array.isArray(byMarket?.markets) ? byMarket.markets : []);
+    const direct = marketsArr.find(m => (m?.slug || m?.market_slug) === slug);
+    if (direct) return direct;
+
+    const byEvent = await gammaFetchJson(`${POLY_GAMMA}/events?slug=${encodeURIComponent(slug)}`);
+    const eventsArr = Array.isArray(byEvent) ? byEvent : (Array.isArray(byEvent?.events) ? byEvent.events : []);
+    for (const ev of eventsArr) {
+      const evMarkets = Array.isArray(ev?.markets) ? ev.markets : [];
+      const hit = evMarkets.find(m => (m?.slug || m?.market_slug) === slug);
+      if (hit) return hit;
+    }
+    return null;
+  }
+
+  // Parses a market's outcomes/outcomePrices (Gamma may return either as
+  // JSON-encoded strings or native arrays) and locates the "Up" side.
+  function _parseOutcomeArrays(m) {
+    let outcomes = m?.outcomes;
+    if (typeof outcomes === 'string') { try { outcomes = JSON.parse(outcomes); } catch { outcomes = null; } }
+    let prices = m?.outcomePrices;
+    if (typeof prices === 'string') { try { prices = JSON.parse(prices); } catch { prices = null; } }
+    if (!Array.isArray(outcomes) || !Array.isArray(prices) || !outcomes.length || outcomes.length !== prices.length) return null;
+    let upIndex = outcomes.findIndex(o => String(o || '').trim().toLowerCase() === 'up');
+    if (upIndex < 0) upIndex = 0; // fall back to index 0 if the market doesn't literally label "Up"/"Down"
+    return { outcomes, prices: prices.map(p => parseFloat(p)), upIndex };
+  }
+
+  // A Polymarket Up/Down market is resolved once trading has closed AND one
+  // side's price has settled at (or extremely close to) 1. There is no
+  // floor_price/strike_type to interpret here -- the resolved outcomePrices
+  // ARE the answer, straight from Polymarket's UMA-oracle-backed resolution.
+  function _resolveFromMarket(m) {
+    const parsed = _parseOutcomeArrays(m);
+    if (!parsed) return null;
+    const { prices, upIndex } = parsed;
+    const upPrice = prices[upIndex];
+    if (!Number.isFinite(upPrice)) return null;
+    const closed = m.closed === true || m.active === false;
+    const settled = closed && (upPrice >= RESOLVED_THRESHOLD || upPrice <= (1 - RESOLVED_THRESHOLD));
+    if (!settled) return null;
+    return { actualOutcome: upPrice >= RESOLVED_THRESHOLD ? 'UP' : 'DOWN', upPrice };
+  }
+
+  // ── Coinbase context (never authoritative) ────────────────────────
+  // Fetches the 1-min candle nearest the window close, purely as a macro/
+  // micro sanity note in the audit trail -- see the file header for why
+  // this can legitimately disagree with a TWAP-resolved outcome.
+  async function fetchCoinbaseContext(sym, closeTimeMs) {
     const product = CB_PRODUCTS[sym];
     if (!product) return null;
-    // Fetch a 2-candle window centred on close_time
     const endSec = Math.ceil(closeTimeMs / 1000) + 5;
     const startSec = endSec - 180;
     try {
@@ -137,7 +209,6 @@
       const candles = await r.json();
       if (!Array.isArray(candles) || !candles.length) return null;
       // candles: [[time, low, high, open, close, volume], ...] descending
-      // Find candle whose close_time (time+60s) is at or just after closeTimeMs
       const target = candles
         .map(c => ({ timeMs: c[0] * 1000, close: parseFloat(c[4]) }))
         .filter(c => c.timeMs <= closeTimeMs + 5_000)
@@ -147,93 +218,102 @@
   }
 
   // ── 1. SNAPSHOT CAPTURE ─────────────────────────────────────────
-  // Called on 'predictionmarketsready'. Captures active 15M markets
-  // as pending resolutions — we need to know what was predicted NOW
+  // Called on 'predictionmarketsready'. Captures active Polymarket 5m/15m
+  // windows as pending resolutions — we need to know what was predicted NOW
   // so we can evaluate correctness when the market settles.
 
-  function captureSnapshot(pmData) {
+  function _captureWindow(sym, coin, poly, type) {
+    if (!poly?.slug || !poly?.closeTime) return;
     const now = Date.now();
+    const closeMs = new Date(poly.closeTime).getTime();
+    if (!Number.isFinite(closeMs)) return;
+    // Skip windows already closed or closing within 20% of their own length (too late to track)
+    const minLeadMs = type === '5m' ? 60_000 : 90_000;
+    if (closeMs < now + minLeadMs) return;
+    if (_pending.has(poly.slug)) return;
+    // Already settled this slug (session or restored log) — never re-queue
+    if (_settledSlugs.has(poly.slug)) return;
+    if (window._15mResolutionLog?.some(e => e.slug === poly.slug)) {
+      _settledSlugs.add(poly.slug);
+      return;
+    }
+    if (_pending.size >= MAX_PENDING) {
+      const oldest = [..._pending.entries()].sort((a, b) => a[1].snapshotTs - b[1].snapshotTs)[0];
+      if (oldest) _pending.delete(oldest[0]);
+    }
 
+    const pred = window._lastPrediction?.[sym];
+    const intent = window.KalshiOrchestrator?.getIntent?.(sym) || null;
+    const modelDir = pred?.direction ?? null;
+    const entryProb = poly.probability ?? null;
+    const conditionId = poly.clobConditionId || poly.conditionId || poly.condition_id || null;
+    const tokenIds = Array.isArray(poly.clobTokenIds) ? poly.clobTokenIds.map(String) : [];
+
+    _pending.set(poly.slug, {
+      sym,
+      slug: poly.slug,
+      type,
+      snapshotTs: now,
+      closeTimeMs: closeMs,
+      entryProb,
+      modelDir,
+      title: poly.title ?? null,
+      priceToBeatNum: poly.priceToBeatNum ?? null,
+      priceToBeatSource: poly.priceToBeatSource ?? null,
+      conditionId,
+      tokenIds,
+      clobUpAssetId: poly.clobUpAssetId ? String(poly.clobUpAssetId) : (tokenIds[0] || null),
+      clobDownAssetId: poly.clobDownAssetId ? String(poly.clobDownAssetId) : (tokenIds[1] || null),
+      edgeCents: intent?.edgeCents ?? null,
+      entryPrice: intent?.entryPrice ?? null,
+      side: intent?.side ?? null,
+      modelProbUp: intent?.modelProbUp ?? null,
+      orchestratorAction: intent?.action ?? null,
+      orchestratorAlign: intent?.alignment ?? null,
+      closeSnapshots: [],
+      modelScore: window._lastPrediction?.[sym]?.score ?? null,
+      sweetSpot: intent?.sweetSpot ?? false,
+      confidence: intent?.confidence ?? null,
+      crowdFade: intent?.crowdFade ?? false,
+      crowdFadeDir: intent?.direction ?? null,
+      timingRegime: intent?.timingRegime ?? null,
+      timingLabel: intent?.timingLabel ?? null,
+      timingScore: intent?.timingScore ?? null,
+      timingReasons: intent?.timingReasons ?? [],
+      timingBlocks: intent?.timingBlocks ?? [],
+      timingAdaptive: intent?.timingAdaptive ?? null,
+      closeValue: intent?.closeValue ?? false,
+      closeValueCandidate: intent?.closeValueCandidate ?? false,
+      scalpFlip: intent?.scalpFlip ?? false,
+      scalpCandidate: intent?.scalpCandidate ?? false,
+      missedOpportunityScore: intent?.missedOpportunityScore ?? 0,
+      microFlowScore: intent?.microFlowScore ?? null,
+      scalpSetupScore: intent?.scalpSetupScore ?? null,
+      microToxicity: intent?.microToxicity ?? null,
+      exitPlan: intent?.exitPlan ?? null,
+    });
+
+    // Ensure CLOB WS is subscribed so market_resolved can arrive for this window
+    if (tokenIds.length && window.PolymarketWS?.subscribeAssets) {
+      try { window.PolymarketWS.subscribeAssets(tokenIds); } catch (_) { }
+    }
+
+    const secsToClose = Math.round((closeMs - now) / 1000);
+    addAudit(poly.slug, 'captured', {
+      sym, type, closeTime: poly.closeTime, secsToClose, entryProb, modelDir,
+      priceToBeatNum: poly.priceToBeatNum, title: poly.title, conditionId,
+    });
+    console.log(
+      `[Resolver] 📸 captured ${sym} ${type} ${poly.slug} | ` +
+      `closes in ${Math.floor(secsToClose / 60)}m${secsToClose % 60}s | ` +
+      `PTB=$${poly.priceToBeatNum ?? 'pending'} prob=${entryProb != null ? (entryProb * 100).toFixed(0) + '%' : 'n/a'} model=${modelDir}`
+    );
+  }
+
+  function captureSnapshot(pmData) {
     for (const [sym, coin] of Object.entries(pmData || {})) {
-      const k15 = coin?.kalshi15m;
-      if (!k15?.ticker || !k15?.closeTime) continue;
-
-      const closeMs = new Date(k15.closeTime).getTime();
-      // Skip markets already closed or closing within 90s (too late to track)
-      if (closeMs < now + 90_000) continue;
-      // Skip if already in pending
-      if (_pending.has(k15.ticker)) continue;
-      // Trim if too many pending
-      if (_pending.size >= MAX_PENDING) {
-        const oldest = [..._pending.entries()]
-          .sort((a, b) => a[1].snapshotTs - b[1].snapshotTs)[0];
-        if (oldest) _pending.delete(oldest[0]);
-      }
-
-      // Capture what the model currently predicts for this coin
-      const pred = window._lastPrediction?.[sym];
-      const intent = window.KalshiOrchestrator?.getIntent?.(sym) || null;
-      const modelDir = pred?.direction ?? null;
-      const entryProb = k15.probability ?? null;
-
-      _pending.set(k15.ticker, {
-        sym,
-        ticker: k15.ticker,
-        type: '15m',
-        snapshotTs: now,
-        closeTimeMs: closeMs,
-        entryProb,
-        modelDir,
-        title: k15.title ?? null,
-        subtitle: k15.subtitle ?? null,
-        // Structured contract fields — from Kalshi API directly, not text-parsed
-        targetPrice: k15.targetPriceNum ?? null,   // resolved ref (floorPrice preferred)
-        floorPrice: k15.floorPrice ?? null,   // direct numeric API field
-        capPrice: k15.capPrice ?? null,
-        strikeDir: k15.strikeDir ?? 'above', // 'above'|'below' — YES direction
-        strikeType: k15.strikeType ?? null,    // raw API strike_type
-        edgeCents: intent?.edgeCents ?? null,
-        entryPrice: intent?.entryPrice ?? null,
-        side: intent?.side ?? null,
-        modelProbUp: intent?.modelProbUp ?? null,
-        orchestratorAction: intent?.action ?? null,
-        orchestratorAlign: intent?.alignment ?? null,
-        // Close-snapshot and orchestrator enrichment
-        closeSnapshots: [],
-        modelScore: window._lastPrediction?.[sym]?.score ?? null,
-        sweetSpot: intent?.sweetSpot ?? false,
-        confidence: intent?.confidence ?? null,
-        crowdFade: intent?.crowdFade ?? false,
-        crowdFadeDir: intent?.direction ?? null,
-        timingRegime: intent?.timingRegime ?? null,
-        timingLabel: intent?.timingLabel ?? null,
-        timingScore: intent?.timingScore ?? null,
-        timingReasons: intent?.timingReasons ?? [],
-        timingBlocks: intent?.timingBlocks ?? [],
-        timingAdaptive: intent?.timingAdaptive ?? null,
-        closeValue: intent?.closeValue ?? false,
-        closeValueCandidate: intent?.closeValueCandidate ?? false,
-        scalpFlip: intent?.scalpFlip ?? false,
-        scalpCandidate: intent?.scalpCandidate ?? false,
-        missedOpportunityScore: intent?.missedOpportunityScore ?? 0,
-        microFlowScore: intent?.microFlowScore ?? null,
-        scalpSetupScore: intent?.scalpSetupScore ?? null,
-        microToxicity: intent?.microToxicity ?? null,
-        exitPlan: intent?.exitPlan ?? null,
-      });
-
-      const secsToClose = Math.round((closeMs - now) / 1000);
-      addAudit(k15.ticker, 'captured', {
-        sym, closeTime: k15.closeTime, secsToClose, entryProb, modelDir,
-        floorPrice: k15.floorPrice, strikeDir: k15.strikeDir, strikeType: k15.strikeType,
-        targetPrice: k15.targetPriceNum, title: k15.title,
-      });
-      console.log(
-        `[Resolver] 📸 captured ${sym} ${k15.ticker} | ` +
-        `closes in ${Math.floor(secsToClose / 60)}m${secsToClose % 60}s | ` +
-        `ref=$${k15.targetPriceNum} (floor_price=${k15.floorPrice}) ` +
-        `strike=${k15.strikeDir ?? 'above'} prob=${entryProb != null ? (entryProb * 100).toFixed(0) + '%' : 'n/a'} model=${modelDir}`
-      );
+      if (coin?.poly15m) _captureWindow(sym, coin, coin.poly15m, '15m');
+      if (coin?.poly5m) _captureWindow(sym, coin, coin.poly5m, '5m');
     }
   }
 
@@ -243,22 +323,20 @@
     const snap = snaps
       .filter(s => s.secsLeft >= 30 && s.secsLeft <= 90)
       .sort((a, b) => Math.abs(a.secsLeft - 60) - Math.abs(b.secsLeft - 60))[0];
-    if (!snap || snap.kalshiProb == null || !actualOutcome) return false;
-    const yesDir = entry.strikeDir === 'below' ? 'DOWN' : 'UP';
-    const noDir = yesDir === 'UP' ? 'DOWN' : 'UP';
-    const kalshiDir = snap.kalshiProb >= 0.5 ? yesDir : noDir;
-    return kalshiDir !== actualOutcome && Math.abs(snap.kalshiProb - 0.5) >= 0.10;
+    if (!snap || snap.mktProb == null || !actualOutcome) return false;
+    const mktDir = snap.mktProb >= 0.5 ? 'UP' : 'DOWN';
+    return mktDir !== actualOutcome && Math.abs(snap.mktProb - 0.5) >= 0.10;
   }
 
-  // ── Close-time snapshots — called from app.js 100ms tick ────────────────────
-  // Records Kalshi probability at key time thresholds before contract closes.
-  function addCloseSnapshot(sym, secsLeft, kalshiProb, modelScore) {
+  // ── Close-time snapshots — called from app.js tick ────────────────────
+  // Records the market's Up probability at key time thresholds before close.
+  function addCloseSnapshot(sym, secsLeft, mktProb, modelScore) {
     for (const entry of _pending.values()) {
       if (entry.sym === sym) {
         if (!entry.closeSnapshots) entry.closeSnapshots = [];
         const already = entry.closeSnapshots.some(s => Math.abs(s.secsLeft - secsLeft) < 15);
         if (!already) {
-          entry.closeSnapshots.push({ secsLeft, kalshiProb, modelScore, ts: Date.now() });
+          entry.closeSnapshots.push({ secsLeft, mktProb, modelScore, ts: Date.now() });
         }
         break;
       }
@@ -266,292 +344,257 @@
   }
 
   // ── 2. RESOLUTION POLLER ─────────────────────────────────────────
-  // Checks pending markets. For those past close_time + grace, fetches
-  // the Kalshi market to check settlement.
+  // Checks pending markets. For those past close_time + grace, fetches the
+  // exact Polymarket market by slug to check for a resolved outcome.
 
   async function checkPending() {
     const now = Date.now();
     const expired = [..._pending.values()]
-      .filter(e => now >= e.closeTimeMs + SETTLE_GRACE);
+      .filter(e => now >= e.closeTimeMs + SETTLE_GRACE)
+      .filter(e => !_settledSlugs.has(e.slug) && !_pushInFlight.has(e.slug));
 
     for (const entry of expired) {
+      // Race: push path may have settled while we were iterating
+      if (!_pending.has(entry.slug) || _settledSlugs.has(entry.slug)) continue;
+
       const secsPast = Math.round((now - entry.closeTimeMs) / 1000);
-      console.log(`[Resolver] ⏳ polling ${entry.sym} ${entry.ticker} (${secsPast}s past close)`);
-      addAudit(entry.ticker, 'poll_attempt', {
+      console.log(`[Resolver] ⏳ polling ${entry.sym} ${entry.type} ${entry.slug} (${secsPast}s past close)`);
+      addAudit(entry.slug, 'poll_attempt', {
         sym: entry.sym,
+        type: entry.type,
         secsPast,
         closeTimeMs: entry.closeTimeMs,
         rti: getRtiDiagnostics(entry.sym, entry.closeTimeMs),
       });
 
-      const settled = await resolveKalshiMarket(entry);
+      const settled = await resolvePolymarketMarket(entry);
       if (settled) {
-        _pending.delete(entry.ticker);
+        _pending.delete(entry.slug);
         recordResolution(settled);
       } else {
-        if (now - entry.closeTimeMs > 10 * 60_000) {
-          console.warn(`[Resolver] ⚠️ ${entry.sym} ${entry.ticker} timed out 10m+ — dropping`);
-          addAudit(entry.ticker, 'dropped', { sym: entry.sym, reason: 'timeout_10min' });
-          _pending.delete(entry.ticker);
+        if (now - entry.closeTimeMs > 15 * 60_000) {
+          console.warn(`[Resolver] ⚠️ ${entry.sym} ${entry.slug} timed out 15m+ — dropping`);
+          addAudit(entry.slug, 'dropped', { sym: entry.sym, reason: 'timeout_15min' });
+          _pending.delete(entry.slug);
         } else {
-          console.log(`[Resolver] 🔄 ${entry.sym} ${entry.ticker} not settled yet — retry next cycle`);
+          console.log(`[Resolver] 🔄 ${entry.sym} ${entry.slug} not settled yet — retry next cycle`);
         }
       }
     }
   }
 
-  // ── 3. KALSHI SETTLEMENT FETCH ───────────────────────────────────
+  // ── 3. POLYMARKET SETTLEMENT FETCH ───────────────────────────────
   // Returns a resolution record or null if not yet settled.
-  // Routes through ProxyOrchestrator for:
-  //   - Rate limiting with fallback to Polymarket if Kalshi 429s
-  //   - Deduplication of identical settlement queries
-  //   - 3 automatic retries with exponential backoff before giving up
 
-  async function resolveKalshiMarket(entry) {
-    const url = `${KALSHI_BASE}/markets/${entry.ticker}`;
-    const retryDelays = [2000, 4000, 20000];
-    let d = null;
-    let viaTransport = null;
+  async function resolvePolymarketMarket(entry) {
+    const retryDelays = [3000, 8000, 20000];
+    let m = null;
 
     for (let attempt = 0; attempt <= retryDelays.length; attempt++) {
-      if (window.EndpointTransport?.fetchKalshiMarket) {
-        const hit = await window.EndpointTransport.fetchKalshiMarket(entry.ticker, {
-          endpoint: 'kalshi-settlement',
-          cacheType: 'settlement',
-        });
-        if (hit?.data) {
-          d = hit.data;
-          viaTransport = hit.transport || 'rpc/http';
-          break;
-        }
-      } else {
-        d = await kalshiFetch(url);
-        if (d) {
-          viaTransport = 'http';
-          break;
-        }
-      }
-
+      m = await fetchPolymarketMarketBySlug(entry.slug);
+      if (m) break;
       if (attempt < retryDelays.length) {
         const delay = retryDelays[attempt];
-        console.warn(`[Resolver] ⚠️ Retry ${attempt + 1} for ${entry.sym} ${entry.ticker} — ${delay}ms`);
-        addAudit(entry.ticker, 'fetch_retry', { sym: entry.sym, attempt: attempt + 1, nextDelayMs: delay });
+        console.warn(`[Resolver] ⚠️ Retry ${attempt + 1} for ${entry.sym} ${entry.slug} — ${delay}ms`);
+        addAudit(entry.slug, 'fetch_retry', { sym: entry.sym, attempt: attempt + 1, nextDelayMs: delay });
         await new Promise(r => setTimeout(r, delay));
       }
     }
 
-    if (!d) {
-      console.error(`[Resolver] ❌ ${entry.sym} ${entry.ticker} — settlement fetch failed after retries`);
-      addAudit(entry.ticker, 'fetch_failed_all_retries', {
-        sym: entry.sym,
-        url,
-        attempts: retryDelays.length + 1,
-      });
-      try {
-        window.NetworkHealth?.update?.('Kalshi', {
-          status: 'down',
-          lastFetch: Date.now(),
-          fallback: false,
-          reason: 'settlement fetch failed',
-        });
-      } catch (_) { }
+    if (!m) {
+      console.error(`[Resolver] ❌ ${entry.sym} ${entry.slug} — market fetch failed after retries`);
+      addAudit(entry.slug, 'fetch_failed_all_retries', { sym: entry.sym, attempts: retryDelays.length + 1 });
       return null;
     }
 
-    if (viaTransport) {
-      addAudit(entry.ticker, 'transport_fetch_success', { sym: entry.sym, transport: viaTransport });
-    }
-
-    return await processKalshiSettlement(d, entry);
+    return await processPolymarketSettlement(m, entry);
   }
 
-  // ── Helper: Process Kalshi settlement response ───────────────────
-  async function processKalshiSettlement(d, entry) {
-    const m = d?.market;
-    if (!m) {
-      console.error(`[Resolver] ❌ ${entry.sym} ${entry.ticker} — no 'market' key in response`, Object.keys(d));
-      addAudit(entry.ticker, 'no_market_key', { sym: entry.sym, responseKeys: Object.keys(d) });
-      return null;
+  // Map CLOB/WS winning_outcome (and token-id fallbacks) → UP | DOWN | null
+  // Accepts Batch-2 polymarket-ws detail (camelCase) and raw wire snake_case.
+  function mapPushOutcome(detail, entry) {
+    const raw = detail?.winning_outcome || detail?.winningOutcome || null;
+    if (raw != null) {
+      const s = String(raw).trim().toLowerCase();
+      if (s === 'up' || s === 'yes') return 'UP';
+      if (s === 'down' || s === 'no') return 'DOWN';
     }
-    const statusNorm = String(m.status || '').toLowerCase();
-    if (statusNorm !== 'settled' && statusNorm !== 'finalized') {
-      console.log(`[Resolver] ⏳ ${entry.sym} ${entry.ticker} status='${m.status}' result='${m.result}' — not settled yet`);
-      addAudit(entry.ticker, 'awaiting_settlement', {
+    // Fallback: match winning asset to Up token (index 0 / clobUpAssetId)
+    const winId = String(
+      detail?.winning_asset_id ||
+      detail?.winningAssetId ||
+      detail?.winningTokenId ||
+      detail?.winning_token_id ||
+      ''
+    );
+    if (winId && entry) {
+      const upId = entry.clobUpAssetId ? String(entry.clobUpAssetId) : null;
+      const downId = entry.clobDownAssetId ? String(entry.clobDownAssetId) : null;
+      if (upId && winId === upId) return 'UP';
+      if (downId && winId === downId) return 'DOWN';
+      if (Array.isArray(entry.tokenIds) && entry.tokenIds.length >= 2) {
+        if (winId === String(entry.tokenIds[0])) return 'UP';
+        if (winId === String(entry.tokenIds[1])) return 'DOWN';
+      }
+    }
+    return null;
+  }
+
+  function findPendingForPush(detail) {
+    if (!detail) return null;
+    const slug =
+      detail.slug ||
+      detail.event_message?.slug ||
+      detail.eventMessage?.slug ||
+      detail.raw?.slug ||
+      null;
+    if (slug && _pending.has(slug)) return _pending.get(slug);
+
+    const conditionId = String(
+      detail.conditionId || detail.condition_id || detail.market || detail.raw?.market || ''
+    );
+    if (conditionId) {
+      for (const e of _pending.values()) {
+        if (e.conditionId && String(e.conditionId) === conditionId) return e;
+      }
+    }
+
+    // Batch-2 WS emits assetIds; wire uses assets_ids
+    const assets =
+      detail.assetIds ||
+      detail.assets_ids ||
+      detail.tokenIds ||
+      detail.token_ids ||
+      detail.raw?.assets_ids ||
+      [];
+    if (Array.isArray(assets) && assets.length) {
+      const assetSet = new Set(assets.map(String));
+      for (const e of _pending.values()) {
+        if (e.clobUpAssetId && assetSet.has(String(e.clobUpAssetId))) return e;
+        if (e.clobDownAssetId && assetSet.has(String(e.clobDownAssetId))) return e;
+        if (Array.isArray(e.tokenIds) && e.tokenIds.some(t => assetSet.has(String(t)))) return e;
+      }
+    }
+    return null;
+  }
+
+  // ── Helper: Process a Polymarket market's settlement state ───────
+  // settleSource: 'gamma_poll' | 'ws_push'
+  async function processPolymarketSettlement(m, entry, settleSource = 'gamma_poll') {
+    const resolved = _resolveFromMarket(m);
+    if (!resolved) {
+      addAudit(entry.slug, 'awaiting_settlement', {
         sym: entry.sym,
-        status: m.status,
-        result: m.result ?? null,
+        closed: m.closed === true,
+        outcomePrices: m.outcomePrices ?? null,
         closeTimeMs: entry.closeTimeMs,
         nowMs: Date.now(),
         secsPastClose: Math.round((Date.now() - entry.closeTimeMs) / 1000),
         rti: getRtiDiagnostics(entry.sym, entry.closeTimeMs),
       });
-      return null;
-    }
-    if (!m.result) {
-      console.warn(`[Resolver] ⚠️ ${entry.sym} ${entry.ticker} settled but result is empty — status=${m.status}`);
-      addAudit(entry.ticker, 'empty_result', { sym: entry.sym, status: m.status });
+      console.log(`[Resolver] ⏳ ${entry.sym} ${entry.slug} closed=${m.closed === true} outcomePrices=${JSON.stringify(m.outcomePrices)} — not settled yet`);
       return null;
     }
 
-    // ── Authoritative contract details from Kalshi API─────────────────────
-    // Use the actual structured fields — floor_price, strike_type, result.
-    // strikeDir determines which side of floor_price makes YES win:
-    //   'above' (default for KXBTC15M): YES = close >= floor_price → UP
-    //   'below':                        YES = close <  floor_price → DOWN
-    const apiFloorPriceRaw = m.floor_price != null ? parseFloat(m.floor_price) : null;
-    const apiFloorStrike = m.floor_strike != null ? parseFloat(m.floor_strike) : null;
-    const apiCapPriceRaw = m.cap_price != null ? parseFloat(m.cap_price) : null;
-    const apiCapStrike = m.cap_strike != null ? parseFloat(m.cap_strike) : null;
-    const apiFloorPrice = (Number.isFinite(apiFloorStrike) && apiFloorStrike > 0)
-      ? apiFloorStrike
-      : (Number.isFinite(apiFloorPriceRaw) && apiFloorPriceRaw > 0 ? apiFloorPriceRaw : null);
-    const apiCapPrice = (Number.isFinite(apiCapStrike) && apiCapStrike > 0)
-      ? apiCapStrike
-      : (Number.isFinite(apiCapPriceRaw) && apiCapPriceRaw > 0 ? apiCapPriceRaw : null);
-    // Normalize strike_type — handle all Kalshi variants
-    const apiStrikeType = m.strike_type ? String(m.strike_type).toLowerCase() : null;
-    const apiStrikeDir = (() => {
-      if (apiStrikeType === 'below' || apiStrikeType === 'under') return 'below';
-      if (apiStrikeType === 'above' || apiStrikeType === 'over' || apiStrikeType === 'at_least' || apiStrikeType === 'greater_or_equal') return 'above';
-      return entry.strikeDir ?? 'above'; // fall back to snapshot value
-    })();
+    return await buildResolutionRecord(entry, resolved.actualOutcome, resolved.upPrice, {
+      settleSource,
+      outcomePrices: m.outcomePrices,
+      closed: m.closed === true,
+    });
+  }
 
-    // Resolved reference price: API floor_price takes priority over snapshot's targetPrice
-    const refPrice = (Number.isFinite(apiFloorPrice) && apiFloorPrice > 0)
-      ? apiFloorPrice
-      : entry.targetPrice ?? null;
-
-    // Confidence: 92 when we have structured floor_price; 65 when falling back to snapshot ref
-    const confidence = (Number.isFinite(apiFloorPrice) && apiFloorPrice > 0) ? 92 : 65;
-
-    // Map Kalshi result → UP/DOWN using the contract's actual strike direction
-    // YES on an 'above' contract = price rose above ref = UP
-    // YES on a 'below' contract = price stayed below ref = DOWN
-    const resultNorm = String(m.result || '').toLowerCase();
-    const yesResult = resultNorm === 'yes';
-    const actualOutcome = yesResult
-      ? (apiStrikeDir === 'below' ? 'DOWN' : 'UP')
-      : (apiStrikeDir === 'below' ? 'UP' : 'DOWN');
-
-    // Market direction: prob >= 50% says market thinks YES will win
-    // Translate to UP/DOWN via same strikeDir logic
+  // Build the canonical resolution record shared by push + poll paths.
+  async function buildResolutionRecord(entry, actualOutcome, upPrice, meta = {}) {
+    const settleSource = meta.settleSource || 'gamma_poll';
     const entryProb = entry.entryProb ?? 0.5;
-    const yesWins = entryProb >= 0.50;
-    const marketDir = yesWins
-      ? (apiStrikeDir === 'below' ? 'DOWN' : 'UP')
-      : (apiStrikeDir === 'below' ? 'UP' : 'DOWN');
-
+    const marketDir = entryProb >= 0.50 ? 'UP' : 'DOWN';
     const modelDir = entry.modelDir;
     const modelCorrect = modelDir && modelDir !== 'FLAT' ? modelDir === actualOutcome : null;
     const marketCorrect = marketDir === actualOutcome;
 
-    // Full contract audit — raw Kalshi API fields + derived values
     const rtiDiagnostics = getRtiDiagnostics(entry.sym, entry.closeTimeMs);
-    addAudit(entry.ticker, 'contract_settled', {
+    addAudit(entry.slug, 'contract_settled', {
       sym: entry.sym,
-      // Raw Kalshi API fields
-      result: m.result,
-      status: m.status,
-      floor_price: m.floor_price,
-      cap_price: m.cap_price,
-      strike_type: m.strike_type,
-      close_time: m.close_time,
-      title: m.title,
-      yes_sub_title: m.yes_sub_title,
-      // Derived
-      apiStrikeDir,
-      confidence,
-      refPrice,
+      type: entry.type,
+      settleSource,
+      closed: meta.closed ?? true,
+      outcomePrices: meta.outcomePrices ?? null,
+      upPrice,
       actualOutcome,
       marketDir,
       modelDir,
       modelCorrect,
       marketCorrect,
       entryProb,
-      // Proxy cross-check — what did the bucket-close proxy call?
-      proxyOutcome: entry.proxyOutcome ?? null,
-      proxyMismatch: entry.proxyOutcome ? entry.proxyOutcome !== actualOutcome : null,
+      priceToBeatNum: entry.priceToBeatNum,
       rtiDiagnostics,
     });
 
     console.log(
-      `[Resolver] ✅ ${entry.sym} ${entry.ticker} | result=${m.result} → ${actualOutcome} | ` +
-      `floor_price=${m.floor_price ?? 'null'} strike=${apiStrikeDir} conf=${confidence} | ` +
-      `snapshot_ref=${entry.targetPrice} | model=${modelDir} ${modelCorrect ? '✓' : modelCorrect === false ? '✗' : '?'} | ` +
+      `[Resolver] ✅ ${entry.sym} ${entry.type} ${entry.slug} | → ${actualOutcome} (up=${Number(upPrice).toFixed(3)}) ` +
+      `[${settleSource}] | PTB=$${entry.priceToBeatNum ?? 'n/a'} | model=${modelDir} ${modelCorrect ? '✓' : modelCorrect === false ? '✗' : '?'} | ` +
       `mktProb=${(entryProb * 100).toFixed(0)}% mktOk=${marketCorrect}`
     );
 
-    const cbSettlePrice = await fetchCoinbaseSettlement(entry.sym, entry.closeTimeMs);
-    if (cbSettlePrice != null && refPrice != null) {
-      const cbSide = cbSettlePrice >= refPrice ? 'UP' : 'DOWN';
-      if (cbSide !== actualOutcome) {
-        console.warn(
-          `[Resolver] ⚠️ CB price diverges from Kalshi result for ${entry.sym}: ` +
-          `CB=${cbSettlePrice} vs ref=${refPrice} → ${cbSide} but Kalshi=${actualOutcome} (wick/TWAP spread)`
+    // ── Coinbase context note (informational only, never authoritative) ──
+    const cbContextPrice = await fetchCoinbaseContext(entry.sym, entry.closeTimeMs);
+    let cbContextNote = null;
+    if (cbContextPrice != null && entry.priceToBeatNum != null) {
+      const cbDir = cbContextPrice >= entry.priceToBeatNum ? 'UP' : 'DOWN';
+      cbContextNote = { cbContextPrice, priceToBeatNum: entry.priceToBeatNum, cbDir, agrees: cbDir === actualOutcome };
+      if (cbDir !== actualOutcome) {
+        // Not a warning: Polymarket resolves on a TWAP window, CB here is a
+        // single spot candle. Divergence near a boundary is expected, not an error.
+        console.log(
+          `[Resolver] ℹ️ CB spot vs Polymarket TWAP resolution for ${entry.sym}: ` +
+          `CB=${cbContextPrice} vs PTB=${entry.priceToBeatNum} → ${cbDir} (spot) while Polymarket resolved ${actualOutcome} (TWAP) — informational only`
         );
-        addAudit(entry.ticker, 'cb_divergence', {
-          sym: entry.sym, cbSettlePrice, refPrice, cbSide, kalshiResult: actualOutcome,
-        });
+        addAudit(entry.slug, 'cb_context_note', { sym: entry.sym, ...cbContextNote });
       }
     }
 
-    // ── PYTH Backup Verification ─────────────────────────────────────────
-    // Check if PYTH price exists for this coin
+    // ── PYTH context note (informational only, never authoritative) ──
     const pythData = window._pythPrices ? window._pythPrices[entry.sym] : null;
-    if (pythData && refPrice != null) {
+    if (pythData && entry.priceToBeatNum != null) {
       const pythPrice = pythData.price;
-      const divergence = Math.abs((pythPrice - refPrice) / refPrice);
-      const pythSide = pythPrice >= refPrice ? 'UP' : 'DOWN';
-
-      if (divergence > 0.005) { // 0.5% threshold
-        console.warn(
-          `[Resolver] ⚠️ PRICE_DIVERGENCE: ${entry.sym} ${entry.ticker} | ` +
-          `PYTH=${pythPrice} vs Kalshi=${refPrice} (${(divergence * 100).toFixed(2)}% diff) → PYTH=${pythSide} vs Kalshi=${actualOutcome}`
-        );
-        addAudit(entry.ticker, 'pyth_divergence', {
-          sym: entry.sym,
-          pythPrice,
-          kalshiRefPrice: refPrice,
-          divergencePct: divergence * 100,
-          pythSide,
-          kalshiResult: actualOutcome,
-          mismatch: pythSide !== actualOutcome,
-        });
-      } else {
-        addAudit(entry.ticker, 'pyth_verified', {
-          sym: entry.sym,
-          pythPrice,
-          kalshiRefPrice: refPrice,
-          divergencePct: divergence * 100,
-          pythSide,
-          kalshiResult: actualOutcome,
-          match: pythSide === actualOutcome,
-        });
-      }
+      const divergence = Math.abs((pythPrice - entry.priceToBeatNum) / entry.priceToBeatNum);
+      const pythDir = pythPrice >= entry.priceToBeatNum ? 'UP' : 'DOWN';
+      addAudit(entry.slug, 'pyth_context_note', {
+        sym: entry.sym,
+        pythPrice,
+        priceToBeatNum: entry.priceToBeatNum,
+        divergencePct: divergence * 100,
+        pythDir,
+        actualOutcome,
+        agrees: pythDir === actualOutcome,
+      });
     }
+
+    const settlementAuthority = settleSource === 'ws_push' ? 'polymarket_ws' : 'polymarket_gamma';
 
     return {
       sym: entry.sym,
-      ticker: entry.ticker,
-      type: '15m',
+      ticker: entry.slug, // kept for consumer field-compat; Polymarket has no separate ticker, slug IS the id
+      slug: entry.slug,
+      type: entry.type,
       snapshotTs: entry.snapshotTs,
       closeTimeMs: entry.closeTimeMs,
       settledTs: Date.now(),
       settleLatencyMs: Math.max(0, Date.now() - entry.closeTimeMs),
       settleLatencySec: Math.max(0, Math.round((Date.now() - entry.closeTimeMs) / 1000)),
+      settleSource,
+      settlementAuthority,
       entryProb,
       marketDir,
       actualOutcome,
-      kalshiResult: m.result,          // raw 'yes'/'no' from Kalshi API
-      refPrice,                         // authoritative ref from floor_price
-      floorPrice: apiFloorPrice,
-      capPrice: apiCapPrice,
-      strikeDir: apiStrikeDir,
-      strikeType: apiStrikeType,
-      confidence,                       // 92 = structured floor_price, 65 = fallback
-      cbSettlePrice,
+      upPrice,
+      refPrice: entry.priceToBeatNum,        // Polymarket's own TWAP-based price-to-beat
+      priceToBeatNum: entry.priceToBeatNum,
+      priceToBeatSource: entry.priceToBeatSource,
+      confidence: settleSource === 'ws_push' ? 95 : 92,
+      cbContextPrice,
+      cbContextNote,
       rtiAtResolve: rtiDiagnostics,
-      proxyOutcome: entry.proxyOutcome ?? null,  // what bucket-close proxy called
       modelDir: modelDir ?? null,
       modelCorrect,
       marketCorrect,
@@ -589,7 +632,6 @@
         closeValueCandidate: entry.closeValueCandidate ?? false,
         scalpCandidate: entry.scalpCandidate ?? false,
       } : null,
-      // Enhanced contract analysis fields
       closeSnapshots: entry.closeSnapshots ?? [],
       modelScore: entry.modelScore ?? null,
       sweetSpot: entry.sweetSpot ?? false,
@@ -601,14 +643,90 @@
     };
   }
 
+  // ── PUSH path: CLOB WS market_resolved → immediate settle ───────
+  async function handleMarketResolvedPush(detail) {
+    const entry = findPendingForPush(detail);
+    if (!entry) {
+      // Not one of our tracked 5m/15m windows — ignore quietly
+      return;
+    }
+    if (_settledSlugs.has(entry.slug) || !_pending.has(entry.slug)) return;
+    if (_pushInFlight.has(entry.slug)) return;
+    _pushInFlight.add(entry.slug);
+
+    try {
+      addAudit(entry.slug, 'push_market_resolved', {
+        sym: entry.sym,
+        type: entry.type,
+        slug: entry.slug,
+        conditionId: detail?.conditionId || detail?.market || null,
+        winning_outcome: detail?.winning_outcome || detail?.winningOutcome || null,
+        winning_asset_id:
+          detail?.winning_asset_id ||
+          detail?.winningAssetId ||
+          detail?.winningTokenId ||
+          null,
+      });
+
+      let actualOutcome = mapPushOutcome(detail, entry);
+      let upPrice = actualOutcome === 'UP' ? 1 : actualOutcome === 'DOWN' ? 0 : null;
+
+      // If WS payload lacks a clear Up/Down, fall back to Gamma once (still push-triggered)
+      if (!actualOutcome) {
+        console.log(`[Resolver] 📡 push matched ${entry.sym} ${entry.slug} but outcome unclear — Gamma confirm`);
+        const m = await fetchPolymarketMarketBySlug(entry.slug);
+        if (m) {
+          const settled = await processPolymarketSettlement(m, entry, 'ws_push');
+          if (settled) {
+            _pending.delete(entry.slug);
+            recordResolution(settled);
+            return;
+          }
+        }
+        console.log(`[Resolver] 📡 push ${entry.slug} not ready — leave for poll fallback`);
+        return;
+      }
+
+      console.log(
+        `[Resolver] 📡 push-resolve ${entry.sym} ${entry.type} ${entry.slug} → ${actualOutcome}`
+      );
+      const record = await buildResolutionRecord(entry, actualOutcome, upPrice, {
+        settleSource: 'ws_push',
+        closed: true,
+        outcomePrices: actualOutcome === 'UP' ? [1, 0] : [0, 1],
+      });
+      _pending.delete(entry.slug);
+      recordResolution(record);
+    } catch (err) {
+      console.warn(`[Resolver] push handler error for ${entry.slug}:`, err?.message || err);
+      addAudit(entry.slug, 'push_error', { sym: entry.sym, error: String(err?.message || err) });
+    } finally {
+      _pushInFlight.delete(entry.slug);
+    }
+  }
+
   // ── 4. RECORD + DISPATCH ─────────────────────────────────────────
+  // Idempotent by slug: push vs poll (or double events) never double-write.
 
   function recordResolution(res) {
+    if (!res?.slug) return;
+    if (_settledSlugs.has(res.slug)) {
+      console.log(`[Resolver] ⏭ skip duplicate slug ${res.slug} (already recorded)`);
+      addAudit(res.slug, 'dedupe_skip', { sym: res.sym, settleSource: res.settleSource });
+      return;
+    }
+    if (window._15mResolutionLog.some(e => e.slug === res.slug)) {
+      _settledSlugs.add(res.slug);
+      console.log(`[Resolver] ⏭ skip duplicate slug ${res.slug} (already in log)`);
+      return;
+    }
+
+    _settledSlugs.add(res.slug);
     window._15mResolutionLog.push(res);
     if (window._15mResolutionLog.length > LOG_MAX) {
       window._15mResolutionLog.shift();
     }
-    // Quick lookup by coin
+    // Quick lookup by coin (latest across both 5m and 15m)
     window._resolutionMap[res.sym] = res;
     saveLog();
 
@@ -618,27 +736,29 @@
     }
 
     // Notify the app (UI can show toast, update accuracy badge)
+    // settlementAuthority: polymarket_ws (push) | polymarket_gamma (poll)
+    const settlementAuthority = res.settlementAuthority
+      || (res.settleSource === 'ws_push' ? 'polymarket_ws' : 'polymarket_gamma');
     try {
       window.dispatchEvent(new CustomEvent('market15m:resolved', {
         detail: {
           sym: res.sym,
           outcome: res.actualOutcome,   // 'UP' | 'DOWN'
-          kalshiResult: res.kalshiResult,    // raw 'yes' | 'no' from Kalshi API
-          proxyMismatch: res.proxyMismatch ?? null,
-          settlementAuthority: 'kalshi_api',
+          type: res.type,               // '5m' | '15m'
+          settlementAuthority,
           canonical: true,
-          schemaVersion: 'resolver.v1',
+          schemaVersion: 'resolver.v2',
           modelCorrect: res.modelCorrect,
           marketCorrect: res.marketCorrect,
           prob: res.entryProb,
           ticker: res.ticker,
-          refPrice: res.refPrice,        // authoritative floor_price
-          floorPrice: res.floorPrice,
-          strikeDir: res.strikeDir,
-          cbSettlePrice: res.cbSettlePrice,
+          slug: res.slug,
+          refPrice: res.refPrice,
+          cbContextPrice: res.cbContextPrice,
           rtiAtResolve: res.rtiAtResolve,
           settleLatencyMs: res.settleLatencyMs,
           settleLatencySec: res.settleLatencySec,
+          settleSource: res.settleSource || null,
         },
       }));
     } catch (_) { }
@@ -647,10 +767,10 @@
       : res.modelCorrect === false ? '\u274c'
         : '\u2753';
     console.log(
-      `[Resolver] ${res.sym} 15M settled result=${res.kalshiResult} → ${res.actualOutcome} ${icon} ` +
-      `| model=${res.modelDir ?? 'N/A'} | ref=$${res.refPrice} floor_price=${res.floorPrice} ` +
+      `[Resolver] ${res.sym} ${res.type} settled → ${res.actualOutcome} ${icon} ` +
+      `| ${settlementAuthority} | model=${res.modelDir ?? 'N/A'} | PTB=$${res.refPrice} ` +
       `| mktProb:${(res.entryProb * 100).toFixed(0)}% mktOk:${res.marketCorrect} ` +
-      `| cbSettle=${res.cbSettlePrice}`
+      `| cbContext=${res.cbContextPrice}`
     );
   }
 
@@ -702,7 +822,16 @@
       captureSnapshot(e.detail || {});
     });
 
-    // Poll every 60s for settlements
+    // PUSH path: CLOB WS market_resolved (via polymarket-ws CustomEvent)
+    window.addEventListener('polymarket:market_resolved', e => {
+      try {
+        handleMarketResolvedPush(e.detail || {});
+      } catch (err) {
+        console.warn('[Resolver] polymarket:market_resolved handler error:', err?.message || err);
+      }
+    });
+
+    // Poll every 60s for settlements (fallback if WS push missed / delayed)
     if (_pollTimer) clearInterval(_pollTimer);
     _pollTimer = setInterval(() => {
       if (!document.hidden) checkPending();
@@ -711,7 +840,7 @@
     // Also do an immediate pass in case of app restart with stale pending
     setTimeout(checkPending, 5000);
 
-    console.log('[Resolver] 15M market resolver started');
+    console.log('[Resolver] Polymarket 5M/15M market resolver started (push+poll)');
   }
 
   // ── PUBLIC API ───────────────────────────────────────────────────
@@ -722,6 +851,9 @@
     getResolutionAccuracy,
     getLatest: sym => window._resolutionMap[sym] ?? null,
     addCloseSnapshot,
+    /** Test/debug: inject a market_resolved detail object */
+    handlePush: handleMarketResolvedPush,
+    hasSettledSlug: (slug) => _settledSlugs.has(slug),
     buildCalibration(sym, n = 30) { return getResolutionAccuracy(sym, n); },
     getMissedOpps(n = 50) {
       return (window._15mResolutionLog || []).filter(e => e.missedOpportunity != null).slice(-n);
@@ -751,45 +883,32 @@
 
   // ── DEBUG API ─────────────────────────────────────────────────────
   // Available from the DevTools console:
-  //   KalshiDebug.audit('ETH')     — step-by-step contract audit trail
-  //   KalshiDebug.errors()         — proxy mismatches, wick, dir_conflict events
-  //   KalshiDebug.pending()        — contracts currently waiting to settle
-  //   KalshiDebug.last('ETH')      — latest authoritative resolution for ETH
-  //   KalshiDebug.log('ETH')       — raw _kalshiLog entries for ETH
-  //   KalshiDebug.snap('ETH')      — current snapshot for ETH
-  //   KalshiDebug.contract('ETH')  — full state: snap + pending + resolved
-  //   KalshiDebug.conflicts()      — all entries where model dir ≠ CDF direction
-  //   KalshiDebug.summary()        — accuracy summary across all coins
-  window.KalshiDebug = {
+  //   MarketDebug.audit('ETH')     — step-by-step contract audit trail
+  //   MarketDebug.pending()        — contracts currently waiting to settle
+  //   MarketDebug.last('ETH')      — latest authoritative resolution for ETH
+  //   MarketDebug.snap(sym)        — (unused, kept for API compat)
+  //   MarketDebug.contract('ETH')  — full state: pending + resolved
+  //   MarketDebug.summary()        — accuracy summary across all coins
+  // window.KalshiDebug is kept as an alias — cosmetic name only, several
+  // renderer files still call it by that name; functionally identical.
+  const MarketDebug = {
     audit(sym) {
       const log = window._contractAuditLog || [];
-      const rows = sym ? log.filter(e => e.sym === sym || (e.ticker || '').includes(sym)) : log;
+      const rows = sym ? log.filter(e => e.sym === sym || (e.slug || '').includes(sym)) : log;
       console.table(rows.map(e => ({
-        time: e.tsIso?.slice(11, 19), ticker: e.ticker, event: e.event,
-        sym: e.sym, result: e.result, outcome: e.actualOutcome,
-        floor_price: e.floor_price, strike: e.apiStrikeDir ?? e.strikeDir,
-        confidence: e.confidence, modelDir: e.modelDir, modelOk: e.modelCorrect,
+        time: e.tsIso?.slice(11, 19), slug: e.slug, event: e.event,
+        sym: e.sym, outcome: e.actualOutcome, upPrice: e.upPrice,
+        modelDir: e.modelDir, modelOk: e.modelCorrect,
       })));
       return rows;
-    },
-    errors() {
-      const errs = window._kalshiErrors || [];
-      console.table(errs.map(e => ({
-        time: e.tsIso?.slice(11, 19), type: e.type, sym: e.sym,
-        ticker: e.ticker, proxy: e.proxy, auth: e.authoritative,
-        ref: e.refPrice, close: e.proxyClosePrice, cbSettle: e.cbSettlePrice,
-        gap: e.refDiffPct, wick: e.wickStraddle, nearRef: e.nearRef,
-        dirConflict: e.dirConflict, momentumDir: e.momentumDir, cdfDir: e.cdfImpliedDir,
-      })));
-      return errs;
     },
     pending() {
       const p = [..._pending.values()];
       console.table(p.map(e => ({
-        sym: e.sym, ticker: e.ticker,
+        sym: e.sym, type: e.type, slug: e.slug,
         closesAt: new Date(e.closeTimeMs).toISOString().slice(11, 19),
         secsLeft: Math.round((e.closeTimeMs - Date.now()) / 1000),
-        floorPrice: e.floorPrice, strikeDir: e.strikeDir,
+        priceToBeatNum: e.priceToBeatNum,
         model: e.modelDir, prob: e.entryProb != null ? `${(e.entryProb * 100).toFixed(0)}%` : null,
       })));
       return p;
@@ -798,164 +917,37 @@
       const r = window._resolutionMap?.[sym];
       if (!r) { console.log(`No resolution yet for ${sym}`); return null; }
       console.table([{
-        sym: r.sym, ticker: r.ticker, result: r.kalshiResult,
-        outcome: r.actualOutcome, strikeDir: r.strikeDir,
-        floor_price: r.floorPrice, ref: r.refPrice, cbSettle: r.cbSettlePrice,
+        sym: r.sym, type: r.type, slug: r.slug,
+        outcome: r.actualOutcome, ref: r.refPrice, upPrice: r.upPrice,
         model: r.modelDir, modelOk: r.modelCorrect, mktOk: r.marketCorrect,
         confidence: r.confidence, settledAt: new Date(r.settledTs).toISOString().slice(11, 19),
       }]);
       return r;
     },
-    log(sym) {
-      const entries = (window._kalshiLog || []).filter(e => !sym || e.sym === sym);
-      console.table(entries.slice(-20).map(e => ({
-        sym: e.sym, outcome: e.outcome, proxy: e.proxyOutcome, conf: e.proxyConfidence,
-        ref: e.ref, close: e.closePrice, gap: e.refDiffPct,
-        modelDir: e.modelDir, mYes: e.mYesPct, kYes: e.kYesPct,
-        settled: e._settled, mismatch: e._proxyMismatch,
-        wick: e._wickStraddle, nearRef: e._nearRef, conflict: e._dirConflict,
-      })));
-      return entries;
-    },
-    snap(sym) {
-      const snaps = window._lastKalshiSnapshot || {};
-      const s = sym ? snaps[sym] : snaps;
-      console.log(sym ? `=== ${sym} snapshot ===` : '=== all snapshots ===', s);
-      return s;
-    },
     contract(sym) {
-      const snap = window._lastKalshiSnapshot?.[sym];
       const pend = [..._pending.values()].find(e => e.sym === sym);
       const res = window._resolutionMap?.[sym];
-      const errs = (window._kalshiErrors || []).filter(e => e.sym === sym).slice(-5);
       console.log(`\n=== ${sym} FULL CONTRACT STATE ===`);
-      console.log('📸 snapshot:', snap ?? 'NONE');
       console.log('⏳ pending: ', pend ?? 'NONE');
       console.log('✅ resolved:', res ?? 'NONE');
-      errs.length && console.log('❌ errors:  ', errs);
-      return { snap, pend, res, errs };
-    },
-    conflicts() {
-      const entries = (window._kalshiLog || []).filter(e => e._dirConflict || e.dirConflict);
-      console.table(entries.map(e => ({
-        sym: e.sym, modelDir: e.modelDir, cdfDir: e.cdfImpliedDir,
-        mYes: e.mYesPct, outcome: e.outcome, settled: e._settled,
-        kalshiAuth: e._kalshiResult, mismatch: e._proxyMismatch,
-      })));
-      return entries;
+      return { pend, res };
     },
     summary() {
-      const coins = [...new Set((window._kalshiLog || []).map(e => e.sym))];
+      const coins = [...new Set((window._15mResolutionLog || []).map(e => e.sym))];
       const rows = coins.map(sym => {
-        const entries = (window._kalshiLog || []).filter(e => e.sym === sym && e._settled);
-        const correct = entries.filter(e => !e._proxyMismatch).length;
-        const conflicts = entries.filter(e => e._dirConflict).length;
-        const wicks = entries.filter(e => e._wickStraddle).length;
-        return { sym, settled: entries.length, correct, accuracy: entries.length ? `${(correct / entries.length * 100).toFixed(0)}%` : '–', conflicts, wicks };
+        const acc = getResolutionAccuracy(sym, 100);
+        return {
+          sym,
+          settled: (window._15mResolutionLog || []).filter(e => e.sym === sym).length,
+          accuracy: acc ? `${(acc.accuracy * 100).toFixed(0)}%` : '–',
+          trend: acc ? acc.trend : '–',
+        };
       });
       console.table(rows);
       return rows;
     },
-    tune() {
-      const log = window._15mResolutionLog || [];
-      if (log.length === 0) { console.log('❌ No settlement data available'); return null; }
-
-      const coins = [...new Set(log.map(e => e.sym))];
-      const tuneReport = {};
-
-      coins.forEach(sym => {
-        const entries = log.filter(e => e.sym === sym);
-        if (entries.length < 3) return; // skip coins with < 3 trades
-
-        // Per-coin accuracy
-        const correct = entries.filter(e => e.modelCorrect === true).length;
-        const accuracy = (correct / entries.length * 100).toFixed(1);
-
-        // Edge threshold analysis — bucket by edgeCents
-        const edgeBuckets = [
-          { min: 0, max: 5, label: '0-5¢' },
-          { min: 5, max: 10, label: '5-10¢' },
-          { min: 10, max: 20, label: '10-20¢' },
-          { min: 20, max: 999, label: '20+¢' },
-        ];
-
-        const edgeAnalysis = edgeBuckets.map(bucket => {
-          const inBucket = entries.filter(e => e.edgeCents != null && e.edgeCents >= bucket.min && e.edgeCents < bucket.max);
-          const wins = inBucket.filter(e => e.modelCorrect === true).length;
-          const rate = inBucket.length > 0 ? (wins / inBucket.length * 100).toFixed(1) : '—';
-          return { ...bucket, trades: inBucket.length, wins, rate };
-        });
-
-        // Volatility impact
-        const volBuckets = ['low', 'medium', 'high'];
-        const volAnalysis = volBuckets.map(vol => {
-          const inVol = entries.filter(e => (e.volatility?.toLowerCase() || 'medium') === vol);
-          const wins = inVol.filter(e => e.modelCorrect === true).length;
-          const rate = inVol.length > 0 ? (wins / inVol.length * 100).toFixed(1) : '—';
-          return { volatility: vol, trades: inVol.length, wins, rate };
-        });
-
-        // Time bias — early vs late entries
-        const early = entries.filter(e => (e.entrySecsLeft ?? 300) > 60);
-        const late = entries.filter(e => (e.entrySecsLeft ?? 300) <= 60);
-        const earlyRate = early.length > 0 ? (early.filter(e => e.modelCorrect).length / early.length * 100).toFixed(1) : '—';
-        const lateRate = late.length > 0 ? (late.filter(e => e.modelCorrect).length / late.length * 100).toFixed(1) : '—';
-
-        // Fade analysis — when model disagrees with crowd
-        const fadeEntries = entries.filter(e => e.crowdFade === true);
-        const fadeWins = fadeEntries.filter(e => e.modelCorrect === true).length;
-        const fadeRate = fadeEntries.length > 0 ? (fadeWins / fadeEntries.length * 100).toFixed(1) : '—';
-
-        tuneReport[sym] = {
-          total: entries.length,
-          accuracy: `${accuracy}%`,
-          edgeAnalysis,
-          volAnalysis,
-          timeOfEntry: { early: `${earlyRate}% (${early.length})`, late: `${lateRate}% (${late.length})` },
-          fadePerf: { trades: fadeEntries.length, rate: fadeRate, wins: fadeWins },
-        };
-      });
-
-      console.log('\n╔══════════════════════════════════════════════════════╗');
-      console.log('║            DEEP MODEL TUNING ANALYSIS                ║');
-      console.log('║          (Last ' + log.length + ' settled markets)                ║');
-      console.log('╚══════════════════════════════════════════════════════╝\n');
-
-      coins.forEach(sym => {
-        const t = tuneReport[sym];
-        if (!t) return;
-        console.log(`\n📊 ${sym.padEnd(6)} — ${t.total} trades, ${t.accuracy} accuracy`);
-        console.log('  ├─ Edge Thresholds:');
-        t.edgeAnalysis.forEach(e => {
-          const indicator = e.rate !== '—' ? (parseFloat(e.rate) >= 55 ? '✅' : parseFloat(e.rate) >= 50 ? '⚠️ ' : '❌') : '—';
-          console.log(`  │  ${indicator} ${e.label.padEnd(7)} → ${e.rate.padEnd(5)}% (${e.trades} trades)`);
-        });
-        console.log('  ├─ Volatility Impact:');
-        t.volAnalysis.forEach(v => {
-          const rate = v.rate !== '—' ? parseFloat(v.rate).toFixed(0) : '—';
-          console.log(`  │  ${v.volatility.padEnd(8)} → ${rate.padEnd(3)}% (${v.trades} trades)`);
-        });
-        console.log(`  ├─ Entry Timing: Early=${t.timeOfEntry.early} | Late=${t.timeOfEntry.late}`);
-        console.log(`  └─ Fade Performance: ${t.fadePerf.wins}/${t.fadePerf.trades} (${t.fadePerf.rate}% win rate)`);
-      });
-
-      console.log('\n💡 RECOMMENDATIONS:');
-      Object.entries(tuneReport).forEach(([sym, t]) => {
-        const lowEdge = t.edgeAnalysis.find(e => e.label === '0-5¢');
-        const highEdge = t.edgeAnalysis.find(e => e.label === '20+¢');
-        const lowRate = lowEdge?.rate !== '—' ? parseFloat(lowEdge.rate) : 50;
-        const highRate = highEdge?.rate !== '—' ? parseFloat(highEdge.rate) : 50;
-
-        if (lowRate < 50 && highRate > 55) {
-          console.log(`  • ${sym}: RAISE minimum edge threshold (high-edge trades ~${highRate}% vs low ~${lowRate}%)`);
-        }
-        if (parseFloat(t.fadePerf.rate || 0) > 55 && t.fadePerf.trades > 2) {
-          console.log(`  • ${sym}: Crowd-fade strategy working well (${t.fadePerf.rate}%) — consider scaling`);
-        }
-      });
-
-      return tuneReport;
-    },
   };
+  window.MarketDebug = MarketDebug;
+  window.KalshiDebug = MarketDebug; // legacy name, several renderer files still reference this
 
 })();

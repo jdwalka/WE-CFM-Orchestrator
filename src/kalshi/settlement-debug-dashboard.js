@@ -1,17 +1,18 @@
 /**
- * Kalshi Settlement Debug Dashboard
+ * Polymarket Settlement Debug Dashboard
  * 
- * Real-time verification of model predictions vs Kalshi settlement outcomes.
+ * Real-time verification of model predictions vs Polymarket settlement outcomes.
  * Shows: Predicted direction + Actual settlement + Win/Loss per contract
  */
 
 (function () {
   'use strict';
 
-  const DASHBOARD_ID = 'kalshi-settlement-debug-dashboard';
+  const DASHBOARD_ID = 'poly-settlement-debug-dashboard';
   
   // ── Build HTML dashboard ──
   function createDashboard() {
+    if (document.getElementById(DASHBOARD_ID)) return;
     const html = `
       <div id="${DASHBOARD_ID}" style="
         position: fixed;
@@ -30,7 +31,7 @@
         box-shadow: 0 0 20px rgba(0,212,255,0.3);
       ">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; border-bottom: 1px solid #2a3f5f; padding-bottom: 8px;">
-          <span style="color: #00d4ff; font-weight: 700;">🧪 KALSHI SETTLEMENT DEBUG</span>
+          <span style="color: #00d4ff; font-weight: 700;">🧪 POLYMARKET SETTLEMENT DEBUG</span>
           <button onclick="document.getElementById('${DASHBOARD_ID}').style.display='none'; return false;" 
             style="background: none; border: none; color: #888; cursor: pointer; font-size: 14px;">✕</button>
         </div>
@@ -54,7 +55,7 @@
 
   // ── Extract prediction data from app state ──
   function getSettlementData() {
-    const log = window._kalshiLog || [];
+    const log = window._kalshiLog || window._polyLog || [];
     const resLog = window._15mResolutionLog || [];
     
     // Merge and sort by timestamp
@@ -62,16 +63,16 @@
       ...log.filter(e => e._settled).map(e => ({
         sym: e.sym,
         modelDir: e.modelDir,
-        outcome: e._kalshiResult,
+        outcome: e._polyResult || e._kalshiResult,
         ts: e.ts || e.settledTs,
-        source: 'kalshi-log',
+        source: 'poly-log',
         correct: e.modelCorrect,
         confidence: e.proxyConfidence || e.modelConf || 0,
-        kalshiProb: e.kYesPct || 0,
-        kYesAsk: e.yesAsk || 0,
-        kYesBid: e.yesBid || 0,
-        kNoAsk: e.noAsk || 0,
-        kNoBid: e.noBid || 0
+        polyProb: e.polyYesPct || e.kYesPct || 0,
+        polyYesAsk: e.yesAsk || 0,
+        polyYesBid: e.yesBid || 0,
+        polyNoAsk: e.noAsk || 0,
+        polyNoBid: e.noBid || 0
       })),
       ...resLog.filter(e => e.modelCorrect !== null).map(e => ({
         sym: e.sym,
@@ -81,11 +82,11 @@
         source: 'resolution-log',
         correct: e.modelCorrect,
         confidence: e.confidence || e.modelConf || 0,
-        kalshiProb: e.entryProb != null ? Math.round(e.entryProb * 100) : 0,
-        kYesAsk: e.yesAsk || (e.closeSnapshots?.slice(-1)[0]?.kalshiProb != null ? Math.round(e.closeSnapshots.slice(-1)[0].kalshiProb * 100) : 0),
-        kYesBid: e.yesBid || 0,
-        kNoAsk: e.noAsk || 0,
-        kNoBid: e.noBid || 0
+        polyProb: e.entryProb != null ? Math.round(e.entryProb * 100) : 0,
+        polyYesAsk: e.yesAsk || (e.closeSnapshots?.slice(-1)[0]?.polyProb != null ? Math.round(e.closeSnapshots.slice(-1)[0].polyProb * 100) : 0),
+        polyYesBid: e.yesBid || 0,
+        polyNoAsk: e.noAsk || 0,
+        polyNoBid: e.noBid || 0
       }))
     ];
     
@@ -163,7 +164,7 @@
   }
 
   // ── API for console access ──
-  window.KalshiSettlementDebug = {
+  const PolyDebugAPI = {
     show: () => {
       const el = document.getElementById(DASHBOARD_ID);
       if (el) el.style.display = 'block';
@@ -180,7 +181,7 @@
       const stats = calculateStats();
       const data = getSettlementData();
       console.log('═══════════════════════════════════════════');
-      console.log('KALSHI SETTLEMENT ACCURACY REPORT');
+      console.log('POLYMARKET SETTLEMENT ACCURACY REPORT');
       console.log('═══════════════════════════════════════════');
       
       let totalWins = 0, totalTrades = 0;
@@ -204,6 +205,9 @@
     }
   };
 
+  window.PolymarketSettlementDebug = PolyDebugAPI;
+  window.KalshiSettlementDebug = PolyDebugAPI;
+
   // ── Auto-create dashboard when app loads ──
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', () => {
@@ -215,5 +219,5 @@
     setInterval(updateDashboard, 2000);
   }
 
-  console.log('[KalshiSettlementDebug] Dashboard loaded. Use window.KalshiSettlementDebug.printReport() to see accuracy.');
+  console.log('[PolymarketSettlementDebug] Dashboard loaded. Use window.PolymarketSettlementDebug.printReport() to see accuracy.');
 })();

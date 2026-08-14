@@ -8,9 +8,10 @@
     _obsGetQuantDriftSnapshot, _obsEmergencyToolsSummary, _obsBuildMetrics, _obsRenderHist
   } = window.APP_OBSERVABILITY || window;
 
-  const {
-    startKalshiPolling, stopKalshiPolling, loadKalshiHistoricalContracts, scheduleNewContractRetries
-  } = window.APP_KALSHI_POLLING || window;
+  const startKalshiPolling = (window.APP_KALSHI_POLLING && window.APP_KALSHI_POLLING.startKalshiPolling) || (() => {});
+  const stopKalshiPolling = (window.APP_KALSHI_POLLING && window.APP_KALSHI_POLLING.stopKalshiPolling) || (() => {});
+  const loadKalshiHistoricalContracts = (window.APP_KALSHI_POLLING && window.APP_KALSHI_POLLING.loadKalshiHistoricalContracts) || (() => {});
+  const scheduleNewContractRetries = (window.APP_KALSHI_POLLING && window.APP_KALSHI_POLLING.scheduleNewContractRetries) || (() => {});
 
   const {
     startDepthLive, updateDepthBook, updateDepthAlerts, updateDepthRawWalls, 

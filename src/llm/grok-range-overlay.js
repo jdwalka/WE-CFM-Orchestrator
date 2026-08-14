@@ -79,11 +79,9 @@
 
   function resolveMarket(coin) {
     try {
-      if (window.PredictionMarkets && window.PredictionMarkets.getMarket) {
-        return window.PredictionMarkets.getMarket(coin);
+      if (window.PredictionMarkets && window.PredictionMarkets.getCoin) {
+        return window.PredictionMarkets.getCoin(coin);
       }
-      const st = window.PredictionMarkets && window.PredictionMarkets.state;
-      return (st && st[coin]) || null;
     } catch (_) {}
     return null;
   }
@@ -110,139 +108,87 @@
     return false;
   }
 
-  const KALSHI_15M_SERIES = {
-    BTC: 'KXBTC15M', ETH: 'KXETH15M', SOL: 'KXSOL15M',
-    XRP: 'KXXRP15M', DOGE: 'KXDOGE15M', BNB: 'KXBNB15M',
+  const POLY_15M_COIN_SLUGS = {
+    BTC: 'btc', ETH: 'eth', SOL: 'sol', XRP: 'xrp', DOGE: 'doge', HYPE: 'hype', BNB: 'bnb',
   };
 
   /**
-   * Bind 15m Grok to the *active* Kalshi 15M UP/DOWN contract only.
-   * YES = price finishes UP over the window / above strike (per contract subtitle).
+   * Bind 15m Grok to the *active* Polymarket 15m Up/Down market only.
+   * Polymarket's "Up" outcome token IS "price finishes up over the window" --
+   * unlike Kalshi there's no floor_price/strike_type to interpret, and no
+   * inverted-contract case (strikeDir='below'). The window's own open price
+   * (priceToBeatNum, itself TWAP-sourced) is the reference, not a strike.
    */
-  function buildKalshi15m(coin, market) {
-    let k = (market && (market.kalshi15m || market.kalshi || market['15m'])) || null;
-    try {
-      if (window.HourlyRangesPanel && typeof window.HourlyRangesPanel.get15mMarket === 'function') {
-        const live15 = window.HourlyRangesPanel.get15mMarket(coin);
-        if (live15 && live15.ticker) {
-          const yesAsk = parseFloat(live15.yes_ask_dollars || live15.yesAsk) || 0;
-          const yesBid = parseFloat(live15.yes_bid_dollars || live15.yesBid) || 0;
-          const prob = yesAsk > 0 && yesBid > 0 ? (yesAsk + yesBid) / 2 : (yesAsk || yesBid || 0.50);
-          const floor = live15.floor_strike != null ? parseFloat(live15.floor_strike)
-            : (live15.floor_price != null ? parseFloat(live15.floor_price) : NaN);
-          k = {
-            ticker: live15.ticker,
-            series: live15.series_ticker || `KX${coin}15M`,
-            closeTime: live15.close_time,
-            probability: prob,
-            yesProb: prob,
-            yesAsk,
-            yesBid,
-            floorPrice: Number.isFinite(floor) ? floor : null,
-            strikeDir: String(live15.yes_sub_title || live15.subtitle || '').toLowerCase().includes('below') ? 'below' : 'above',
-            subtitle: live15.yes_sub_title || live15.subtitle || null,
-            title: live15.title || null,
-          };
-        }
-      }
-    } catch (_) {}
-    try {
-      if ((!k || !k.ticker) && window.PredictionMarkets && typeof window.PredictionMarkets.getCoin === 'function') {
-        const c = window.PredictionMarkets.getCoin(coin);
-        if (c && c.kalshi15m && c.kalshi15m.ticker) k = c.kalshi15m;
-      }
-    } catch (_) {}
-    try {
-      if ((!k || !k.ticker) && window._predictions && window._predictions[coin] && window._predictions[coin].kalshi15m) {
-        k = window._predictions[coin].kalshi15m;
-      }
-    } catch (_) {}
+  function buildPoly15m(coin, market) {
+    let p = (market && market.poly15m) || null;
+    if (!p || !p.slug) {
+      try {
+        const c = window.PredictionMarkets?.getCoin?.(coin);
+        if (c?.poly15m?.slug) p = c.poly15m;
+      } catch (_) {}
+    }
+    if (!p || !p.slug) {
+      try {
+        const live15 = window.HourlyRangesPanel?.get15mMarket?.(coin);
+        if (live15?.slug) p = live15;
+      } catch (_) {}
+    }
 
     const now = Date.now();
-    let closeMs = k && k.closeTime ? Date.parse(k.closeTime) : NaN;
+    let closeMs = p && p.closeTime ? Date.parse(p.closeTime) : NaN;
 
-    // Instant transition to NEXT 15m contract if missing or expired (closeMs <= now)
-    if (!k || !k.ticker || !Number.isFinite(closeMs) || closeMs <= now) {
+    // Instant transition to the NEXT 15m window if missing or expired.
+    // Pending (no live data yet) rather than fabricating a price -- there's
+    // no synthetic PTB to fall back on the way Kalshi's floor_price allowed.
+    if (!p || !p.slug || !Number.isFinite(closeMs) || closeMs <= now) {
       let next15mMs = Math.ceil(now / (15 * 60 * 1000)) * (15 * 60 * 1000);
-      if (next15mMs <= now) {
-        next15mMs += 15 * 60 * 1000;
-      }
+      if (next15mMs <= now) next15mMs += 15 * 60 * 1000;
       const closeIso = new Date(next15mMs).toISOString();
-      const spot = resolvePrice(coin);
-      const series = `KX${coin}15M`;
-      const d = new Date(next15mMs);
-      const yearShort = String(d.getUTCFullYear()).slice(2);
-      const months = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
-      const monthStr = months[d.getUTCMonth()];
-      const dayStr = String(d.getUTCDate()).padStart(2, '0');
-      const hourStr = String(d.getUTCHours()).padStart(2, '0');
-      const minStr = String(d.getUTCMinutes()).padStart(2, '0');
-      const synthTicker = `${series}-${yearShort}${monthStr}${dayStr}${hourStr}${minStr}-${minStr}`;
+      const prefix = POLY_15M_COIN_SLUGS[coin];
+      const slug = prefix ? `${prefix}-updown-15m-${Math.floor(next15mMs / 1000)}` : null;
 
-      k = {
-        ticker: synthTicker,
-        series,
+      p = {
+        slug,
         closeTime: closeIso,
-        probability: k?.probability ?? 0.50,
-        floorPrice: spot,
-        strikeDir: 'above',
-        subtitle: `Target Price: $${spot ? spot.toFixed(2) : '---'}`,
-        title: `${coin} price up in next 15 mins?`,
+        probability: p?.probability ?? null,
+        priceToBeatNum: null,
+        title: `${coin} Up or Down 15M`,
       };
       closeMs = next15mMs;
     }
 
     const secondsToClose = Math.max(0, Math.round((closeMs - Date.now()) / 1000));
-    const yesProb = k.probability != null ? Number(k.probability)
-      : (k.yesProb != null ? Number(k.yesProb) : 0.50);
-    const series = k.series || k.series_ticker || (`KX${coin}15M`);
-    const floor = k.floorPrice != null ? Number(k.floorPrice)
-      : (k.targetPriceNum != null ? Number(k.targetPriceNum) : resolvePrice(coin));
-    const strikeDir = k.strikeDir || (String(k.subtitle || '').toLowerCase().includes('below') ? 'below' : 'above');
+    const yesProb = Number.isFinite(Number(p.probability)) ? Number(p.probability) : null;
+    const ptb = Number.isFinite(Number(p.priceToBeatNum)) ? Number(p.priceToBeatNum) : null;
 
     return {
-      live: true,
-      ticker: k.ticker,
-      series,
-      eventTicker: k.event_ticker || k.eventTicker || null,
-      yesProb: Number.isFinite(yesProb) ? yesProb : 0.50,
-      noProb: Number.isFinite(yesProb) ? Math.max(0.01, Math.min(0.99, 1 - yesProb)) : 0.50,
-      yesBid: k.yesBid != null ? Number(k.yesBid) : (k.yes_bid != null ? Number(k.yes_bid) : yesProb),
-      yesAsk: k.yesAsk != null ? Number(k.yesAsk) : (k.yes_ask != null ? Number(k.yes_ask) : yesProb),
-      noBid: k.noBid != null ? Number(k.noBid) : 1 - yesProb,
-      noAsk: k.noAsk != null ? Number(k.noAsk) : 1 - yesProb,
-      closeTime: k.closeTime,
-      openTime: k.openTime || null,
+      live: !!(p.slug && yesProb != null),
+      slug: p.slug,
+      eventTicker: p.slug,
+      yesProb: yesProb ?? 0.50,
+      noProb: yesProb != null ? Math.max(0.01, Math.min(0.99, 1 - yesProb)) : 0.50,
+      closeTime: p.closeTime,
       secondsToClose,
-      title: k.title || null,
-      subtitle: k.subtitle || null,
-      strikeDir,
-      floorPrice: Number.isFinite(floor) ? floor : null,
-      targetPrice: k.targetPrice || (Number.isFinite(floor) ? `$${floor}` : null),
-      targetPriceNum: Number.isFinite(floor) ? floor : null,
-      volume: k.volume != null ? Number(k.volume) : null,
-      openInterest: k.openInterest != null ? Number(k.openInterest) : null,
+      title: p.title || `${coin} Up or Down 15M`,
+      priceToBeatNum: ptb,
+      targetPrice: p.targetPrice || (ptb != null ? `$${ptb}` : null),
+      targetPriceNum: ptb,
+      volume: p.volume != null ? Number(p.volume) : null,
       tradable: true,
-      settlementRule: strikeDir === 'below'
-        ? `YES wins if ${coin} is BELOW ${Number.isFinite(floor) ? floor : 'strike'} at 15m close → YES = price DOWN`
-        : `YES wins if ${coin} is AT/ABOVE ${Number.isFinite(floor) ? floor : 'open/strike'} at 15m close → YES = price UP`,
-      yesMeansPriceUp: !(String(strikeDir).toLowerCase() === 'below' || String(strikeDir).toLowerCase() === 'under'),
+      settlementRule: `Polymarket resolves "Up" if ${coin} finishes above the window's open price (price-to-beat, TWAP-sourced) at 15m close.`,
     };
   }
 
-  function buildKalshiHourlyLadder(coin, spot) {
-    // Prefer live ladder from hourly-ranges panel when available
+  function buildHourlyLadder(coin, spot) {
+    // Polymarket has no live multi-strike hourly-range market today (unlike
+    // Kalshi's KX* series), so HourlyRangesPanel always returns its
+    // spot-centered synthetic distribution here -- see hourly-ranges-panel.js.
     let ranges = null;
     try {
       if (window.HourlyRangesPanel && typeof window.HourlyRangesPanel.getRanges === 'function') {
         ranges = window.HourlyRangesPanel.getRanges(coin);
       }
     } catch (_) {}
-    if (!Array.isArray(ranges) || !ranges.length) {
-      try {
-        ranges = (window.__hourlyRangesState && window.__hourlyRangesState[coin]) || null;
-      } catch (_) {}
-    }
     if (!Array.isArray(ranges) || !ranges.length) return { ladder: [], spotBucket: null };
 
     const price = Number(spot);
@@ -252,7 +198,7 @@
       yesProb: Number(r.prob ?? r.yesAsk ?? r.yesBid) || null,
       yesBid: r.yesBid != null ? Number(r.yesBid) : null,
       yesAsk: r.yesAsk != null ? Number(r.yesAsk) : null,
-      ticker: r.ticker || r.event_ticker || null,
+      ticker: r.ticker || null,
       closeTime: r.closeTime || null,
       isSpot: Number.isFinite(price) && price >= Number(r.low) && price <= Number(r.high),
     }));
@@ -265,9 +211,8 @@
     const market = resolveMarket(coin) || {};
     const current = resolvePrice(coin);
     const sessionMemory = mem() ? mem().memoryPackForPrompt(coin) : { sampleCount: 0, sessionMinutes: 0 };
-    const k15raw = market.kalshi15m || market['15m'] || {};
-    const kalshi15m = buildKalshi15m(coin, market);
-    const { ladder, spotBucket } = buildKalshiHourlyLadder(coin, current);
+    const poly15m = buildPoly15m(coin, market);
+    const { ladder, spotBucket } = buildHourlyLadder(coin, current);
     let xSent = { score: 0, summary: 'n/a', momentum: 'flat' };
     try {
       if (window.SocialSentiment && window.SocialSentiment.getTrend) {
@@ -293,9 +238,9 @@
       rangePrediction: true,
       rangeHorizon: true,
       // Explicit product flags for LLM routing / prompts
-      kalshi15mContract: is15,
-      kalshiHourlyRanges: !is15,
-      venue: is15 ? 'kalshi-15m' : 'kalshi-hourly',
+      poly15mContract: is15,
+      hourlyRanges: !is15,
+      venue: is15 ? 'polymarket-15m' : 'polymarket-hourly',
       currentPrice: current,
       direction: modelDir,
       modelDirection: modelDir,
@@ -306,19 +251,17 @@
       sessionMemory,
       analyticsMemory: sessionMemory,
       // THE contract Grok must analyze for 15m
-      kalshi15m,
-      activeContract: is15 ? kalshi15m : null,
-      kalshiRangeLadder: ladder,
-      kalshiSpotBucket: spotBucket,
+      poly15m,
+      activeContract: is15 ? poly15m : null,
+      rangeLadder: ladder,
+      spotBucket,
       higherTF: {
         '15m': {
-          prob: kalshi15m.yesProb ?? null,
-          ticker: kalshi15m.ticker,
-          series: kalshi15m.series,
-          live: kalshi15m.live,
-          floorPrice: kalshi15m.floorPrice,
-          strikeDir: kalshi15m.strikeDir,
-          secondsToClose: kalshi15m.secondsToClose,
+          prob: poly15m.yesProb ?? null,
+          slug: poly15m.slug,
+          live: poly15m.live,
+          priceToBeatNum: poly15m.priceToBeatNum,
+          secondsToClose: poly15m.secondsToClose,
           open: sessionMemory.open15m || null,
           closed: sessionMemory.windows15m || null,
         },
@@ -336,35 +279,22 @@
         modelDirection: modelDir,
         modelScore: modelScore,
         confidencePct: confidence != null ? Math.round(confidence * 100) : null,
-        kalshi15mYes: kalshi15m.yesProb,
-        kalshi15mTicker: kalshi15m.ticker,
+        poly15mYes: poly15m.yesProb,
+        poly15mSlug: poly15m.slug,
       },
       xaiMaxTokens: 1400,
     };
   }
 
-  /**
-   * Kalshi YES is NOT always "price up".
-   * strikeDir === 'below' → YES wins if price finishes DOWN/under strike.
-   * strikeDir === 'above' (default for 15M up/down) → YES wins if price finishes UP/over strike.
-   */
-  function yesMeansPriceUp(strikeDir) {
-    const d = String(strikeDir || 'above').toLowerCase();
-    return !(d === 'below' || d === 'under');
+  /** Map price direction UP/DOWN → the Polymarket outcome token to buy */
+  function priceDirToYesSide(priceDir) {
+    return String(priceDir).toUpperCase() === 'UP' ? 'Up' : 'Down';
   }
 
-  /** Map price direction UP/DOWN → buy YES or NO on the contract */
-  function priceDirToYesSide(priceDir, strikeDir) {
-    const up = String(priceDir).toUpperCase() === 'UP';
-    if (yesMeansPriceUp(strikeDir)) return up ? 'YES' : 'NO';
-    return up ? 'NO' : 'YES'; // inverted contract
-  }
-
-  /** Map market YES probability → P(price goes up) */
-  function yesProbToPriceUpProb(yesProb, strikeDir) {
+  /** Polymarket's Up-token probability IS P(price goes up) -- no inversion. */
+  function yesProbToPriceUpProb(yesProb) {
     const y = Number(yesProb);
-    if (!Number.isFinite(y)) return null;
-    return yesMeansPriceUp(strikeDir) ? y : (1 - y);
+    return Number.isFinite(y) ? y : null;
   }
 
   function clamp01(x) {
@@ -376,10 +306,10 @@
    * Blends quantitative model directional prediction, market YES odds, and spot vs floor.
    */
   function decide15mMechanically(snapshot) {
-    const k = snapshot.kalshi15m || {};
+    const k = snapshot.poly15m || {};
     const spot = Number(snapshot.currentPrice);
-    const floor = Number(k.floorPrice ?? k.targetPriceNum);
-    const pUpMkt = yesProbToPriceUpProb(k.yesProb, k.strikeDir);
+    const floor = Number(k.priceToBeatNum);
+    const pUpMkt = yesProbToPriceUpProb(k.yesProb);
     const path = Number(snapshot.sessionMemory && snapshot.sessionMemory.pathReturnPct);
     const open15 = snapshot.sessionMemory && snapshot.sessionMemory.open15m;
     const modelDir = snapshot.direction || snapshot.modelDirection;
@@ -396,14 +326,14 @@
       reasons.push(`model=${modelDir} conf=${(modelConf * 100).toFixed(0)}% score=${modelScore.toFixed(3)}`);
     }
 
-    // 2. Kalshi Market Probability (35% weight)
+    // 2. Polymarket Up-token Probability (35% weight)
     if (Number.isFinite(pUpMkt)) {
       const edge = (pUpMkt - 0.5) * 2; // -1..1
       score += edge * 1.2;
-      reasons.push(`mktP(up)=${(pUpMkt * 100).toFixed(1)}% (yes=${k.yesProb != null ? (k.yesProb * 100).toFixed(1) : '?'}% strike=${k.strikeDir || 'above'})`);
+      reasons.push(`mktP(up)=${(pUpMkt * 100).toFixed(1)}%`);
     }
 
-    // 3. Spot vs Strike Distance
+    // 3. Spot vs Price-to-Beat Distance
     if (Number.isFinite(spot) && Number.isFinite(floor) && floor > 0) {
       const bps = ((spot - floor) / floor) * 10000;
       score += Math.max(-0.5, Math.min(0.5, bps / 30));
@@ -436,7 +366,7 @@
    * Hourly: pick ladder bucket by market YES * proximity * model prediction.
    */
   function decideHourlyMechanically(snapshot) {
-    let ladder = Array.isArray(snapshot.kalshiRangeLadder) ? snapshot.kalshiRangeLadder.slice() : [];
+    let ladder = Array.isArray(snapshot.rangeLadder) ? snapshot.rangeLadder.slice() : [];
     const spot = Number(snapshot.currentPrice);
     const open1h = snapshot.sessionMemory && snapshot.sessionMemory.open1h;
     const path = Number(snapshot.sessionMemory && snapshot.sessionMemory.pathReturnPct);
@@ -513,8 +443,8 @@
       const mech = decide15mMechanically(snapshot);
       let call = grokCall === 'UP' || grokCall === 'DOWN' ? grokCall : mech.call;
       // If Grok fights strong market ( |pUp-0.5| > 0.12 ), trust market/mech
-      const k = snapshot.kalshi15m || {};
-      const pUp = yesProbToPriceUpProb(k.yesProb, k.strikeDir);
+      const k = snapshot.poly15m || {};
+      const pUp = yesProbToPriceUpProb(k.yesProb);
       if (Number.isFinite(pUp) && Math.abs(pUp - 0.5) >= 0.12) {
         const mktCall = pUp >= 0.5 ? 'UP' : 'DOWN';
         if (call !== mktCall && call !== mech.call) call = mech.call;
@@ -569,7 +499,7 @@
   function resolvePreferredRange(output, snapshot, call, mech) {
     if (mech && mech.preferredRange) return mech.preferredRange;
     const pr = (output && output.preferredRange) || null;
-    const ladder = (snapshot && snapshot.kalshiRangeLadder) || [];
+    const ladder = (snapshot && snapshot.rangeLadder) || [];
     if (pr && Number.isFinite(Number(pr.low)) && Number.isFinite(Number(pr.high))) {
       // Only accept if it matches a ladder row (within $1)
       const match = ladder.find((b) =>
@@ -605,37 +535,41 @@
 
     try {
       const snapshot = buildRangeSnapshot(coin, horizonMinutes);
+      // ASI1 leads pre-contract 15m/60m market analysis (cascade + flags)
+      snapshot.preContract = true;
+      snapshot.preferAsi1 = true;
+      snapshot.rangePrediction = true;
       const sc = snapshot.sessionMemory && snapshot.sessionMemory.sampleCount;
 
-      // 15m: only analyze when we have a live Kalshi 15M contract ticker
+      // 15m: only analyze when we have a live Polymarket 15m market
       if (horizonMinutes === 15) {
-        const c = snapshot.kalshi15m;
-        if (!c || !c.ticker || !c.live) {
-          console.warn(`[GrokRange] skip ${coin} 15m — no live Kalshi 15M contract (need PredictionMarkets.kalshi15m)`);
+        const c = snapshot.poly15m;
+        if (!c || !c.slug || !c.live) {
+          console.warn(`[GrokRange] skip ${coin} 15m — no live Polymarket 15m market (need PredictionMarkets.getCoin().poly15m)`);
           _guidance[key][coin] = {
             ts: now,
             horizonMinutes: 15,
-            error: 'no-live-kalshi-15m-contract',
-            kalshi15m: c || null,
+            error: 'no-live-poly-15m-market',
+            poly15m: c || null,
           };
           return;
         }
         console.log(
-          `[GrokRange] firing ${coin} 15m ON CONTRACT ${c.ticker} series=${c.series} yes=${c.yesProb != null ? (c.yesProb * 100).toFixed(1) + '%' : '?'} ttc=${c.secondsToClose}s floor=${c.floorPrice ?? 'n/a'}`
+          `[GrokRange] firing ${coin} 15m (ASI1-primary) ON ${c.slug} yes=${c.yesProb != null ? (c.yesProb * 100).toFixed(1) + '%' : '?'} ttc=${c.secondsToClose}s ptb=${c.priceToBeatNum ?? 'n/a'}`
         );
       } else {
-        console.log(`[GrokRange] firing ${coin} ${key} samples=${sc ?? 0} ladder=${(snapshot.kalshiRangeLadder || []).length}`);
+        console.log(`[GrokRange] firing ${coin} ${key} ASI1-primary samples=${sc ?? 0} ladder=${(snapshot.rangeLadder || []).length}`);
       }
 
       const res = await _withTimeout(
         window.electron.invoke('llm:analyzeSnapshot', snapshot),
         REQUEST_TIMEOUT_MS,
-        'grok' + key + ':' + coin
+        'range' + key + ':' + coin
       );
 
       if (res && res.success && res.output) {
         const o = res.output;
-        const grokDir = parseGrokPriceDir(o, snapshot.kalshi15m?.strikeDir);
+        const grokDir = parseGrokPriceDir(o);
         const finalized = finalizeCall(horizonMinutes, grokDir, snapshot);
         let call = finalized.call;
         if (call !== 'UP' && call !== 'DOWN') {
@@ -654,43 +588,34 @@
           ? (confRaw <= 1 ? confRaw : confRaw / 100)
           : null;
         const confidence = clamp01(Math.max(finalized.confidence, grokConf != null ? grokConf : 0));
-        const k15 = snapshot.kalshi15m || {};
-        // A non-directional call has no contract side — emitting YES/NO here would
-        // assert a trade the model never made (priceDirToYesSide treats anything
-        // that is not 'UP' as the down side).
-        const yesSide = call === 'WAIT'
-          ? null
-          : (horizonMinutes === 15
-            ? priceDirToYesSide(call, k15.strikeDir)
-            : (call === 'UP' ? 'YES' : 'NO'));
-        const kalshiPeg = horizonMinutes === 15
+        const k15 = snapshot.poly15m || {};
+        // A non-directional call has no side — emitting Up/Down here would
+        // assert a trade the model never made.
+        const side = call === 'WAIT' ? null : (horizonMinutes === 15 ? priceDirToYesSide(call) : (call === 'UP' ? 'Up' : 'Down'));
+        const polyPeg = horizonMinutes === 15
           ? {
-              ticker: k15.ticker,
-              series: k15.series,
-              eventTicker: k15.eventTicker,
-              side: yesSide,
+              slug: k15.slug,
+              side,
               priceDirection: call,
               yesProb: k15.yesProb,
-              priceUpProb: yesProbToPriceUpProb(k15.yesProb, k15.strikeDir),
-              floorPrice: k15.floorPrice,
-              strikeDir: k15.strikeDir,
+              priceUpProb: yesProbToPriceUpProb(k15.yesProb),
+              priceToBeatNum: k15.priceToBeatNum,
               closeTime: k15.closeTime,
               secondsToClose: k15.secondsToClose,
               settlementRule: k15.settlementRule,
-              rationale: `Price ${call} → buy ${yesSide} on ${k15.ticker} (strikeDir=${k15.strikeDir || 'above'})`,
+              rationale: `Price ${call} → buy ${side} on ${k15.slug}`,
               mechReasons: (finalized.mech && finalized.mech.reasons) || [],
             }
           : {
-              ticker: preferredRange && preferredRange.ticker,
-              series: null,
-              side: yesSide,
+              slug: preferredRange && preferredRange.ticker,
+              side,
               priceDirection: call,
               rationale: (finalized.mech && finalized.mech.reasons || []).join('; '),
             };
         const notesBase = (o.suggestions && o.suggestions.notes) || '';
         const notes = horizonMinutes === 15
-          ? (`${call} ${k15.ticker || ''} → ${yesSide}`.trim()
-            + ` · mktYES ${k15.yesProb != null ? (k15.yesProb * 100).toFixed(0) + '%' : '?'}`
+          ? (`${call} ${k15.slug || ''} → ${side}`.trim()
+            + ` · mktUp ${k15.yesProb != null ? (k15.yesProb * 100).toFixed(0) + '%' : '?'}`
             + ` · ttc ${k15.secondsToClose ?? '?'}s`
             + (notesBase ? ` — ${notesBase.replace(/^\s*(UP|DOWN)\b\s*/i, '').slice(0, 120)}` : ''))
           : (`${call}`
@@ -711,9 +636,9 @@
           regime: o.regime || 'unknown',
           range: o.range || preferredRange,
           preferredRange,
-          kalshiPeg,
-          kalshi15m: k15,
-          contractTicker: horizonMinutes === 15 ? k15.ticker : (preferredRange && preferredRange.ticker),
+          polyPeg,
+          poly15m: k15,
+          contractSlug: horizonMinutes === 15 ? k15.slug : (preferredRange && preferredRange.ticker),
           notes,
           rationale: (o.ai_wording && o.ai_wording.primary_rationale) || '',
           marketPatterns: (o.ai_wording && o.ai_wording.market_patterns) || '',
@@ -742,7 +667,7 @@
             call,
             horizonMinutes,
             preferredRange,
-            source: 'kalshi-range-' + key,
+            source: 'polymarket-range-' + key,
           };
         } catch (_) {}
         console.log(`[GrokRange] ${coin} ${key} → ${call} conf=${confidence.toFixed(2)} samples=${sc} peg=${preferredRange ? preferredRange.low + '-' + preferredRange.high : 'n/a'}`);
@@ -752,16 +677,14 @@
           }
         } catch (_) {}
       } else {
-        // LLM failed — still emit mechanical Kalshi-tied call (no WAIT)
+        // LLM failed — still emit a mechanical Polymarket-tied call (no WAIT)
         const finalized = finalizeCall(horizonMinutes, null, snapshot);
         const call = finalized.call === 'DOWN' ? 'DOWN' : 'UP';
         const preferredRange = horizonMinutes === 60
           ? resolvePreferredRange(null, snapshot, call, finalized.mech)
           : null;
-        const k15 = snapshot.kalshi15m || {};
-        const yesSide = horizonMinutes === 15
-          ? priceDirToYesSide(call, k15.strikeDir)
-          : (call === 'UP' ? 'YES' : 'NO');
+        const k15 = snapshot.poly15m || {};
+        const side = horizonMinutes === 15 ? priceDirToYesSide(call) : (call === 'UP' ? 'Up' : 'Down');
         _guidance[key][coin] = {
           ts: now,
           horizonMinutes,
@@ -769,21 +692,19 @@
           direction: call,
           confidence: finalized.confidence,
           preferredRange,
-          kalshi15m: k15,
-          kalshiPeg: horizonMinutes === 15 ? {
-            ticker: k15.ticker,
-            series: k15.series,
-            side: yesSide,
+          poly15m: k15,
+          polyPeg: horizonMinutes === 15 ? {
+            slug: k15.slug,
+            side,
             priceDirection: call,
             yesProb: k15.yesProb,
-            strikeDir: k15.strikeDir,
             settlementRule: k15.settlementRule,
             rationale: 'mechanical (LLM empty)',
             mechReasons: (finalized.mech && finalized.mech.reasons) || [],
-          } : { ticker: preferredRange && preferredRange.ticker, side: yesSide },
-          contractTicker: horizonMinutes === 15 ? k15.ticker : (preferredRange && preferredRange.ticker),
+          } : { slug: preferredRange && preferredRange.ticker, side },
+          contractSlug: horizonMinutes === 15 ? k15.slug : (preferredRange && preferredRange.ticker),
           notes: horizonMinutes === 15
-            ? `${call} ${k15.ticker || ''} → ${yesSide} · mechanical (${(res && res.error) || 'empty-llm'})`
+            ? `${call} ${k15.slug || ''} → ${side} · mechanical (${(res && res.error) || 'empty-llm'})`
             : `${call} · mechanical hourly`,
           provider: 'mechanical',
         };
@@ -802,10 +723,10 @@
           confidence: finalized.confidence,
           notes: `${call} · mechanical after error: ${e && e.message}`,
           provider: 'mechanical',
-          kalshi15m: snapshot.kalshi15m,
-          kalshiPeg: horizonMinutes === 15 ? {
-            ticker: snapshot.kalshi15m && snapshot.kalshi15m.ticker,
-            side: priceDirToYesSide(call, snapshot.kalshi15m && snapshot.kalshi15m.strikeDir),
+          poly15m: snapshot.poly15m,
+          polyPeg: horizonMinutes === 15 ? {
+            slug: snapshot.poly15m && snapshot.poly15m.slug,
+            side: priceDirToYesSide(call),
             priceDirection: call,
           } : null,
         };
@@ -843,9 +764,9 @@
 
     // Instant Drop & Transition for expired 15m contract guidance
     if (key === '15m' && g) {
-      const k15 = g.kalshiPeg || g.kalshi15m;
+      const k15 = g.polyPeg || g.poly15m;
       const closeMs = k15 && k15.closeTime ? Date.parse(k15.closeTime) : NaN;
-      // Age fallback: guidance built when no Kalshi contract could be resolved has
+      // Age fallback: guidance built when no Polymarket market could be resolved has
       // k15 = {} → closeTime undefined → closeMs NaN, so the close check below can
       // never fire and the entry would live forever, rendering its original call and
       // colour indefinitely. A 15m call cannot outlive its own window.
@@ -965,8 +886,8 @@
     async evaluateJob(job) {
       const { coin, spot } = job;
       const snapshot15 = buildRangeSnapshot(coin, 15);
-      const k15 = snapshot15.kalshi15m || {};
-      const floor = k15.floorPrice ?? k15.targetPriceNum;
+      const k15 = snapshot15.poly15m || {};
+      const floor = k15.priceToBeatNum;
       const ttc = Number(k15.secondsToClose);
 
       // Self-check 15m contract guidance telemetry against live Pyth spot price vs target strike

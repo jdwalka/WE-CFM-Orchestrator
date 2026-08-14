@@ -58,3 +58,33 @@
 - Days: 30  Candles: 8640
 - Coins analyzed: BTC, ETH, SOL, XRP
 - Log: G:\WECRYP\backtest-logs\advanced-2026-08-02.log
+
+## Advanced Backtest — 2026-08-13T19:37:58.032Z
+- Days: 14  Candles: 4032
+- Coins analyzed: SOL
+- Log: G:\WECRYP\backtest-logs\advanced-2026-08-13.log
+
+## Advanced Backtest — 2026-08-13T19:39:52.334Z
+- Days: 14  Candles: 4032
+- Coins analyzed: SOL
+- Log: G:\WECRYP\backtest-logs\advanced-2026-08-13.log
+
+## Walk-Forward Backtest — 2026-08-13T19:38:42.061Z
+- Days: 14  Train: 400  Test: 100  Step: 50
+- Coins: BTC, ETH, SOL, XRP
+- Log: G:\WECRYP\backtest-logs\wf-2026-08-13.log
+
+## Advanced Backtest — 2026-08-13T21:15:24.863Z
+- Days: 1  Candles: 288
+- Coins analyzed: BTC, ETH, SOL, XRP
+- Log: G:\WECRYP\backtest-logs\advanced-2026-08-13.log
+
+## Advanced Backtest — 2026-08-13T21:15:56.739Z
+- Days: 1  Candles: 288
+- Coins analyzed: BTC, ETH, SOL, XRP
+- Log: G:\WECRYP\backtest-logs\advanced-2026-08-13.log
+
+## Advanced Backtest — 2026-08-13T21:32:16.989Z
+- Days: 1  Candles: 288
+- Coins analyzed: BTC, ETH, SOL, XRP
+- Log: G:\WECRYP\backtest-logs\advanced-2026-08-13.log

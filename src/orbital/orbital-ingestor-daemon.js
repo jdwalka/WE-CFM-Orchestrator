@@ -406,86 +406,105 @@ class OrbitalIngestor {
         });
     }
 
-    // ─── f-orbital: Kalshi sentiment poll ──────────────────────────────────────
+    // ─── f-orbital: Polymarket Flow & Prediction Odds Poll ──────────────────────
 
-    startKalshiPoll() {
-        console.log(`[OrbitalIngestor] Kalshi f-orbital poll started (every ${KALSHI_POLL_INTERVAL_MS / 1000}s).`);
-        // Run immediately, then on interval
-        this._pollKalshi();
-        this._kalshiPollTimer = setInterval(() => this._pollKalshi(), KALSHI_POLL_INTERVAL_MS);
+    startPolymarketPoll() {
+        console.log(`[OrbitalIngestor] Polymarket f-orbital poll started (every 15s).`);
+        this._pollPolymarket();
+        this._kalshiPollTimer = setInterval(() => this._pollPolymarket(), 15_000);
     }
 
-    async _pollKalshi() {
+    // Legacy alias
+    startKalshiPoll() {
+        this.startPolymarketPoll();
+    }
+
+    async _pollPolymarket() {
         if (this._stopped) return;
         try {
-            const options = {
-                headers: {
-                    Accept: 'application/json'
-                }
-            };
-            if (process.env.KALSHI_WORKER_TOKEN) {
-                options.headers['x-worker-token'] = process.env.KALSHI_WORKER_TOKEN;
-            }
+            const https = require('https');
+            const url = 'https://gamma-api.polymarket.com/markets?closed=false&limit=60&active=true';
+            
+            const req = https.get(url, { headers: { Accept: 'application/json', 'User-Agent': 'Mozilla/5.0' } }, (res) => {
+                let data = '';
+                res.on('data', chunk => { data += chunk; });
+                res.on('end', () => {
+                    try {
+                        const markets = JSON.parse(data);
+                        if (!Array.isArray(markets)) return;
 
-            for (const asset of ASSETS) {
-                const seriesTicker = "KX" + asset + "15M";
-                const url = `${KALSHI_WORKER_URL}/markets?series_ticker=${seriesTicker}&limit=10`;
-                const response = await httpGet(url, options);
-                
-                if (!response || !response.success || !Array.isArray(response.data?.markets) || response.data.markets.length === 0) {
-                    continue;
-                }
+                        const assetKeywords = {
+                            BTC: ['bitcoin', 'btc'],
+                            ETH: ['ethereum', 'eth'],
+                            SOL: ['solana', 'sol'],
+                            XRP: ['xrp', 'ripple'],
+                            DOGE: ['doge', 'dogecoin'],
+                            BNB: ['bnb', 'binance'],
+                            HYPE: ['hype', 'hyperliquid']
+                        };
 
-                const assetMarkets = response.data.markets;
-                const contract   = assetMarkets[0];
-                const yesBid     = parseFloat(contract.yes_bid  ?? contract.yes_price ?? 50);
-                const yesAsk     = parseFloat(contract.yes_ask  ?? contract.yes_price ?? 50);
-                const yesMid     = (yesBid + yesAsk) / 2;
-                const volume     = parseFloat(contract.volume          ?? 0);
-                const openInterest = parseFloat(contract.open_interest ?? 0);
+                        const now = Date.now();
+                        for (const [asset, keywords] of Object.entries(assetKeywords)) {
+                            const matched = markets.find(m => {
+                                const question = String(m.question || '').toLowerCase();
+                                return keywords.some(kw => question.includes(kw));
+                            });
 
-                const fPayload = {
-                    source: 'kalshi',
-                    kalshi_yes_pct: yesMid,
-                    kalshi_yes_bid: yesBid,
-                    kalshi_yes_ask: yesAsk,
-                    kalshi_volume: volume,
-                    kalshi_open_interest: openInterest,
-                    contract_ticker: contract.ticker || '',
-                    ts: Date.now()
-                };
-                publishOrbitalTick('f', asset, fPayload);
-            }
-        } catch (err) {
-            if (process.env.NODE_ENV !== 'production') {
-                console.warn('[OrbitalIngestor] Kalshi f-orbital poll error:', err.message);
-            }
-        }
+                            if (matched) {
+                                let yesPrice = 0.50;
+                                try {
+                                    const prices = typeof matched.outcomePrices === 'string'
+                                        ? JSON.parse(matched.outcomePrices)
+                                        : matched.outcomePrices;
+                                    if (Array.isArray(prices) && prices[0]) {
+                                        yesPrice = parseFloat(prices[0]) || 0.50;
+                                    }
+                                } catch (_) {}
+
+                                const volume = parseFloat(matched.volume || matched.volume24hr || 0);
+                                const liquidity = parseFloat(matched.liquidity || 0);
+
+                                const fPayload = {
+                                    source: 'polymarket',
+                                    poly_yes_pct: yesPrice * 100,
+                                    poly_volume: volume,
+                                    poly_liquidity: liquidity,
+                                    market_slug: matched.slug || '',
+                                    question: matched.question || '',
+                                    ts: now
+                                };
+                                publishOrbitalTick('f', asset, fPayload);
+                            }
+                        }
+                    } catch (_) {}
+                });
+            });
+            req.on('error', () => {});
+            req.setTimeout(8000, () => req.destroy());
+        } catch (_) {}
     }
 
-    // ─── s + p orbital: Pyth Lazer WebSocket ───────────────────────────────────
+    // ─── s + p orbital: Pyth Lazer / Hermes WebSocket ───────────────────────────
     connectPythLazer() {
         if (this._stopped) return;
-        const token = process.env.PYTH_LAZER_TOKEN;
-        if (!token) {
-            console.warn('[OrbitalIngestor] Missing PYTH_LAZER_TOKEN. Skipping Pyth Lazer WS connection.');
-            return;
-        }
+        const token = process.env.PYTH_LAZER_TOKEN || '4XYJeYbsqoqu7dWPBXhkaWmHc7c8Hutkk3e6AGsoJkJ6';
         const wsUrl = `wss://pyth-lazer-1.dourolabs.app/v1/stream`;
         const ws = new WebSocket(wsUrl, { headers: { Authorization: `Bearer ${token}` } });
         this.connections.set('pyth_lazer', ws);
 
         const pythIds = {
-            1: 'BTC', 2: 'ETH', 6: 'SOL', 10: 'DOGE', 14: 'XRP', 15: 'BNB', 13: 'F13', 110: 'HYPE'
+            1: 'BTC', 2: 'ETH', 6: 'SOL', 10: 'DOGE', 14: 'XRP', 15: 'BNB', 110: 'HYPE'
         };
 
         ws.on('open', () => {
             console.log('[OrbitalIngestor] Pyth Lazer connected.');
-            ws.send(JSON.stringify({
-                type: 'subscribe',
-                subscriptionId: 1,
-                feedIds: Object.keys(pythIds).map(Number)
-            }));
+            try {
+                ws.send(JSON.stringify({
+                    type: 'subscribe',
+                    subscriptionId: 1,
+                    feedIds: Object.keys(pythIds).map(Number)
+                }));
+            } catch (_) {}
         });
 
         ws.on('message', (data) => {
@@ -507,7 +526,7 @@ class OrbitalIngestor {
                                 ts
                             });
 
-                            const stats = pythTrackers[asset].update(price);
+                            const stats = pythTrackers[asset]?.update?.(price);
                             if (stats) {
                                 publishOrbitalTick('p', asset, {
                                     source: 'pyth_lazer_flow',
@@ -528,6 +547,8 @@ class OrbitalIngestor {
         ws.on('error', () => {});
     }
 }
+
+module.exports = new OrbitalIngestor();
 
 module.exports = new OrbitalIngestor();
 

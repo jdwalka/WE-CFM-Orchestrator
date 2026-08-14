@@ -431,7 +431,10 @@ function renderMarkets5M() {
     // (fingerprint changed) or the panel was just freshly mounted (content still
     // holds a different view's markup -- checked via the container's own
     // dataset, which survives other views overwriting content.innerHTML).
-    const fingerprint = COINS_5M.map(s => `${s}:${pm[s]?.poly5m?.slug || ''}:${pm[s]?.poly5m?.priceToBeatNum ?? pm[s]?.poly5m?.targetPriceNum ?? ''}`).join('|');
+    const fingerprint = COINS_5M.map(s => {
+      const b = window.Asi1PreContract?.get?.(s, '5m');
+      return `${s}:${pm[s]?.poly5m?.slug || ''}:${pm[s]?.poly5m?.priceToBeatNum ?? pm[s]?.poly5m?.targetPriceNum ?? ''}:${b?.ts || 0}:${b?.call || ''}`;
+    }).join('|');
     const _now5m = Date.now();
     const stillMounted = content?.dataset?.wecryptoView === 'markets5m';
     if (stillMounted && fingerprint === window._markets5mLastFingerprint
@@ -479,15 +482,14 @@ function renderMarkets5M() {
       if (prob <= 0.45) return `<span class="badge-down" style="${sz}">▼ BUY DOWN</span>`;
       return `<span class="badge-neutral" style="${sz}">◆ WAIT</span>`;
     }
-    function _live5mSignal(p5, fallbackCurrentPx = null) {
-      // Polymarket 5m contracts settle exclusively against Chainlink, so the
-      // primary UP/DOWN signal traders act on must compare like-for-like against
-      // the Chainlink-sourced price-to-beat. A faster spot tick (Pyth, the app's
-      // general ticker) can diverge from Chainlink by a few dollars — enough to
-      // flip direction on cents-margin contracts even when settlement wouldn't
-      // actually flip — so it's only used as a fallback when Chainlink has no
-      // reading yet.
-      const chainlinkCurrent = Number(p5?.chainlinkCurrentPriceNum);
+    function _live5mSignal(p5, fallbackCurrentPx = null, explicitSym = null) {
+      let sym = explicitSym || p5?.sym || null;
+      if (!sym && p5?.slug) {
+        const m = String(p5.slug).match(/^(btc|eth|sol|xrp|doge|bnb|hype)-/i);
+        if (m) sym = m[1].toUpperCase();
+      }
+      const rtdsTwap = (sym && window.PredictionMarkets?.getFreshRtdsTwap?.(sym, 15_000)?.price) || null;
+      const chainlinkCurrent = rtdsTwap ?? Number(p5?.chainlinkCurrentPriceNum ?? p5?.currentPriceNum);
       const useChainlink = Number.isFinite(chainlinkCurrent) && chainlinkCurrent > 0;
       const current = useChainlink
         ? chainlinkCurrent
@@ -582,6 +584,25 @@ function renderMarkets5M() {
       // already-formatted string used elsewhere (the contract queue).
       const ptbNum = Number(p5?.targetPriceNum ?? p5?.priceToBeatNum);
       const ptbLabel = p5?.targetPrice || (Number.isFinite(ptbNum) && ptbNum > 0 ? `$${ptbNum.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 6 })}` : null);
+
+      // Record this window's call for later grading against the real
+      // settlement outcome (src/kalshi/poly5m-resolution-tracker.js).
+      // Idempotent per slug -- safe to call on every render, not just once.
+      if (modelOdds != null && p5?.slug) {
+        const slugMatch = String(p5.slug).match(/-updown-(5m|15m)-(\d+)$/);
+        if (slugMatch) {
+          const windowSec = slugMatch[1] === '15m' ? 900 : 300;
+          const windowStart = Number(slugMatch[2]);
+          window.Poly5MResolutionTracker?.recordPending5mPrediction(sym, p5.slug, windowStart, windowSec, {
+            direction: modelOdds >= 0.5 ? 'UP' : 'DOWN',
+            confidence: Math.abs(modelOdds - 0.5) * 2,
+            modelYesPct: modelOdds,
+            ptbAnchored,
+            ptbOpen: Number.isFinite(ptbNum) && ptbNum > 0 ? ptbNum : null,
+          });
+        }
+      }
+
       const edge = (modelOdds != null && Number.isFinite(p5prob)) ? (modelOdds - p5prob) : null;
       const edgeColor = edge == null ? 'var(--color-text-faint)' : Math.abs(edge) < 0.03 ? 'var(--color-text-faint)' : (edge > 0 ? 'var(--color-green)' : 'var(--color-red)');
       const edgeLabel = edge == null ? '' : `Δ${edge >= 0 ? '+' : ''}${Math.round(edge * 100)}pt vs venue`;
@@ -604,16 +625,36 @@ function renderMarkets5M() {
           ${modelOdds == null ? `
             <div style="font-size:9px;color:var(--color-text-faint);margin-top:4px;">Run predictions</div>
           ` : (() => {
-            const action = modelOdds >= 0.55 ? '▲ YES' : modelOdds <= 0.45 ? '▼ NO' : '◆ WAIT';
-            const actionColor = modelOdds >= 0.55 ? 'var(--color-green)' : modelOdds <= 0.45 ? 'var(--color-red)' : 'var(--color-text-faint)';
-            const actionVerb = modelOdds >= 0.55 ? 'close ABOVE PTB' : modelOdds <= 0.45 ? 'close BELOW PTB' : 'is a coin flip right now';
+            const abovePct = Math.round(modelOdds * 100);
+            const belowPct = 100 - abovePct;
+
+            let statement = '';
+            let actionBadge = '';
+            let actionColor = '';
+
+            if (modelOdds >= 0.55) {
+              actionColor = 'var(--color-green)';
+              statement = `Model projects <strong style="color:${actionColor}">${abovePct}%</strong> chance to close <strong>ABOVE PTB</strong>`;
+              actionBadge = `<span style="font-size:16px;font-weight:800;color:${actionColor}">${abovePct}%</span>
+                             <span style="font-size:10px;font-weight:700;color:${actionColor}">▲ YES</span>`;
+            } else if (modelOdds <= 0.45) {
+              actionColor = 'var(--color-red)';
+              statement = `Model projects <strong style="color:${actionColor}">${belowPct}%</strong> chance to close <strong>BELOW PTB</strong> <span style="font-size:10px;color:var(--color-text-faint)">(${abovePct}% YES)</span>`;
+              actionBadge = `<span style="font-size:16px;font-weight:800;color:${actionColor}">${belowPct}%</span>
+                             <span style="font-size:10px;font-weight:700;color:${actionColor}">▼ NO</span>`;
+            } else {
+              actionColor = 'var(--color-text-faint)';
+              statement = `Model projects neutral market (<strong style="color:var(--color-text)">${abovePct}%</strong> YES / <strong style="color:var(--color-text)">${belowPct}%</strong> NO)`;
+              actionBadge = `<span style="font-size:16px;font-weight:800;color:${actionColor}">${abovePct}%</span>
+                             <span style="font-size:10px;font-weight:700;color:${actionColor}">◆ WAIT</span>`;
+            }
+
             return `
               <div style="font-size:11px;color:var(--color-text);margin-top:4px;">
-                Model believes <strong style="color:${actionColor}">${Math.round(modelOdds * 100)}%</strong> chance to ${actionVerb}
+                ${statement}
               </div>
               <div style="display:flex;align-items:baseline;gap:6px;margin-top:3px;">
-                <span style="font-size:16px;font-weight:800;color:${actionColor}">${Math.round(modelOdds * 100)}%</span>
-                <span style="font-size:10px;font-weight:700;color:${actionColor}">${action}</span>
+                ${actionBadge}
               </div>
               ${_confBar(modelOdds)}
               ${!ptbAnchored ? `<div style="font-size:8px;color:var(--color-text-faint);margin-top:2px;">directional lean only -- Polymarket has not published this window's price-to-beat yet</div>` : ''}
@@ -624,6 +665,11 @@ function renderMarkets5M() {
               ${live5m.state} PTB by <strong>${_fmtSignedPriceDelta(live5m.delta)}</strong> (${(Math.abs(live5m.deltaPct) * 100).toFixed(3)}%)
             </div>
           ` : ''}
+          ${(() => {
+            try {
+              return window.Asi1PreContract?.renderStripHtml?.(sym, { horizon: '5m', maxNotes: 320 }) || '';
+            } catch (_) { return ''; }
+          })()}
           ${rationaleBlockHtml || divergenceAlertHtml ? `
             <div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--color-border);display:flex;flex-direction:column;gap:6px;">
               ${rationaleBlockHtml}
@@ -657,7 +703,7 @@ function renderMarkets5M() {
     function _modelOdds(sym) {
       const p = pred[sym];
       if (!p) return null;
-      const cdfYesPct = p.projections?.p15?.kalshiAlign?.modelYesPct;
+      const cdfYesPct = p.projections?.p15?.kalshiAlign?.modelYesPct ?? p.diagnostics?.ptbAnchor?.modelYesPct;
       if (Number.isFinite(cdfYesPct)) {
         return _clamp(cdfYesPct / 100, 0.02, 0.98);
       }
@@ -666,60 +712,74 @@ function renderMarkets5M() {
         return proj >= 0 ? 0.5 + (Math.abs(proj) * 0.5) : 0.5 - (Math.abs(proj) * 0.5);
       }
       if (Number.isFinite(p.score)) {
-        return _clamp(0.5 + p.score * 0.40, 0.02, 0.98);
+        return _clamp(0.5 + p.score * 0.35, 0.05, 0.95);
       }
       return null;
     }
 
     function _modelOdds5m(sym) {
       const p = pred[sym];
-      if (!p) return null;
-      // 0. Prefer live PTB-anchored re-score (settlement objective, not free momentum)
-      const ptbYes = p.diagnostics?.ptbAnchor?.modelYesPct;
-      if (Number.isFinite(ptbYes)) {
-        return _clamp(ptbYes / 100, 0.02, 0.98);
-      }
-      // 1. Check if we have exact polyAlign on the p5 projection
-      const polyYesPct = p.projections?.p5?.polyAlign?.modelYesPct;
-      if (Number.isFinite(polyYesPct)) {
-        return _clamp(polyYesPct / 100, 0.02, 0.98);
-      }
-      // 2. Check the h5 projection target vs priceToBeat (time-aware sigma)
       const p5 = pm[sym]?.poly5m;
       const ptb = Number(p5?.targetPriceNum ?? p5?.priceToBeatNum);
-      const proj = p.projections?.p5 ?? null;
-      const lastPrice = Number(p.price || proj?.target);
-      if (proj && Number.isFinite(proj.target) && Number.isFinite(ptb) && ptb > 0 && Number.isFinite(lastPrice) && lastPrice > 0) {
+      
+      // Real-time live price: prioritize live Chainlink 30s TWAP streamed by Polymarket RTDS
+      const rtdsLive = window.PredictionMarkets?.getFreshRtdsTwap?.(sym, 15_000);
+      const liveTwap = rtdsLive?.price ?? (Number.isFinite(p5?.currentPriceNum) && p5.currentPriceNum > 0 ? p5.currentPriceNum : null) ?? window.Microstructure?.getTwap?.(sym, 30_000) ?? Number(p?.price);
+
+      if (Number.isFinite(ptb) && ptb > 0 && Number.isFinite(liveTwap) && liveTwap > 0) {
         const closeMs = p5?.closeTime ? new Date(p5.closeTime).getTime() : null;
         const remainingFrac = Number.isFinite(closeMs)
           ? Math.max(0.08, Math.min(1, (closeMs - Date.now()) / (5 * 60_000)))
           : 0.6;
-        const atrPct = p.volatility?.atrPct ? (p.volatility.atrPct / 100) : 0.0017;
-        const atrDollar = lastPrice * atrPct;
-        const sigma = Math.max(lastPrice * 0.00004, atrDollar * 0.42 * Math.sqrt(remainingFrac));
-        const z = (proj.target - ptb) / (sigma || 1);
-        return _clamp(normalCDF(z), 0.02, 0.98);
+        const atrPct = p?.volatility?.atrPct ? (p.volatility.atrPct / 100) : 0.0035;
+        const atrDollar = liveTwap * atrPct;
+        const sigma = Math.max(liveTwap * 0.0015, atrDollar * Math.sqrt(remainingFrac));
+        
+        // 5M momentum score
+        const h5Score = p?.horizonScores?.h5 ?? p?.diagnostics?.fastTiming?.horizonScores?.h5 ?? (Number.isFinite(Number(p?.score)) ? Number(p.score) * 0.5 : 0);
+        const gap = liveTwap - ptb;
+        
+        // Micro-momentum from HUD
+        const microSnap = window.Microstructure?.getSnapshot?.(sym);
+        const momDir = microSnap?.momentum?.dir; // 'UP', 'DOWN', or null
+        const driftPct = microSnap?.momentum?.pct30 ?? 0;
+        
+        let expectedMove = h5Score * atrDollar * 0.40 * remainingFrac;
+        if (gap < 0 && expectedMove > 0 && (momDir !== 'UP' || driftPct <= 0)) {
+          // If currently below PTB and not actively breaking up on tape, expected move cannot cross PTB
+          expectedMove = Math.min(expectedMove, Math.abs(gap) * 0.2);
+        } else if (gap > 0 && expectedMove < 0 && (momDir !== 'DOWN' || driftPct >= 0)) {
+          expectedMove = Math.max(expectedMove, -Math.abs(gap) * 0.2);
+        }
+        
+        const meanFinal = liveTwap + expectedMove;
+        const z = (meanFinal - ptb) / (sigma || 1);
+        let prob = normalCDF(z);
+        
+        // Strict real-time state anchor against live TWAP:
+        if (gap < 0 && (momDir !== 'UP' || h5Score <= 0)) {
+          // Live TWAP is BELOW PTB and tape is not breaking upward -> MUST be <= 40% YES (>= 60% NO)
+          prob = Math.min(prob, 0.40);
+        } else if (gap > 0 && (momDir !== 'DOWN' || h5Score >= 0)) {
+          // Live TWAP is ABOVE PTB and tape is not breaking downward -> MUST be >= 60% YES
+          prob = Math.max(prob, 0.60);
+        }
+        
+        return _clamp(prob, 0.02, 0.98);
       }
-      // 3. Fallback to h5 horizonScore — never use raw free-momentum alone for 5m PTB
-      const h5Score = p.horizonScores?.h5 ?? p.diagnostics?.fastTiming?.horizonScores?.h5;
-      if (Number.isFinite(h5Score) && Number.isFinite(ptb) && ptb > 0 && Number.isFinite(lastPrice) && lastPrice > 0) {
-        // Convert score to a mild PTB lean only when already on that side of PTB
-        const gap = lastPrice - ptb;
-        const sideLean = gap >= 0 ? 0.08 : -0.08;
-        return _clamp(0.5 + sideLean + h5Score * 0.22, 0.05, 0.95);
+      
+      // Fallback if no PTB yet: Anchor to real-time 5m tape, NEVER lagging 15m/1h score
+      const microSnapFallback = window.Microstructure?.getSnapshot?.(sym);
+      const momDirFallback = microSnapFallback?.momentum?.dir;
+      const driftPctFallback = microSnapFallback?.momentum?.pct30 ?? (microSnapFallback?.momentum?.pct60 ?? 0);
+      
+      let fallbackScore = p?.horizonScores?.h5 ?? (Number.isFinite(Number(p?.score)) ? Number(p.score) * 0.3 : 0);
+      if (momDirFallback === 'DOWN' || driftPctFallback < -0.0002) {
+        fallbackScore = Math.min(fallbackScore, -0.30);
+      } else if (momDirFallback === 'UP' || driftPctFallback > 0.0002) {
+        fallbackScore = Math.max(fallbackScore, 0.30);
       }
-      // 4. No PTB yet. Polymarket often has not published openPrice for a fresh
-      // window for well over half its 5 minutes (observed: still absent >3 minutes
-      // in), and paths 0-3 all require a locked PTB by design -- so without this,
-      // the model shows nothing for most of every window even though it already has
-      // a PTB-independent directional score. Use that score directly. This is NOT
-      // "will this beat the PTB" (there isn't one yet); _modelOdds5mIsPtbAnchored()
-      // flags this case so the caller can label it as a lean, not a PTB call.
-      const rawScore = Number.isFinite(h5Score) ? h5Score : Number(p.score);
-      if (Number.isFinite(rawScore)) {
-        return _clamp(0.5 + rawScore * 0.4, 0.05, 0.95);
-      }
-      return null;
+      return _clamp(0.5 + fallbackScore * 0.35, 0.20, 0.80);
     }
 
     // Whether _modelOdds5m(sym)'s current value (if any) is anchored to a locked
@@ -777,6 +837,7 @@ function renderMarkets5M() {
     function _render5mIndicators(sym) {
       const p = pred[sym];
       if (!p) return '';
+      const p5 = pm[sym]?.poly5m;
       const ft = p.diagnostics?.fastTiming;
       if (!ft) return '';
       
@@ -794,7 +855,11 @@ function renderMarkets5M() {
       const purity = fd.driftPurity != null ? `${(fd.driftPurity * 100).toFixed(0)}%` : '—';
       const quality = fd.momentumQuality != null ? `${(fd.momentumQuality * 100).toFixed(0)}%` : '—';
       const streakLabel = streak5 > 0 ? `${streak5} ${dirText} candles` : '0 candles';
-      const target5m = p.projections?.p5?.target;
+      const rtdsLive = window.PredictionMarkets?.getFreshRtdsTwap?.(sym, 15_000);
+      const liveTwap = rtdsLive?.price ?? (Number.isFinite(p5?.currentPriceNum) && p5.currentPriceNum > 0 ? p5.currentPriceNum : null) ?? window.Microstructure?.getTwap?.(sym, 30_000) ?? Number(p?.price);
+      const atrPctVal = p?.volatility?.atrPct ? (p.volatility.atrPct / 100) : 0.0035;
+      const expectedMoveVal = (h5Score || 0) * (liveTwap || 1) * atrPctVal * 0.40;
+      const target5m = (liveTwap && Number.isFinite(liveTwap)) ? (liveTwap + expectedMoveVal) : p.projections?.p5?.target;
       const targetLabel = target5m != null ? `$${fmtPrice(target5m)}` : '—';
       
       return `
@@ -1103,7 +1168,7 @@ function renderMarkets5M() {
       const proj = _modelProj(sym);
 
       const p5prob = p5?.probability ?? null;
-      const live5m = _live5mSignal(p5, curPx);
+      const live5m = _live5mSignal(p5, curPx, sym);
       const liveCurrentSource = live5m?.source === 'polymarket-chainlink'
         ? 'polymarket-chainlink'
         : (tick?.source === 'pyth-lazer' ? 'pyth-lazer' : (p5?.currentPriceSource || 'polymarket-chainlink'));
@@ -1218,19 +1283,25 @@ function renderMarkets5M() {
                    from here. The model already sees this window's odds/PTB/close time
                    through pm[sym].poly5m (see _modelOdds5m above), sourced straight
                    from prediction-markets.js, independent of what this widget shows. -->
-              ${p5?.slug ? `
+              ${(() => {
+                const nowSec = Math.floor(Date.now() / 1000);
+                const windowTs = nowSec - (nowSec % 300);
+                const coinPrefix = (window.PredictionMarkets?.POLY_5M_COIN_SLUGS?.[sym] || sym.toLowerCase());
+                const activeSlug = p5?.slug || `${coinPrefix}-updown-5m-${windowTs}`;
+                return activeSlug ? `
                 <div id="p5hudwrap-${sym}" style="position:absolute;top:16px;left:16px;z-index:5;pointer-events:none;">${_renderMicroHudInner(sym)}</div>
                 <iframe
                   id="p5emb-${sym}"
                   title="${sym} Up or Down 5m — Polymarket"
-                  src="https://embed.polymarket.com/market?market=${encodeURIComponent(p5.slug)}&theme=dark&border=false&creator=JohnDaWalka&height=300"
+                  src="https://embed.polymarket.com/market?market=${encodeURIComponent(activeSlug)}&theme=dark&border=false&creator=JohnDaWalka&height=300"
                   style="width:100%;height:300px;border:0;border-radius:6px;display:block;"
                   frameborder="0"
                   allowtransparency="true"
                   loading="lazy"></iframe>
-                <a href="https://polymarket.com/event/${encodeURIComponent(p5.slug)}" target="_blank" rel="noopener"
+                <a href="https://polymarket.com/event/${encodeURIComponent(activeSlug)}" target="_blank" rel="noopener"
                    style="display:inline-block;margin-top:5px;font-size:10px;color:var(--color-text-faint);text-decoration:none;">Open on Polymarket ↗</a>
-              ` : `<div style="color:var(--color-text-faint);font-size:11px">No Poly 5M market</div>`}
+              ` : `<div style="color:var(--color-text-faint);font-size:11px">No Poly 5M market</div>`;
+              })()}
             </div>
 
             <!-- Model + venue stat box: everything here is either the model's own
@@ -1316,16 +1387,12 @@ function renderMarkets5M() {
     // synchronously in the same task as the innerHTML write, before the browser
     // paints, so the swap itself is invisible -- only a genuine window rollover
     // (a real src change) is allowed to reload.
+    // Track active embed frame references safely
     window._p5EmbedCache = window._p5EmbedCache || new Map();
     COINS_5M.forEach((sym) => {
       const freshFrame = document.getElementById(`p5emb-${sym}`);
-      if (!freshFrame) { window._p5EmbedCache.delete(sym); return; }
-      const src = freshFrame.getAttribute('src');
-      const cached = window._p5EmbedCache.get(sym);
-      if (cached && cached.src === src && cached.node !== freshFrame) {
-        freshFrame.replaceWith(cached.node);
-      } else {
-        window._p5EmbedCache.set(sym, { src, node: freshFrame });
+      if (freshFrame) {
+        window._p5EmbedCache.set(sym, { src: freshFrame.getAttribute('src'), node: freshFrame });
       }
     });
 
@@ -1341,13 +1408,6 @@ function renderMarkets5M() {
             el.textContent = `⏱ ${_countdown(close)}`;
             const closeMs = new Date(close).getTime();
             if (Number.isFinite(closeMs) && closeMs <= Date.now()) expiredPoly5m = true;
-          }
-        }
-        const kEl = document.getElementById(`k5cd-${sym}`);
-        if (kEl) {
-          const close = kEl.dataset.close;
-          if (close) {
-            kEl.textContent = `⏱ ${_countdown(close)}`;
           }
         }
       });
@@ -4042,7 +4102,7 @@ function render() {
     if (orbitalAnimationFrame) { cancelAnimationFrame(orbitalAnimationFrame); orbitalAnimationFrame = null; }
     syncPredictionRefresh();
 
-    const bootGateViews = new Set(['cfm', 'predictions', 'universe', 'markets', 'markets5m']);
+    const bootGateViews = new Set(['cfm', 'predictions', 'universe', 'markets', 'markets5m', 'polymarket']);
     const bootGateActive =
       !_fetchAttempted &&
       !_userInteractedWithNav &&
@@ -4084,6 +4144,7 @@ function render() {
       switch (view) {
         case 'markets': runPanelRender(view, renderMarkets, renderToken); break;
         case 'markets5m': runPanelRender(view, renderMarkets5M, renderToken); break;
+        case 'polymarket': window.PolymarketTerminal?.render?.(); break;
         case 'debuglog': runPanelRender(view, renderDebugLog, renderToken); break;
         case 'observability': runPanelRender(view, renderObservability, renderToken); break;
         case 'portfolio': runPanelRender(view, renderPortfolio, renderToken); break;

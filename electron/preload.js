@@ -41,9 +41,12 @@ function envFileCandidates() {
   const localAppData = process.env.LOCALAPPDATA || '';
   const candidates = [
     path.join(path.dirname(process.execPath || __filename), '.env'),
+    appData && path.join(appData, 'WE-CRYPTO-Polymarket-v2.15.6', '.env'),
+    // Pre-rename installs kept their .env under the old Kalshi-branded folder name.
     appData && path.join(appData, 'WE-CRYPTO-Kalshi-15m-v2.15.5', '.env'),
     appData && path.join(appData, 'we-cfm-orchestrator', '.env'),
     appData && path.join(appData, 'WECRYPTO', '.env'),
+    localAppData && path.join(localAppData, 'WE-CRYPTO-Polymarket-v2.15.6', '.env'),
     localAppData && path.join(localAppData, 'WE-CRYPTO-Kalshi-15m-v2.15.5', '.env'),
     localAppData && path.join(localAppData, 'we-cfm-orchestrator', '.env'),
     localAppData && path.join(localAppData, 'WECRYPTO', '.env'),
@@ -103,6 +106,8 @@ function secretDirCandidates() {
     path.join(process.resourcesPath || '', '..', 'secrets'),
     path.join(process.cwd(), 'secrets'),
     localAppData && path.join(localAppData, 'WE-CRYPTO', 'user-data', 'secrets'),
+    appData && path.join(appData, 'WE-CRYPTO-Polymarket-v2.15.6', 'secrets'),
+    // Pre-rename installs kept their secrets under the old Kalshi-branded folder name.
     appData && path.join(appData, 'WE-CRYPTO-Kalshi-15m-v2.15.5', 'secrets'),
     'G:\\WECRYPTO\\secrets',
     'F:\\WECRYPTO\\secrets',
@@ -389,8 +394,6 @@ contextBridge.exposeInMainWorld('desktopApp', {
   hasNodeWs: !!ws,
   proxyPort: () => ipcRenderer.invoke('proxy:port'),
   getPublicEnv: () => ipcRenderer.invoke('env:getPublicConfig'),
-  loadKalshiCredentials: () => ipcRenderer.invoke('kalshi:loadCredentials'),
-  getKalshiWsAuthHeaders: () => ipcRenderer.invoke('kalshi:wsAuthHeaders'),
   generateCoinbaseJWT: (opts) => ipcRenderer.invoke('coinbase:generate-jwt', opts || {}),
   // Returns all local drives (C-Z), UNC network shares, and cloud sync folders
   getDrives: () => ipcRenderer.invoke('storage:getDrives'),
@@ -412,10 +415,6 @@ contextBridge.exposeInMainWorld('electron', {
   readFile: (filePath) => ipcRenderer.invoke('data:readFile', filePath)
     .then((r) => (r && r.ok) ? r.content : null)
     .catch(() => null),
-  kalshi: {
-    loadCSVTrades: (browserStateJson) => ipcRenderer.invoke('kalshi:loadCSVTrades', browserStateJson),
-    fetchHistoricalContracts: (opts) => ipcRenderer.invoke('kalshi:fetchHistoricalContracts', opts),
-  },
   llm: {
     getDiagnostics: () => ipcRenderer.invoke('llm:getDiagnostics'),
     getQueryHistory: (limit) => ipcRenderer.invoke('llm:getQueryHistory', limit),

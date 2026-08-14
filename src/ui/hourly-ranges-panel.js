@@ -1,16 +1,18 @@
 // ================================================================
-// WE|||CRYPTO — Hourly Ranges Panel v6 (Clean Rewrite)
+// WE|||CRYPTO — Hourly Ranges Panel v8 (Polymarket)
 //
-// Fetches live range contracts from Kalshi /markets?series_ticker=KX*
-// Shows 10-15 scrollable buckets centered on current price.
-// Polls every 30s, accelerates to every 10s in final 10 mins of hour.
+// Shows a spot-centered synthetic range ladder (no live multi-strike
+// ladder market exists on Polymarket for hourly crypto ranges today,
+// unlike Kalshi's KX* series) plus the live Polymarket 15m contract,
+// read straight from window.PredictionMarkets (already polled there,
+// no separate network fetch needed here).
+// Polls every 10s, accelerates to every 2.5s in the final 15 mins.
 // ================================================================
 
 (function () {
   'use strict';
 
   // ── Constants ──────────────────────────────────────────────────
-  const KALSHI_BASE = 'https://api.elections.kalshi.com/trade-api/v2';
   const COINBASE_EXCH_BASE = 'https://api.exchange.coinbase.com';
   const INSTRUMENTS = {
     BTC: 'BTCUSD', ETH: 'ETHUSD', SOL: 'SOLUSD',
@@ -18,11 +20,6 @@
   };
 
   const COINS = ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE'];
-
-  const SERIES = {
-    BTC: 'KXBTC', ETH: 'KXETH', SOL: 'KXSOLE',
-    XRP: 'KXXRP', DOGE: 'KXDOGE',
-  };
 
   const CB_PRODUCTS = {
     BTC: 'BTC-USD', ETH: 'ETH-USD', SOL: 'SOL-USD',
@@ -46,13 +43,11 @@
   const POLL_FAST_MS    = 2500;   // Last 15 mins (2.5s)
   const HALF_WINDOW_MS  = 30 * 60 * 1000;
   const FAST_WINDOW_MS  = 15 * 60 * 1000;
-  const CACHE_TTL_MS    = 2000;   // Allow 2.5s fast-polling
 
   // ── State ──────────────────────────────────────────────────────
   let _prices  = {}; // sym → number
   let _ranges  = {}; // sym → [{ low, high, yesAsk, yesBid, yesAsk%, closeTime }]
   let _closeTimes = {}; // sym → ISO string of active bucket
-  let _apiCache = {}; // seriesTicker → { ts, markets[] }
   let _timer   = null;
   let _mounted = false;
 
@@ -129,7 +124,7 @@
       const distFromSpot = Math.abs((low + high) / 2 - refPrice) / step;
       let prob = Math.exp(-distFromSpot * distFromSpot * 0.35) * 0.48;
       prob = Number(Math.max(0.01, Math.min(0.85, prob)).toFixed(2));
-      const tickerStr = `KX${sym}-SPOT-${low}`;
+      const tickerStr = `${sym}-RANGE-${low}`;
 
       result.push({
         low,
@@ -145,56 +140,6 @@
     }
 
     return result;
-  }
-
-  // ── Strike / market helpers ────────────────────────────────────
-  function isBetweenMarket(m) {
-    if (!m) return false;
-    if (m.strike_type === 'between') return true;
-    if (m.strike_type === 'custom' && m.custom_strike?.strike_type === 'between') return true;
-    const sub = String(m.yes_sub_title || m.subtitle || '').toLowerCase();
-    return sub.includes(' to ') || sub.includes('between');
-  }
-
-  function parseStrikeBounds(m) {
-    const cs = m.custom_strike || {};
-    const floorStrike = m.floor_strike != null ? parseFloat(m.floor_strike) : NaN;
-    const floorPrice = m.floor_price != null ? parseFloat(m.floor_price) : NaN;
-    const capStrike = m.cap_strike != null ? parseFloat(m.cap_strike) : NaN;
-    const capPrice = m.cap_price != null ? parseFloat(m.cap_price) : NaN;
-    const csFloor = cs.floor_strike != null ? parseFloat(cs.floor_strike) : NaN;
-    const csCap = cs.cap_strike != null ? parseFloat(cs.cap_strike) : NaN;
-
-    let low = Number.isFinite(floorStrike) && floorStrike > 0 ? floorStrike
-      : Number.isFinite(floorPrice) && floorPrice > 0 ? floorPrice
-        : Number.isFinite(csFloor) && csFloor > 0 ? csFloor : NaN;
-    let high = Number.isFinite(capStrike) && capStrike > 0 ? capStrike
-      : Number.isFinite(capPrice) && capPrice > 0 ? capPrice
-        : Number.isFinite(csCap) && csCap > 0 ? csCap : NaN;
-
-    if ((!Number.isFinite(low) || !Number.isFinite(high)) && m.yes_sub_title) {
-      const nums = String(m.yes_sub_title).replace(/[$,]/g, '').match(/\d+(?:\.\d+)?/g) || [];
-      if (nums.length >= 2) {
-        low = parseFloat(nums[0]);
-        high = parseFloat(nums[1]);
-      }
-    }
-
-    return { low, high };
-  }
-
-  function normalizeStrikeScale(low, high, refPrice) {
-    if (!Number.isFinite(low) || !Number.isFinite(high) || !Number.isFinite(refPrice) || refPrice <= 0) {
-      return { low, high };
-    }
-    const mid = (low + high) / 2;
-    if (mid > refPrice * 12) return { low: low / 100, high: high / 100 };
-    return { low, high };
-  }
-
-  function parseCloseMs(closeTime) {
-    const ms = Date.parse(closeTime);
-    return Number.isFinite(ms) ? ms : null;
   }
 
   function readLivePrice(sym) {
@@ -249,213 +194,28 @@
     return readLivePrice(sym);
   }
 
-  // ── Kalshi market fetcher ──────────────────────────────────────
-  async function fetchKalshiMarkets(seriesTicker) {
-    const now = Date.now();
-    const cached = _apiCache[seriesTicker];
-    if (cached && (now - cached.ts) < CACHE_TTL_MS) return cached.markets;
-
-    if (window.EndpointTransport?.fetchKalshiMarkets) {
-      try {
-        const data = await window.EndpointTransport.fetchKalshiMarkets({
-          series_ticker: seriesTicker,
-          status: 'open',
-          limit: 1000,
-        });
-        const markets = Array.isArray(data?.markets) ? data.markets : [];
-        _apiCache[seriesTicker] = { ts: now, markets };
-        return markets;
-      } catch (e) {
-        console.warn(`[HR] Kalshi transport error ${seriesTicker}:`, e.message);
-      }
-    }
-
-    // Fetch up to 1000 markets for this series
-    const url = `${KALSHI_BASE}/markets?series_ticker=${seriesTicker}&status=open&limit=1000`;
-    try {
-      const data = await apiFetch(url, 25000);
-      const markets = Array.isArray(data?.markets) ? data.markets : [];
-      _apiCache[seriesTicker] = { ts: now, markets };
-      return markets;
-    } catch (e) {
-      console.warn(`[HR] Kalshi fetch error ${seriesTicker}:`, e.message);
-      return cached?.markets || [];
-    }
-  }
-
-  // ── 15M Kalshi market fetcher ──────────────────────────────────
-  const _kalshi15mMarkets = {}; // sym → market object
-
-  async function fetchKalshi15mMarket(sym) {
-    const seriesTicker = `KX${sym}15M`;
-    const now = Date.now();
-    try {
-      const markets = await fetchKalshiMarkets(seriesTicker);
-      if (Array.isArray(markets) && markets.length) {
-        const active = markets.find(m => {
-          const closeMs = parseCloseMs(m.close_time);
-          return closeMs && closeMs > now;
-        }) || markets[0];
-        if (active) {
-          _kalshi15mMarkets[sym] = active;
-          return active;
-        }
-      }
-    } catch (e) {
-      console.warn(`[HR] Kalshi 15m fetch error ${sym}:`, e.message);
-    }
-    return _kalshi15mMarkets[sym] || null;
-  }
-
-  // ── Pick the best close-time bucket ───────────────────────────
-  // Price-aware: choose the hour whose strike ladder best matches live spot.
-  function pickCloseBucket(markets, refPrice) {
-    const now = Date.now();
-    const byClose = new Map();
-
-    for (const m of markets) {
-      if (!isBetweenMarket(m)) continue;
-      const closeMs = parseCloseMs(m.close_time);
-      if (closeMs == null || closeMs <= now - 75_000) continue; // Allow 75s grace window for clock drift / 60s close lock
-      if (closeMs > now + 6 * 3600 * 1000) continue; // Filter out far future series (>6h)
-
-      let entry = byClose.get(closeMs);
-      if (!entry) {
-        entry = {
-          closeMs,
-          count: 0,
-          maxProb: 0,
-          isActive: false,
-          lows: [],
-          highs: [],
-        };
-        byClose.set(closeMs, entry);
-      }
-      entry.count++;
-
-      const openMs = parseCloseMs(m.open_time);
-      if (openMs != null && openMs <= now && closeMs > now) entry.isActive = true;
-
-      const { low, high } = parseStrikeBounds(m);
-      const scaled = normalizeStrikeScale(low, high, refPrice);
-      if (Number.isFinite(scaled.low) && Number.isFinite(scaled.high) && scaled.high >= scaled.low) {
-        entry.lows.push(scaled.low);
-        entry.highs.push(scaled.high);
-      }
-
-      const yesAsk = parseFloat(m.yes_ask_dollars) || 0;
-      const yesBid = parseFloat(m.yes_bid_dollars) || 0;
-      const prob = yesAsk > 0 && yesBid > 0 ? (yesAsk + yesBid) / 2 : (yesAsk || yesBid);
-      if (prob > entry.maxProb) entry.maxProb = prob;
-    }
-
-    const entries = [...byClose.values()];
-    if (!entries.length) return null;
-
-    const scoreEntry = (entry) => {
-      let score = 0;
-      const minsToClose = (entry.closeMs - now) / 60_000;
-
-      if (Number.isFinite(refPrice) && refPrice > 0 && entry.lows.length) {
-        let bestDist = Infinity;
-        let contains = false;
-        for (let i = 0; i < entry.lows.length; i++) {
-          const low = entry.lows[i];
-          const high = entry.highs[i];
-          if (refPrice >= low && refPrice <= high) contains = true;
-          const mid = (low + high) / 2;
-          bestDist = Math.min(bestDist, Math.abs(mid - refPrice));
-        }
-        // Heavy penalty for buckets whose price strikes are misaligned (>10% off from spot)
-        if (bestDist > refPrice * 0.10) {
-          score += 50_000_000 + bestDist * 1000;
-        } else {
-          score += bestDist * 10;
-        }
-        if (contains) score -= 1_000_000;
-      } else {
-        score += 50_000;
-      }
-
-      if (entry.isActive) score -= 500_000;
-      score += minsToClose * 2;
-      return score;
-    };
-
-    entries.sort((a, b) => scoreEntry(a) - scoreEntry(b));
-    return entries[0].closeMs;
+  // ── Live Polymarket 15m contract (already polled by prediction-markets.js) ──
+  function get15mContract(sym) {
+    return window.PredictionMarkets?.getCoin?.(sym)?.poly15m || null;
   }
 
   // ── Build range list for a coin ────────────────────────────────
+  // No live multi-strike hourly ladder market exists on Polymarket today
+  // (unlike Kalshi's KX* range series), so the ladder is always the
+  // spot-centered synthetic distribution.
   async function loadCoin(sym) {
-    const series = SERIES[sym];
-    if (!series) return;
+    const price = await fetchPrice(sym);
 
-    const [markets, price, m15] = await Promise.allSettled([
-      fetchKalshiMarkets(series),
-      fetchPrice(sym),
-      fetchKalshi15mMarket(sym),
-    ]).then(([m, p, k15]) => [
-      m.status === 'fulfilled' ? m.value : [],
-      p.status === 'fulfilled' ? p.value : readLivePrice(sym),
-      k15.status === 'fulfilled' ? k15.value : null,
-    ]);
-
-    // Store price
     if (price !== null && Number.isFinite(price)) {
       _prices[sym] = price;
     }
 
-    if (!markets.length) return;
-
     const refPrice = _prices[sym] ?? price;
+    if (!Number.isFinite(refPrice) || refPrice <= 0) return;
 
-    // Pick close time (returns milliseconds timestamp)
-    const closeTimeMs = pickCloseBucket(markets, refPrice);
-    if (closeTimeMs) {
-      _closeTimes[sym] = new Date(closeTimeMs).toISOString();
-    }
-
-    // Filter to chosen close bucket, 'between' only
-    const buckets = markets.filter(m => {
-      if (!isBetweenMarket(m)) return false;
-      if (!closeTimeMs) return true;
-      return parseCloseMs(m.close_time) === closeTimeMs;
-    });
-
-    // Map to our format
-    const ranges = buckets.map(m => {
-      let { low, high } = parseStrikeBounds(m);
-      ({ low, high } = normalizeStrikeScale(low, high, refPrice));
-      const yesAsk = parseFloat(m.yes_ask_dollars) || 0;
-      const yesBid = parseFloat(m.yes_bid_dollars) || 0;
-      const prob = yesAsk > 0 && yesBid > 0 ? (yesAsk + yesBid) / 2 : (yesAsk || yesBid);
-      return {
-        low,
-        high,
-        yesAsk,
-        yesBid,
-        noAsk: parseFloat(m.no_ask_dollars) || 0,
-        prob,
-        ticker: m.ticker,
-        closeTime: m.close_time,
-        subtitle: m.yes_sub_title || '',
-      };
-    }).filter(r => Number.isFinite(r.low) && Number.isFinite(r.high) && r.high >= r.low);
-
-    ranges.sort((a, b) => a.low - b.low);
-    _ranges[sym] = ranges;
-
-    if (Number.isFinite(refPrice) && refPrice > 0) {
-      const nearestDist = ranges.length ? ranges.reduce((best, r) => {
-        const mid = (r.low + r.high) / 2;
-        return Math.min(best, Math.abs(mid - refPrice));
-      }, Infinity) : Infinity;
-      if (!ranges.length || nearestDist > refPrice * 0.04) {
-        console.warn(`[HR] ${sym} ladder misaligned (spot $${refPrice.toFixed(2)}, nearest off by $${nearestDist.toFixed(2)}) — synthesizing spot-centered hourly range ladder`);
-        _ranges[sym] = buildSpotCenteredRanges(sym, refPrice, _closeTimes[sym]);
-      }
-    }
+    const nextHourIso = new Date(Math.ceil(Date.now() / 3600000) * 3600000).toISOString();
+    _closeTimes[sym] = nextHourIso;
+    _ranges[sym] = buildSpotCenteredRanges(sym, refPrice, nextHourIso);
     saveHRCache();
   }
 
@@ -600,7 +360,7 @@
         ${closeLabel}`;
     }
 
-    // Grok 15m + hourly call pegged to Kalshi ranges (no 5m, never WAIT)
+    // Grok 15m + hourly call pegged to live Polymarket data (no 5m, never WAIT)
     let grokHtml = '';
     try {
       const api = window.GrokRangeOverlay || window.GrokRangeGrok;
@@ -622,15 +382,14 @@
         let notes = String(g.notes || '').slice(0, 180);
 
         if (label === '15m contract') {
-          const peg15 = g.kalshiPeg || g.kalshi15m;
-          const ticker = g.contractTicker || (peg15 && peg15.ticker) || '';
-          const side = peg15 && peg15.side ? peg15.side : (call === 'UP' ? 'YES' : 'NO');
-          const floor = peg15 && (peg15.floorPrice ?? peg15.targetPriceNum);
-          const strikePrice = floor ? `$${Number(floor).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : (priceStr !== '—' ? priceStr : '');
-          if (ticker) metaLine += ` · ${ticker} buy ${side}`;
-          if (strikePrice) metaLine += ` · strike ${strikePrice}`;
-          if (peg15 && peg15.strikeDir) metaLine += ` (${peg15.strikeDir})`;
-          if (peg15 && peg15.yesProb != null) metaLine += ` · mkt YES ${(Number(peg15.yesProb) * 100).toFixed(0)}%`;
+          const peg15 = g.polyPeg || g.poly15m;
+          const slug = g.contractSlug || (peg15 && peg15.slug) || '';
+          const side = peg15 && peg15.side ? peg15.side : (call === 'UP' ? 'Up' : 'Down');
+          const ptb = peg15 && peg15.priceToBeatNum;
+          const ptbLabel = ptb ? `$${Number(ptb).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : (priceStr !== '—' ? priceStr : '');
+          if (slug) metaLine += ` · buy ${side}`;
+          if (ptbLabel) metaLine += ` · PTB ${ptbLabel}`;
+          if (peg15 && peg15.yesProb != null) metaLine += ` · mkt Up ${(Number(peg15.yesProb) * 100).toFixed(0)}%`;
           if (peg15 && peg15.secondsToClose != null) metaLine += ` · ttc ${peg15.secondsToClose}s`;
         } else {
           // 1h range — Top 2-5 Multi-Bucket Likelihood
@@ -645,8 +404,8 @@
             }
           }
 
-          if (/bucket\s+\$?\d+/i.test(notes) || /KXBTC|KXETH/i.test(notes)) {
-            notes = ''; // Wipe stale text containing old tickers
+          if (/bucket\s+\$?\d+/i.test(notes)) {
+            notes = ''; // Wipe stale text containing bucket refs that no longer resolve
           }
         }
 
@@ -659,23 +418,27 @@
       };
       const b15 = renderOne('15m contract', g15);
       const b60 = renderOne('1h range', g60);
-      if (b15 || b60) {
+      let asi1Strip = '';
+      try {
+        asi1Strip = window.Asi1PreContract?.renderStripHtml?.(sym, { horizon: '15m', maxNotes: 360 }) || '';
+      } catch (_) { asi1Strip = ''; }
+
+      if (b15 || b60 || asi1Strip) {
         grokHtml = `<div class="hr-grok">
-          <div class="hr-grok-hdr">🤖 Grok (xAI) · Kalshi-pegged</div>
+          <div class="hr-grok-hdr">✨ ASI1 pre-contract · 🤖 range overlay (Polymarket-pegged)</div>
+          ${asi1Strip}
           ${b15}${b60}
         </div>`;
       } else {
         const stats = window.GrokAnalyticsMemory && window.GrokAnalyticsMemory.getStats
           ? window.GrokAnalyticsMemory.getStats() : null;
         const n = stats && stats.byCoin && stats.byCoin[sym] ? stats.byCoin[sym].samples : 0;
-        grokHtml = `<div class="hr-grok"><div class="hr-grok-hdr">🤖 Grok (xAI)</div>
-          <div class="hr-grok-notes">Building memory… ${n} samples · 15m/1h calls soon</div></div>`;
+        grokHtml = `<div class="hr-grok"><div class="hr-grok-hdr">✨ ASI1 · range memory</div>
+          <div class="hr-grok-notes">Building pre-contract briefs… ${n} samples · 15m/1h soon</div></div>`;
       }
     } catch (_) { grokHtml = ''; }
 
     // Polymarket 15m Up/Down — pulled by prediction-markets.js refreshPoly15M().
-    // User no longer trades Kalshi's range buckets, so this is the primary
-    // block on the card now; Kalshi ranges/Grok stay below as reference.
     // Probability/PTB text is shown only when the venue has actually published
     // it for this window; the embed itself renders whatever Polymarket shows,
     // live, straight from the venue -- never a guess.
@@ -709,18 +472,16 @@
       }
     } catch (_) { poly15mHtml = ''; }
 
-    // Kalshi ranges/Grok (body, grokHtml) are computed above but no longer
-    // rendered -- Kalshi isn't traded here anymore, this card is Polymarket 15m
-    // Up/Down only. Left the fetch/compute in place since HourlyRangesPanel's
-    // get15mMarket() is part of its public API and other modules may still
-    // read it even though this card doesn't display it.
+    // Polymarket embed shows the live 15m odds; body is the spot-centered
+    // hourly bucket ladder (top-3 ranked by likelihood); Grok adds the LLM's
+    // own directional call + reasoning on top of both.
     return `
       <div class="hr-card">
         <div class="hr-card-header">
           <span class="hr-sym" style="color:${color}">${sym}</span>
           <span class="hr-price">${priceStr}</span>
         </div>
-        <div class="hr-card-body">${poly15mHtml || '<div class="hr-empty">Loading Polymarket 15m market…</div>'}</div>
+        <div class="hr-card-body">${poly15mHtml || '<div class="hr-empty">Loading Polymarket 15m market…</div>'}${body}${grokHtml}</div>
       </div>`;
   }
 
@@ -972,7 +733,7 @@
       return r;
     },
     getPrice:  (sym) => _prices[sym] || null,
-    get15mMarket: (sym) => _kalshi15mMarkets[sym] || null,
+    get15mMarket: get15mContract,
   };
 
   console.log('[HourlyRangesPanel v7] ✓ Ready');

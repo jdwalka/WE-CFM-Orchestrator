@@ -2,7 +2,7 @@
   "name": "we-cfm-orchestrator",
   "version": "2.15.6",
   "private": true,
-  "description": "WalkerEnterprise CFM Kalshi 15m Deep Dive Optimization — Divergence detection + real-time momentum + crash protection",
+  "description": "WalkerEnterprise CFM Polymarket 5m/15m Deep Dive Optimization — TWAP resolution tracking + real-time momentum + crash protection",
   "author": "WalkerEnterprise",
   "main": "electron/main.js",
   "scripts": {
@@ -47,7 +47,6 @@
     "backtest:advanced": "node backtest/advanced-backtest.js --days 30",
     "backtest:advanced:volatility": "node backtest/advanced-volatility-backtest.js --days 7",
     "backtest:walkforward": "node backtest/walk-forward-backtest.js --days 30 --fold-size 400 --test 100 --step 50",
-    "backtest:kalshi-odds-wf": "node backtest/kalshi-odds-walkforward.js --days 7 --coins BTC,ETH,SOL,XRP --train 120 --test 40 --step 20 --min-trades 12",
     "backtest:pipeline": "node backtest/recalibrate-and-backtest.js --write-weights",
     "backtest:pipeline:11d": "node backtest/recalibrate-and-backtest.js --days 11 --write-weights --coins BTC,ETH,SOL,XRP",
     "backtest:edge-committee": "node backtest/edge-committee-retuner.js --days 11 --coins BTC,ETH,SOL,XRP",
@@ -68,7 +67,7 @@
   "build": {
     "npmRebuild": false,
     "appId": "com.walkerenterprise.wecfmorchestrator",
-    "productName": "WE-CRYPTO-Kalshi-15m-v2.15.6",
+    "productName": "WE-CRYPTO-Polymarket-v2.15.6",
     "electronVersion": "41.4.0",
     "asar": true,
     "files": [
@@ -112,10 +111,10 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "WE--CRYPTO--BETA3",
-      "artifactName": "WE-CRYPTO-Kalshi-15m-v2.15.6-installer-${arch}.${ext}"
+      "artifactName": "WE-CRYPTO-Polymarket-v2.15.6-installer-${arch}.${ext}"
     },
     "portable": {
-      "artifactName": "WE-CRYPTO-Kalshi-15m-v2.15.6-portable-${arch}.${ext}"
+      "artifactName": "WE-CRYPTO-Polymarket-v2.15.6-portable-${arch}.${ext}"
     }
   },
   "devDependencies": {

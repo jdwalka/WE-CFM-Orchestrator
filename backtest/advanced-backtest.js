@@ -61,10 +61,10 @@ const PER_COIN_INDICATOR_BIAS = {
 };
 
 const BACKTEST_FILTER_OVERRIDES = {
-  BTC:  { h1:{entryThreshold:0.30,minAgreement:0.54}, h5:{entryThreshold:0.30,minAgreement:0.54}, h10:{entryThreshold:0.25,minAgreement:0.58}, h15:{entryThreshold:0.25,minAgreement:0.58} },
-  ETH:  { h1:{entryThreshold:0.25,minAgreement:0.50}, h5:{entryThreshold:0.25,minAgreement:0.50}, h10:{entryThreshold:0.25,minAgreement:0.50}, h15:{entryThreshold:0.25,minAgreement:0.54} },
-  XRP:  { h1:{entryThreshold:0.30,minAgreement:0.58}, h5:{entryThreshold:0.30,minAgreement:0.58}, h10:{entryThreshold:0.30,minAgreement:0.58}, h15:{entryThreshold:0.30,minAgreement:0.54} },
-  SOL:  { h1:{entryThreshold:0.35,minAgreement:0.50}, h5:{entryThreshold:0.35,minAgreement:0.50}, h10:{entryThreshold:0.28,minAgreement:0.54}, h15:{entryThreshold:0.30,minAgreement:0.54,maxThreshold:0.55} },
+  BTC:  { h1:{entryThreshold:0.30,minAgreement:0.58}, h5:{entryThreshold:0.30,minAgreement:0.58}, h10:{entryThreshold:0.30,minAgreement:0.58}, h15:{entryThreshold:0.28,minAgreement:0.58} },
+  ETH:  { h1:{entryThreshold:0.30,minAgreement:0.58}, h5:{entryThreshold:0.30,minAgreement:0.58}, h10:{entryThreshold:0.30,minAgreement:0.58}, h15:{entryThreshold:0.28,minAgreement:0.58} },
+  XRP:  { h1:{entryThreshold:0.30,minAgreement:0.58}, h5:{entryThreshold:0.30,minAgreement:0.58}, h10:{entryThreshold:0.28,minAgreement:0.58}, h15:{entryThreshold:0.25,minAgreement:0.58} },
+  SOL:  { h1:{entryThreshold:0.30,minAgreement:0.58}, h5:{entryThreshold:0.30,minAgreement:0.58}, h10:{entryThreshold:0.30,minAgreement:0.58}, h15:{entryThreshold:0.25,minAgreement:0.58} },
 };
 
 const SCORE_AMPLIFIER        = 1.6;
@@ -437,24 +437,35 @@ function buildSignalModel(candles, sym = null) {
   let cciSig = cciVal > 150 ? -clamp((cciVal - 100) / 150, 0, 1) : cciVal < -150 ? clamp((-100 - cciVal) / 150, 0, 1) : clamp(-cciVal / 200, -0.3, 0.3);
   cciSig = clamp(cciSig, -1, 1);
 
-  const cmfSig = clamp(calcCMF(candles, 20) * 2.5, -1, 1);
-  const fisherSig = clamp(-calcFisher(candles, 10) / 2.5, -1, 1);
+  let cmfSig = clamp(calcCMF(candles, 20) * 2.5, -1, 1);
+  let fisherSig = clamp(calcFisher(candles, 10) / 2.5, -1, 1);
   const kelt = calcKeltner(candles, 20, 2.0);
   let keltSig = kelt.position >= 0.88 ? -clamp((kelt.position - 0.88) / 0.12, 0, 1) : kelt.position <= 0.12 ? clamp((0.12 - kelt.position) / 0.12, 0, 1) : clamp(-(kelt.position - 0.5) * 0.45, -0.22, 0.22);
 
-  const isBullTrend = emaCross > 0.15 && adxR.pdi > adxR.mdi && adxR.adx > 22;
-  const isBearTrend = emaCross < -0.15 && adxR.mdi > adxR.pdi && adxR.adx > 22;
-  if (isBullTrend || isBearTrend) {
-    const sf = clamp((adxR.adx - 22) / 28, 0, 0.70);
-    if (isBullTrend) {
-      if (rsiSig < 0) rsiSig *= (1 - sf); if (stochSig < 0) stochSig *= (1 - sf);
-      if (wRSig < 0) wRSig *= (1 - sf); if (bandSig < 0) bandSig *= (1 - sf * 0.6);
-      if (mfiSig < 0) mfiSig *= (1 - sf * 0.6);
-    } else {
-      if (rsiSig > 0) rsiSig *= (1 - sf); if (stochSig > 0) stochSig *= (1 - sf);
-      if (wRSig > 0) wRSig *= (1 - sf); if (bandSig > 0) bandSig *= (1 - sf * 0.6);
-      if (mfiSig > 0) mfiSig *= (1 - sf * 0.6);
-    }
+  // --- Trend Regime Modulation ---
+  const isStrongBear = (supertrendSig === -1 || hmaSig < -0.15 || mom < -0.20 || vwmaSig < -0.15) && (adxR.mdi > adxR.pdi || adxR.adx > 18 || mom < -0.30);
+  const isStrongBull = (supertrendSig === 1 || hmaSig > 0.15 || mom > 0.20 || vwmaSig > 0.15) && (adxR.pdi > adxR.mdi || adxR.adx > 18 || mom > 0.30);
+
+  if (isStrongBear) {
+    if (rsiSig > 0) rsiSig = 0;
+    if (stochSig > 0) stochSig = 0;
+    if (wRSig > 0) wRSig = 0;
+    if (bandSig > 0) bandSig = 0;
+    if (mfiSig > 0) mfiSig = 0;
+    if (vwapSig > 0) vwapSig = 0;
+    if (cciSig > 0) cciSig = 0;
+    if (keltSig > 0) keltSig = 0;
+    if (fisherSig > 0) fisherSig = 0;
+  } else if (isStrongBull) {
+    if (rsiSig < 0) rsiSig = 0;
+    if (stochSig < 0) stochSig = 0;
+    if (wRSig < 0) wRSig = 0;
+    if (bandSig < 0) bandSig = 0;
+    if (mfiSig < 0) mfiSig = 0;
+    if (vwapSig < 0) vwapSig = 0;
+    if (cciSig < 0) cciSig = 0;
+    if (keltSig < 0) keltSig = 0;
+    if (fisherSig < 0) fisherSig = 0;
   }
 
   const sv = {

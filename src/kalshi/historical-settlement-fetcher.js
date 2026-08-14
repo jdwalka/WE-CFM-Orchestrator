@@ -1,22 +1,21 @@
 /**
  * Historical Settlement Fetcher
- * 
- * Pulls SETTLED contracts from Kalshi, Polymarket, and Coinbase Prediction Markets
- * to build historical accuracy scorecard showing model performance over time.
- * 
+ *
+ * Pulls SETTLED contracts from Polymarket (and optional Coinbase) to build
+ * historical accuracy scorecards. Kalshi network I/O is permanently disabled.
+ *
  * NOT waiting for new contracts to close — fetching what already settled.
  */
 
 class HistoricalSettlementFetcher {
   constructor() {
-    this.kalshiBase = 'https://api.elections.kalshi.com/trade-api/v2';
     this.polyBase = 'https://gamma-api.polymarket.com';
     this.coinbaseBase = 'https://api.exchange.coinbase.com';
     this.coinbasePredictionsEnabled = this._readFlag('enableCoinbasePredictions');
 
     // Cache for settled contracts (avoid redundant API calls)
     this.settledCache = {
-      kalshi: [],
+      kalshi: [], // legacy empty — never populated
       polymarket: [],
       coinbase: [],
     };
@@ -29,7 +28,7 @@ class HistoricalSettlementFetcher {
 
     this.cacheTTL = 300_000; // 5 minutes
 
-    console.log('[HistoricalSettlementFetcher] Initialized');
+    console.log('[HistoricalSettlementFetcher] Initialized (Polymarket-only; Kalshi fetch disabled)');
   }
 
   _readFlag(name) {
@@ -42,114 +41,13 @@ class HistoricalSettlementFetcher {
   }
 
   /**
-   * Fetch settled Kalshi markets from last N hours
-   * Returns array of { ticker, symbol, outcome, settlePrice, settleTime }
+   * Kalshi settled fetch — permanently disabled (Polymarket-only overhaul).
+   * Kept as a no-op so older callers do not throw.
    */
-  async fetchKalshiSettled(hoursBack = 24, limit = 100) {
-    const now = Date.now();
-
-    // Check cache
-    if (this.settledCache.kalshi.length > 0 && now - this.lastFetch.kalshi < this.cacheTTL) {
-      console.log(`[HistoricalFetcher] Using Kalshi cache (${this.settledCache.kalshi.length} settled contracts)`);
-      return this.settledCache.kalshi;
-    }
-
-    try {
-      // Prefer per-series settled fetch (more reliable than scanning all markets)
-      // Include all 4-coin focus + DOGE
-      const seriesList = ['KXBTC15M', 'KXETH15M', 'KXSOL15M', 'KXXRP15M', 'KXDOGE15M'];
-      let aggregatedMarkets = [];
-
-      for (const series of seriesList) {
-        try {
-          const url = `${this.kalshiBase}/markets?series_ticker=${series}&status=settled&limit=${limit}`;
-          const resp = await fetch(url);
-          if (!resp || !resp.ok) {
-            console.warn(`[HistoricalFetcher] Kalshi per-series ${series} HTTP ${resp && resp.status}`);
-            continue;
-          }
-          const d = await resp.json();
-          if (Array.isArray(d.markets) && d.markets.length) {
-            console.log(`[HistoricalFetcher] ${series}: fetched ${d.markets.length} settled markets`);
-            aggregatedMarkets.push(...d.markets);
-          } else {
-            console.log(`[HistoricalFetcher] ${series}: no settled markets returned`);
-          }
-        } catch (e) {
-          console.warn(`[HistoricalFetcher] Kalshi per-series fetch failed for ${series}: ${e && e.message ? e.message : e}`);
-        }
-      }
-
-      // Fallback: query all settled markets if per-series returned nothing
-      let markets = aggregatedMarkets;
-      if (!markets || markets.length === 0) {
-        const url = `${this.kalshiBase}/markets?status=settled&limit=${limit}`;
-        const response = await fetch(url);
-        if (!response || !response.ok) {
-          console.error(`[HistoricalFetcher] Kalshi API error: ${response && response.status}`);
-          return [];
-        }
-        const data = await response.json();
-        markets = data.markets || [];
-      }
-
-      const settled = markets
-        .filter(m => {
-          // Only 15M crypto markets
-          if (!m.ticker) return false;
-          if (!m.ticker.includes('15M')) return false;
-          if (!['BTC', 'ETH', 'SOL', 'XRP', 'DOGE'].some(sym => m.ticker.includes(sym))) return false;  // 5-coin focus
-          const statusNorm = String(m.status || '').toLowerCase();
-          if (statusNorm !== 'settled' && statusNorm !== 'finalized') return false;
-          return true;
-        })
-        .map(m => {
-          // Extract coin symbol from ticker (e.g., "KXBTC15M-26MAY150115-15" → "BTC")
-          const symMatch = m.ticker.match(/KX([A-Z0-9]+)15M/);
-          const symbol = symMatch ? symMatch[1] : null;
-
-          return {
-            source: 'kalshi',
-            ticker: m.ticker,
-            symbol,
-            status: m.status,
-            result: m.result, // 'YES' or 'NO'
-            floorPrice: (m.floor_strike != null && Number.isFinite(parseFloat(m.floor_strike)))
-              ? parseFloat(m.floor_strike)
-              : m.floor_price,
-            strikeType: m.strike_type,
-            settleTime: m.close_time ? new Date(m.close_time).getTime() : null,
-            createdAt: m.created_at ? new Date(m.created_at).getTime() : null,
-            expiresAt: m.expires_at ? new Date(m.expires_at).getTime() : null,
-            // Raw market object for debugging
-            raw: m,
-          };
-        });
-
-      // Balance per-coin: distribute evenly rather than first-200-wins
-      const byCoin = {};
-      for (const m of settled) {
-        if (!byCoin[m.symbol]) byCoin[m.symbol] = [];
-        byCoin[m.symbol].push(m);
-      }
-
-      const balanced = [];
-      const maxPerCoin = 50; // up to 50 recent per coin
-      for (const [sym, mktList] of Object.entries(byCoin)) {
-        balanced.push(...mktList.slice(-maxPerCoin)); // keep most recent maxPerCoin per coin
-      }
-      balanced.sort((a, b) => (b.settleTime || 0) - (a.settleTime || 0)); // sort by settle time descending
-
-      const result = balanced.slice(0, 250); // overall cap at 250 to allow multi-coin representation
-      this.settledCache.kalshi = result;
-      this.lastFetch.kalshi = now;
-
-      console.log(`[HistoricalFetcher] Fetched ${result.length} settled Kalshi 15M markets (per-series; ${settled.length} eligible)`);
-      return result;
-    } catch (err) {
-      console.error('[HistoricalFetcher] Kalshi fetch error:', err && err.message ? err.message : err);
-      return this.settledCache.kalshi; // Return cache on error
-    }
+  async fetchKalshiSettled(_hoursBack = 24, _limit = 100) {
+    this.settledCache.kalshi = [];
+    this.lastFetch.kalshi = Date.now();
+    return [];
   }
 
   /**
@@ -192,20 +90,50 @@ class HistoricalSettlementFetcher {
           const symMatch = m.question.match(/(BTC|ETH|SOL|XRP|DOGE|BNB)/i);
           const symbol = symMatch ? symMatch[1].toUpperCase() : null;
 
-          // Determine outcome from outcome prices. "1" means YES resolved, "0" means NO.
-          const outcomeYes = parseFloat(m.outcomePrices?.[0] || '0');
-          const outcomeNo = parseFloat(m.outcomePrices?.[1] || '0');
-          const outcome = outcomeYes > outcomeNo ? 'YES' : 'NO';
-          
+          // Parse outcomes/outcomePrices (Gamma may JSON-stringify arrays).
+          // Crypto Up/Down markets label "Up"/"Down"; classic binary uses "Yes"/"No".
+          // Prefer directional UP/DOWN for scorecards; keep legacy outcome YES/NO too.
+          let outcomes = m.outcomes;
+          if (typeof outcomes === 'string') {
+            try { outcomes = JSON.parse(outcomes); } catch { outcomes = null; }
+          }
+          let prices = m.outcomePrices;
+          if (typeof prices === 'string') {
+            try { prices = JSON.parse(prices); } catch { prices = null; }
+          }
+          const priceArr = Array.isArray(prices) ? prices.map(p => parseFloat(p)) : [];
+          const outArr = Array.isArray(outcomes) ? outcomes.map(o => String(o || '').trim()) : [];
+
+          let upIndex = outArr.findIndex(o => o.toLowerCase() === 'up');
+          if (upIndex < 0) upIndex = outArr.findIndex(o => o.toLowerCase() === 'yes');
+          if (upIndex < 0) upIndex = 0;
+
+          const upPrice = Number.isFinite(priceArr[upIndex]) ? priceArr[upIndex]
+            : parseFloat(String(priceArr[0] ?? '0'));
+          const otherIdx = upIndex === 0 ? 1 : 0;
+          const downPrice = Number.isFinite(priceArr[otherIdx]) ? priceArr[otherIdx]
+            : parseFloat(String(priceArr[1] ?? '0'));
+          // Directional outcome for Up/Down markets (and Yes→UP / No→DOWN).
+          // Decisive prices (≥0.98 / ≤0.02) win; otherwise higher side.
+          let outcomeDir = 'DOWN';
+          if (upPrice >= 0.98) outcomeDir = 'UP';
+          else if (upPrice <= 0.02) outcomeDir = 'DOWN';
+          else outcomeDir = upPrice >= downPrice ? 'UP' : 'DOWN';
+          // Legacy YES/NO field (Yes/Up → YES) for older consumers of calculateAccuracy
+          const outcome = outcomeDir === 'UP' ? 'YES' : 'NO';
+
           const resolvedTime = m.updatedAt ? new Date(m.updatedAt).getTime() : (m.endDateIso ? new Date(m.endDateIso).getTime() : new Date(m.endDate).getTime());
 
           return {
             source: 'polymarket',
             marketId: m.id,
+            slug: m.slug || m.market_slug || null,
             symbol,
             title: m.question,
-            outcome,
-            outcomePrices: m.outcomePrices,
+            outcome,           // YES | NO (legacy)
+            outcomeDir,        // UP | DOWN (preferred for crypto Up/Down)
+            outcomes: outArr.length ? outArr : null,
+            outcomePrices: priceArr.length ? priceArr : m.outcomePrices,
             resolvedTime: resolvedTime,
             createdAt: m.createdAt ? new Date(m.createdAt).getTime() : null,
             // Raw market object for debugging
@@ -367,8 +295,12 @@ class HistoricalSettlementFetcher {
           const yesDir = strike === 'below' ? 'DOWN' : 'UP';
           const noDir = yesDir === 'UP' ? 'DOWN' : 'UP';
           marketDir = String(m.result).toUpperCase() === 'YES' ? yesDir : noDir;
+        } else if (m.source === 'polymarket') {
+          // Prefer outcomeDir (UP/DOWN); fall back to YES→UP / NO→DOWN
+          marketDir = m.outcomeDir
+            || (m.outcome === 'YES' || m.outcome === 'UP' ? 'UP' : 'DOWN');
         } else {
-          // Polymarket and Coinbase: outcome is already 'YES' or 'NO' (price up/down)
+          // Coinbase: outcome is already 'YES' or 'NO' (price up/down)
           marketDir = m.outcome === 'YES' ? 'UP' : 'DOWN';
         }
 
@@ -431,6 +363,9 @@ class HistoricalSettlementFetcher {
           const yesDir = strike === 'below' ? 'DOWN' : 'UP';
           const noDir = yesDir === 'UP' ? 'DOWN' : 'UP';
           marketDir = String(m.result).toUpperCase() === 'YES' ? yesDir : noDir;
+        } else if (m.source === 'polymarket') {
+          marketDir = m.outcomeDir
+            || (m.outcome === 'YES' || m.outcome === 'UP' ? 'UP' : 'DOWN');
         } else {
           marketDir = m.outcome === 'YES' ? 'UP' : 'DOWN';
         }

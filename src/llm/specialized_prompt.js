@@ -816,18 +816,21 @@ function calculateCrowdFade(kalshiPercent) {
 function generateRangeSystemPrompt(horizonMinutes) {
   const h = Number(horizonMinutes) === 60 ? 60 : 15;
   if (h === 15) {
-    return `You are Grok (xAI) analyzing ONE live Kalshi 15-MINUTE binary contract (snapshot.kalshi15m / activeContract).
+    return `You are ASI1 (Fetch.ai ASI:One) — the PRIMARY pre-contract market analyst for WE-CRYPTO.
+You guide the trader BEFORE and DURING a live Polymarket 15-MINUTE Up/Down crypto market.
 
-CRITICAL SEMANTICS (do not invert):
-- call/direction UP|DOWN = your view of **price direction** by settlement (spot higher or lower).
-- YES/NO on the ticker depends on strikeDir:
-  - strikeDir "above" (default 15M up/down): YES ≈ price UP; NO ≈ price DOWN.
-  - strikeDir "below": YES ≈ price DOWN; NO ≈ price UP.
-- Always set kalshiPeg.side to YES or NO consistent with strikeDir + your price call.
-- NEVER say WAIT. Always UP or DOWN on price.
+ROLE — PRE-CONTRACT / IN-WINDOW GUIDE:
+- Tell the trader clearly what to do: lean BUY UP, BUY DOWN, or stay flat-size / reduce if edge is thin.
+- Explain WHY using Polymarket odds, price-to-beat (PTB), time-to-close, L2 book imbalance, model score, and path.
+- Be decisive and specific (levels, TTC buckets, invalidation). No vague fluff.
 
-Use: ticker, yesProb, yesBid/yesAsk, floorPrice/strike, secondsToClose, currentPrice vs floor, session open15m path.
-Respect market odds when |yesProb-0.5| is large unless microstructure clearly disagrees.
+CRITICAL SEMANTICS:
+- call/direction UP|DOWN = your view of **price direction** by settlement (spot vs window open / price-to-beat).
+- Polymarket "Up" token = price finished above PTB (no Kalshi strike inversion).
+- Always set polyPeg.side to "Up" or "Down" consistent with your price call.
+- NEVER say WAIT as the call. Always UP or DOWN. If edge is tiny, still pick a side and set confidence low + sizing note "size down / skip if already positioned".
+
+Use: slug, yesProb/P(Up), priceToBeatNum, secondsToClose, currentPrice vs PTB, depthImbalance/spread if present, session path, model direction/score.
 
 Return ONLY valid JSON:
 {
@@ -838,7 +841,14 @@ Return ONLY valid JSON:
   "call": "UP|DOWN",
   "range": { "low": 0, "high": 0, "widthPct": 0 },
   "preferredRange": { "low": 0, "high": 0, "yesProb": 0, "ticker": "" },
-  "kalshiPeg": { "ticker": "", "series": "", "side": "YES|NO", "rationale": "" },
+  "polyPeg": { "slug": "", "side": "Up|Down", "rationale": "" },
+  "preContract": {
+    "action": "BUY_UP|BUY_DOWN|SIZE_DOWN|HOLD_FLAT",
+    "urgency": "now|wait_pullback|late_window",
+    "edgeVsMarket": "with_crowd|fade_crowd|neutral",
+    "invalidation": "",
+    "sizeHint": "full|half|skip"
+  },
   "analysis": {
     "strongest_signal": "",
     "weakest_signal": "",
@@ -857,18 +867,20 @@ Return ONLY valid JSON:
 }
 
 RULES:
-- notes start with UP or DOWN, then exact ticker, mkt YES%, ttc, spot vs floor.
-- kalshiPeg.ticker must equal active contract ticker.
+- suggestions.notes MUST start with UP or DOWN, then slug, mkt Up%, ttc, spot vs PTB, then 2–4 sentences of trader guidance (what to do now).
+- ai_wording.primary_rationale = fuller pre-contract brief (what changed, book, crowd).
+- polyPeg.slug must equal the active market's slug.
 - Valid JSON only.`.trim();
   }
 
-  return `You are Grok (xAI) trading analyst for HOURLY Kalshi RANGE (BETWEEN) contracts.
+  return `You are ASI1 (Fetch.ai ASI:One) — hourly crypto RANGE pre-positioning advisor for Polymarket-related decisions.
 
-NEVER say WAIT. Call UP or DOWN only.
-Use kalshiRangeLadder buckets (floor–cap) and kalshiSpotBucket. Pick preferredRange to the bucket you think settles YES.
+NEVER say WAIT as the call. Call UP or DOWN only.
+Use rangeLadder buckets (low–high, spot-centered) and spotBucket. Pick preferredRange to the bucket you think price lands in.
+Include preContract.action / sizeHint / invalidation for how to lean into the hour.
 
 Return ONLY valid JSON with the same schema as 15m (horizonMinutes: 60), plus preferredRange matching a ladder row.
-suggestions.notes MUST start with UP or DOWN. Valid JSON only.`.trim();
+suggestions.notes MUST start with UP or DOWN then actionable guidance. Valid JSON only.`.trim();
 }
 
 function generateRangeUserPrompt(snapshot) {
@@ -880,34 +892,47 @@ function generateRangeUserPrompt(snapshot) {
   const tr = snapshot.tailRisk;
   const xs = snapshot.xSentiment || {};
   const onchain = snapshot.onChainSideScan || snapshot.onChainRecent || {};
-  const k15 = snapshot.kalshi15m || {};
-  const ladder = Array.isArray(snapshot.kalshiRangeLadder) ? snapshot.kalshiRangeLadder : [];
-  const here = snapshot.kalshiSpotBucket || null;
+  const k15 = snapshot.poly15m || {};
+  const ladder = Array.isArray(snapshot.rangeLadder) ? snapshot.rangeLadder : [];
+  const here = snapshot.spotBucket || null;
   const modelDir = snapshot.direction || snapshot.modelDirection || 'n/a';
   const modelScore = snapshot.score ?? snapshot.modelScore ?? 'n/a';
   const modelConf = snapshot.confidence != null ? (Number(snapshot.confidence) * 100).toFixed(1) + '%' : 'n/a';
 
   if (h === 15) {
     const ac = snapshot.activeContract || k15;
-    return `Grok — Kalshi 15M CONTRACT analysis (this ticker only):
+    const yesP = ac.yesProb ?? ac.probability ?? ac.upProbability;
+    const imb = ac.depthImbalance ?? k15.depthImbalance;
+    const spread = ac.spread ?? k15.spread;
+    const mid = ac.mid ?? k15.mid;
+    return `ASI1 pre-contract brief — Polymarket 15M (this market only):
 
 Coin: ${coin}
 Spot: ${Number.isFinite(current) && current > 0 ? '$' + current : 'n/a'}
 Timestamp: ${new Date().toISOString()}
 
-## QUANTITATIVE MODEL PREDICTION (PRIMARY DIRECTIONAL INPUT)
+## LIVE POLYMARKET CONTRACT
+Slug: ${ac.slug || k15.slug || 'n/a'}
+P(Up) / yesProb: ${yesP != null ? (Number(yesP) * 100).toFixed(1) + '%' : 'n/a'}
+Price-to-beat (PTB): ${ac.priceToBeatNum ?? k15.priceToBeatNum ?? 'n/a'}
+Seconds to close: ${ac.secondsToClose ?? k15.secondsToClose ?? 'n/a'}
+Best bid/ask (Up): ${ac.bestBid ?? k15.bestBid ?? 'n/a'} / ${ac.bestAsk ?? k15.bestAsk ?? 'n/a'}
+Mid / spread / depthImbalance: ${mid ?? 'n/a'} / ${spread ?? 'n/a'} / ${imb ?? 'n/a'}
+Live direction vs PTB: ${ac.liveDirection || k15.liveDirection || 'n/a'}
+
+## QUANTITATIVE MODEL PREDICTION (blend with market — do not ignore odds)
 Model Direction: ${modelDir}
 Model Confidence: ${modelConf}
 Model Score: ${modelScore}
 Regime: ${snapshot.regimeLocal || 'n/a'}
 
-## ACTIVE 15M CONTRACT (MUST bind call to this)
+## ACTIVE 15M MARKET (MUST bind call to this)
 ${JSON.stringify(ac, null, 2).slice(0, 1200)}
 
-Settlement: ${ac.settlementRule || 'YES if UP/above strike at 15m close'}
-Market YES mid: ${ac.yesProb != null ? (Number(ac.yesProb) * 100).toFixed(1) + '%' : 'n/a'}
+Settlement: ${ac.settlementRule || 'Up if price finishes above the window open (price-to-beat) at 15m close'}
+Market Up mid: ${ac.yesProb != null ? (Number(ac.yesProb) * 100).toFixed(1) + '%' : 'n/a'}
 Seconds to close: ${ac.secondsToClose ?? 'n/a'}
-Strike/floor: ${ac.floorPrice ?? ac.targetPriceNum ?? 'n/a'} (${ac.strikeDir || 'above'})
+Price-to-beat: ${ac.priceToBeatNum ?? 'n/a'}
 
 ## Session memory (support only)
 samples=${mem.sampleCount ?? 0}, sessionMin=${mem.sessionMinutes ?? 0}, pathReturnPct=${mem.pathReturnPct ?? 'n/a'},
@@ -919,15 +944,15 @@ X score=${xs.score ?? 0} "${xs.summary || 'n/a'}"
 On-chain: ${typeof onchain === 'string' ? onchain : JSON.stringify(onchain).slice(0, 350)}
 
 TASK:
-1. Synthesize Quantitative Model Prediction (${modelDir}, conf=${modelConf}) with live Kalshi 15M contract state.
-2. Decide YES or NO on ticker ${ac.ticker || 'ACTIVE_15M'} only.
-3. If strikeDir is "below": map YES -> call DOWN, NO -> call UP. Otherwise (strikeDir "above"): map YES -> call UP, NO -> call DOWN. Never WAIT.
-4. notes start with UP|DOWN then ticker then yes% and ttc.
-5. kalshiPeg.ticker must equal ${ac.ticker || 'the contract ticker'}.
+1. Synthesize Quantitative Model Prediction (${modelDir}, conf=${modelConf}) with the live Polymarket 15M market state.
+2. Decide Up or Down on market ${ac.slug || 'ACTIVE_15M'} only.
+3. Up token means price finished up over the window; Down means it finished down. Never WAIT.
+4. notes start with UP|DOWN then slug then Up% and ttc.
+5. polyPeg.slug must equal ${ac.slug || 'the market slug'}.
 6. Valid JSON only.`.trim();
   }
 
-  return `Grok Kalshi HOURLY RANGE snapshot:
+  return `Grok Polymarket HOURLY RANGE snapshot:
 
 Coin: ${coin}
 Horizon: 60 minutes
@@ -940,7 +965,7 @@ Model Confidence: ${modelConf}
 Model Score: ${modelScore}
 Regime: ${snapshot.regimeLocal || 'n/a'}
 
-## KALSHI HOURLY RANGE LADDER (peg preferredRange to one row)
+## HOURLY RANGE LADDER (spot-centered synthetic buckets, peg preferredRange to one row)
 spotBucket=${JSON.stringify(here)}
 ladder=${JSON.stringify(ladder).slice(0, 2800)}
 

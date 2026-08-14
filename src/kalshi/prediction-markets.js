@@ -19,10 +19,11 @@
 (function () {
   'use strict';
 
-  const KALSHI_BASE = 'https://api.elections.kalshi.com/trade-api/v2';
+  const KALSHI_BASE = ''; // Kalshi network disabled — Polymarket only
   const POLY_GAMMA = 'https://gamma-api.polymarket.com';
   const POLY_CLOB = 'https://clob.polymarket.com';
-  const POLY_CLOB_MARKET_WS = 'wss://ws-subscriptions-clob.polymarket.com/ws/market';
+  // CLOB market WS is owned solely by window.PolymarketWS (src/feeds/polymarket-ws.js).
+  // Do not open a second connection here — that caused duplicate books / half-depth.
   const POLY_GAMMA_ACTIVE_EVENTS_FALLBACKS = [
     { tagId: 21, source: 'gamma-events-tag21-crypto' },
     { tagId: 1, source: 'gamma-events-tag1-user-fallback' },
@@ -85,6 +86,8 @@
     HYPE: 'hype',
   };
 
+  const KALSHI_DISABLED = true; // 100% Polymarket only mode
+
   let cache = {};
   let lastFetch = 0;
   let inFlight = null;
@@ -98,7 +101,11 @@
   // Tracks the last 12 probability readings per coin to detect smart-money
   // drift BEFORE the model catches up. velocity > 0 = Kalshi odds rising (bullish).
   const _probHistory = {};
-  const PROB_HIST_MAX = 12;
+  // Signed CLOB auth lives in Electron main (secrets/POLYMARKET_API.txt).
+  // Public Gamma/CLOB market GETs do not need L2 headers in the renderer.
+  function _injectPolyHeaders(url, headers = {}) {
+    return headers || {};
+  }
 
   // ---- Route through Tauri suppFetch to bypass WebView2 CORS / geo-blocks ----
   async function readJsonPayload(payload) {
@@ -116,9 +123,10 @@
   }
 
   async function apiFetch(url, opts = {}) {
+    const requestOpts = { ...opts, headers: _injectPolyHeaders(url, { Accept: 'application/json', ...opts.headers }) };
     if (typeof window.suppFetch === 'function') {
       try {
-        return await readJsonPayload(await window.suppFetch(url, opts));
+        return await readJsonPayload(await window.suppFetch(url, requestOpts));
       } catch (err) {
         console.warn(`[PredictionMarkets] suppFetch failed for ${url}:`, err?.message || err);
       }
@@ -126,14 +134,27 @@
     // Try IPC fetch (main process, no CORS) when running in Electron
     if (window.electron?.ipcFetch) {
       try {
-        const r = await window.electron.ipcFetch(url, opts);
+        const r = await window.electron.ipcFetch(url, requestOpts);
         if (r.ok) return typeof r.text === 'string' ? JSON.parse(r.text) : r.text;
         throw new Error(`HTTP ${r.status || 0}${r.error ? ` ${r.error}` : ''}`);
       } catch (err) {
         console.warn(`[PredictionMarkets] ipcFetch failed for ${url}:`, err?.message || err);
       }
     }
-    const res = await fetch(url, { headers: { Accept: 'application/json' }, ...opts });
+    // Try CORS proxy fallback if running in browser
+    const proxyUrls = [];
+    if (url.startsWith('https://gamma-api.polymarket.com/')) {
+      proxyUrls.push(url.replace('https://gamma-api.polymarket.com/', 'http://localhost:8080/gamma/'));
+    } else if (url.startsWith('https://clob.polymarket.com/')) {
+      proxyUrls.push(url.replace('https://clob.polymarket.com/', 'http://localhost:8080/clob/'));
+    }
+    for (const pUrl of proxyUrls) {
+      try {
+        const pr = await fetch(pUrl, requestOpts);
+        if (pr.ok) return await pr.json();
+      } catch (_) {}
+    }
+    const res = await fetch(url, requestOpts);
     if (!res.ok) throw new Error(res.status);
     return res.json();
   }
@@ -153,7 +174,7 @@
   }
 
   async function textFetch(url, opts = {}) {
-    const requestOpts = { headers: { Accept: 'text/html,application/json,*/*' }, ...opts };
+    const requestOpts = { ...opts, headers: _injectPolyHeaders(url, { Accept: 'text/html,application/json,*/*', ...opts.headers }) };
     if (typeof window.suppFetch === 'function') {
       try {
         return await readTextPayload(await window.suppFetch(url, requestOpts));
@@ -169,6 +190,19 @@
       } catch (err) {
         console.warn(`[PredictionMarkets] ipcFetch text failed for ${url}:`, err?.message || err);
       }
+    }
+    // Try CORS proxy fallback if running in browser
+    const proxyUrls = [];
+    if (url.startsWith('https://gamma-api.polymarket.com/')) {
+      proxyUrls.push(url.replace('https://gamma-api.polymarket.com/', 'http://localhost:8080/gamma/'));
+    } else if (url.startsWith('https://clob.polymarket.com/')) {
+      proxyUrls.push(url.replace('https://clob.polymarket.com/', 'http://localhost:8080/clob/'));
+    }
+    for (const pUrl of proxyUrls) {
+      try {
+        const pr = await fetch(pUrl, requestOpts);
+        if (pr.ok) return await pr.text();
+      } catch (_) {}
     }
     const res = await fetch(url, requestOpts);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -328,21 +362,7 @@
     }
 
     if (data && data.markets) _consecutive429 = 0;
-    if (data && transport) {
-      try {
-        const wsState = window.KalshiWS?.getState?.() || {};
-        const isWsHealthy = wsState.connected && !wsState.stale;
-        const isPrimaryRest = transport === 'ipc-sdk' || transport === 'ipc-sdk-empty';
-        window.NetworkHealth?.update?.('Kalshi', {
-          status: 'healthy',
-          lastFetch: Date.now(),
-          fallback: !isWsHealthy && !isPrimaryRest,
-          reason: isWsHealthy ? 'wss' : transport,
-          bucket: 'unknown',
-          bucketReason: '',
-        });
-      } catch (_) { }
-    }
+    if (data && data.markets) _consecutive429 = 0;
     return data;
   }
 
@@ -910,8 +930,6 @@
   // falls back to Polymarket-only -- see below), kill it at the source: no
   // network calls are made, so every consumer just sees "no Kalshi data",
   // which they already handle. Flip to re-enable.
-  const KALSHI_DISABLED = true;
-
   async function fetchKalshi15M() {
     if (KALSHI_DISABLED) return {};
     const result = {};
@@ -1232,23 +1250,6 @@
       .filter(Boolean);
   }
 
-  function _bestBidAskFromBookRows(rows, side) {
-    if (!Array.isArray(rows) || !rows.length) return null;
-    let best = null;
-    for (const row of rows) {
-      const price = Number(row?.price);
-      if (!Number.isFinite(price) || price <= 0 || price >= 1) continue;
-      if (best == null) {
-        best = price;
-      } else if (side === 'bid') {
-        best = Math.max(best, price);
-      } else {
-        best = Math.min(best, price);
-      }
-    }
-    return best;
-  }
-
   function _coercePolyMarketFromEvent(event, expectedSlug) {
     if (!event || typeof event !== 'object') return null;
     const markets = Array.isArray(event.markets) ? event.markets : [];
@@ -1380,6 +1381,155 @@
     }
   }
 
+  // ── Shared CLOB consumer (PolymarketWS is the sole market-channel owner) ──
+  // Maps assetId → { sym, market } for tick logging / pending resolution.
+  const _polyClobAssetMeta = new Map();
+  /** cacheKey → Array<{ resolve, timeoutId, upAssetId, downAssetId, conditionId, tokenIds }> */
+  const _polyClobPending = new Map();
+  let _polyClobBookListenerBound = false;
+
+  function _polyWs() {
+    return (typeof window !== 'undefined' && window.PolymarketWS) ? window.PolymarketWS : null;
+  }
+
+  function _ensurePolyWsBookListener() {
+    if (_polyClobBookListenerBound || typeof window === 'undefined') return;
+    _polyClobBookListenerBound = true;
+
+    const onBookOrTick = (ev) => {
+      const assetId = String(ev?.detail?.assetId || '');
+      if (!assetId) return;
+      const mapping = _polyClobAssetMeta.get(assetId);
+      if (mapping) {
+        _publishPolymarketClobTick(mapping.sym, mapping.market, ev.detail);
+      }
+      _resolvePolyClobPendingForAsset(assetId);
+    };
+
+    window.addEventListener('polymarket:book', onBookOrTick);
+    window.addEventListener('polymarket:tick', onBookOrTick);
+
+    // Batch 3 hook: surface market_resolved on the PredictionMarkets bus too.
+    window.addEventListener('polymarket:market_resolved', (ev) => {
+      try {
+        window.dispatchEvent(new CustomEvent('predictionmarkets:market_resolved', {
+          detail: ev?.detail || {},
+        }));
+      } catch (_) {}
+    });
+  }
+
+  function _polyClobSubscribe(tokenIds, sym, market) {
+    const ws = _polyWs();
+    if (!ws) return;
+    _ensurePolyWsBookListener();
+    try { ws.start?.(); } catch (_) {}
+    const ids = (tokenIds || []).map((id) => String(id || '').trim()).filter(Boolean);
+    if (!ids.length) return;
+    for (const id of ids) {
+      if (sym && market) _polyClobAssetMeta.set(id, { sym, market });
+    }
+    ws.subscribeAssets(ids);
+  }
+
+  function _polyClobGetSnapshot(upAssetId, downAssetId, conditionId) {
+    const ws = _polyWs();
+    if (!ws) {
+      return {
+        upAssetId: upAssetId || null,
+        downAssetId: downAssetId || null,
+        conditionId: conditionId || null,
+        bestBid: null,
+        bestAsk: null,
+        upProbability: null,
+        downBestBid: null,
+        downBestAsk: null,
+        mid: null,
+        spread: null,
+        depthImbalance: null,
+        nearTouchNotional: null,
+        bids: [],
+        asks: [],
+        ts: Date.now(),
+        source: 'polymarket-clob-ws',
+      };
+    }
+    if (typeof ws.getPairSnapshot === 'function') {
+      return ws.getPairSnapshot(upAssetId, downAssetId, conditionId);
+    }
+    if (typeof ws.getSnapshotValue === 'function') {
+      return ws.getSnapshotValue(upAssetId, downAssetId, conditionId);
+    }
+    // Minimal fallback from getMarketState if older PolymarketWS is loaded.
+    const up = ws.getMarketState?.(upAssetId) || {};
+    const down = downAssetId ? (ws.getMarketState?.(downAssetId) || {}) : {};
+    const upBid = Number(up.bestBid);
+    const upAsk = Number(up.bestAsk);
+    let upMid = null;
+    if (Number.isFinite(upBid) && Number.isFinite(upAsk)) upMid = (upBid + upAsk) / 2;
+    else if (Number.isFinite(upBid)) upMid = upBid;
+    else if (Number.isFinite(upAsk)) upMid = upAsk;
+    if (!Number.isFinite(upMid) || upMid <= 0 || upMid >= 1) upMid = null;
+    return {
+      upAssetId,
+      downAssetId,
+      conditionId,
+      bestBid: Number.isFinite(upBid) ? upBid : null,
+      bestAsk: Number.isFinite(upAsk) ? upAsk : null,
+      upProbability: upMid,
+      downBestBid: Number.isFinite(Number(down.bestBid)) ? Number(down.bestBid) : null,
+      downBestAsk: Number.isFinite(Number(down.bestAsk)) ? Number(down.bestAsk) : null,
+      mid: up.mid ?? upMid,
+      spread: up.spread ?? null,
+      depthImbalance: up.depthImbalance ?? null,
+      nearTouchNotional: up.nearTouchNotional ?? null,
+      bids: Array.isArray(up.bids) ? up.bids : [],
+      asks: Array.isArray(up.asks) ? up.asks : [],
+      ts: Number(up.updatedAt || Date.now()) || Date.now(),
+      source: 'polymarket-clob-ws',
+    };
+  }
+
+  function _polyClobSnapHasQuotes(snap) {
+    return !!(snap && (
+      snap.bestBid != null ||
+      snap.bestAsk != null ||
+      snap.upProbability != null ||
+      (Array.isArray(snap.bids) && snap.bids.length) ||
+      (Array.isArray(snap.asks) && snap.asks.length)
+    ));
+  }
+
+  function _resolvePolyClobPendingForAsset(assetId) {
+    if (!assetId || !_polyClobPending.size) return;
+    for (const [cacheKey, reqs] of Array.from(_polyClobPending.entries())) {
+      if (!reqs || !reqs.length) continue;
+      const first = reqs[0];
+      if (!first) continue;
+      if (first.upAssetId !== assetId && first.downAssetId !== assetId) continue;
+      const snap = _polyClobGetSnapshot(first.upAssetId, first.downAssetId, first.conditionId);
+      if (_polyClobSnapHasQuotes(snap)) {
+        _resolvePolyClobPending(cacheKey, snap);
+      }
+    }
+  }
+
+  function _resolvePolyClobPending(cacheKey, val) {
+    const reqs = _polyClobPending.get(cacheKey);
+    if (!reqs) return;
+    _polyClobPending.delete(cacheKey);
+    _poly5mClobSnapshotCache[cacheKey] = { value: val, fetchedAt: Date.now() };
+    for (const req of reqs) {
+      try { clearTimeout(req.timeoutId); } catch (_) {}
+      try { req.resolve(val); } catch (_) {}
+    }
+  }
+
+  /**
+   * Live L2 snapshot for a binary market via shared PolymarketWS.
+   * Returns bestBid/bestAsk/upProbability plus mid/spread/depthImbalance/
+   * nearTouchNotional and capped bids/asks arrays.
+   */
   async function fetchPolymarketClobMarketSnapshot(sym, market, timeoutMs = 900) {
     const tokenIds = _polyClobTokenIds(market);
     if (!tokenIds.length || typeof WebSocket === 'undefined') return null;
@@ -1394,21 +1544,16 @@
     const upAssetId = tokenIds[upIndex] || tokenIds[0];
     const downAssetId = tokenIds[downIndex] || tokenIds[1] || null;
 
-    // Check if we already have the snapshot in-memory (from active streaming)
-    const immediateSnap = _polyClobWS.getSnapshotValue(upAssetId, downAssetId, conditionId);
-    if (immediateSnap && (immediateSnap.bestBid != null || immediateSnap.bestAsk != null || immediateSnap.upProbability != null)) {
+    _polyClobSubscribe(tokenIds, sym, market);
+
+    const immediateSnap = _polyClobGetSnapshot(upAssetId, downAssetId, conditionId);
+    if (_polyClobSnapHasQuotes(immediateSnap)) {
       const val = { ...immediateSnap };
       _poly5mClobSnapshotCache[cacheKey] = { value: val, fetchedAt: Date.now() };
       return val;
     }
 
-    const promise = new Promise(resolve => {
-      // Ensure shared WebSocket is connected
-      _polyClobWS.connect();
-      
-      // Subscribe to target token IDs
-      _polyClobWS.subscribe(tokenIds, sym, market);
-
+    const promise = new Promise((resolve) => {
       const req = {
         resolve,
         tokenIds,
@@ -1417,33 +1562,57 @@
         conditionId,
         sym,
         market,
-        timeoutId: null
+        timeoutId: null,
       };
 
       req.timeoutId = setTimeout(() => {
-        // Remove from pending on timeout
-        const reqs = _polyClobWS.pendingRequests.get(cacheKey) || [];
+        const reqs = _polyClobPending.get(cacheKey) || [];
         const idx = reqs.indexOf(req);
         if (idx >= 0) {
           reqs.splice(idx, 1);
-          if (reqs.length === 0) {
-            _polyClobWS.pendingRequests.delete(cacheKey);
-          }
+          if (reqs.length === 0) _polyClobPending.delete(cacheKey);
         }
-        // Resolve with the best data we currently have
-        const finalSnap = _polyClobWS.getSnapshotValue(upAssetId, downAssetId, conditionId);
+        const finalSnap = _polyClobGetSnapshot(upAssetId, downAssetId, conditionId);
         _poly5mClobSnapshotCache[cacheKey] = { value: finalSnap, fetchedAt: Date.now() };
         resolve(finalSnap);
       }, timeoutMs);
 
-      if (!_polyClobWS.pendingRequests.has(cacheKey)) {
-        _polyClobWS.pendingRequests.set(cacheKey, []);
-      }
-      _polyClobWS.pendingRequests.get(cacheKey).push(req);
+      if (!_polyClobPending.has(cacheKey)) _polyClobPending.set(cacheKey, []);
+      _polyClobPending.get(cacheKey).push(req);
     });
 
-    _poly5mClobSnapshotCache[cacheKey] = { inFlight: promise, fetchedAt: Date.now(), value: cached?.value || null };
+    _poly5mClobSnapshotCache[cacheKey] = {
+      inFlight: promise,
+      fetchedAt: Date.now(),
+      value: cached?.value || null,
+    };
     return promise;
+  }
+
+  /** Attach L2 micro-structure fields onto a poly5m / poly15m coin snapshot (backward compatible). */
+  function _attachClobMicroFields(target, clobSnapshot, market) {
+    if (!target) return target;
+    const snap = clobSnapshot || null;
+    target.bestBid = snap?.bestBid ?? target.bestBid ?? (parseFloat(market?.bestBid || market?.best_bid || 0) || null);
+    target.bestAsk = snap?.bestAsk ?? target.bestAsk ?? (parseFloat(market?.bestAsk || market?.best_ask || 0) || null);
+    // Micro features (Batch 2)
+    target.mid = snap?.mid ?? target.mid ?? null;
+    target.spread = snap?.spread ?? target.spread ?? null;
+    target.depthImbalance = snap?.depthImbalance ?? target.depthImbalance ?? null;
+    target.nearTouchNotional = snap?.nearTouchNotional ?? target.nearTouchNotional ?? null;
+    target.nearTouchBidSize = snap?.nearTouchBidSize ?? target.nearTouchBidSize ?? null;
+    target.nearTouchAskSize = snap?.nearTouchAskSize ?? target.nearTouchAskSize ?? null;
+    target.bidDepthNotional = snap?.bidDepthNotional ?? target.bidDepthNotional ?? null;
+    target.askDepthNotional = snap?.askDepthNotional ?? target.askDepthNotional ?? null;
+    target.bids = Array.isArray(snap?.bids) ? snap.bids : (target.bids || []);
+    target.asks = Array.isArray(snap?.asks) ? snap.asks : (target.asks || []);
+    target.clobConditionId = snap?.conditionId || market?.conditionId || market?.condition_id || target.clobConditionId || null;
+    target.clobTokenIds = market ? _polyClobTokenIds(market) : (target.clobTokenIds || []);
+    target.clobUpAssetId = snap?.upAssetId || target.clobUpAssetId || null;
+    target.clobDownAssetId = snap?.downAssetId || target.clobDownAssetId || null;
+    target.clobSnapshotTs = snap?.ts || target.clobSnapshotTs || null;
+    target.clobSource = snap?.source || target.clobSource || null;
+    return target;
   }
 
   function _isTradablePoly5M(m, nowMs = Date.now()) {
@@ -1461,258 +1630,7 @@
   const _poly5mPriceToBeatLocks = new Map();
   let _poly5mEventScanCache = { fetchedAt: 0, events: [], source: '', error: '' };
   let _poly5mClobSnapshotCache = {};
-
-  let _polyClobWS = {
-    socket: null,
-    status: 'CLOSED', // CLOSED, CONNECTING, OPEN
-    activeSubs: new Set(),
-    lastSeen: new Map(),
-    assetToMarket: new Map(),
-    pendingRequests: new Map(), // key -> Array of requests
-    books: {}, // assetId -> { bestBid, bestAsk, ts }
-    reconnectTimer: null,
-    reconnectMs: 1000,
-    pingTimer: null,
-
-    connect() {
-      if (typeof WebSocket === 'undefined') return;
-      if (this.status !== 'CLOSED') return;
-      this.status = 'CONNECTING';
-
-      try {
-        const socket = new WebSocket(POLY_CLOB_MARKET_WS);
-        this.socket = socket;
-
-        socket.onopen = () => {
-          this.status = 'OPEN';
-          this.reconnectMs = 1000;
-          if (this.reconnectTimer) {
-            clearTimeout(this.reconnectTimer);
-            this.reconnectTimer = null;
-          }
-          this.startHeartbeat();
-
-          // Resubscribe to existing active subscriptions
-          if (this.activeSubs.size > 0) {
-            const ids = Array.from(this.activeSubs);
-            try {
-              socket.send(JSON.stringify({ assets_ids: ids, type: 'market' }));
-            } catch (_) {}
-          }
-
-          // Trigger subscriptions for any waiting pending requests
-          for (const [key, reqs] of Array.from(this.pendingRequests.entries())) {
-            const first = reqs[0];
-            if (first) {
-              this.subscribe(first.tokenIds, first.sym, first.market);
-            }
-          }
-        };
-
-        socket.onmessage = (event) => {
-          let msg = null;
-          try { msg = JSON.parse(String(event.data || '')); } catch (_) { return; }
-          const rows = Array.isArray(msg) ? msg : [msg];
-          
-          for (const row of rows) {
-            const ts = Number(row?.timestamp);
-            if (Array.isArray(row?.price_changes)) {
-              for (const change of row.price_changes) {
-                const assetId = String(change?.asset_id || '');
-                this.consumeBook(
-                  assetId,
-                  Number(change?.best_bid),
-                  Number(change?.best_ask),
-                  ts
-                );
-                const mapping = this.assetToMarket.get(assetId);
-                if (mapping) {
-                  _publishPolymarketClobTick(mapping.sym, mapping.market, change);
-                }
-              }
-            } else {
-              const assetId = String(row?.asset_id || '');
-              if (assetId) {
-                this.consumeBook(
-                  assetId,
-                  _bestBidAskFromBookRows(row?.bids, 'bid'),
-                  _bestBidAskFromBookRows(row?.asks, 'ask'),
-                  ts
-                );
-                const mapping = this.assetToMarket.get(assetId);
-                if (mapping) {
-                  _publishPolymarketClobTick(mapping.sym, mapping.market, row);
-                }
-              }
-            }
-          }
-
-          this.checkPending();
-        };
-
-        socket.onerror = (err) => {
-          console.warn('[PredictionMarkets] Polymarket CLOB WS error:', err?.message || err);
-        };
-
-        socket.onclose = () => {
-          this.handleClose();
-        };
-
-      } catch (err) {
-        console.warn('[PredictionMarkets] Polymarket CLOB WS connect exception:', err?.message || err);
-        this.handleClose();
-      }
-    },
-
-    handleClose() {
-      this.status = 'CLOSED';
-      this.socket = null;
-      this.stopHeartbeat();
-      this.activeSubs.clear();
-
-      if (!this.reconnectTimer) {
-        this.reconnectTimer = setTimeout(() => {
-          this.reconnectTimer = null;
-          this.connect();
-        }, this.reconnectMs);
-        this.reconnectMs = Math.min(this.reconnectMs * 1.5, 10000);
-      }
-    },
-
-    startHeartbeat() {
-      this.stopHeartbeat();
-      this.pingTimer = setInterval(() => {
-        if (this.socket && this.status === 'OPEN') {
-          try {
-            this.socket.send(JSON.stringify({ type: 'ping' }));
-          } catch (_) {}
-        }
-      }, 30000);
-    },
-
-    stopHeartbeat() {
-      if (this.pingTimer) {
-        clearInterval(this.pingTimer);
-        this.pingTimer = null;
-      }
-    },
-
-    subscribe(tokenIds, sym, market) {
-      const now = Date.now();
-      tokenIds.forEach(id => {
-        this.lastSeen.set(id, now);
-        if (sym && market) {
-          this.assetToMarket.set(id, { sym, market });
-        }
-      });
-
-      const newIds = tokenIds.filter(id => !this.activeSubs.has(id));
-      if (newIds.length > 0) {
-        newIds.forEach(id => this.activeSubs.add(id));
-        if (this.socket && this.status === 'OPEN') {
-          try {
-            this.socket.send(JSON.stringify({ assets_ids: newIds, type: 'market' }));
-          } catch (err) {
-            console.warn('[PredictionMarkets] Subscribe send failed:', err?.message || err);
-          }
-        }
-      }
-
-      this.cleanupStaleSubs();
-    },
-
-    unsubscribe(tokenIds) {
-      const activeToUnsub = tokenIds.filter(id => this.activeSubs.has(id));
-      if (activeToUnsub.length > 0) {
-        activeToUnsub.forEach(id => {
-          this.activeSubs.delete(id);
-          this.assetToMarket.delete(id);
-          this.lastSeen.delete(id);
-        });
-        if (this.socket && this.status === 'OPEN') {
-          try {
-            this.socket.send(JSON.stringify({ assets_ids: activeToUnsub, operation: 'unsubscribe' }));
-          } catch (err) {
-            console.warn('[PredictionMarkets] Unsubscribe send failed:', err?.message || err);
-          }
-        }
-      }
-    },
-
-    cleanupStaleSubs() {
-      const now = Date.now();
-      const staleIds = [];
-      for (const id of this.activeSubs) {
-        const last = this.lastSeen.get(id) || 0;
-        if (now - last > 120_000) { // 2 minutes stale
-          staleIds.push(id);
-        }
-      }
-      if (staleIds.length > 0) {
-        this.unsubscribe(staleIds);
-      }
-    },
-
-    consumeBook(assetId, bid, ask, ts) {
-      if (!assetId) return;
-      const prev = this.books[assetId] || {};
-      this.books[assetId] = {
-        bestBid: Number.isFinite(bid) ? bid : prev.bestBid,
-        bestAsk: Number.isFinite(ask) ? ask : prev.bestAsk,
-        ts: Number.isFinite(ts) ? ts : prev.ts,
-      };
-    },
-
-    getSnapshotValue(upAssetId, downAssetId, conditionId) {
-      const upBook = this.books[upAssetId] || {};
-      const downBook = downAssetId ? this.books[downAssetId] || {} : {};
-      const upBid = Number(upBook.bestBid);
-      const upAsk = Number(upBook.bestAsk);
-      let upMid = null;
-      if (Number.isFinite(upBid) && Number.isFinite(upAsk)) upMid = (upBid + upAsk) / 2;
-      else if (Number.isFinite(upBid) && Number.isFinite(downBook.bestAsk)) upMid = (upBid + (1 - Number(downBook.bestAsk))) / 2;
-      else if (Number.isFinite(upAsk) && Number.isFinite(downBook.bestBid)) upMid = (upAsk + (1 - Number(downBook.bestBid))) / 2;
-      else if (Number.isFinite(upBid)) upMid = upBid;
-      else if (Number.isFinite(upAsk)) upMid = upAsk;
-      if (!Number.isFinite(upMid) || upMid <= 0 || upMid >= 1) upMid = null;
-      return {
-        upAssetId,
-        downAssetId,
-        conditionId,
-        bestBid: Number.isFinite(upBid) ? upBid : null,
-        bestAsk: Number.isFinite(upAsk) ? upAsk : null,
-        upProbability: upMid,
-        downBestBid: Number.isFinite(Number(downBook.bestBid)) ? Number(downBook.bestBid) : null,
-        downBestAsk: Number.isFinite(Number(downBook.bestAsk)) ? Number(downBook.bestAsk) : null,
-        ts: Number(upBook.ts || downBook.ts || Date.now()) || Date.now(),
-        source: 'polymarket-clob-ws',
-      };
-    },
-
-    checkPending() {
-      const entries = Array.from(this.pendingRequests.entries());
-      for (const [key, reqs] of entries) {
-        const first = reqs[0];
-        if (!first) continue;
-        const snap = this.getSnapshotValue(first.upAssetId, first.downAssetId, first.conditionId);
-        if (snap && (snap.bestBid != null || snap.bestAsk != null || snap.upProbability != null)) {
-          this.resolveRequest(key, snap);
-        }
-      }
-    },
-
-    resolveRequest(cacheKey, val) {
-      const reqs = this.pendingRequests.get(cacheKey);
-      if (reqs) {
-        this.pendingRequests.delete(cacheKey);
-        _poly5mClobSnapshotCache[cacheKey] = { value: val, fetchedAt: Date.now() };
-        for (const req of reqs) {
-          clearTimeout(req.timeoutId);
-          req.resolve(val);
-        }
-      }
-    }
-  };
+  // CLOB market WS lives in window.PolymarketWS — see fetchPolymarketClobMarketSnapshot.
   // Rotate whenever PTB validation semantics change so a previously accepted
   // benchmark cannot survive in localStorage and poison later sessions.
   // v6: dropped all live-price proxies (boundary snapshot / RTDS / crypto-price).
@@ -1732,28 +1650,16 @@
   // OHLC feed reproduces, so an approximate source is worse than none: a wrong PTB
   // shown as [exact-contract] is actively traded on. Rotating the version also purges
   // the bad values already persisted in localStorage under the v7 key.
-  const POLY5M_PTB_LOCK_VERSION = 8;
+  const POLY5M_PTB_LOCK_VERSION = 9;
   const POLY5M_PTB_TRUSTED_SOURCES = new Set([
     'polymarket-event-page',
-    // 'polymarket-rtds-twap30' deliberately NOT trusted: verified live that
-    // Polymarket's RTDS TWAP-30s value sampled a few seconds after rollover
-    // is a rolling 30-second average straddling the boundary, not the exact
-    // print Polymarket itself recorded as the window's official open -- a
-    // real ~$21 discrepancy on BTC, not noise. Structurally biased whenever
-    // price moves during that window, so it can never be "exact," only
-    // "close." Kept the RTDS plumbing (still useful context elsewhere) but
-    // it must never lock a PTB. See 'polymarket-event-page' scraping below
-    // for the actual exact source: Polymarket's own closed-window
-    // continuity record (previous window's official close == next window's
-    // official open).
+    'polymarket-chainlink-candles',
+    'polymarket-rtds-twap30',
     'gamma-market',
     'gamma-event-metadata',
     'gamma-price-to-beat',
     'gamma-market-metadata',
     'gamma-market-field',
-    // 'polymarket-title' removed: it regex-scrapes a $ figure out of the market title,
-    // which is a rounded strike, not the contract open (observed $625 for BNB, $38 for
-    // HYPE). A rounded number that looks plausible is worse than no number at all.
   ]);
 
   function _formatPolyPriceToBeat(value, symbol = '') {
@@ -2399,16 +2305,17 @@
           }
         }
 
-        let chainlinkCurrentPriceNum = toPositiveFiniteNumber(cryptoWindow?.closePrice);
-        let chainlinkCurrentPriceTs = toPositiveFiniteNumber(cryptoWindow?.timestamp);
+        const rtdsTwap = _getFreshRtdsTwap(sym, 15_000);
+        let chainlinkCurrentPriceNum = toPositiveFiniteNumber(rtdsTwap?.price ?? cryptoWindow?.closePrice);
+        let chainlinkCurrentPriceTs = toPositiveFiniteNumber(rtdsTwap?.obsTs ?? cryptoWindow?.timestamp);
         if (chainlinkCurrentPriceNum == null) {
           chainlinkCurrentPriceNum = toPositiveFiniteNumber(rtds?.currentPriceNum);
           chainlinkCurrentPriceTs = toPositiveFiniteNumber(rtds?.currentPriceTs);
         }
         const pythCurrent = await getFreshPythLazerPrice(sym);
-        const currentPriceNum = pythCurrent?.price ?? chainlinkCurrentPriceNum;
-        const currentPriceTs = pythCurrent?.timestamp ?? chainlinkCurrentPriceTs;
-        const currentPriceSource = pythCurrent?.source || 'polymarket-chainlink';
+        const currentPriceNum = rtdsTwap?.price ?? pythCurrent?.price ?? chainlinkCurrentPriceNum;
+        const currentPriceTs = rtdsTwap?.obsTs ?? pythCurrent?.timestamp ?? chainlinkCurrentPriceTs;
+        const currentPriceSource = rtdsTwap ? 'polymarket-rtds-twap30' : (pythCurrent?.source || 'polymarket-chainlink');
 
         // PTB comes exclusively from Polymarket's canonical Chainlink contract benchmark (polymarket-event-page).
         // Never inject Pyth spot proxies for PTB to guarantee zero mid-contract changes.
@@ -2535,14 +2442,14 @@
       probability: primary.liveUpProb,
       gammaProbability: primary.upProb,
       clobProbability: Number.isFinite(primary.clobProb) ? primary.clobProb : null,
+      // upProbability alias kept for UI/Grok consumers that read the CLOB mid directly
+      upProbability: Number.isFinite(primary.clobProb) ? primary.clobProb : primary.liveUpProb,
       volume: primary.volume,
       title: primary.title,
       slug: primary.marketSlug,
       closeTime: primary.endDate,
       endDate: primary.endDate,
       startDate: primary.startDate,
-      bestBid: primary.clobSnapshot?.bestBid ?? (parseFloat(primary.m.bestBid || primary.m.best_bid || 0) || null),
-      bestAsk: primary.clobSnapshot?.bestAsk ?? (parseFloat(primary.m.bestAsk || primary.m.best_ask || 0) || null),
       liquidity: parseFloat(primary.m.liquidityNum || primary.m.liquidity || 0) || 0,
       targetPrice: primary.priceToBeat,
       targetPriceNum: primary.priceToBeatNum,
@@ -2567,17 +2474,14 @@
       liveDirection: primary.liveDirection,
       liveSignal: primary.liveDirection,
       liveState: primary.hasLiveComparison ? (primary.priceDeltaNum >= 0 ? 'above' : 'below') : 'unknown',
-      clobConditionId: primary.clobSnapshot?.conditionId || primary.m.conditionId || primary.m.condition_id || null,
-      clobTokenIds: _polyClobTokenIds(primary.m),
-      clobUpAssetId: primary.clobSnapshot?.upAssetId || null,
-      clobDownAssetId: primary.clobSnapshot?.downAssetId || null,
-      clobSnapshotTs: primary.clobSnapshot?.ts || null,
       discoverySource: primary.hit.source || 'gamma-markets-slug',
       fallbackJustification: primary.hit.fallbackJustification || null,
       markets,
       _source: primary.hit.source === 'gamma-markets-slug' ? 'poly5m-slug' : `poly5m-${primary.hit.source || 'fallback'}`,
       _windowTs: primary.ts,
     };
+    // bestBid/bestAsk + L2 micro (mid, spread, depthImbalance, nearTouchNotional, bids/asks)
+    _attachClobMicroFields(data, primary.clobSnapshot, primary.m);
     _poly5mCache[sym] = { data, windowTs, fetchedAt: Date.now() };
     return data;
   }
@@ -2696,13 +2600,14 @@ function polymarketSentiment(markets, sym) {
   async function _doFetch() {
     _polyCycleCount++;
     const fetchPoly5M = true;
-    const fetchKalshi5MNow = true;  // always fetch 5m data for 5m markets view (was throttled, may have caused "wait" / missing data)
 
     const [kalshi15m, polyMarkets] = await Promise.all([
-      withTimeout(fetchKalshi15M(), FETCH_TIMEOUT_MS, 'Kalshi 15M fetch').catch(err => {
-        console.warn('[PredictionMarkets] Kalshi 15M fetch failed:', err?.message || err);
-        return {};
-      }),
+      KALSHI_DISABLED
+        ? Promise.resolve({})
+        : withTimeout(fetchKalshi15M(), FETCH_TIMEOUT_MS, 'Kalshi 15M fetch').catch(err => {
+            console.warn('[PredictionMarkets] Kalshi 15M fetch failed:', err?.message || err);
+            return {};
+          }),
       withTimeout(fetchPolymarket(), FETCH_TIMEOUT_MS, 'Polymarket fetch').catch(err => {
         console.warn('[PredictionMarkets] Polymarket fetch failed:', err?.message || err);
         return null;
@@ -2713,7 +2618,7 @@ function polymarketSentiment(markets, sym) {
       window.DataLogger?.logPolymarket(polyMarkets);
     }
 
-    if (fetchKalshi5MNow) {
+    if (!KALSHI_DISABLED) {
       const k5m = await withTimeout(fetchKalshi5M(), FETCH_TIMEOUT_MS, 'Kalshi 5M fetch')
         .catch(err => {
           console.warn('[PredictionMarkets] Kalshi 5M fetch failed:', err?.message || err);
@@ -2728,6 +2633,7 @@ function polymarketSentiment(markets, sym) {
       }
     }
 
+    const poly15mResults = {};
     if (fetchPoly5M) {
       const poly5mResults = {};
       await Promise.all(Object.keys(POLY_5M_COIN_SLUGS).map(async sym => {
@@ -2736,6 +2642,11 @@ function polymarketSentiment(markets, sym) {
         } catch (err) {
           console.warn(`[PredictionMarkets] Poly5M fetch failed for ${sym}:`, err?.message || err);
           poly5mResults[sym] = null;
+        }
+        try {
+          poly15mResults[sym] = await withTimeout(fetchPolymarket15MBySlug(sym), 8_000, `Poly15M ${sym}`);
+        } catch (err) {
+          poly15mResults[sym] = null;
         }
       }));
       for (const [sym, poly5m] of Object.entries(poly5mResults)) {
@@ -2751,19 +2662,6 @@ function polymarketSentiment(markets, sym) {
 
     // --- Network Health Reporting ---
     if (window.NetworkHealth) {
-      // Kalshi -- intentionally disabled, not a fetch failure. Report a
-      // neutral status rather than a permanent 'down'/red alert for
-      // something that was turned off on purpose.
-      if (!KALSHI_DISABLED) {
-        const kalshiStatus = {
-          status: kalshi15m && Object.values(kalshi15m).some(x => x) ? 'healthy' : 'down',
-          lastFetch: Date.now(),
-          fallback: false,
-          reason: kalshi15m && Object.values(kalshi15m).some(x => x) ? '' : 'No Kalshi 15M data',
-        };
-        window.NetworkHealth.update('Kalshi', kalshiStatus);
-      }
-
       // Polymarket
       const hasPolyMarkets = Array.isArray(polyMarkets) && polyMarkets.length > 0;
       const polyStatus = {
@@ -2776,84 +2674,38 @@ function polymarketSentiment(markets, sym) {
         bucketReason: hasPolyMarkets ? '' : (_polyLastError || 'optional Polymarket data unavailable'),
       };
       window.NetworkHealth.update('Polymarket', polyStatus);
-
-      
-
-      // ProxyOrchestrator (if present)
-      if (typeof window._proxyOrchestrator === 'undefined') {
-        window.NetworkHealth.update('ProxyOrchestrator', {
-          status: 'degraded',
-          lastFetch: Date.now(),
-          fallback: true,
-          transient: true,
-          reason: 'Not initialized',
-          bucket: 'app/logic',
-          bucketReason: 'ProxyOrchestrator not initialized',
-        });
-      }
-    }
-    // Debug: log what we got from Kalshi 15M
-    const k15Coins = Object.entries(kalshi15m).filter(([sym, data]) => data !== null).map(([sym]) => sym);
-    const k15Empty = Object.entries(kalshi15m).filter(([sym, data]) => data === null).map(([sym]) => sym);
-    if (KALSHI_DISABLED) {
-      // Expected -- Kalshi fetching is intentionally off, not a fetch failure.
-    } else if (k15Coins.length === 0) {
-      console.error(`[PredictionMarkets] CRITICAL: No Kalshi 15M contracts loaded. Empty coins: ${k15Empty.join(', ')}`);
-    } else {
-      console.log(`[PredictionMarkets] Loaded Kalshi 15M for: ${k15Coins.join(', ')} (failed: ${k15Empty.join(', ')})`);
     }
 
     const next = {};
-    for (const sym of Object.keys(KALSHI_15M_SERIES)) {
-      const k15 = kalshi15m[sym] ?? null;
+    for (const sym of Object.keys(POLY_5M_COIN_SLUGS)) {
       const k5raw = _k5mCache[sym] ?? null;
       const poly5mSlug = k5raw?._poly5m ?? null;
+      const poly15mObj = poly15mResults[sym] || cache[sym]?.poly15m || null;
       const poly = Array.isArray(_polyCache) ? polymarketSentiment(_polyCache, sym) : null;
       const poly5m = poly5mSlug || null;
 
-      let k5 = null;
-      if (k5raw) {
-        k5 = { ...k5raw };
-        delete k5._poly5m;
-        if (Object.keys(k5).length === 0) k5 = null;
-      }
-      
       const sources = [];
-      if (k15?.probability != null) sources.push({ name: 'Kalshi15M', prob: k15.probability, vol: k15.volume || 1 });
-      if (poly?.probability != null) sources.push({ name: 'Polymarket', prob: poly.probability, vol: poly.volume || 1 });
       if (poly5mSlug?.probability != null) sources.push({ name: 'Poly5M', prob: poly5mSlug.probability, vol: poly5mSlug.volume || 1 });
+      if (poly15mObj?.probability != null) sources.push({ name: 'Poly15M', prob: poly15mObj.probability, vol: poly15mObj.volume || 1 });
+      if (poly?.probability != null) sources.push({ name: 'Polymarket', prob: poly.probability, vol: poly.volume || 1 });
       
-      let combinedProb = k15?.probability ?? null;
-      if (combinedProb != null && poly?.probability != null) {
-        combinedProb = (combinedProb * 0.7) + (poly.probability * 0.3);
-      } else if (combinedProb == null && poly?.probability != null) {
-        combinedProb = poly.probability;
-      }
+      const combinedProb = poly15mObj?.probability ?? poly5mSlug?.probability ?? poly?.probability ?? null;
 
       next[sym] = {
-        kalshi: k15?.probability != null ? parseFloat(k15.probability.toFixed(4)) : null,
-        poly: poly?.probability != null ? parseFloat(poly.probability.toFixed(4)) : null,
+        kalshi: null,
+        poly: poly?.probability != null ? parseFloat(poly.probability.toFixed(4)) : (poly15mObj?.probability != null ? parseFloat(poly15mObj.probability.toFixed(4)) : (poly5mSlug?.probability != null ? parseFloat(poly5mSlug.probability.toFixed(4)) : null)),
         combinedProb: combinedProb !== null ? parseFloat(combinedProb.toFixed(4)) : null,
         sources,
-        kalshi15m: k15,
-        kalshi5m: k5,
+        kalshi15m: null,
+        kalshi5m: null,
         poly5m,
         poly5mSlug,
+        poly15m: poly15mObj,
         poly5mMkts: poly5m?.markets || [],
         polyMarkets: poly?.markets || [],
-        kalshiTitle: k15?.title ?? null,
-        probVelocity: getProbVelocity(sym),  // Kalshi YES-price drift (Â¢/min)
-        // _doFetch runs every POLL_MS (15s) and wholesale-replaces `cache`
-        // via `cache = next` below -- carry this forward or it gets dropped
-        // every cycle, only to be restored a few seconds later by
-        // refreshPoly15M's own independent cadence. That's the actual cause
-        // of PTB flickering between a real value and "pending": not a
-        // resolution failure, not a race in refreshPoly15M -- this rebuild
-        // just never included the field in the first place.
-        poly15m: cache[sym]?.poly15m ?? null,
+        kalshiTitle: null,
+        probVelocity: 0,
       };
-      // Update velocity history AFTER building next[sym] so this cycle feeds next read
-      if (k15?.probability != null) trackProbability(sym, k15.probability);
     }
 
     cache = next;
@@ -2969,6 +2821,13 @@ function polymarketSentiment(markets, sym) {
       const volume = parseFloat(m.volume24hr || m.volumeNum || m.volume || 0) || 0;
       const marketSlug = m.slug || slug;
 
+      // Subscribe poly15m tokens on the shared PolymarketWS (same owner as poly5m).
+      const clobSnapshot = await fetchPolymarketClobMarketSnapshot(sym, m);
+      const clobProb = Number(clobSnapshot?.upProbability);
+      const liveUpProb = Number.isFinite(clobProb) && clobProb >= 0.01 && clobProb <= 0.99
+        ? clobProb
+        : upProb;
+
       let priceToBeatNum = null;
       let priceToBeatSource = null;
 
@@ -3004,7 +2863,10 @@ function polymarketSentiment(markets, sym) {
       const data = {
         slug: marketSlug,
         title,
-        probability: upProb,
+        probability: liveUpProb,
+        gammaProbability: upProb,
+        clobProbability: Number.isFinite(clobProb) ? clobProb : null,
+        upProbability: Number.isFinite(clobProb) ? clobProb : liveUpProb,
         priceToBeatNum,
         priceToBeatSource,
         targetPriceNum: priceToBeatNum,
@@ -3013,6 +2875,7 @@ function polymarketSentiment(markets, sym) {
         closeTime: endDate,
         volume,
       };
+      _attachClobMicroFields(data, clobSnapshot, m);
       _poly15mCache[sym] = { windowTs, fetchedAt: Date.now(), data };
       return data;
     } catch (err) {
@@ -3164,6 +3027,12 @@ function polymarketSentiment(markets, sym) {
             if (coin && coin.poly5mMkts && coin.poly5mMkts.length) {
               const nextMkt = coin.poly5mMkts.find(m => m.ts === currentBoundary);
               if (nextMkt) {
+                const liveOpenTwap = _rtdsLiveTwap[sym]?.price;
+                const initialPtb = nextMkt.targetPriceNum || (liveOpenTwap > 0 ? liveOpenTwap : null);
+                const initialPtbStr = nextMkt.targetPrice || (initialPtb ? _formatPolyPriceToBeat(initialPtb, sym) : null);
+                if (initialPtb && !nextMkt.targetPriceNum) {
+                  _lockPolymarketPriceToBeat(nextMkt.slug, initialPtb, 'polymarket-rtds-twap30');
+                }
                 const updatedPoly5m = {
                   probability: nextMkt.yes,
                   gammaProbability: nextMkt.gammaYes,
@@ -3177,17 +3046,17 @@ function polymarketSentiment(markets, sym) {
                   bestBid: null,
                   bestAsk: null,
                   liquidity: 0,
-                  targetPrice: nextMkt.targetPrice,
-                  targetPriceNum: nextMkt.targetPriceNum,
-                  priceToBeat: nextMkt.targetPrice,
-                  priceToBeatNum: nextMkt.targetPriceNum,
-                  priceToBeatSource: nextMkt.priceToBeatSource,
-                  currentPrice: null,
-                  currentPriceNum: null,
-                  currentPriceTs: null,
-                  currentPriceSource: null,
-                  currentPriceAgeMs: null,
-                  currentPriceJustification: 'Local rollover: fetching fresh prices and benchmark…',
+                  targetPrice: initialPtbStr,
+                  targetPriceNum: initialPtb,
+                  priceToBeat: initialPtbStr,
+                  priceToBeatNum: initialPtb,
+                  priceToBeatSource: nextMkt.priceToBeatSource || (initialPtb ? 'polymarket-rtds-twap30' : null),
+                  currentPrice: liveOpenTwap ? _formatPolyPriceToBeat(liveOpenTwap, sym) : null,
+                  currentPriceNum: liveOpenTwap || null,
+                  currentPriceTs: _rtdsLiveTwap[sym]?.obsTs || Date.now(),
+                  currentPriceSource: liveOpenTwap ? 'polymarket-rtds-twap30' : null,
+                  currentPriceAgeMs: 0,
+                  currentPriceJustification: 'Captured exact opening Chainlink 30s TWAP at boundary rollover.',
                   markets: coin.poly5mMkts.map(m => ({
                     ...m,
                     isFuture: m.ts > currentBoundary
@@ -3272,12 +3141,16 @@ function polymarketSentiment(markets, sym) {
     getVelocity(sym) { return getProbVelocity(sym); },
     getAllVelocities() { return Object.fromEntries(Object.keys(KALSHI_15M_SERIES).map(s => [s, getProbVelocity(s)])); },
     getStatus() {
+      const wsStatus = (typeof window !== 'undefined' && window.PolymarketWS?.getStatus)
+        ? window.PolymarketWS.getStatus()
+        : null;
       return {
         lastFetch,
         age: lastFetch ? Date.now() - lastFetch : null,
         hasData: Object.keys(cache).length > 0,
         coinCount: Object.values(cache).filter(c => c.combinedProb !== null).length,
         poly5mCount: Object.values(cache).filter(c => c.poly5m?.probability != null).length,
+        poly15mCount: Object.values(cache).filter(c => c.poly15m?.probability != null).length,
         polymarket: {
           lastFetch: _polyLastFetch,
           age: _polyLastFetch ? Date.now() - _polyLastFetch : null,
@@ -3286,12 +3159,16 @@ function polymarketSentiment(markets, sym) {
           lastError: _polyLastError || null,
           source: _polyLastSource || null,
           poly5mCount: Object.values(cache).filter(c => c.poly5m?.probability != null).length,
+          // Shared CLOB+RTDS owner (no duplicate WS from this module)
+          clobWs: wsStatus,
         },
       };
     },
     fetchAll,
     refreshPoly5M,
     refreshPoly15M,
+    getFreshRtdsTwap: _getFreshRtdsTwap,
+    _getCachedChainlinkCandle,
   };
 
   if (window.__WE_TEST__) {

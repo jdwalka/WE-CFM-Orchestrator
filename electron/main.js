@@ -4,14 +4,7 @@ const path = require('path');
 const fs = require('fs');
 const fsp = fs.promises;
 const { spawn } = require('child_process');
-const { loadKalshiCredentials, buildKalshiWsAuthHeaders } = require('./kalshi-credentials.js');
 const { normalizeCoinbaseJwtUri } = require('../src/infra/coinbase-jwt-utils');
-
-// User no longer trades Kalshi. Kill it at the source (don't spawn the
-// worker process) rather than tear out the credential/IPC-bridge files --
-// they're inert once nothing starts the worker, and other code already
-// checks for its absence defensively.
-const KALSHI_DISABLED = true;
 
 // --- AMD AOCL & BLAS Optimizations for Downstream C++/Python Binaries ---
 // Force NumPy, PyTorch, and Custom C++ to prioritize AMD AOCL (BLIS/libflame) and avoid Intel MKL throttling on Ryzen.
@@ -136,9 +129,12 @@ function getEnvFileCandidates() {
     loadedEnvPath,
     path.join(exeDir, '.env'),
     userDataDir && path.join(userDataDir, '.env'),
+    appData && path.join(appData, 'WE-CRYPTO-Polymarket-v2.15.6', '.env'),
+    // Pre-rename installs kept their .env under the old Kalshi-branded folder name.
     appData && path.join(appData, 'WE-CRYPTO-Kalshi-15m-v2.15.5', '.env'),
     appData && path.join(appData, 'we-cfm-orchestrator', '.env'),
     appData && path.join(appData, 'WECRYPTO', '.env'),
+    localAppData && path.join(localAppData, 'WE-CRYPTO-Polymarket-v2.15.6', '.env'),
     localAppData && path.join(localAppData, 'WE-CRYPTO-Kalshi-15m-v2.15.5', '.env'),
     localAppData && path.join(localAppData, 'we-cfm-orchestrator', '.env'),
     localAppData && path.join(localAppData, 'WECRYPTO', '.env'),
@@ -512,7 +508,7 @@ try {
     console.warn('[Env] Failed loading Pyth secret:', e && e.message);
   }
 
-  // Load Gated Switch Router component for Coinbase, Kalshi, Polymarket SDKs and Telegram
+  // Load Gated Switch Router component for Coinbase, Polymarket SDKs and Telegram
   try {
     require('../src/infra/gated-switch-router');
   } catch (e) {
@@ -547,7 +543,6 @@ if (process.env.WECRYPTO_TOR_SOCKS) {
 
     const bypassDomains = [
       'coingecko.com',
-      'kalshi.com',
       'polymarket.com',
       'etherscan.io',
       'crypto.com',
@@ -604,8 +599,8 @@ if (process.env.WECRYPTO_TOR_SOCKS) {
 }
 
 
-// ── Kalshi Worker Bridge ──────────────────────────────────────────────────
-const { startKalshiWorker, stopKalshiWorker, getWorkerReadiness } = require('./kalshi-ipc-bridge.js');
+// ── Tor-routed Fetch Bridge ─────────────────────────────────────────────────
+require('./tor-fetch-ipc-bridge.js');
 
 // ── Multi-Drive Settlement Logger ──────────────────────────────────────────
 require('./multi-drive-logger-handlers.js');
@@ -1425,23 +1420,12 @@ function logStartupHealth(tag = 'snapshot') {
   if (typeof getWebServiceHealth === 'function') {
     webServiceHealth = getWebServiceHealth() || webServiceHealth;
   }
-  const kalshi = KALSHI_DISABLED
-    ? { ready: true, readyLatencyMs: null, lastHealthError: null, disabled: true }
-    : (typeof getWorkerReadiness === 'function'
-      ? getWorkerReadiness()
-      : { ready: false, readyLatencyMs: null, lastHealthError: 'readiness unavailable' });
   const pythAgeMs = pythLazerStatus.lastDataTs
     ? Date.now() - pythLazerStatus.lastDataTs
     : null;
   const summary = {
     tag,
     proxy: { healthy: proxyHealthy, port: proxyPort },
-    kalshi: {
-      ready: !!kalshi.ready,
-      readyLatencyMs: kalshi.readyLatencyMs,
-      lastHealthError: kalshi.lastHealthError || null,
-      disabled: !!kalshi.disabled,
-    },
     web: {
       started: !!webServiceHealth.started,
       mode: webServiceHealth.mode,
@@ -1457,12 +1441,11 @@ function logStartupHealth(tag = 'snapshot') {
     },
   };
   const issues = [];
-  if (!summary.kalshi.ready) issues.push('kalshi-not-ready');
   if (!summary.web.started) issues.push('web-not-started');
   if (summary.web.mode === 'http-fallback') issues.push('web-http-fallback');
   if (!summary.proxy.healthy) issues.push('proxy-fallback');
   if (summary.pyth.timeoutCount > 0) issues.push('pyth-timeout-fallback');
-  const grade = (!summary.kalshi.ready || !summary.web.started)
+  const grade = !summary.web.started
     ? 'RED'
     : issues.length > 0
       ? 'YELLOW'
@@ -1491,7 +1474,6 @@ const PROXY_EXCHANGE_BASES = {
   'kraken': 'https://api.kraken.com',
   'bybit': 'https://api.bybit.com',
   'okx': 'https://www.okx.com',
-  'kalshi': 'https://api.elections.kalshi.com',
   'polymarket': 'https://gamma-api.polymarket.com',
   'polymarket-clob': 'https://clob.polymarket.com',
   'bitfinex': 'https://api-pub.bitfinex.com',
@@ -2243,45 +2225,25 @@ ipcMain.handle('pyth:getProxyLatest', async (_, feedIds) => {
   }
 });
 
-// ── IPC: Kalshi credentials loader ─────────────────────────────────────────
-ipcMain.handle('kalshi:loadCredentials', async () => {
-  const result = loadKalshiCredentials({ app });
-  if (result.success) {
-    console.log(`[Kalshi] Credentials loaded from ${result.path}`);
-  } else {
-    console.warn(`[Kalshi] Credential load failed: ${result.error}`);
-  }
-  return result;
-});
-
-ipcMain.handle('kalshi:wsAuthHeaders', async () => {
-  const result = await buildKalshiWsAuthHeaders({ app });
-  if (result.success) {
-    console.log(`[Kalshi] WSS auth headers signed from ${result.path}`);
-  } else {
-    console.warn(`[Kalshi] WSS auth header signing failed: ${result.error}`);
-  }
-  return result;
-});
-
 // ── IPC: public runtime env for renderer-only API keys ─────────────────────
 ipcMain.handle('env:getPublicConfig', async () => resolveCoinGeckoPublicConfig());
 
-// ── IPC: ASI1 mini narrative velocity (renderer-safe) ───────────────────────
-ipcMain.handle('asi1:mini-narrative', async (_event, args = {}) => {
+// ── IPC: ASI1 hybrid narrative velocity (renderer-safe) ───────────────────────
+async function handleAsi1NarrativeRequest(args = {}, defaultModel = 'asi1-ultra') {
   try {
     const Asi1Client = require('../src/infra/asi1-client');
     if (!Asi1Client.hasAsi1Credentials()) {
       return { velocity: 0, narrative: 'asi1-not-configured' };
     }
     const prompt = String(args.prompt || 'Reply JSON only: {"velocity":0,"narrative":"flat"}');
+    const model = args.model || defaultModel;
     const result = await Asi1Client.chatCompletion(
       [{ role: 'user', content: prompt }],
       {
-        model: args.model || 'asi1-mini',
-        max_tokens: 120,
+        model,
+        max_tokens: model.includes('ultra') ? 350 : 120,
         temperature: 0.1,
-        timeoutMs: 12000,
+        timeoutMs: model.includes('ultra') ? 25000 : 12000,
         response_format: { type: 'json_object' },
       },
     );
@@ -2289,10 +2251,50 @@ ipcMain.handle('asi1:mini-narrative', async (_event, args = {}) => {
     try {
       return JSON.parse(raw);
     } catch (_) {
-      return { velocity: 0, narrative: raw.slice(0, 80) };
+      return { velocity: 0, narrative: raw.slice(0, 120) };
     }
   } catch (err) {
     return { velocity: 0, narrative: err?.message || 'asi1-error' };
+  }
+}
+
+ipcMain.handle('asi1:quick-narrative', async (_event, args = {}) => {
+  return handleAsi1NarrativeRequest(args, 'asi1-mini');
+});
+
+ipcMain.handle('asi1:deep-narrative', async (_event, args = {}) => {
+  return handleAsi1NarrativeRequest(args, 'asi1-ultra');
+});
+
+ipcMain.handle('asi1:mini-narrative', async (_event, args = {}) => {
+  return handleAsi1NarrativeRequest(args, 'asi1-ultra');
+});
+
+// Structured pre-contract brief (used by Asi1PreContract advisor + debugging)
+ipcMain.handle('asi1:precontract-brief', async (_event, args = {}) => {
+  try {
+    const Asi1Client = require('../src/infra/asi1-client');
+    if (!Asi1Client.hasAsi1Credentials()) {
+      return { ok: false, error: 'asi1-not-configured' };
+    }
+    if (LLMSignalAssistant && typeof LLMSignalAssistant.analyzeSnapshot === 'function' && args.snapshot) {
+      const snap = { ...args.snapshot, preContract: true, preferAsi1: true, rangePrediction: true };
+      if (!snap.rangeHorizonMinutes) snap.rangeHorizonMinutes = 15;
+      const output = await LLMSignalAssistant.analyzeSnapshot(snap);
+      return {
+        ok: true,
+        output,
+        provider: output?.provider || 'asi1',
+        model: output?.model || null,
+      };
+    }
+    // Fallback: raw narrative
+    return handleAsi1NarrativeRequest({
+      prompt: args.prompt || 'Reply JSON {"velocity":0,"narrative":"no snapshot"}',
+      model: process.env.ASI1_PRECONTRACT_MODEL || 'asi1-ultra',
+    }, 'asi1-ultra');
+  } catch (err) {
+    return { ok: false, error: err?.message || 'asi1-precontract-error' };
   }
 });
 
@@ -2551,174 +2553,6 @@ ipcMain.handle('network:logError', async (_, errorType, details) => {
   } catch (e) {
     console.error('[IPC] Failed to log network error:', e.message);
     return false;
-  }
-});
-
-// ── IPC: Read Kalshi CSV and parse trades ──────────────────────────────
-ipcMain.handle('kalshi:loadCSVTrades', async (event, browserStateJson) => {
-  try {
-    // Try multiple locations in order:
-    // 1. F:\WECRYPTO\ (home location)
-    // 2. D:\WECRYPTO\ (backup)
-    // 3. Relative to app.getAppPath()
-    const candidates = [
-      'F:\\WECRYPTO\\Kalshi-Recent-Activity-All.csv',
-      'D:\\WECRYPTO\\Kalshi-Recent-Activity-All.csv',
-      path.join(app.getAppPath(), '..', '..', 'Kalshi-Recent-Activity-All.csv'),
-      path.join(app.getAppPath(), 'Kalshi-Recent-Activity-All.csv'),
-    ];
-
-    let csvPath = null;
-    for (const candidate of candidates) {
-      if (fs.existsSync(candidate)) {
-        csvPath = candidate;
-        break;
-      }
-    }
-
-    if (!csvPath) {
-      console.warn(`[IPC] CSV not found in candidates:`, candidates);
-      return { success: false, trades: [], error: 'CSV file not found in any location' };
-    }
-
-    console.log(`[IPC] Loading CSV from: ${csvPath}`);
-
-    const content = fs.readFileSync(csvPath, 'utf-8');
-
-    // Simple CSV parser
-    const lines = content.split('\n').filter(l => l.trim());
-    if (lines.length < 2) {
-      return { success: false, trades: [], error: 'CSV is empty' };
-    }
-
-    const headers = lines[0].split(',').map(h => h.trim().replace(/^"|"$/g, ''));
-    const trades = [];
-
-    for (let i = 1; i < lines.length; i++) {
-      const line = lines[i];
-      if (!line.trim()) continue;
-
-      // Parse CSV carefully (handle quoted fields)
-      const values = [];
-      let inQuotes = false;
-      let current = '';
-      for (let j = 0; j < line.length; j++) {
-        const char = line[j];
-        if (char === '"') {
-          inQuotes = !inQuotes;
-        } else if (char === ',' && !inQuotes) {
-          values.push(current.trim().replace(/^"|"$/g, ''));
-          current = '';
-        } else {
-          current += char;
-        }
-      }
-      values.push(current.trim().replace(/^"|"$/g, ''));
-
-      const record = {};
-      headers.forEach((h, idx) => {
-        record[h] = values[idx] || '';
-      });
-
-      // Filter: only filled orders (source data for entries)
-      // CSV has: type="Order", Status="Filled", no Result yet (will merge with resolution log)
-      if (record.type === 'Order' && record.Status === 'Filled') {
-        const symMatch = record.Market_Ticker?.match(/KX(\w+)15M/);
-        const coin = symMatch ? symMatch[1].substring(0, 3) : null;
-
-        if (coin) {
-          trades.push({
-            timestamp: new Date(record.Original_Date).getTime(),
-            originalDate: record.Original_Date,
-            marketTicker: record.Market_Ticker,
-            symbol: coin,
-            direction: record.Direction?.toUpperCase() || '', // BUY = UP, SELL = DOWN
-            yesPrice: parseFloat(record.Yes_Contracts_Average_Price_In_Cents) || 0,
-            noPrice: parseFloat(record.No_Contracts_Average_Price_In_Cents) || 0,
-            profit: parseFloat(record.Profit_In_Dollars) || 0,
-            // Result will come from resolution log merge
-          });
-        }
-      }
-    }
-
-    console.log(`[IPC] Parsed ${trades.length} filled Kalshi orders from CSV`);
-
-    // Try to parse resolution log from browser state
-    let resolutionLog = [];
-    try {
-      if (browserStateJson) {
-        const state = JSON.parse(browserStateJson);
-        resolutionLog = state.resolutionLog || [];
-        console.log(`[IPC] Received ${resolutionLog.length} resolution records from browser`);
-      }
-    } catch (e) {
-      console.warn(`[IPC] Could not parse browser state:`, e.message);
-    }
-
-    return {
-      success: true,
-      trades,
-      csvPath,
-      count: trades.length,
-      resolutionCount: resolutionLog.length,
-      resolution: resolutionLog
-    };
-  } catch (error) {
-    console.error('[IPC] Error loading Kalshi CSV:', error.message);
-    return { success: false, trades: [], error: error.message };
-  }
-});
-
-// ── IPC: Fetch historical contracts from Kalshi API ──────────────────────────
-ipcMain.handle('kalshi:fetchHistoricalContracts', async (event, { limit = 100, symbol = null } = {}) => {
-  try {
-    const KALSHI_BASE = 'https://api.elections.kalshi.com/trade-api/v2';
-
-    console.log(`[IPC] Fetching historical contracts from Kalshi (limit: ${limit}, symbol: ${symbol})`);
-
-    // Fetch portfolio to get user's historical contract IDs
-    const portfolioResp = await fetch(`${KALSHI_BASE}/portfolio`, {
-      method: 'GET',
-      headers: { 'Accept': 'application/json' },
-    });
-
-    if (!portfolioResp.ok) {
-      console.warn('[IPC] Kalshi portfolio fetch failed');
-      return { success: false, contracts: [], error: 'Portfolio fetch failed' };
-    }
-
-    const portfolio = await portfolioResp.json();
-    const contracts = portfolio.contracts || [];
-
-    // Filter by symbol if requested
-    let filtered = contracts;
-    if (symbol) {
-      filtered = contracts.filter(c => c.ticker && c.ticker.includes(symbol));
-    }
-
-    // Return most recent contracts up to limit
-    const result = filtered
-      .sort((a, b) => new Date(b.resolved_at || b.created_at) - new Date(a.resolved_at || a.created_at))
-      .slice(0, limit)
-      .map(c => ({
-        symbol: c.ticker?.match(/KX(\w+)/)?.[1] || null,
-        ticker: c.ticker,
-        direction: c.side?.toUpperCase(), // BUY = YES (UP), SELL = NO (DOWN)
-        result: c.resolved_at ? (c.outcome === 'YES' ? 'UP' : 'DOWN') : null,
-        timestamp: new Date(c.resolved_at || c.created_at).getTime(),
-        resolvedAt: c.resolved_at,
-        profit: c.pnl || 0,
-        quantity: c.quantity,
-        avgPrice: c.avg_price,
-        source: 'kalshi-api',
-      }));
-
-    console.log(`[IPC] Fetched ${result.length} historical contracts from Kalshi API`);
-    return { success: true, contracts: result, count: result.length };
-  } catch (error) {
-    console.error('[IPC] Error fetching Kalshi historical:', error.message);
-    return { success: false, contracts: [], error: error.message };
   }
 });
 
@@ -3953,11 +3787,6 @@ app.whenReady().then(async () => {
 
   await startProxy();
   startCexFlowMonitor(); // best-effort; never blocks boot
-  // User no longer trades Kalshi -- the worker process/IPC bridge stays in
-  // the tree (renderer code still defensively checks for its absence) but
-  // is no longer spawned, so it stops polling Kalshi entirely.
-  if (!KALSHI_DISABLED) await startKalshiWorker({ bootTimeoutMs: 12000, pollMs: 150 });
-
   // --- Orbital Matrix (Redpanda Orchestration + Ingestion & Sync) ---
   (async () => {
     const workspacePath = process.env.WECRYP_ROOT || path.join(__dirname, '..');
@@ -4044,7 +3873,6 @@ app.on('window-all-closed', async () => {
     return;
   }
   // Proxy stop handled by orchestrator
-  stopKalshiWorker();
   if (pythLazerClient) { try { await pythLazerClient.shutdown(); } catch (_) { } pythLazerClient = null; }
 
   // Stop app-owned workers but preserve the persistent Redpanda cluster.

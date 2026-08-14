@@ -15,8 +15,9 @@
     proxyOrchestrator: 7,
   };
   const stats = {};
-  const KALSHI_BASE = 'https://api.elections.kalshi.com/trade-api/v2';
-  const KALSHI_WORKER_URL = 'http://127.0.0.1:3050';
+  // Kalshi network disabled (Polymarket-only). Keep constants empty so no accidental fetch.
+  const KALSHI_BASE = '';
+  const KALSHI_WORKER_URL = '';
   const WS_STALE_MS = 75_000;
   const WS_STALE_GRACE_MS = 15_000;
   const SOURCE_STALE_MS = 60_000;
@@ -29,7 +30,7 @@
   const WSS_RECOVERY_MAX_ATTEMPTS = 8;
   const HEALTHY_OK_MAX_AGE_MS = 90_000;
   const PROVIDER_ROLE = {
-    kalshi: 'critical',
+    polymarket: 'critical',
     pyth: 'critical',
     binance: 'optional',
     generic: 'optional',
@@ -688,20 +689,8 @@
     throw lastErr || new Error('httpFetchJson failed');
   }
 
-  async function rpcKalshiMarket(ctx) {
-    const ticker = ctx.market_ticker;
-    if (!ticker) return null;
-    const url = `${KALSHI_BASE}/markets/${encodeURIComponent(ticker)}`;
-
-    if (window.electron?.ipcFetch) {
-      const r = await window.electron.ipcFetch(url, ctx.opts || {});
-      if (r.ok) {
-        return typeof r.text === 'string' ? JSON.parse(r.text) : r.text;
-      }
-      throw new Error(r.error || `IPC HTTP ${r.status || 0}`);
-    }
-
-    return null;
+  async function rpcKalshiMarket(_ctx) {
+    return null; // Kalshi disabled
   }
 
   function _unwrapKalshiMarketsPayload(root) {
@@ -717,17 +706,18 @@
     return null;
   }
 
-  async function rpcKalshiMarkets(ctx) {
+  async function rpcKalshiMarkets(_ctx) {
+    return { markets: [] }; // Kalshi disabled — body retained below unreachable after early return
     const q = new URLSearchParams();
-    if (ctx.series_ticker) q.set('series_ticker', ctx.series_ticker);
-    if (ctx.status) q.set('status', ctx.status);
-    q.set('limit', String(ctx.limit || 500));
+    if (_ctx.series_ticker) q.set('series_ticker', _ctx.series_ticker);
+    if (_ctx.status) q.set('status', _ctx.status);
+    q.set('limit', String(_ctx.limit || 500));
 
     if (window.electron?.invoke) {
       const ipc = await window.electron.invoke('kalshi:markets', {
-        series_ticker: ctx.series_ticker,
-        status: ctx.status,
-        limit: ctx.limit || 25,
+        series_ticker: _ctx.series_ticker,
+        status: _ctx.status,
+        limit: _ctx.limit || 25,
       });
       if (ipc && (ipc.status === 429 || /429|rate.?limit/i.test(String(ipc.error || ipc.data?.error || '')))) {
         throw new Error('IPC HTTP 429');
@@ -751,6 +741,7 @@
       }
     }, 20000) : null;
     try {
+      // Unreachable with empty worker URL; left for structure until full delete
       const res = await fetch(`${KALSHI_WORKER_URL}/markets?${q}`, {
         signal: controller ? controller.signal : undefined,
         headers: { Accept: 'application/json' },
@@ -870,130 +861,32 @@
   }
 
   async function fetchKalshiMarket(ticker, opts = {}) {
-    if (!ticker) return null;
-    const url = `${KALSHI_BASE}/markets/${encodeURIComponent(ticker)}`;
-    return fetchWithPriority('kalshi', {
-      domain: 'kalshi-settlement',
-      market_ticker: ticker,
-      url,
-      opts: {
-        endpoint: 'kalshi-settlement',
-        cacheType: 'settlement',
-        fallbackChain: ['polymarket', 'kalshi', 'cache'],
-        ...opts,
-      },
-    });
+    return null;
   }
 
   async function fetchKalshiMarkets(params = {}) {
-    const q = new URLSearchParams();
-    if (params.series_ticker) q.set('series_ticker', params.series_ticker);
-    if (params.status) q.set('status', params.status);
-    q.set('limit', String(params.limit || 500));
-    const url = `${KALSHI_BASE}/markets?${q}`;
-    const hit = await fetchWithPriority('kalshi', {
-      domain: 'kalshi-markets',
-      url,
-      ...params,
-      opts: { endpoint: 'kalshi-markets', cacheType: 'market-data' },
-    });
-    if (hit?.data && typeof hit.data === 'object') {
-      hit.data._transport = hit.transport;
-      hit.data._domain = 'kalshi-markets';
-    }
-    return hit?.data ?? null;
+    return { markets: [] };
   }
 
   function ensureKalshiWs(opts = {}) {
-    const ws = window.KalshiWS;
-    if (!ws?.connect) return;
-    const reason = String(opts.reason || 'ensure');
-    const st = ws.getState?.();
-    if (opts.force && ws.reconnectNow) {
-      if (ws.forceRetry && st?.suspended) {
-        ws.forceRetry(reason);
-        return;
-      }
-      logKalshiWsDecision('force-reconnect', {
-        reason,
-        reconnectAttempts: st?.reconnectAttempts || 0,
-        connected: !!st?.connected,
-        stale: !!st?.stale,
-        suspended: !!st?.suspended,
-        suspendInMs: st?.suspendInMs || 0,
-        connecting: !!st?.connecting,
-      });
-      ws.reconnectNow(reason);
-      return;
-    }
-    if (st?.connecting && (st.connectingForMs || 0) > 25_000 && ws.reconnectNow) {
-      logKalshiWsDecision('connecting-timeout-reset', {
-        reason,
-        connectingForMs: st.connectingForMs,
-      });
-      ws.reconnectNow(`connect-hung:${reason}`);
-      return;
-    }
-    if (st?.connected && !st?.stale) return;
-    if (st?.suspended) {
-      logKalshiWsDecision('connect-skipped-suspended', {
-        reason,
-        suspendInMs: st.suspendInMs || 0,
-        suspendReason: st.suspendReason || '',
-      });
-      scheduleTransportHealthSync();
-      return;
-    }
-    logKalshiWsDecision('connect-attempt', {
-      reason,
-      connected: !!st?.connected,
-      stale: !!st?.stale,
-      reconnectAttempts: st?.reconnectAttempts || 0,
-      lastConnectAttempt: st?.lastConnectAttempt?.status || '',
-    });
-    ws.connect({ reason }).then(() => {
-      console.log('[EndpointTransport] Kalshi WSS connected');
-      logKalshiWsDecision('connect-success', {
-        reason,
-        reconnectAttempts: ws.getState?.()?.reconnectAttempts || 0,
-      });
-      updateSourceHealth('kalshi', 'wss', 'kalshi-market-stream', true, { stale: false });
-      scheduleTransportHealthSync();
-    }).catch(err => {
-      console.warn('[EndpointTransport] Kalshi WSS connect failed:', err?.message || err);
-      logKalshiWsDecision('connect-failed', {
-        reason,
-        error: String(err?.message || err || 'connect failed'),
-        reconnectAttempts: ws.getState?.()?.reconnectAttempts || 0,
-      });
-      updateSourceHealth('kalshi', 'wss', 'kalshi-market-stream', false, {
-        stale: true,
-        error: String(err?.message || err || 'connect failed'),
-      });
-      scheduleTransportHealthSync();
-    });
+    return;
   }
 
   function subscribeKalshiMarketTickers(tickers) {
-    const list = (Array.isArray(tickers) ? tickers : []).filter(Boolean);
-    if (!list.length) return;
-    window._kalshiActiveMarkets = list;
-    const ws = window.KalshiWS;
-    if (ws?.subscribeMarkets) ws.subscribeMarkets(list);
-    scheduleTransportHealthSync();
+    return;
   }
 
-  function noteKalshiWsActivity() {
+  function notePolymarketWsActivity() {
     lastWsActivityTs = Date.now();
     lastTransportEventTs = lastWsActivityTs;
-    bump('kalshi', 'wss', true);
-    updateSourceHealth('kalshi', 'wss', 'kalshi-market-stream', true, { stale: false });
-    updateDomainSelection('kalshi-market-stream', 'kalshi:wss', 'wss-activity');
+    bump('polymarket', 'wss', true);
+    updateSourceHealth('polymarket', 'wss', 'polymarket-market-stream', true, { stale: false });
+    updateDomainSelection('polymarket-market-stream', 'polymarket:wss', 'wss-activity');
     pushBusEvent({
       type: 'stream-update',
-      provider: 'kalshi',
+      provider: 'polymarket',
       transport: 'wss',
-      domain: 'kalshi-market-stream',
+      domain: 'polymarket-market-stream',
       ts: lastWsActivityTs,
       ok: true,
     });
@@ -1009,25 +902,10 @@
     lastRouteChangeReason = routeHint ? `${reasonWithClass}:${routeHint}` : reasonWithClass;
     lastRouteChangeTs = Date.now();
     const stage = String(detail.stage || '');
-    const proxied = String(detail.proxied || '').toLowerCase();
-    const reason = String(detail.reason || '').toLowerCase();
-    const provider = String(detail.provider || '').toLowerCase();
-    const wsState = getWsState();
-    const kalshiScoped = provider === 'kalshi' || proxied.includes('/kalshi') || reason.includes('kalshi');
-    const now = Date.now();
-    const canForceRecovery = (now - lastKalshiRouteRecoveryTs) > 12_000;
-
-    // Route churn from optional providers should never flap Kalshi WSS.
-    if ((stage === 'reinit-done' || stage === 'route-error') && kalshiScoped && canForceRecovery) {
-      lastKalshiRouteRecoveryTs = now;
-      console.info(`[EndpointTransport] Route churn recovery (${lastRouteChangeReason})`);
-      ensureKalshiWs({ force: true, reason: `route:${lastRouteChangeReason}` });
-    }
-
-    if (!kalshiScoped && stage === 'network-failure') {
+    if (stage === 'network-failure') {
       updateSourceHealth('localproxy', 'proxyOrchestrator', 'proxy-transport', false, {
         stale: false,
-        error: `non-kalshi-${lastRouteChangeReason}`,
+        error: `proxy-${lastRouteChangeReason}`,
       });
     }
     scheduleTransportHealthSync();
@@ -1035,50 +913,22 @@
 
   const busConfig = [
     {
-      id: 'kalshi-wss-state',
-      provider: 'kalshi',
+      id: 'polymarket-ws-state',
+      provider: 'polymarket',
       transport: 'wss',
-      domain: 'kalshi-market-stream',
+      domain: 'polymarket-market-stream',
       intervalMs: 5_000,
       poll: async () => {
-        const ws = getWsState();
-        const stale = !ws.connected || !!ws.stale;
-        if (stale) throw new Error(ws.connected ? 'kalshi wss stale' : 'kalshi wss disconnected');
+        const polyWs = window.PolymarketWS;
+        const st = polyWs?.getStatus?.() || {};
+        if (!st.clobConnected && !st.rtdsConnected) {
+          throw new Error('Polymarket WS connecting');
+        }
         return {
-          connected: !!ws.connected,
-          stale: !!ws.stale,
-          tickers: ws.tickers || 0,
-          lastMessageTs: ws.lastMessageTs || null,
+          clobConnected: !!st.clobConnected,
+          rtdsConnected: !!st.rtdsConnected,
+          feeds: st.subscribedAssetsCount || 0,
         };
-      },
-    },
-    {
-      id: 'kalshi-rpc-markets',
-      provider: 'kalshi',
-      transport: 'rpc',
-      domain: 'kalshi-markets',
-      intervalMs: 18_000,
-      poll: async () => {
-        const payload = await rpcKalshiMarkets({ status: 'open', limit: 1 });
-        const markets = Array.isArray(payload?.markets) ? payload.markets : [];
-        return { marketCount: markets.length };
-      },
-    },
-    {
-      id: 'kalshi-http-markets',
-      provider: 'kalshi',
-      transport: 'http',
-      domain: 'kalshi-markets',
-      intervalMs: 30_000,
-      poll: async () => {
-        const payload = await httpFetchJson(
-          `${KALSHI_BASE}/markets?limit=1&status=open`,
-          { endpoint: 'kalshi-markets', cacheType: 'market-data', retries: 0 },
-          'kalshi',
-          'kalshi-markets',
-        );
-        const markets = Array.isArray(payload?.markets) ? payload.markets : [];
-        return { marketCount: markets.length };
       },
     },
     {
@@ -1207,89 +1057,14 @@
     if (transportPulseTimer) return;
     transportPulseTimer = setInterval(() => {
       try {
-        const ws = getWsState();
-        const stability = evaluateKalshiWssStability(ws);
-        const streamFallback = selectKalshiStreamFallback();
-        if (!stability.connected) {
-          kalshiDemotedSinceTs = kalshiDemotedSinceTs || Date.now();
-          updateSourceHealth('kalshi', 'wss', 'kalshi-market-stream', false, {
-            stale: true,
-            error: 'wss disconnected',
-          });
-          const demoteReason = `wss-disconnected-demote:${streamFallback.reason}`;
-          lastKalshiDemoteReason = demoteReason;
-          updateDomainSelection('kalshi-market-stream', `kalshi:${streamFallback.transport}`, demoteReason);
-          logKalshiWsDecision('demote-disconnected', {
-            selected: `kalshi:${streamFallback.transport}`,
-            demoteReason,
-            stale: !!ws.stale,
-            suspended: !!ws.suspended,
-            suspendInMs: ws.suspendInMs || 0,
-            suspendReason: ws.suspendReason || '',
-            reconnectAttempts: ws.reconnectAttempts || 0,
-            reconnectInMs: ws.reconnectInMs || 0,
-            lastCloseReason: ws.lastCloseReason || '',
-            lastError: ws.lastError || '',
-          });
-          if (!ws.suspended && (Date.now() - lastKalshiWsRecoveryTs) > 20_000 && shouldAttemptKalshiWsRecovery('disconnect')) {
-            lastKalshiWsRecoveryTs = Date.now();
-            ensureKalshiWs({ force: true, reason: 'disconnect-pulse-recovery' });
-          }
-        } else if (!stability.stale) {
-          updateSourceHealth('kalshi', 'wss', 'kalshi-market-stream', true, { stale: false });
-          const demotedForMs = kalshiDemotedSinceTs ? Math.max(0, Date.now() - kalshiDemotedSinceTs) : 0;
-          const forcePromote = stability.demoted && demotedForMs >= WSS_MAX_DEMOTE_HOLD_MS;
-          if (stability.shouldPromote || !stability.demoted || forcePromote) {
-            const reason = forcePromote
-              ? 'wss-max-demote-hold-repromote'
-              : (stability.shouldPromote ? 'wss-stable-repromote' : 'wss-healthy');
-            updateDomainSelection('kalshi-market-stream', 'kalshi:wss', reason);
-            kalshiDemotedSinceTs = 0;
-            lastKalshiDemoteReason = '';
-            logKalshiWsDecision('promote-wss', {
-              reason,
-              stableForMs: stability.stableForMs || 0,
-              demotedForMs,
-              reconnectAttempts: ws.reconnectAttempts || 0,
-              tickers: ws.tickers || 0,
-            });
-          }
-        } else if (stability.shouldDemote || stability.demoted) {
-          kalshiDemotedSinceTs = kalshiDemotedSinceTs || Date.now();
-          updateSourceHealth('kalshi', 'wss', 'kalshi-market-stream', false, {
-            stale: true,
-            error: `wss stale (${stability.staleWindows || 0} windows)`,
-          });
-          const baseReason = stability.shouldDemote ? 'wss-stale-demote-hysteresis' : 'wss-stale-held';
-          const reason = `${baseReason}:${streamFallback.reason}`;
-          lastKalshiDemoteReason = reason;
-          updateDomainSelection('kalshi-market-stream', `kalshi:${streamFallback.transport}`, reason);
-          logKalshiWsDecision('demote-stale', {
-            reason,
-            selected: `kalshi:${streamFallback.transport}`,
-            staleWindows: stability.staleWindows || 0,
-            staleForMs: stability.staleForMs || 0,
-            staleAgeMs: stability.staleAgeMs || 0,
-          });
-          if (stability.shouldDemote && (Date.now() - lastKalshiWsRecoveryTs) > 20_000 && shouldAttemptKalshiWsRecovery('stale')) {
-            if (ws.suspended) {
-              logKalshiWsDecision('recovery-skipped-suspended', {
-                reason: 'stale',
-                suspendInMs: ws.suspendInMs || 0,
-              });
-              return;
-            }
-            lastKalshiWsRecoveryTs = Date.now();
-            ensureKalshiWs({ force: true, reason: 'stale-pulse-recovery' });
-          }
-        } else {
-          // Grace period: stale seen, but not enough windows/duration to demote.
-          updateSourceHealth('kalshi', 'wss', 'kalshi-market-stream', true, { stale: false });
-          logKalshiWsDecision('grace-hold', {
-            staleWindows: stability.staleWindows || 0,
-            staleForMs: stability.staleForMs || 0,
-          });
-        }
+        const polyWs = window.PolymarketWS;
+        const st = polyWs?.getStatus?.() || {};
+        const connected = !!(st.clobConnected || st.rtdsConnected);
+        updateSourceHealth('polymarket', 'wss', 'polymarket-market-stream', connected, {
+          stale: !connected,
+          error: connected ? '' : 'ws connecting',
+        });
+        updateDomainSelection('polymarket-market-stream', connected ? 'polymarket:wss' : 'polymarket:http', connected ? 'wss-live' : 'http-fallback');
       } catch (_) { }
       scheduleTransportHealthSync();
     }, 5_000);
@@ -1305,73 +1080,12 @@
     return lastOk >= lastFail;
   }
 
-  function transportHasRecentDomainSuccess(provider, transport, domainHints = [], maxAgeMs = HEALTHY_OK_MAX_AGE_MS) {
-    const now = Date.now();
-    const hints = (Array.isArray(domainHints) ? domainHints : []).map((h) => String(h || '').toLowerCase()).filter(Boolean);
-    for (const row of sourceState.values()) {
-      if (!row || row.provider !== provider || row.transport !== transport) continue;
-      const domain = String(row.domain || '').toLowerCase();
-      if (hints.length && !hints.some((hint) => domain.includes(hint))) continue;
-      const lastOk = Number(row.lastOk || 0);
-      const lastFail = Number(row.lastFail || 0);
-      if (!lastOk) continue;
-      if ((now - lastOk) > maxAgeMs) continue;
-      if (lastOk < lastFail) continue;
-      return true;
-    }
-    return false;
-  }
-
-  function selectKalshiStreamFallback() {
-    const httpHealthy = transportLikelyHealthy('kalshi', 'http');
-    const rpcHealthy = transportLikelyHealthy('kalshi', 'rpc');
-    const httpRecentSuccess = transportHasRecentDomainSuccess('kalshi', 'http', ['kalshi-markets', 'kalshi-settlement', 'kalshi-market']);
-    const rpcRecentSuccess = transportHasRecentDomainSuccess('kalshi', 'rpc', ['kalshi-markets', 'kalshi-settlement', 'kalshi-market']);
-
-    // If WSS is unavailable, avoid defaulting to RPC when RPC has no recent success
-    // and HTTP has proven recent success on Kalshi domains.
-    if (!rpcHealthy && !rpcRecentSuccess && httpRecentSuccess) {
-      return { transport: 'http', reason: 'http-recent-success-rpc-unhealthy' };
-    }
-    if (httpHealthy && !rpcHealthy) {
-      return { transport: 'http', reason: 'http-healthy-rpc-unhealthy' };
-    }
-    if (rpcHealthy) {
-      return { transport: 'rpc', reason: rpcRecentSuccess ? 'rpc-healthy-recent-success' : 'rpc-healthy' };
-    }
-    if (httpHealthy) {
-      return { transport: 'http', reason: httpRecentSuccess ? 'http-healthy-recent-success' : 'http-healthy' };
-    }
-    if (httpRecentSuccess && !rpcRecentSuccess) {
-      return { transport: 'http', reason: 'http-recent-success-no-rpc-success' };
-    }
-    return { transport: 'rpc', reason: rpcRecentSuccess ? 'rpc-recent-success-default' : 'rpc-default-no-recent-http-success' };
-  }
-
   ensureIngestionBus();
   ensureTransportPulse();
 
   if (typeof window !== 'undefined') {
-    window.addEventListener('kalshi:ticker', noteKalshiWsActivity);
-    window.addEventListener('kalshi:trade', noteKalshiWsActivity);
-    window.addEventListener('kalshi:ws-state', () => {
-      const ws = getWsState();
-      const staleAgeMs = ws.lastMessageTs ? Math.max(0, Date.now() - ws.lastMessageTs) : Number.POSITIVE_INFINITY;
-      if (!ws.connected || (ws.stale && staleAgeMs > (WS_STALE_MS + WS_STALE_GRACE_MS))) {
-        updateSourceHealth('kalshi', 'wss', 'kalshi-market-stream', false, {
-          stale: true,
-          error: ws.stale ? 'wss stale' : 'wss disconnected',
-        });
-      }
-      if (ws.connected && !ws.stale) {
-        logKalshiWsDecision('ws-state-healthy', {
-          reconnectAttempts: ws.reconnectAttempts || 0,
-          tickers: ws.tickers || 0,
-          auth: ws.lastAuthStatus || '',
-        });
-      }
-      scheduleTransportHealthSync();
-    });
+    window.addEventListener('polymarket:tick', notePolymarketWsActivity);
+    window.addEventListener('polymarket:book', notePolymarketWsActivity);
     window.addEventListener('proxy-route-change', handleRouteChange);
   }
 
@@ -1383,7 +1097,7 @@
     httpFetchJson,
     ensureKalshiWs,
     subscribeKalshiMarketTickers,
-    noteKalshiWsActivity,
+    notePolymarketWsActivity,
     summarizeStats,
     summarizeBus,
     summarizeCoordinator,

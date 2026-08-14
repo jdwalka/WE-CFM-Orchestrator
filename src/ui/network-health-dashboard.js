@@ -230,25 +230,29 @@
             };
 
             try {
-                const brokers = await fetchJsonWithTimeout('http://127.0.0.1:9644/v1/brokers', 2500);
-                out.docker = 'healthy';
-                const brokerList = Array.isArray(brokers) ? brokers : [];
-                out.nodes = brokerList.filter(broker => broker?.is_alive !== false && broker?.membership_status === 'active').length;
-                out.nodesDown = brokerList
-                    .filter(broker => broker?.is_alive === false || broker?.membership_status !== 'active')
-                    .map(broker => broker?.node_id)
-                    .filter(nodeId => Number.isFinite(nodeId));
-                out.redpanda = out.nodesDown.length ? 'degraded' : 'healthy';
-                out.notifications.push({
-                    ts: Date.now(),
-                    level: 'success',
-                    source: 'renderer-probe',
-                    message: `Redpanda admin API reachable (${out.nodes} node${out.nodes === 1 ? '' : 's'})`,
-                });
+                const brokers = await fetchJsonWithTimeout('http://127.0.0.1:8080/redpanda/v1/brokers', 2500)
+                    .catch(() => fetchJsonWithTimeout('http://127.0.0.1:9644/v1/brokers', 2500));
+                if (brokers) {
+                    out.docker = 'healthy';
+                    const brokerList = Array.isArray(brokers) ? brokers : [];
+                    out.nodes = brokerList.filter(broker => broker?.is_alive !== false && broker?.membership_status === 'active').length;
+                    out.nodesDown = brokerList
+                        .filter(broker => broker?.is_alive === false || broker?.membership_status !== 'active')
+                        .map(broker => broker?.node_id)
+                        .filter(nodeId => Number.isFinite(nodeId));
+                    out.redpanda = out.nodesDown.length ? 'degraded' : 'healthy';
+                    out.notifications.push({
+                        ts: Date.now(),
+                        level: 'success',
+                        source: 'renderer-probe',
+                        message: `Redpanda admin API reachable (${out.nodes} node${out.nodes === 1 ? '' : 's'})`,
+                    });
+                }
             } catch (_) { }
 
             try {
-                const topicData = await fetchJsonWithTimeout('http://127.0.0.1:8081/api/topics', 2500);
+                const topicData = await fetchJsonWithTimeout('http://127.0.0.1:8080/redpanda-console/api/topics', 2500)
+                    .catch(() => fetchJsonWithTimeout('http://127.0.0.1:8081/api/topics', 2500));
                 const topics = Array.isArray(topicData?.topics)
                     ? topicData.topics.map((topic) => topic?.topicName).filter((name) => name && name.includes('wecrypto.orbital'))
                     : [];
@@ -316,16 +320,10 @@
             return `<div style="margin-bottom:5px;"><span style="color:#e0e6f0;width:72px;display:inline-block;">${provider}</span> ${cells}</div>`;
         }).join('');
 
-        const wsState = window.KalshiWS?.getState?.() || {};
-        let wsHint = '<span style="color:#888;">Kalshi WSS off</span>';
-        if (wsState.suspended) {
-            wsHint = `<span style="color:#ffd166;">WSS suspended (persistent network block) · retry ${formatMs(wsState.suspendInMs || 0)}</span>`;
-        } else if (wsState.connected && !wsState.stale) {
-            wsHint = '<span style="color:#3ecf8e;">Kalshi WSS live</span>';
-        } else if (wsState.connected && wsState.stale) {
-            wsHint = '<span style="color:#ffd166;">Kalshi WSS stale</span>';
-        } else if (!wsState.connected && (wsState.reconnectAttempts || 0) > 0) {
-            wsHint = `<span style="color:#ffd166;">Kalshi WSS recovering (${wsState.reconnectAttempts})</span>`;
+        const polyState = window.PolymarketWS?.getStatus?.() || {};
+        let wsHint = '<span style="color:#888;">Polymarket WS connecting</span>';
+        if (polyState.clobConnected || polyState.rtdsConnected) {
+            wsHint = `<span style="color:#3ecf8e;">Polymarket WS live (${polyState.subscribedAssetsCount || 0} feeds)</span>`;
         }
 
         let hybridHint = '<span style="color:#888;">Hybrid mode: normal</span>';
@@ -354,11 +352,28 @@
                 return `<div style="color:#9aa6b2;margin-top:2px;">${domain}: <span style="color:#e0e6f0;">${selected}</span>${reason ? ` <span style="color:#888;">(${reason})</span>` : ''}</div>`;
             }).join('');
 
+        // Polymarket WS status (legacy Kalshi wsState removed — never reintroduce bare `wsState`)
+        const polyWs = window.PolymarketWS?.getStatus?.() || {};
+        const wsState = {
+            lastConnectAttempt: t.ws?.lastConnectAttempt || null,
+            lastHandshakeStatus: polyWs.clobConnected || polyWs.rtdsConnected ? 'ok' : 'connecting',
+            lastHandshakeError: '',
+            lastAuthStatus: 'n/a',
+            lastAuthError: '',
+            lastIssueBucket: '',
+            lastIssueReason: '',
+            suspended: false,
+            suspendInMs: 0,
+            suspendReason: '',
+            ...(t.ws || {}),
+        };
         const wsDiag = t.ws || {};
         const connectAttempt = wsDiag.lastConnectAttempt || wsState.lastConnectAttempt || null;
         const connectLine = connectAttempt
             ? `WSS connect: ${connectAttempt.status || 'unknown'}${connectAttempt.reason ? ` (${connectAttempt.reason})` : ''}${connectAttempt.error ? ` · ${connectAttempt.error}` : ''}`
-            : 'WSS connect: no attempts yet';
+            : (polyWs.clobConnected || polyWs.rtdsConnected)
+                ? `WSS connect: polymarket live (clob=${!!polyWs.clobConnected} rtds=${!!polyWs.rtdsConnected})`
+                : 'WSS connect: polymarket connecting';
         const hsStatus = wsDiag.lastHandshakeStatus || wsState.lastHandshakeStatus || 'unknown';
         const hsError = wsDiag.lastHandshakeError || wsState.lastHandshakeError || '';
         const authStatus = wsDiag.lastAuthStatus || wsState.lastAuthStatus || 'not-attempted';

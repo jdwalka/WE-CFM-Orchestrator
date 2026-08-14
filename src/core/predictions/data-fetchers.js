@@ -860,6 +860,7 @@
     fetchKucoinCandles, fetchKucoinBook, fetchKucoinTrades,
     fetchBitfinexCandles, fetchBitfinexBook, fetchBitfinexTrades,
     fetchKrakenCandles, fetchKrakenBook, fetchKrakenTrades,
-    anchoredPoolCandles, bucketCandles
+    anchoredPoolCandles, bucketCandles,
+    geckoBucketMs, bucketGeckoSeries,
   };
 })();

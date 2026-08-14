@@ -76,110 +76,17 @@ class ContractWinRateCalculator {
   }
 
   /**
-   * Load contracts from Kalshi CSV file (via Electron IPC)
-   */
-  async loadFromKalshiCSV(resolutionLog = []) {
-    try {
-      if (typeof window === 'undefined' || !window.electron?.kalshi) {
-        console.warn('[WinRateCalc] Kalshi IPC not available');
-        return [];
-      }
-
-      // Get both CSV trades and resolution outcomes
-      const browserState = {
-        resolutionLog: resolutionLog || window._15mResolutionLog || []
-      };
-
-      const result = await window.electron.kalshi.loadCSVTrades(JSON.stringify(browserState));
-      if (!result.success) {
-        console.warn('[WinRateCalc] CSV load failed:', result.error);
-        return [];
-      }
-
-      console.log(`[WinRateCalc] Loaded ${result.count} CSV trades, ${result.resolutionCount} resolution records`);
-
-      // MERGE: CSV trades + resolution outcomes
-      const csvTrades = result.trades || [];
-      const resolution = result.resolution || [];
-
-      // Index resolution by market ticker for fast lookup
-      const resIndex = new Map();
-      resolution.forEach(res => {
-        const key = `${res.symbol}-${Math.floor(res.settledTs / 60000)}`; // minute-level grouping
-        if (!resIndex.has(key)) {
-          resIndex.set(key, []);
-        }
-        resIndex.get(key).push(res);
-      });
-
-      // Transform CSV trades to contract format, merging with resolution
-      const contracts = csvTrades.map(trade => {
-        // Find matching resolution record (same symbol, within ±2 minutes)
-        const resKey = `${trade.symbol}-${Math.floor(trade.timestamp / 60000)}`;
-        const resMatches = resIndex.get(resKey) || [];
-        const resMatch = resMatches.find(r => Math.abs(r.settledTs - trade.timestamp) < 120000); // 2 min window
-
-        return {
-          symbol: trade.symbol,
-          source: 'kalshi-csv',
-          ts: trade.timestamp,
-          marketTicker: trade.marketTicker,
-          direction: trade.direction,
-          yesPrice: trade.yesPrice,
-          noPrice: trade.noPrice,
-          profit: trade.profit,
-          // From resolution log
-          modelCorrect: resMatch?.modelCorrect ?? null,
-          outcome: resMatch?.outcome ?? null,
-          kalshiResult: resMatch?.outcome ?? null,
-          settledTs: resMatch?.settledTs ?? trade.timestamp,
-        };
-      });
-
-      return contracts;
-    } catch (err) {
-      console.warn('[WinRateCalc] CSV load failed:', err.message);
-    }
-
-    return [];
-  }
-
-  /**
-   * Load contracts from Kalshi API (live historical data for debugging/retuning)
-   */
-  async loadFromKalshiAPI() {
-    try {
-      if (typeof window === 'undefined' || !window.electron?.kalshi) {
-        console.warn('[WinRateCalc] Kalshi API not available');
-        return [];
-      }
-
-      const result = await window.electron.kalshi.fetchHistoricalContracts({ limit: 150 });
-      if (result.success && result.contracts) {
-        console.log(`[WinRateCalc] Loaded ${result.count} contracts from Kalshi API`);
-        return result.contracts;
-      }
-    } catch (err) {
-      console.warn('[WinRateCalc] Kalshi API fetch failed:', err.message);
-    }
-
-    return [];
-  }
-
-  /**
-   * Load contracts from all sources (priority: Kalshi API > CSV > Cache > Historical)
+   * Load contracts from all sources (priority: Cache > Historical)
    */
   async loadAllContracts() {
-    const [fromAPI, fromCSV, cached, historical] = await Promise.all([
-      this.loadFromKalshiAPI(),      // ← PRIMARY: Live API data for real-time retuning
-      this.loadFromKalshiCSV(),      // Fallback: CSV export
-      this.loadCachedContracts(),    // Fallback: Drive cache
-      this.loadHistoricalContracts(), // Fallback: Historical fetcher
+    const [cached, historical] = await Promise.all([
+      this.loadCachedContracts(),    // Drive cache
+      this.loadHistoricalContracts(), // Historical fetcher (Polymarket + Coinbase)
     ]);
 
-    // Deduplicate: timestamp + symbol (API data takes priority)
+    // Deduplicate: timestamp + symbol
     const seen = new Map();
-    const merged = [...fromAPI, ...fromCSV, ...cached, ...historical];
+    const merged = [...cached, ...historical];
 
     for (const c of merged) {
       const key = `${c.ts || c.settledTs || c.createdAt}-${c.symbol}`;
@@ -192,7 +99,7 @@ class ContractWinRateCalculator {
       .sort((a, b) => (a.ts || a.settledTs || 0) - (b.ts || b.settledTs || 0))
       .slice(-500); // Keep most recent 500
 
-    console.log(`[WinRateCalc] Loaded contracts: ${fromAPI.length} from API, ${fromCSV.length} from CSV, ${cached.length} from cache, ${historical.length} historical (total: ${this.contracts.length})`);
+    console.log(`[WinRateCalc] Loaded contracts: ${cached.length} from cache, ${historical.length} historical (total: ${this.contracts.length})`);
     return this.contracts;
   }
 
@@ -237,13 +144,6 @@ class ContractWinRateCalculator {
       let actualDir = null;
       if (contract.outcome === 'UP' || contract.outcome === 'DOWN') {
         actualDir = contract.outcome;
-      } else if (contract.source === 'kalshi') {
-        // Kalshi: YES direction depends on strike type ('above' vs 'below').
-        const strike = String(contract.strikeType ?? contract.raw?.strike_type ?? 'above').toLowerCase();
-        const yesDir = strike === 'below' ? 'DOWN' : 'UP';
-        const noDir = yesDir === 'UP' ? 'DOWN' : 'UP';
-        const isYes = String(contract.result || '').toUpperCase() === 'YES';
-        actualDir = isYes ? yesDir : noDir;
       } else {
         // Polymarket/Coinbase: outcome is already YES/NO where YES = UP
         actualDir = contract.outcome === 'YES' ? 'UP' : 'DOWN';

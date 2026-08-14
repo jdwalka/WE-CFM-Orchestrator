@@ -19,11 +19,19 @@ const ASI1_BASE_URL = (
 ).replace(/\/$/, '');
 
 const ASI1_CHAT_URL = `${ASI1_BASE_URL}/chat/completions`;
-// The only current caller (llm_signal_assistant.js) always passes an explicit
-// model, so this default only matters for direct callers of chatCompletion().
-const ASI1_DEFAULT_MODEL = process.env.ASI1_MODEL || 'asi1-ultra';
+// Default model selection set to asi1-mini for fast response & low quota usage
+const ASI1_QUICK_TICK_MODEL = process.env.ASI1_QUICK_TICK_MODEL || 'asi1-mini';
+const ASI1_DEEP_INSIGHT_MODEL = process.env.ASI1_DEEP_INSIGHT_MODEL || process.env.ASI1_MODEL || 'asi1-mini';
+const ASI1_DEFAULT_MODEL = process.env.ASI1_MODEL || 'asi1-mini';
 const ASI1_HEALTH_TIMEOUT_MS = Number(process.env.ASI1_HEALTH_TIMEOUT_MS || 12000);
 const ASI1_REQUEST_TIMEOUT_MS = Number(process.env.ASI1_REQUEST_TIMEOUT_MS || 90000);
+
+function resolveModelForTier(tier, requestedModel) {
+  if (requestedModel) return requestedModel;
+  if (tier === 'quick-tick' || tier === 'quick' || tier === 'mini') return ASI1_QUICK_TICK_MODEL;
+  if (tier === 'deep-insight' || tier === 'deep' || tier === 'macro' || tier === 'ultra') return ASI1_DEEP_INSIGHT_MODEL;
+  return ASI1_DEFAULT_MODEL;
+}
 
 const KEY_ENV_NAMES = [
   'ASI_ONE_API_KEY',
@@ -36,6 +44,42 @@ const KEY_ENV_NAMES = [
   'asi1_api_key_fallback',
 ];
 
+const fs = require('fs');
+const pathMod = require('path');
+
+function readAsi1KeysFromSecrets() {
+  const candidateDirs = [
+    pathMod.resolve(process.cwd(), 'secrets'),
+    pathMod.resolve(__dirname, '../../secrets'),
+    pathMod.resolve(__dirname, '../secrets'),
+    'G:\\WECRYP\\secrets',
+    'G:\\WECRYPTO\\secrets',
+  ];
+  const fileNames = ['ASI1_API.txt', 'ASI_ONE_API_KEY.txt', 'ASI1_API_KEY.txt'];
+  const foundKeys = [];
+  const seen = new Set();
+
+  for (const dir of candidateDirs) {
+    for (const file of fileNames) {
+      const fullPath = pathMod.join(dir, file);
+      try {
+        if (fs.existsSync(fullPath)) {
+          const content = fs.readFileSync(fullPath, 'utf8');
+          const lines = content.split(/\r?\n/);
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (trimmed.startsWith('sk_') && !seen.has(trimmed)) {
+              seen.add(trimmed);
+              foundKeys.push({ env: `file:${file}`, value: trimmed });
+            }
+          }
+        }
+      } catch (_) {}
+    }
+  }
+  return foundKeys;
+}
+
 function resolveAsi1ApiKeys() {
   const keys = [];
   const seen = new Set();
@@ -44,6 +88,13 @@ function resolveAsi1ApiKeys() {
     if (!value || seen.has(value)) continue;
     seen.add(value);
     keys.push({ env: name, value });
+  }
+  const secretKeys = readAsi1KeysFromSecrets();
+  for (const k of secretKeys) {
+    if (!seen.has(k.value)) {
+      seen.add(k.value);
+      keys.push(k);
+    }
   }
   return keys;
 }
@@ -60,7 +111,10 @@ function isRetryableAsi1Error(err) {
   const msg = String(err?.message || err || '').toLowerCase();
   const status = Number(err?.status || err?.statusCode || 0);
   return status === 401 || status === 403 || status === 429 || status === 402
-    || msg.includes('rate limit') || msg.includes('unauthorized') || msg.includes('invalid api key');
+    || status === 500 || status === 502 || status === 503 || status === 504
+    || msg.includes('rate limit') || msg.includes('unauthorized') || msg.includes('invalid api key')
+    || msg.includes('upstream_error') || msg.includes('aborted') || msg.includes('timeout')
+    || msg.includes('econnreset') || msg.includes('fetch failed');
 }
 
 async function fetchWithTimeout(url, options, timeoutMs) {
@@ -82,79 +136,104 @@ async function chatCompletion(messages, options = {}) {
     throw new Error('ASI:One API key missing — set ASI_ONE_API_KEY or asi1_api_key2_fallback');
   }
 
-  const payload = {
-    model: options.model || ASI1_DEFAULT_MODEL,
-    messages,
-    temperature: options.temperature ?? 0.2,
-    max_tokens: options.max_tokens ?? 1500,
-    stream: options.stream ?? false,
-    ...(options.response_format ? { response_format: options.response_format } : {}),
-    ...(options.web_search != null ? { web_search: options.web_search } : {}),
-  };
-
-  const headers = {
-    'Content-Type': 'application/json',
-    ...(options.extraHeaders || {}),
-  };
-  if (options.sessionId) {
-    headers['x-session-id'] = options.sessionId;
-  }
+  const requestedModel = resolveModelForTier(options.tier, options.model) || 'asi1-mini';
+  const candidateModels = Array.from(new Set(
+    Array.isArray(options.candidateModels) && options.candidateModels.length
+      ? options.candidateModels
+      : [requestedModel, 'asi1-fast', 'asi1-mini', 'asi1']
+  ));
 
   let lastErr = null;
-  for (const { env, value } of keys) {
-    try {
-      const response = await fetchWithTimeout(
-        ASI1_CHAT_URL,
-        {
-          method: 'POST',
-          headers: { ...headers, Authorization: `Bearer ${value}` },
-          body: JSON.stringify(payload),
-        },
-        options.timeoutMs || ASI1_REQUEST_TIMEOUT_MS,
-      );
+  for (const targetModel of candidateModels) {
+    const payload = {
+      model: targetModel,
+      messages,
+      temperature: options.temperature ?? 0.2,
+      max_tokens: options.max_tokens ?? 1500,
+      stream: options.stream ?? false,
+      ...(options.response_format ? { response_format: options.response_format } : {}),
+      ...(options.web_search != null ? { web_search: options.web_search } : {}),
+    };
 
-      if (!response.ok) {
-        const body = await response.text().catch(() => '');
-        const err = new Error(`ASI:One HTTP ${response.status}: ${body.slice(0, 240) || response.statusText}`);
-        err.status = response.status;
-        err.keyEnv = env;
-        if (isRetryableAsi1Error(err) && keys.length > 1) {
+    const headers = {
+      'Content-Type': 'application/json',
+      ...(options.extraHeaders || {}),
+    };
+    if (options.sessionId) {
+      headers['x-session-id'] = options.sessionId;
+    }
+
+    for (const { env, value } of keys) {
+      try {
+        const response = await fetchWithTimeout(
+          ASI1_CHAT_URL,
+          {
+            method: 'POST',
+            headers: { ...headers, Authorization: `Bearer ${value}` },
+            body: JSON.stringify(payload),
+          },
+          options.timeoutMs || ASI1_REQUEST_TIMEOUT_MS,
+        );
+
+        if (!response.ok) {
+          const body = await response.text().catch(() => '');
+          const err = new Error(`ASI:One HTTP ${response.status}: ${body.slice(0, 240) || response.statusText}`);
+          err.status = response.status;
+          err.keyEnv = env;
           lastErr = err;
+          // Retry next key/model on 5xx, 429, auth
+          if (isRetryableAsi1Error(err)) {
+            continue;
+          }
+          // Non-retryable for this key; still try next model
+          break;
+        }
+
+        if (payload.stream && response.body) {
+          const text = await readSseContent(response);
+          return {
+            content: text,
+            model: payload.model,
+            keyEnv: env,
+            raw: null,
+          };
+        }
+
+        const data = await response.json();
+        const msg = data?.choices?.[0]?.message || {};
+        let content = msg.content ?? data?.choices?.[0]?.text ?? '';
+        if (Array.isArray(content)) {
+          content = content.map((p) => (typeof p === 'string' ? p : (p?.text || ''))).join('');
+        }
+        if (!content && msg.reasoning_content) content = msg.reasoning_content;
+        content = String(content || '').trim();
+        if (!content) {
+          lastErr = new Error(`ASI:One empty content model=${targetModel}`);
           continue;
         }
-        throw err;
-      }
-
-      if (payload.stream && response.body) {
-        const text = await readSseContent(response);
         return {
-          content: text,
-          model: payload.model,
+          content,
+          model: data?.model || payload.model,
           keyEnv: env,
-          raw: null,
+          raw: data,
+          usage: data?.usage || null,
+          executable_data: data?.executable_data || null,
+          intermediate_steps: data?.intermediate_steps || null,
+          thought: data?.thought || msg.reasoning_content || null,
         };
+      } catch (err) {
+        if (err?.name === 'AbortError' || /aborted|timeout/i.test(String(err?.message || ''))) {
+          lastErr = new Error(`ASI:One aborted/timeout model=${targetModel}`);
+          lastErr.status = 408;
+        } else {
+          lastErr = err;
+        }
+        // Continue to next key, then next model
+        continue;
       }
-
-      const data = await response.json();
-      const content = data?.choices?.[0]?.message?.content ?? '';
-      return {
-        content: String(content).trim(),
-        model: data?.model || payload.model,
-        keyEnv: env,
-        raw: data,
-        usage: data?.usage || null,
-        executable_data: data?.executable_data || null,
-        intermediate_steps: data?.intermediate_steps || null,
-        thought: data?.thought || null,
-      };
-    } catch (err) {
-      lastErr = err;
-      if (isRetryableAsi1Error(err) && keys.length > 1) continue;
-      throw err;
     }
   }
-
-  throw lastErr || new Error('ASI:One request failed');
+  throw lastErr || new Error('ASI1 chat completion failed across all keys and models');
 }
 
 async function readSseContent(response) {
@@ -178,7 +257,7 @@ async function readSseContent(response) {
 }
 
 /**
- * Lightweight health probe — uses asi1-mini when available for lower cost.
+ * Lightweight health probe — defaults to asi1-ultra model.
  */
 async function healthCheck(options = {}) {
   const keys = resolveAsi1ApiKeys();
@@ -195,7 +274,7 @@ async function healthCheck(options = {}) {
     const result = await chatCompletion(
       [{ role: 'user', content: 'Reply with OK only.' }],
       {
-        model: options.model || process.env.ASI1_HEALTH_MODEL || 'asi1-mini',
+        model: options.model || process.env.ASI1_HEALTH_MODEL || 'asi1-ultra',
         max_tokens: 8,
         temperature: 0,
         stream: false,
@@ -237,6 +316,9 @@ module.exports = {
   ASI1_BASE_URL,
   ASI1_CHAT_URL,
   ASI1_DEFAULT_MODEL,
+  ASI1_QUICK_TICK_MODEL,
+  ASI1_DEEP_INSIGHT_MODEL,
+  resolveModelForTier,
   resolveAsi1ApiKey,
   resolveAsi1ApiKeys,
   hasAsi1Credentials,
