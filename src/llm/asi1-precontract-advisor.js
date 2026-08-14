@@ -371,8 +371,31 @@
     if (ctx.secondsToClose != null && ctx.secondsToClose > maxTtc) {
       return _briefs[briefKey(sym, ctx.horizon)] || null;
     }
-    // Too close to window open — PTB rollover lock may not have landed yet.
+    // Correctness gate, not a timer: verify ctx.slug's own encoded window boundary
+    // matches the boundary Date.now() says is actually current right now. A stale
+    // (already-rolled-over) market context has a real, canonically-sourced PTB —
+    // it's just for a window that no longer exists — so the trusted-source check
+    // in buildMarketContext can't catch this on its own. No time budget: keep
+    // skipping and retrying every cycle for as long as it takes, rather than firing
+    // on a guess. Wrong info is worse than no info.
     const windowSec = WINDOW_SECONDS[ctx.horizon];
+    if (ctx.slug && windowSec) {
+      const slugMatch = ctx.slug.match(/-(\d+)$/);
+      const slugBoundary = slugMatch ? Number(slugMatch[1]) : null;
+      const nowSec = Math.floor(Date.now() / 1000);
+      const expectedBoundary = nowSec - (nowSec % windowSec);
+      if (slugBoundary != null && slugBoundary !== expectedBoundary) {
+        console.warn(
+          `[ASI1 PreContract] ${sym} ${ctx.horizon} market context is stale ` +
+          `(slug boundary ${slugBoundary}, expected ${expectedBoundary}) — ` +
+          `skipping fire rather than risk a wrong PTB, will retry next cycle`
+        );
+        return _briefs[briefKey(sym, ctx.horizon)] || null;
+      }
+    }
+    // Belt-and-suspenders: also require a minimum settle time past open even once
+    // the boundary matches, since the PTB lock write can trail the window-open
+    // instant by a second or two.
     if (ctx.secondsToClose != null && windowSec) {
       const secondsSinceOpen = windowSec - ctx.secondsToClose;
       if (secondsSinceOpen >= 0 && secondsSinceOpen < MIN_SECONDS_SINCE_OPEN) {
