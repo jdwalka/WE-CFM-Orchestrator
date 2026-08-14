@@ -407,9 +407,13 @@
   <script src="../src/core/app-state.js" defer></script>
   <script src="../src/core/audio-notifications.js" defer></script>
   <script src="../src/core/forensics-logger.js" defer></script>
+  <!-- Pyth Hermes REST spot feed — populates window._pythPrices / window.PythClient.
+       feed-adapters.js auto-starts polling once this is present (see its PythClient check). -->
+  <script src="../src/feeds/pyth-browser-client.js" defer></script>
   <script src="../src/core/feeds/feed-adapters.js" defer></script>
   <script src="../src/core/ui/render-layer.js" defer></script>
-  <!-- Raw-data truth guard + inference persistence + ASI1 pre-contract advisor -->
+  <!-- Oracle (Pyth spot + Polymarket PTB only) → truth guard → inference persist → advisors -->
+  <script src="../src/llm/oracle-snapshot.js"></script>
   <script src="../src/llm/inference-truth-guard.js"></script>
   <script src="../src/llm/inference-state-store.js"></script>
   <script src="../src/llm/asi1-precontract-advisor.js" defer></script>

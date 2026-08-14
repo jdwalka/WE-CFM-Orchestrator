@@ -368,6 +368,10 @@ function refreshActiveView(force = false) {
     if (currentView === 'screener') { renderScreener(); return; }
     if (currentView === 'universe') { renderUniverse(); return; }
     if (currentView === 'markets5m') { renderMarkets5M(); return; }
+    if (currentView === 'polymarket') {
+      if (window.PolymarketTerminal?.render) window.PolymarketTerminal.render();
+      return;
+    }
     if (currentView === 'debuglog') { renderDebugLog(); return; }
     if (currentView === 'observability') { renderObservability(); return; }
     if (currentView === 'hourly-ranges') return; // Panel manages its own 30s poll
