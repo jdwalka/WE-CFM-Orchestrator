@@ -262,8 +262,14 @@
       _markOk('whaleAlert');
       _reportHealth(true, 200, 'transactions OK');
 
-      // Normalize response
-      const txs = (data.result || []).map(tx => ({
+      // `(data.result || [])` used to fall through as truthy on a non-array
+      // result (e.g. a 200 response carrying an error string/object instead
+      // of transactions), then throw "(...).map is not a function" -- seen
+      // live on every BTC/ETH/SOL cycle. Guard with Array.isArray instead.
+      if (data.result != null && !Array.isArray(data.result)) {
+        console.warn(`[WhaleAlert] ${chain} unexpected result shape:`, data.result);
+      }
+      const txs = (Array.isArray(data.result) ? data.result : []).map(tx => ({
         hash: tx.hash,
         timestamp: tx.timestamp,
         amount: tx.amount,
