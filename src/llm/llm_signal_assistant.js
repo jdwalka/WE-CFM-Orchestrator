@@ -15,6 +15,10 @@ const {
   generateFiveMinUserPrompt,
   generateRangeSystemPrompt,
   generateRangeUserPrompt,
+  resolveFiveMinTarget,
+  sanitizeOracleSnapshot,
+  scrubMoneyFloatsInText,
+  formatUsdForCoin,
 } = require("./specialized_prompt");
 const Asi1Client = require("../infra/asi1-client");
 
@@ -316,8 +320,20 @@ const TOKENMIX_BASE_URL = process.env.TOKENMIX_BASE_URL || "https://api.tokenmix
 // Gemini/GLM tiers are 10–70x for similar structured notes. Override with
 // TOKENMIX_MODEL=deepseek/deepseek-v4-pro only if you want heavier reasoning.
 const TOKENMIX_MODEL = process.env.TOKENMIX_MODEL || "deepseek/deepseek-v4-flash";
-// Enough room for {call,confidence,notes,preContract} without blowing cost.
-const TOKENMIX_MAX_TOKENS = Number(process.env.TOKENMIX_MAX_TOKENS || 1400);
+// DeepSeek V4 Flash is a *reasoning* model: with thinking on, completion tokens
+// are spent on hidden reasoning first. If max_tokens is too low, finish_reason
+// becomes "length", content is "", and we throw "Unexpected LLM API response
+// format (tokenmix) keys=[choices…]". Default thinking OFF for market JSON
+// (fast, cheap, reliable content). Override TOKENMIX_ENABLE_THINKING=1 for CoT.
+const TOKENMIX_ENABLE_THINKING = (() => {
+  const v = String(process.env.TOKENMIX_ENABLE_THINKING || '0').toLowerCase();
+  return v === '1' || v === 'true' || v === 'yes';
+})();
+// With thinking off, ~800–1400 is enough. With thinking on, budget must cover
+// reasoning_tokens + JSON (~3–6k). Keep a healthy default either way.
+const TOKENMIX_MAX_TOKENS = Number(
+  process.env.TOKENMIX_MAX_TOKENS || (TOKENMIX_ENABLE_THINKING ? 4500 : 1600)
+);
 const TOKENMIX_TIMEOUT_MS = Number(process.env.TOKENMIX_TIMEOUT_MS || 45000);
 // DeepSeek-via-TokenMix sometimes chokes on response_format; we retry without it.
 const TOKENMIX_FORCE_JSON = process.env.TOKENMIX_FORCE_JSON !== '0';
@@ -375,24 +391,9 @@ const LLM_RATE_LIMIT_BASE_COOLDOWN_MS = Number(process.env.LLM_RATE_LIMIT_BASE_C
 const LLM_RATE_LIMIT_MAX_COOLDOWN_MS = Number(process.env.LLM_RATE_LIMIT_MAX_COOLDOWN_MS || 5 * 60 * 1000);
 const LLM_RATE_LIMIT_LOG_DEBOUNCE_MS = Number(process.env.LLM_RATE_LIMIT_LOG_DEBOUNCE_MS || 20000);
 
-// ── 5-minute Polymarket / polycool.app price-to-beat detection ─────────────────
-// xAI Grok is the primary for 5-minute binary PTB contracts. The "price to beat"
-// (immutable, resolved via Chainlink oracle feeds for settlement) is injected
-// into the specialized prompt. 15m Kalshi never carry PTB and never route here.
-
-function resolveFiveMinTarget(snapshot) {
-  if (!snapshot || typeof snapshot !== "object") return null;
-  const m = (snapshot.market && typeof snapshot.market === "object") ? snapshot.market : {};
-  const candidates = [
-    snapshot.priceToBeat, snapshot.price_to_beat, snapshot.targetPrice, snapshot.target,
-    m.priceToBeat, m.price_to_beat, m.targetPrice, m.target,
-  ];
-  for (const c of candidates) {
-    const n = Number(c);
-    if (Number.isFinite(n) && n > 0) return n;
-  }
-  return null;
-}
+// ── 5-minute Polymarket price-to-beat detection ─────────────────
+// resolveFiveMinTarget comes from specialized_prompt (Polymarket-only PTB).
+// PTB may be pending; still route 5m flags/horizon to five-min prompts.
 
 function getHorizonMinutes(snapshot) {
   const h = Number(snapshot?.horizonMinutes ?? snapshot?.horizon);
@@ -401,19 +402,27 @@ function getHorizonMinutes(snapshot) {
 
 function isFiveMinPtbMarket(snapshot) {
   if (!snapshot || typeof snapshot !== "object") return false;
-  // Must carry a price-to-beat target (Polymarket/polycool 5m binaries via Chainlink) — the discriminator.
-  if (resolveFiveMinTarget(snapshot) == null) return false;
-  // …and be a 5-minute market.
   const horizon = getHorizonMinutes(snapshot);
+  // Explicit 5m product flags / horizon — even when PTB still pending
+  if (snapshot.fiveMinute === true || snapshot.isFiveMin === true || horizon === 5) {
+    return true;
+  }
+  // Do not steal 15m/60m range pre-contract traffic
+  if (snapshot.rangePrediction === true || snapshot.rangeHorizon === true) {
+    const rh = Number(snapshot.rangeHorizonMinutes || snapshot.horizonMinutes);
+    if (rh === 15 || rh === 60) return false;
+  }
   const venue = String(
     snapshot.venue || snapshot.marketType || snapshot.market?.venue || ""
   ).toLowerCase();
-  return snapshot.fiveMinute === true
-    || snapshot.isFiveMin === true
-    || horizon === 5
-    || venue.includes("polymarket")
-    || venue.includes("five")
-    || venue.includes("5m");
+  if (venue.includes("5m") || venue.includes("five") || venue.includes("polycool")) {
+    return true;
+  }
+  // Live poly5m contract without 15m active on same snapshot
+  if (snapshot.poly5m?.slug && !snapshot.poly15m?.slug && resolveFiveMinTarget(snapshot) != null) {
+    return true;
+  }
+  return false;
 }
 
 class LLMSignalAssistant {
@@ -427,10 +436,16 @@ class LLMSignalAssistant {
     } else if (this.provider === "anthropic") {
       this.enabled = !!ANTHROPIC_API_KEY;
     } else {
-      // Standalone XAI key (or legacy Anthropic) enables assistant so 5m PTB markets can run
-      // on Grok for the binary contracts even if main provider is not configured.
-      this.enabled = !!(LLM_API_URL && LLM_API_KEY) || !!XAI_API_KEY || !!ANTHROPIC_API_KEY;
+      // Any live market provider enables the assistant (ASI1 + TokenMix/DeepSeek included).
+      this.enabled = !!(LLM_API_URL && LLM_API_KEY)
+        || !!XAI_API_KEY
+        || !!ANTHROPIC_API_KEY
+        || Asi1Client.hasAsi1Credentials()
+        || !!TOKENMIX_API_KEY;
     }
+
+    // Restore query history / market memory / cooldowns from disk (cold-start avoidance)
+    try { this._hydratePersistedState(); } catch (_) { /* */ }
 
     this.contextCache = new Map();      // short-lived prompt/result cache
     this.marketMemory = new Map();      // per-coin rolling recall memory
@@ -544,7 +559,9 @@ class LLMSignalAssistant {
     }
 
     try {
-      const cacheKey = this.getCacheKey(snapshot);
+      // Polymarket-only PTB + Pyth path normalization before any prompt build
+      const snap = sanitizeOracleSnapshot(snapshot);
+      const cacheKey = this.getCacheKey(snap);
       const now = Date.now();
       const cached = this.contextCache.get(cacheKey);
       if (cached && (now - cached.ts) < CONTEXT_CACHE_TTL_MS) {
@@ -554,11 +571,11 @@ class LLMSignalAssistant {
 
       // 5m PTB → five-min prompts; 15m/60m range → range prompts; else generic.
       // Served by xAI (Grok) first when configured; fallback cascade elsewhere.
-      const fiveMin = isFiveMinPtbMarket(snapshot);
-      const rangeHorizon = Number(snapshot.rangeHorizonMinutes || snapshot.horizonMinutes);
+      const fiveMin = isFiveMinPtbMarket(snap);
+      const rangeHorizon = Number(snap.rangeHorizonMinutes || snap.horizonMinutes);
       const isRange = !fiveMin && (
-        snapshot.rangePrediction === true
-        || snapshot.rangeHorizon === true
+        snap.rangePrediction === true
+        || snap.rangeHorizon === true
         || rangeHorizon === 15
         || rangeHorizon === 60
       );
@@ -566,20 +583,34 @@ class LLMSignalAssistant {
         ? generateFiveMinSystemPrompt()
         : isRange
           ? generateRangeSystemPrompt(rangeHorizon === 60 ? 60 : 15)
-          : generateSystemPrompt(getHorizonMinutes(snapshot) || 15);
+          : generateSystemPrompt(getHorizonMinutes(snap) || 15);
       const rawUserPrompt = fiveMin
-        ? generateFiveMinUserPrompt(snapshot)
+        ? generateFiveMinUserPrompt(snap)
         : isRange
-          ? generateRangeUserPrompt(snapshot)
-          : generateUserPrompt(snapshot);
-      const userPrompt = this.enrichPromptWithRecall(snapshot, rawUserPrompt);
+          ? generateRangeUserPrompt(snap)
+          : generateUserPrompt(snap);
+      const userPrompt = this.enrichPromptWithRecall(snap, rawUserPrompt);
 
-      const rawResponse = await this.callAPI(systemPrompt, userPrompt, snapshot);
-      const normalized = this.normalizeResponse(rawResponse);
-      this.recordMarketMemory(snapshot, normalized);
+      const rawResponse = await this.callAPI(systemPrompt, userPrompt, snap);
+      const normalized = this.normalizeResponse(rawResponse, snap);
+      // Surface oracle PTB on output for UI/debug (does not invent numbers)
+      if (snap.priceToBeatNum != null) {
+        normalized.polymarketPtb = snap.priceToBeatNum;
+        normalized.polymarketPtbSource = snap.priceToBeatSource || null;
+        normalized.polymarketPtbDisplay = formatUsdForCoin(snap.coin || snap, snap.priceToBeatNum);
+      }
+      if (snap.modelDirection || snap.modelScore != null) {
+        normalized.modelGuide = {
+          direction: snap.modelDirection || snap.direction || null,
+          score: snap.modelScore ?? snap.score ?? null,
+          confidence: snap.confidence ?? null,
+        };
+      }
+      this.recordMarketMemory(snap, normalized);
       this.contextCache.set(cacheKey, { ts: now, value: normalized });
       this.stats.successes++;
       this.clearRateLimitState();
+      try { this._persistState(); } catch (_) { /* */ }
       return normalized;
     } catch (err) {
       this.stats.failures++;
@@ -774,7 +805,7 @@ Use this recall only as context, and prioritize current market snapshot data if 
     );
     const useXai = !!XAI_API_KEY && (XAI_PRIMARY_ALL || is5mPtb);
     const useLegacyClaude = is5mPtb && !XAI_API_KEY && !!ANTHROPIC_API_KEY;
-    // Pre-contract: ASI1 first, then cheap DeepSeek via TokenMix, then xAI.
+    // Pre-contract: dual-fire ASI1 + TokenMix/DeepSeek (both get traffic), then cascade.
     // 5m PTB: xAI first when keyed; DeepSeek is strong cheap fallback.
     let baseCascade = ['asi1', 'tokenmix', 'xai', 'google', 'openai', 'anthropic', 'openrouter'];
     if (is5mPtb && XAI_API_KEY) {
@@ -785,12 +816,51 @@ Use this recall only as context, and prioritize current market snapshot data if 
     // LLM_CASCADE_PRIMARY pins one provider to the front without disturbing the
     // fallback order behind it.
     const primaryOverride = String(process.env.LLM_CASCADE_PRIMARY || '').trim().toLowerCase();
-    const cascade = primaryOverride && baseCascade.includes(primaryOverride)
+    let cascade = primaryOverride && baseCascade.includes(primaryOverride)
       ? [primaryOverride, ...baseCascade.filter((p) => p !== primaryOverride)]
       : baseCascade;
+    // LLM_ONLY_PROVIDER restricts the whole session to exactly one provider —
+    // e.g. "only asi1 for this trading session" — instead of disabling every
+    // other provider one at a time. Also suppresses the dual-fire/relay path
+    // below, which otherwise always calls TokenMix alongside ASI1 regardless
+    // of cascade order.
+    const onlyProvider = String(process.env.LLM_ONLY_PROVIDER || '').trim().toLowerCase();
+    if (onlyProvider) cascade = [onlyProvider];
     console.log(
-      `[LLM] is5mPtb=${is5mPtb} preContract=${isPreContractRange} useXai=${useXai} path=${cascade.join('→')}`
+      `[LLM] is5mPtb=${is5mPtb} preContract=${isPreContractRange} useXai=${useXai} ` +
+      `tokenmixKey=${!!TOKENMIX_API_KEY} asi1Key=${Asi1Client.hasAsi1Credentials()} path=${cascade.join('→')}`
     );
+
+    // Inference router: pre-contract (15m/60m) always hits both providers when
+    // keyed, TokenMix for the quick short-horizon/order-book read and ASI1 for
+    // the deep regime + pre-contract read, merged into one decisive call.
+    // Set LLM_RELAY_SPECIALIST_SPLIT=0 to revert to the same-prompt dual-fire
+    // vote (_dualFireAsi1AndTokenMix) instead.
+    if (
+      isPreContractRange
+      && !onlyProvider
+      && process.env.LLM_DUAL_FIRE !== '0'
+      && Asi1Client.hasAsi1Credentials()
+      && process.env.LLM_DISABLE_ASI1 !== '1'
+      && TOKENMIX_API_KEY
+      && this._providerCooldownRemaining('tokenmix') <= 0
+    ) {
+      const useSpecialistSplit = process.env.LLM_RELAY_SPECIALIST_SPLIT !== '0';
+      try {
+        const meta = {
+          coin: String(snapshot?.coin || 'GLOBAL'),
+          horizon: String(snapshot?.horizon || snapshot?.horizonMinutes || '15m'),
+          promptLength: (systemPrompt || '').length + (userPrompt || '').length,
+        };
+        const combined = useSpecialistSplit
+          ? await this._relaySpecialistSplit(snapshot, meta)
+          : await this._dualFireAsi1AndTokenMix(systemPrompt, userPrompt, snapshot, meta);
+        // Scrub float trails (e.g. $75.44527553043135 → $75.45) before cascade return
+        if (combined) return this.normalizeResponse(combined, snapshot);
+      } catch (err) {
+        console.warn(`[LLM] relay/dual-fire failed, falling back to cascade: ${err.message}`);
+      }
+    }
 
     let lastErr = null;
     const attempted = [];
@@ -849,7 +919,7 @@ Use this recall only as context, and prioritize current market snapshot data if 
         }
 
         if (p === 'asi1') {
-          if (!Asi1Client.hasAsi1Credentials()) { skipped.push(p); continue; }
+          if (!Asi1Client.hasAsi1Credentials() || process.env.LLM_DISABLE_ASI1 === '1') { skipped.push(p); continue; }
           attempted.push(p);
           // Pre-contract / range: asi1-ultra with room for full guidance notes.
           // 5m ticks: faster mini unless ASI1_5M_MODEL overrides.
@@ -1268,42 +1338,413 @@ Use this recall only as context, and prioritize current market snapshot data if 
   }
 
   /**
-   * TokenMix → DeepSeek V4 Flash (default). Retries without response_format if needed.
+   * Parallel ASI1 + TokenMix/DeepSeek for pre-contract. Both providers are always
+   * queried (so TokenMix is not starved). Winner:
+   *  - same call → higher confidence
+   *  - disagree → prefer ASI1 but attach DeepSeek as shadow (truth guard decides later)
+   */
+  async _dualFireAsi1AndTokenMix(systemPrompt, userPrompt, snapshot, meta = {}) {
+    const coin = meta.coin || 'GLOBAL';
+    const horizon = meta.horizon || '15m';
+    const promptLength = meta.promptLength || 0;
+    const start = Date.now();
+
+    const asi1Model = process.env.ASI1_PRECONTRACT_MODEL || process.env.ASI1_MODEL || 'asi1-fast';
+    const tmModel = TOKENMIX_MODEL;
+
+    const asi1Promise = Asi1Client.chatCompletion(
+      [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt },
+      ],
+      {
+        model: asi1Model,
+        candidateModels: [asi1Model, 'asi1-fast', 'asi1-mini', 'asi1'],
+        tier: 'deep-insight',
+        temperature: 0.12,
+        max_tokens: Number(process.env.ASI1_PRECONTRACT_MAX_TOKENS || 1600),
+        stream: false,
+        response_format: { type: 'json_object' },
+        web_search: process.env.ASI1_WEB_SEARCH === '1',
+        timeoutMs: Number(process.env.ASI1_PRECONTRACT_TIMEOUT_MS || 55000),
+      },
+    ).then((result) => {
+      const content = String(result.content || '').trim();
+      const parsed = this.parseLlmJsonContent(content, { provider: 'asi1', rawText: content });
+      parsed._provider = 'asi1';
+      parsed._model = result.model || asi1Model;
+      return { ok: true, parsed, model: parsed._model, ms: Date.now() - start };
+    }).catch((err) => ({ ok: false, error: err, ms: Date.now() - start }));
+
+    const tmPromise = this.callTokenMixAPI(systemPrompt, userPrompt, {
+      model: tmModel,
+      maxTokens: TOKENMIX_MAX_TOKENS,
+      timeoutMs: TOKENMIX_TIMEOUT_MS,
+    }).then((parsed) => {
+      parsed._provider = 'tokenmix';
+      parsed._model = parsed._model || tmModel;
+      return { ok: true, parsed, model: parsed._model, ms: Date.now() - start };
+    }).catch((err) => ({ ok: false, error: err, ms: Date.now() - start }));
+
+    const [asi1Res, tmRes] = await Promise.all([asi1Promise, tmPromise]);
+
+    // Always log both attempts so the query UI shows TokenMix traffic
+    for (const [provider, res, model] of [
+      ['asi1', asi1Res, asi1Model],
+      ['tokenmix', tmRes, tmModel],
+    ]) {
+      this._recordQueryExecution({
+        id: `llm-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        timestamp: new Date().toISOString(),
+        ts: Date.now(),
+        coin,
+        horizon,
+        provider,
+        model: res.model || model,
+        status: res.ok ? 'SUCCESS' : 'FAILURE',
+        latencyMs: res.ms || 0,
+        promptChars: promptLength,
+        responseChars: res.ok ? JSON.stringify(res.parsed || {}).length : 0,
+        resultCall: res.ok ? (res.parsed?.call || res.parsed?.direction || null) : null,
+        regime: res.ok ? (res.parsed?.regime || null) : null,
+        confidence: res.ok ? (res.parsed?.confidence ?? null) : null,
+        notes: res.ok
+          ? String(res.parsed?.suggestions?.notes || '').slice(0, 280)
+          : null,
+        attempted: ['asi1', 'tokenmix'],
+        skipped: [],
+        error: res.ok ? null : String(res.error?.message || res.error || 'failed'),
+        dualFire: true,
+      });
+      if (!res.ok && provider === 'tokenmix') {
+        this._recordProviderCooldown('tokenmix', res.error || new Error('tokenmix dual-fire fail'));
+      }
+    }
+
+    if (!asi1Res.ok && !tmRes.ok) {
+      throw (asi1Res.error || tmRes.error || new Error('dual-fire both failed'));
+    }
+    if (asi1Res.ok && !tmRes.ok) {
+      console.log(`[LLM dual-fire] ASI1 ok, TokenMix failed — using ASI1`);
+      this._lastProvider = 'asi1';
+      this._lastModel = asi1Res.model;
+      return asi1Res.parsed;
+    }
+    if (!asi1Res.ok && tmRes.ok) {
+      console.log(`[LLM dual-fire] ASI1 failed, TokenMix/DeepSeek ok — using DeepSeek`);
+      this._lastProvider = 'tokenmix';
+      this._lastModel = tmRes.model;
+      return tmRes.parsed;
+    }
+
+    // Both ok — pick winner
+    const a = asi1Res.parsed;
+    const b = tmRes.parsed;
+    const aCall = String(a.call || a.direction || '').toUpperCase();
+    const bCall = String(b.call || b.direction || '').toUpperCase();
+    const aConf = Number(a.confidence) || 0;
+    const bConf = Number(b.confidence) || 0;
+
+    let winner = a;
+    let winnerName = 'asi1';
+    if (aCall && bCall && aCall === bCall) {
+      winner = aConf >= bConf ? a : b;
+      winnerName = aConf >= bConf ? 'asi1' : 'tokenmix';
+      winner._ensemble = 'agree';
+    } else if (aCall && bCall && aCall !== bCall) {
+      // Disagreement: keep ASI1 as primary label but attach DeepSeek shadow + flag
+      winner = a;
+      winnerName = 'asi1';
+      winner._ensemble = 'disagree';
+      winner._shadow = {
+        provider: 'tokenmix',
+        model: tmRes.model,
+        call: bCall,
+        confidence: bConf,
+        notes: scrubMoneyFloatsInText(String(b.suggestions?.notes || '').slice(0, 220), snapshot?.coin || ''),
+      };
+      winner.warnings = [
+        ...(Array.isArray(winner.warnings) ? winner.warnings : []),
+        `ensemble_disagree:asi1=${aCall}/tokenmix=${bCall}`,
+      ];
+      // Soften confidence when models fight
+      winner.confidence = Math.min(aConf, bConf, 0.55);
+    } else {
+      winner = aCall ? a : b;
+      winnerName = aCall ? 'asi1' : 'tokenmix';
+    }
+
+    winner._provider = winnerName === 'tokenmix' ? 'tokenmix' : 'asi1';
+    winner._model = winnerName === 'tokenmix' ? tmRes.model : asi1Res.model;
+    winner._dualFire = true;
+    this._lastProvider = winner._provider;
+    this._lastModel = winner._model;
+    console.log(
+      `[LLM dual-fire] winner=${winnerName} call=${winner.call || winner.direction} ` +
+      `ensemble=${winner._ensemble || 'single'} asi1=${aCall}@${aConf} deepseek=${bCall}@${bConf}`
+    );
+    return winner;
+  }
+
+  /**
+   * Specialist-split inference router: TokenMix/DeepSeek handles the quick,
+   * short-horizon/order-book read; ASI1 handles the deep, 15m-60m regime +
+   * pre-contract read. Unlike _dualFireAsi1AndTokenMix (same prompt to both,
+   * then vote), each model gets a role-specific prompt built from
+   * inference-relay.js's microstructure packet, and the two legs are merged
+   * deterministically (InferenceRelay.mergeLegsLocally) into one decisive
+   * binary call — no extra synthesis LLM call needed.
+   */
+  async _relaySpecialistSplit(snapshot, meta = {}) {
+    const InferenceRelay = require('./inference-relay');
+    const coin = meta.coin || snapshot?.coin || 'GLOBAL';
+    const horizon = meta.horizon || '15m';
+    const start = Date.now();
+
+    const packet = InferenceRelay.buildMicrostructurePacket(snapshot);
+
+    const shortPromise = this.callTokenMixAPI(
+      InferenceRelay.specialistSystemShort(),
+      InferenceRelay.buildSpecialistUser(packet, 'short_ob'),
+      { model: TOKENMIX_MODEL, maxTokens: TOKENMIX_MAX_TOKENS, timeoutMs: TOKENMIX_TIMEOUT_MS },
+    ).then((parsed) => ({ ok: true, parsed, ms: Date.now() - start }))
+      .catch((err) => ({ ok: false, error: err, ms: Date.now() - start }));
+
+    const asi1Model = process.env.ASI1_PRECONTRACT_MODEL || process.env.ASI1_MODEL || 'asi1-fast';
+    const longPromise = Asi1Client.chatCompletion(
+      [
+        { role: 'system', content: InferenceRelay.specialistSystemLong() },
+        { role: 'user', content: InferenceRelay.buildSpecialistUser(packet, 'medium_long') },
+      ],
+      {
+        model: asi1Model,
+        candidateModels: [asi1Model, 'asi1-fast', 'asi1-mini', 'asi1'],
+        tier: 'deep-insight',
+        temperature: 0.12,
+        max_tokens: Number(process.env.ASI1_PRECONTRACT_MAX_TOKENS || 1600),
+        response_format: { type: 'json_object' },
+        timeoutMs: Number(process.env.ASI1_PRECONTRACT_TIMEOUT_MS || 55000),
+      },
+    ).then((result) => {
+      const content = String(result.content || '').trim();
+      const parsed = this.parseLlmJsonContent(content, { provider: 'asi1', rawText: content });
+      return { ok: true, parsed, model: result.model || asi1Model, ms: Date.now() - start };
+    }).catch((err) => ({ ok: false, error: err, ms: Date.now() - start }));
+
+    const [shortRes, longRes] = await Promise.all([shortPromise, longPromise]);
+
+    if (!shortRes.ok && !longRes.ok) {
+      throw (longRes.error || shortRes.error || new Error('relay: both specialist legs failed'));
+    }
+
+    const shortLeg = shortRes.ok ? shortRes.parsed : null;
+    const longLeg = longRes.ok ? longRes.parsed : null;
+    const merged = InferenceRelay.mergeLegsLocally(packet, shortLeg, longLeg);
+
+    for (const [provider, res] of [['tokenmix', shortRes], ['asi1', longRes]]) {
+      this._recordQueryExecution({
+        id: `llm-relay-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        timestamp: new Date().toISOString(),
+        ts: Date.now(),
+        coin,
+        horizon,
+        provider,
+        model: provider === 'tokenmix' ? TOKENMIX_MODEL : asi1Model,
+        status: res.ok ? 'SUCCESS' : 'FAILURE',
+        latencyMs: res.ms || 0,
+        resultCall: res.ok ? (res.parsed?.call || null) : null,
+        confidence: res.ok ? (res.parsed?.confidence ?? null) : null,
+        error: res.ok ? null : String(res.error?.message || res.error || 'failed'),
+        relaySpecialistSplit: true,
+        relayRole: provider === 'tokenmix' ? 'short_ob' : 'medium_long',
+      });
+    }
+
+    this._lastProvider = 'relay';
+    this._lastModel = `tokenmix:${TOKENMIX_MODEL}+asi1:${asi1Model}`;
+    console.log(
+      `[LLM relay] ${coin} ${horizon} call=${merged.call} agreement=${merged.relay?.agreement} ` +
+      `short=${shortLeg?.call || 'FAIL'} long=${longLeg?.call || 'FAIL'} primary=${merged.relay?.primaryLeg}`
+    );
+    return merged;
+  }
+
+  _inferenceStatePath() {
+    const candidates = [
+      path.join(process.cwd(), 'WE-CRYPTO-CACHE', 'llm-inference-state.json'),
+      path.join(__dirname, '..', '..', 'WE-CRYPTO-CACHE', 'llm-inference-state.json'),
+      path.join(process.cwd(), 'data', 'llm-inference-state.json'),
+    ];
+    try {
+      const { app } = require('electron');
+      if (app?.getPath) {
+        candidates.unshift(path.join(app.getPath('userData'), 'llm-inference-state.json'));
+      }
+    } catch (_) { /* not in electron */ }
+    return candidates[0];
+  }
+
+  _hydratePersistedState() {
+    const tryPaths = [
+      this._inferenceStatePath(),
+      path.join(process.cwd(), 'WE-CRYPTO-CACHE', 'llm-inference-state.json'),
+      path.join(__dirname, '..', '..', 'WE-CRYPTO-CACHE', 'llm-inference-state.json'),
+    ];
+    for (const p of tryPaths) {
+      try {
+        if (!fs.existsSync(p)) continue;
+        const raw = fs.readFileSync(p, 'utf8');
+        const data = JSON.parse(raw);
+        if (!data || typeof data !== 'object') continue;
+        if (Array.isArray(data.queryHistory)) {
+          this.queryHistory = data.queryHistory.slice(-200);
+        }
+        if (data.marketMemory && typeof data.marketMemory === 'object') {
+          for (const [k, rows] of Object.entries(data.marketMemory)) {
+            if (Array.isArray(rows)) this.marketMemory.set(k, rows.slice(-12));
+          }
+        }
+        if (data.contextCache && typeof data.contextCache === 'object') {
+          const now = Date.now();
+          for (const [k, entry] of Object.entries(data.contextCache)) {
+            if (entry && entry.value && (now - Number(entry.ts || 0)) < CONTEXT_CACHE_TTL_MS * 4) {
+              this.contextCache.set(k, { ts: entry.ts, value: entry.value });
+            }
+          }
+        }
+        if (data.queryStatsByProvider) this.queryStatsByProvider = data.queryStatsByProvider;
+        if (data.queryStatsByModel) this.queryStatsByModel = data.queryStatsByModel;
+        console.log(
+          `[LLMSignalAssistant] Restored inference state from ${p} ` +
+          `(history=${this.queryHistory.length} memoryCoins=${this.marketMemory.size} cache=${this.contextCache.size})`
+        );
+        return;
+      } catch (err) {
+        console.warn(`[LLMSignalAssistant] hydrate skip ${p}:`, err.message);
+      }
+    }
+  }
+
+  _persistState() {
+    const file = this._inferenceStatePath();
+    try {
+      const dir = path.dirname(file);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      const marketMemory = {};
+      for (const [k, rows] of this.marketMemory.entries()) {
+        marketMemory[k] = (rows || []).slice(-12);
+      }
+      const contextCache = {};
+      for (const [k, entry] of this.contextCache.entries()) {
+        contextCache[k] = { ts: entry.ts, value: entry.value };
+      }
+      const payload = {
+        savedAt: Date.now(),
+        queryHistory: this.queryHistory.slice(-200),
+        marketMemory,
+        contextCache,
+        queryStatsByProvider: this.queryStatsByProvider,
+        queryStatsByModel: this.queryStatsByModel,
+        lastProvider: this._lastProvider || null,
+        lastModel: this._lastModel || null,
+      };
+      fs.writeFileSync(file, JSON.stringify(payload), 'utf8');
+    } catch (err) {
+      // Don't spam — once per few minutes is enough
+      if (!this._lastPersistWarn || Date.now() - this._lastPersistWarn > 120_000) {
+        this._lastPersistWarn = Date.now();
+        console.warn('[LLMSignalAssistant] persist failed:', err.message);
+      }
+    }
+  }
+
+  /**
+   * TokenMix → DeepSeek V4 Flash (default).
+   * Retries: json→plain, and if reasoning ate max_tokens (empty content),
+   * re-calls with enable_thinking:false and a larger budget.
    */
   async callTokenMixAPI(systemPrompt, userPrompt, config = {}) {
     if (!TOKENMIX_API_KEY) throw new Error('TOKENMIX_API_KEY missing');
     const model = config.model || TOKENMIX_MODEL;
-    const maxTokens = Number(config.maxTokens || TOKENMIX_MAX_TOKENS);
+    const baseMaxTokens = Number(config.maxTokens || TOKENMIX_MAX_TOKENS);
     const timeoutMs = Number(config.timeoutMs || TOKENMIX_TIMEOUT_MS);
+    const preferThinking = config.enableThinking != null
+      ? !!config.enableThinking
+      : TOKENMIX_ENABLE_THINKING;
 
-    const attempts = TOKENMIX_FORCE_JSON
+    // Prefer plain first when thinking is off (faster, fewer empty bodies);
+    // with thinking on, try json_object first for structured notes.
+    const jsonFirst = TOKENMIX_FORCE_JSON && preferThinking;
+    const modeAttempts = jsonFirst
       ? [{ jsonMode: true }, { jsonMode: false }]
-      : [{ jsonMode: false }];
+      : TOKENMIX_FORCE_JSON
+        ? [{ jsonMode: false }, { jsonMode: true }]
+        : [{ jsonMode: false }];
+
+    const attempts = [
+      // Primary: env thinking preference
+      ...modeAttempts.map((m) => ({
+        ...m,
+        enableThinking: preferThinking,
+        maxTokens: baseMaxTokens,
+      })),
+      // Rescue: reasoning burned the budget → force no-thinking + headroom
+      {
+        jsonMode: false,
+        enableThinking: false,
+        maxTokens: Math.max(baseMaxTokens, 2000),
+        rescue: true,
+      },
+      {
+        jsonMode: true,
+        enableThinking: false,
+        maxTokens: Math.max(baseMaxTokens, 2000),
+        rescue: true,
+      },
+    ];
+
+    // De-dupe identical attempt shapes
+    const seen = new Set();
+    const uniqueAttempts = attempts.filter((a) => {
+      const k = `${a.jsonMode}|${a.enableThinking}|${a.maxTokens}`;
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    });
 
     let lastErr = null;
-    for (const attempt of attempts) {
+    for (const attempt of uniqueAttempts) {
       try {
         const res = await this.callCompatibleAPI(systemPrompt, userPrompt, {
           url: TOKENMIX_BASE_URL,
           model,
           key: TOKENMIX_API_KEY,
-          maxTokens,
+          maxTokens: attempt.maxTokens,
           timeoutMs,
           stream: false,
-          // DeepSeek on TokenMix: structured output when supported; fallback plain
           responseFormat: attempt.jsonMode ? { type: 'json_object' } : null,
+          enableThinking: attempt.enableThinking,
           providerLabel: 'tokenmix',
         });
         if (res && typeof res === 'object') {
           res._provider = 'tokenmix';
           res._model = model;
+          res._tokenmixThinking = attempt.enableThinking;
         }
         return res;
       } catch (err) {
         lastErr = err;
+        const msg = String(err?.message || err);
+        const reasoningStarve = /empty content|reasoning_tokens|finish=length|Unexpected LLM API response format/i.test(msg);
         console.warn(
-          `[TokenMix] attempt jsonMode=${attempt.jsonMode} failed: ${err.message}`
+          `[TokenMix] attempt json=${attempt.jsonMode} think=${attempt.enableThinking}` +
+            ` maxTok=${attempt.maxTokens}${attempt.rescue ? ' rescue' : ''} failed: ${msg.slice(0, 180)}`
         );
+        // If not a reasoning/format miss and not the last try, still continue
+        // (json_mode can 400). Skip remaining same-thinking attempts only when
+        // auth/payment errors.
+        if (/\b(401|402|403)\b/.test(msg)) break;
+        if (!reasoningStarve && attempt.rescue) continue;
       }
     }
     throw lastErr || new Error('TokenMix DeepSeek failed');
@@ -1350,6 +1791,13 @@ Use this recall only as context, and prioritize current market snapshot data if 
 
     if (config.tools) {
       payload.tools = config.tools;
+    }
+
+    // DeepSeek V4 (TokenMix and direct): disable hidden reasoning so max_tokens
+    // is spent on visible content. Without this, large prompts often return
+    // finish_reason=length with content="" (reasoning_tokens == max_tokens).
+    if (typeof config.enableThinking === 'boolean') {
+      payload.enable_thinking = config.enableThinking;
     }
 
     const controller = new AbortController();
@@ -1415,12 +1863,20 @@ Use this recall only as context, and prioritize current market snapshot data if 
         throw err;
       }
       if (!content) {
-        // Log shape for debugging without dumping full payload
+        const choice = data?.choices?.[0] || null;
+        const finish = choice?.finish_reason || 'unknown';
+        const usage = data?.usage || {};
+        const reasonTok = usage?.completion_tokens_details?.reasoning_tokens
+          ?? usage?.reasoning_tokens
+          ?? null;
         const keys = Object.keys(data || {}).slice(0, 12).join(',');
-        const c0 = data?.choices?.[0] ? Object.keys(data.choices[0]).join(',') : 'none';
-        const m0 = data?.choices?.[0]?.message ? Object.keys(data.choices[0].message).join(',') : 'none';
+        const c0 = choice ? Object.keys(choice).join(',') : 'none';
+        const m0 = choice?.message ? Object.keys(choice.message).join(',') : 'none';
+        // Explicit diagnosis so callTokenMixAPI can rescue (thinking off / more tokens)
         throw new Error(
-          `Unexpected LLM API response format (${providerLabel}) keys=[${keys}] choice=[${c0}] message=[${m0}]`
+          `Unexpected LLM API response format (${providerLabel}) empty content` +
+          ` finish=${finish} reasoning_tokens=${reasonTok} max_tokens=${maxTokens}` +
+          ` keys=[${keys}] choice=[${c0}] message=[${m0}]`
         );
       }
     }
@@ -1734,9 +2190,11 @@ Use this recall only as context, and prioritize current market snapshot data if 
   }
 
   /**
-   * Normalize and validate LLM response
+   * Normalize and validate LLM response.
+   * @param {object} raw
+   * @param {object} [snapshot] — used to scrub float trails by coin decimals
    */
-  normalizeResponse(raw) {
+  normalizeResponse(raw, snapshot = null) {
     if (!raw) {
       return {
         regime: "unknown",
@@ -1748,6 +2206,14 @@ Use this recall only as context, and prioritize current market snapshot data if 
 
     const regime = this.validateRegime(raw.regime);
     const confidence = Math.max(0, Math.min(1, Number(raw.confidence) || 0));
+    const coinHint = snapshot?.coin
+      || snapshot?.poly5m?.slug
+      || snapshot?.poly15m?.slug
+      || snapshot?.activeContract?.slug
+      || raw?.polyPeg?.slug
+      || '';
+
+    const scrub = (t) => scrubMoneyFloatsInText(t, coinHint);
 
     const increaseWeight = Array.isArray(raw.suggestions?.increase_weight)
       ? raw.suggestions.increase_weight
@@ -1763,14 +2229,16 @@ Use this recall only as context, and prioritize current market snapshot data if 
     const suggestions = {
       increase_weight: increaseWeight.filter(s => typeof s === 'string'),
       decrease_weight: decreaseWeight.filter(s => typeof s === 'string'),
-      notes: typeof raw.suggestions?.notes === 'string' ? raw.suggestions.notes :
-        typeof raw.suggestions?.reasoning === 'string' ? raw.suggestions.reasoning :
-          typeof raw.suggestions?.summary === 'string' ? raw.suggestions.summary : "",
+      notes: typeof raw.suggestions?.notes === 'string' ? scrub(raw.suggestions.notes) :
+        typeof raw.suggestions?.reasoning === 'string' ? scrub(raw.suggestions.reasoning) :
+          typeof raw.suggestions?.summary === 'string' ? scrub(raw.suggestions.summary) : "",
     };
 
     // Prefer longer ASI1 notes from primary_rationale when notes are thin
     if ((!suggestions.notes || suggestions.notes.length < 40) && raw.ai_wording?.primary_rationale) {
-      suggestions.notes = String(raw.ai_wording.primary_rationale);
+      suggestions.notes = scrub(String(raw.ai_wording.primary_rationale));
+    } else if (suggestions.notes) {
+      suggestions.notes = scrub(suggestions.notes);
     }
 
     const warnings = Array.isArray(raw.warnings)
@@ -1779,7 +2247,13 @@ Use this recall only as context, and prioritize current market snapshot data if 
         ? raw.suggestions.issues.map(String).filter(w => w.length > 0)
         : [];
 
-    const ai_wording = raw.ai_wording || {
+    const ai_wording = raw.ai_wording ? {
+      ...raw.ai_wording,
+      primary_rationale: scrub(raw.ai_wording.primary_rationale || ''),
+      wait_rationale: scrub(raw.ai_wording.wait_rationale || ''),
+      high_confidence_rationale: scrub(raw.ai_wording.high_confidence_rationale || ''),
+      market_patterns: scrub(raw.ai_wording.market_patterns || ''),
+    } : {
       primary_rationale: "",
       wait_rationale: "",
       high_confidence_rationale: "",

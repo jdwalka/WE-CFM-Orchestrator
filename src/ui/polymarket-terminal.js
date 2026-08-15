@@ -124,13 +124,33 @@
   }
 
   function renderPolymarketTerminal() {
-    const container = document.getElementById('mainContent') || document.querySelector('.main-content');
-    if (!container) return;
+    // App shell mounts panels into #content (see render-layer.js). The old
+    // mainContent / .main-content selectors never matched, so this panel no-op'd
+    // and the previous nav view (e.g. Settlement Log / debug) stayed on screen.
+    const container =
+      document.getElementById('content')
+      || document.querySelector('main.content')
+      || document.getElementById('mainContent')
+      || document.querySelector('.main-content');
+    if (!container) {
+      console.warn('[PolymarketPro] no #content host — cannot render');
+      return;
+    }
 
     const rateLimits = window.PolymarketClient?.getRateLimitStatus?.() || {
       order: { tokens: 60, burstCapacity: 60, refillRate: 40, tier: 'Standard' },
       cancel: { tokens: 120, burstCapacity: 120, refillRate: 80, tier: 'Standard' },
     };
+
+    // Model accuracy (quant engine) vs AI-inference accuracy — tracked separately,
+    // never conflated (see src/llm/inference-state-store.js recordOutcome/getAccuracy).
+    let modelAccPct = null;
+    try {
+      window.__WinRateCalculatorInstance?.calculateAccuracy?.();
+      const s = window.__WinRateCalculatorInstance?.stats?.overall;
+      if (s && s.total > 0) modelAccPct = Number(s.winRate);
+    } catch (_) { /* */ }
+    const aiAcc = window.InferenceStateStore?.getAccuracy?.()?.overall || { total: 0, pct: null };
 
     const wsStatus = window.PolymarketWS?.getStatus?.() || {};
     const perpTicker = window.PolymarketPerpsClient?.getTicker?.(_activeSymbol) || {};
@@ -140,8 +160,18 @@
 
     const yesProb = Math.round((poly5m.probability || 0.5) * 100);
     const noProb = 100 - yesProb;
-    const targetPrice = poly5m.targetPrice || (poly5m.targetPriceNum ? `$${Number(poly5m.targetPriceNum).toLocaleString()}` : 'Live PTB');
-    const markPrice = perpTicker.mark_price ? `$${Number(perpTicker.mark_price).toLocaleString()}` : (poly5m.currentPrice ? `$${Number(poly5m.currentPrice).toLocaleString()}` : '$--');
+    const fmtUsd = (v) => {
+      const n = Number(v);
+      if (!Number.isFinite(n) || n <= 0) return null;
+      const d = /^(XRP|DOGE)$/i.test(_activeSymbol) ? 4 : 2;
+      return '$' + n.toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
+    };
+    const targetPrice = poly5m.targetPrice
+      || fmtUsd(poly5m.targetPriceNum ?? poly5m.priceToBeatNum)
+      || 'Live PTB';
+    const markPrice = fmtUsd(perpTicker.mark_price)
+      || fmtUsd(poly5m.currentPriceNum ?? poly5m.currentPrice)
+      || '$--';
     const fundingRateFormatted = perpFunding.funding_rate ? `${(Number(perpFunding.funding_rate) * 100).toFixed(4)}%` : '+0.0100%';
 
     const coins = ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'BNB', 'HYPE'];
@@ -187,6 +217,23 @@
               <span style="width:8px;height:8px;border-radius:50%;background:#00e676;box-shadow:0 0 6px #00e676;"></span>
               <span>CLOB + RTDS WS Live</span>
             </div>
+          </div>
+        </div>
+
+        <!-- Accuracy Counters: model (quant engine) vs AI inference, tracked separately -->
+        <div style="display:flex;flex-wrap:wrap;gap:10px;">
+          <div style="flex:1;min-width:160px;display:flex;align-items:center;gap:8px;padding:8px 12px;border-radius:6px;background:var(--color-surface);border:1px solid var(--color-border);">
+            <span style="font-size:10px;color:var(--color-text-faint);text-transform:uppercase;letter-spacing:0.05em;">Model Accuracy</span>
+            <span style="margin-left:auto;font-size:14px;font-weight:800;color:${modelAccPct == null ? 'var(--color-text-faint)' : modelAccPct >= 50 ? '#00e676' : '#ff5252'};">
+              ${modelAccPct == null ? 'n/a' : modelAccPct + '%'}
+            </span>
+          </div>
+          <div style="flex:1;min-width:160px;display:flex;align-items:center;gap:8px;padding:8px 12px;border-radius:6px;background:var(--color-surface);border:1px solid var(--color-border);">
+            <span style="font-size:10px;color:var(--color-text-faint);text-transform:uppercase;letter-spacing:0.05em;">AI Inference Accuracy</span>
+            <span style="margin-left:auto;font-size:14px;font-weight:800;color:${aiAcc.pct == null ? 'var(--color-text-faint)' : aiAcc.pct >= 50 ? '#00e676' : '#ff5252'};">
+              ${aiAcc.pct == null ? 'n/a' : aiAcc.pct + '%'}
+            </span>
+            <span style="font-size:10px;color:var(--color-text-faint);">(${aiAcc.total || 0})</span>
           </div>
         </div>
 

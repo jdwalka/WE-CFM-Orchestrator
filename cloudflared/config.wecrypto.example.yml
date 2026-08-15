@@ -1,0 +1,25 @@
+# Cloudflare Tunnel → wecrypto.leaksnipe.win
+# Copy to %USERPROFILE%\.cloudflared\config.yml after `cloudflared tunnel create`
+# and fill TUNNEL_UUID from `cloudflared tunnel list`.
+
+tunnel: TUNNEL_UUID
+credentials-file: C:\Users\gitgo\.cloudflared\TUNNEL_UUID.json
+
+# Optional: force origin cert after `cloudflared tunnel login`
+# origincert: C:\Users\gitgo\.cloudflared\cert.pem
+
+ingress:
+  # Public hostname for WE-CRYPTO companion web service (Electron starts this on 3450)
+  # Electron companion API uses HTTPS on loopback (self-signed) — noTLSVerify required
+  - hostname: wecrypto.leaksnipe.win
+    service: https://127.0.0.1:3450
+    originRequest:
+      noTLSVerify: true
+      connectTimeout: 30s
+
+  # Optional: CORS/API nginx proxy (Docker we-cors-proxy) — only enable if you intend public API proxy
+  # - hostname: wecrypto-proxy.leaksnipe.win
+  #   service: http://127.0.0.1:8080
+
+  # Required catch-all
+  - service: http_status:404

@@ -630,7 +630,7 @@ function computeSignalVector(candles) {
   const hmaSlope = (hmaCurr - hmaPrev2) / (Math.abs(hmaPrev2) || 1) * 100;
   const hmaDevPct = (lastPrice - hmaCurr) / (Math.abs(hmaCurr) || 1) * 100;
   let hmaSig = clamp(hmaSlope * 8, -0.7, 0.7);
-  if (Math.abs(hmaDevPct) > 0.4) hmaSig += clamp(-hmaDevPct * 0.28, -0.3, 0.3);
+  if (Math.abs(hmaDevPct) > 0.4) hmaSig += clamp(hmaDevPct * 0.28, -0.3, 0.3); // FIX: was negated (see predictions.js live logic)
   hmaSig = clamp(hmaSig, -1, 1);
 
   // ── VWMA ──
@@ -658,7 +658,7 @@ function computeSignalVector(candles) {
   let cciSig = 0;
   if (cciVal > 150) cciSig = -clamp((cciVal - 100) / 150, 0, 1);
   else if (cciVal < -150) cciSig = clamp((-100 - cciVal) / 150, 0, 1);
-  else cciSig = clamp(-cciVal / 200, -0.3, 0.3);
+  else cciSig = clamp(cciVal / 200, -0.3, 0.3); // FIX: was negated (see predictions.js 2026-05-04 CRITICAL fix)
   cciSig = clamp(cciSig, -1, 1);
 
   // ── CMF ──
@@ -667,7 +667,7 @@ function computeSignalVector(candles) {
 
   // ── Fisher Transform — plain number return ──
   const fisherVal = calcFisher(candles, 10);
-  const fisherSig = clamp(-fisherVal / 2.5, -1, 1);
+  const fisherSig = clamp(fisherVal / 2.5, -1, 1); // FIX: was negated (see predictions.js 2026-05-04 CRITICAL fix)
 
   // ── Keltner Channels — { position } return ──
   const kelt = calcKeltner(candles, 20, 2.0);
@@ -872,7 +872,18 @@ function printWeightTable(coin, oldW, newW, winRates, obsCount) {
  * coins are never affected.
  */
 function writeWeightsToJSON(coin, oldWeights, newWeights, weightsPath, windowCount, dateStr) {
-  const json = JSON.parse(fs.readFileSync(weightsPath, 'utf8'));
+  // Guarded read: a corrupted/truncated weights file (this exact failure hit
+  // live once already — a duplicate-key JSON error) used to throw uncaught
+  // here, aborting the write phase for every remaining coin in the run after
+  // the expensive backtest computation had already completed for all of
+  // them. Now it's reported per-coin and the run continues.
+  let json;
+  try {
+    json = JSON.parse(fs.readFileSync(weightsPath, 'utf8'));
+  } catch (e) {
+    console.error(`  [ERROR] ${coin}: could not read/parse ${weightsPath} — ${e.message}. Skipping write for this coin; fix the file and rerun.`);
+    return 0;
+  }
   if (!json.PER_COIN_INDICATOR_BIAS[coin]) {
     console.log(`  [WARN] ${coin} not found in predictions-weights.json — skipping`);
     return 0;
@@ -887,7 +898,12 @@ function writeWeightsToJSON(coin, oldWeights, newWeights, weightsPath, windowCou
     updatedCount++;
   }
   if (updatedCount > 0) {
-    fs.writeFileSync(weightsPath, JSON.stringify(json, null, 2), 'utf8');
+    // Atomic write: write-to-temp then rename, so a process kill mid-write
+    // (this environment killed several long-running runs this session)
+    // can't leave weightsPath itself truncated/corrupted.
+    const tmpPath = `${weightsPath}.tmp-${process.pid}`;
+    fs.writeFileSync(tmpPath, JSON.stringify(json, null, 2), 'utf8');
+    fs.renameSync(tmpPath, weightsPath);
     console.log(`  [${coin}] Wrote ${updatedCount} updated weights to predictions-weights.json`);
   } else {
     console.log(`  [${coin}] No weights changed by >${WRITE_CHANGE_THRESHOLD_PCT}%, nothing written`);
@@ -1100,7 +1116,12 @@ if (require.main === module) {
     fetchLookback,
     sleep,
     optimizeWeights,
-    writeWeightsToPredictions,
+    writeWeightsToJSON,
+    // polymarket-retuner.js imports this under the old name — the actual
+    // function was always writeWeightsToJSON; this shorthand property
+    // referenced a non-existent variable and threw ReferenceError on
+    // require() the moment this branch executed.
+    writeWeightsToPredictions: writeWeightsToJSON,
     gradeSignals,
   };
 }

@@ -243,32 +243,116 @@
   // Micro book/flow kept modest for live path (not in offline advanced suite).
   const PER_COIN_INDICATOR_BIAS = {
      BTC: {
-       bands: 1.09, williamsR: 1.08, obv: 0.97, vwap: 1.05, hma: 0.9, momentum: 0.55,
-       stochrsi: 1.05, sma: 0.95, adx: 1.01, mfi: 1.13, supertrend: 1.01, ichimoku: 0.91,
-       keltner: 1.09, volume: 0.94, ema: 0.9, vwma: 0.86, macd: 0.91, structure: 1.13,
-       fisher: 1.08, persistence: 1.01, rsi: 0.63, cci: 1.07, cmf: 1.01,
-       fearGreed: 1.0, book: 0.85, flow: 0.80,
+       bands: 1.09,
+       williamsR: 1.08,
+       obv: 0.956,
+       vwap: 1.05,
+       hma: 0.9,
+       momentum: 0.55,
+       stochrsi: 1.05,
+       sma: 0.95,
+       adx: 1.01,
+       mfi: 1.13,
+       supertrend: 0.942,
+       ichimoku: 0.885,
+       keltner: 1.131,
+       volume: 0.94,
+       ema: 0.891,
+       vwma: 0.86,
+       macd: 0.91,
+       structure: 1.158,
+       fisher: 1.08,
+       persistence: 0.963,
+       rsi: 0.637,
+       cci: 1.07,
+       cmf: 1.01,
+       fearGreed: 1,
+       book: 0.85,
+       flow: 0.8,
      },
      ETH: {
-       bands: 1.33, mfi: 1.1, sma: 0.97, adx: 1.11, supertrend: 1.13, ichimoku: 1.0,
-       hma: 0.85, vwap: 0.82, ema: 0.92, cmf: 1.1, momentum: 0.55, obv: 0.96,
-       fisher: 1.24, vwma: 0.94, macd: 0.84, cci: 1.22, rsi: 0.81, structure: 1.16,
-       persistence: 1.04, stochrsi: 1.11, williamsR: 1.3, keltner: 1.25, volume: 0.92,
-       fearGreed: 1.0, book: 0.90, flow: 0.85,
+       bands: 1.33,
+       mfi: 1.1,
+       sma: 0.957,
+       adx: 1.11,
+       supertrend: 1.069,
+       ichimoku: 0.964,
+       hma: 0.85,
+       vwap: 0.82,
+       ema: 0.908,
+       cmf: 1.1,
+       momentum: 0.55,
+       obv: 0.918,
+       fisher: 1.24,
+       vwma: 0.94,
+       macd: 0.851,
+       cci: 1.22,
+       rsi: 0.81,
+       structure: 1.2,
+       persistence: 0.981,
+       stochrsi: 1.11,
+       williamsR: 1.3,
+       keltner: 1.291,
+       volume: 0.92,
+       fearGreed: 1,
+       book: 0.9,
+       flow: 0.85,
      },
      SOL: {
-       williamsR: 1.14, cci: 1.12, sma: 1.09, mfi: 1.13, rsi: 1.02, supertrend: 1.02,
-       ema: 0.9, bands: 1.18, stochrsi: 0.86, volume: 0.95, cmf: 0.8, ichimoku: 0.92,
-       persistence: 0.77, adx: 0.9, hma: 0.76, vwap: 0.7, vwma: 0.72, macd: 0.9,
-       keltner: 1.31, fisher: 1.13, momentum: 0.55, obv: 0.91, structure: 1.27,
-       fearGreed: 0.9, book: 0.75, flow: 0.70,
+       williamsR: 1.152,
+       cci: 1.12,
+       sma: 1.061,
+       mfi: 1.13,
+       rsi: 1.02,
+       supertrend: 0.963,
+       ema: 0.876,
+       bands: 1.18,
+       stochrsi: 0.86,
+       volume: 0.95,
+       cmf: 0.8,
+       ichimoku: 0.88,
+       persistence: 0.709,
+       adx: 0.9,
+       hma: 0.76,
+       vwap: 0.7,
+       vwma: 0.712,
+       macd: 0.9,
+       keltner: 1.351,
+       fisher: 1.13,
+       momentum: 0.55,
+       obv: 0.863,
+       structure: 1.285,
+       fearGreed: 0.9,
+       book: 0.75,
+       flow: 0.7,
      },
      XRP: {
-       vwap: 0.98, rsi: 0.91, fisher: 0.83, hma: 1.02, mfi: 1.02, momentum: 0.55,
-       sma: 0.81, macd: 1.08, vwma: 0.83, persistence: 0.95, ichimoku: 0.9, obv: 0.82,
-       volume: 0.84, adx: 0.83, ema: 0.77, keltner: 0.89, cci: 0.91, williamsR: 0.85,
-       supertrend: 0.79, cmf: 0.84, stochrsi: 0.96, bands: 0.95, structure: 1.08,
-       fearGreed: 0.7, book: 0.6, flow: 0.55,
+       vwap: 0.98,
+       rsi: 0.91,
+       fisher: 0.83,
+       hma: 1.009,
+       mfi: 1.02,
+       momentum: 0.55,
+       sma: 0.765,
+       macd: 1.063,
+       vwma: 0.803,
+       persistence: 0.865,
+       ichimoku: 0.859,
+       obv: 0.809,
+       volume: 0.84,
+       adx: 0.83,
+       ema: 0.733,
+       keltner: 0.947,
+       cci: 0.936,
+       williamsR: 0.875,
+       supertrend: 0.728,
+       cmf: 0.84,
+       stochrsi: 0.988,
+       bands: 0.992,
+       structure: 1.127,
+       fearGreed: 0.7,
+       book: 0.606,
+       flow: 0.556,
      },
      HYPE: {
        williamsR: 6.5,
@@ -4376,37 +4460,86 @@
             || ''
           ).trim();
 
+          const aiCall = String(llmOutput.call || llmOutput.direction || '').toUpperCase();
+          let truth = null;
+          if (window.InferenceTruthGuard?.evaluate) {
+            truth = window.InferenceTruthGuard.evaluate({
+              call: aiCall,
+              confidence: clamp(toFiniteNumber(llmOutput.confidence, 0), 0, 1),
+              sym: coin.sym,
+              horizon: '15m',
+              modelScore: pred.score,
+            });
+          }
+
+          const nullified = !!truth?.nullified;
+          const effectiveCall = truth?.effectiveCall || (aiCall === 'UP' || aiCall === 'DOWN' ? aiCall : null);
+          const effectiveConfPct = truth
+            ? Math.round(clamp(truth.confidence, 0, 1) * 100)
+            : llmConfidencePct;
+          const gatedNotes = nullified
+            ? `⛔ NULLIFIED by raw data (${truth.reason}). Truth=${effectiveCall}. Was AI=${aiCall}. ${llmNotes}`.slice(0, 700)
+            : (truth?.soft
+              ? `⚠ soft raw conflict — ${truth.reason}. ${llmNotes}`.slice(0, 700)
+              : llmNotes);
+
+          // When nullified, zero LLM influence on adaptive weights / notes path
+          if (nullified && Array.isArray(llmOutput.suggestions?.increase_weight)) {
+            llmOutput.suggestions.increase_weight = [];
+          }
+          if (nullified && Array.isArray(llmOutput.suggestions?.decrease_weight)) {
+            llmOutput.suggestions.decrease_weight = [];
+          }
+
           pred.llm = {
             regime: String(llmOutput.regime || 'unknown'),
-            confidence: llmConfidencePct,
+            confidence: effectiveConfPct,
             suggestions: llmOutput.suggestions || {},
-            warnings: Array.isArray(llmOutput.warnings) ? llmOutput.warnings.map(String) : [],
-            notes: llmNotes,
+            warnings: [
+              ...(Array.isArray(llmOutput.warnings) ? llmOutput.warnings.map(String) : []),
+              ...(nullified ? [`truth_nullified:${truth.reason}`] : []),
+              ...(truth?.soft ? [`truth_soft:${truth.reason}`] : []),
+            ],
+            notes: gatedNotes,
             ai_wording: llmOutput.ai_wording || null,
             analysis: llmOutput.analysis || null,
             market_patterns: llmOutput.ai_wording?.market_patterns || llmOutput.market_patterns || null,
             preContract: llmOutput.preContract || null,
             provider: llmOutput.provider || response?.providerStatus?.provider || response?.diagnostics?.lastProvider || response?.diagnostics?.provider || null,
             model: llmOutput.model || response?.providerStatus?.model || response?.diagnostics?.lastModel || null,
-            degraded: llmDegraded,
+            degraded: llmDegraded || nullified,
             cooldownRemainingMs: llmCooldownRemainingMs,
             providerStatus: response?.providerStatus || null,
+            call: effectiveCall,
+            aiCallOriginal: aiCall === 'UP' || aiCall === 'DOWN' ? aiCall : null,
+            nullified,
+            softConflict: !!truth?.soft,
+            truthWeight: truth?.weight ?? 1,
+            sourceOfTruth: truth?.sourceOfTruth || 'llm',
+            truthReason: truth?.reason || null,
+            truthCall: truth?.truthCall || null,
           };
 
           pred.diagnostics = {
             ...(pred.diagnostics || {}),
             llmRegime: pred.llm.regime,
-            llmConfidence: llmConfidencePct,
-            llmWarnings: pred.llm.warnings.slice(0, 3),
-            llmDegraded,
+            llmConfidence: effectiveConfPct,
+            llmWarnings: pred.llm.warnings.slice(0, 5),
+            llmDegraded: llmDegraded || nullified,
+            llmNullified: nullified,
+            llmSourceOfTruth: pred.llm.sourceOfTruth,
             llmCooldownRemainingMs,
-            llmSuggestedIncreases: Array.isArray(pred.llm.suggestions?.increase_weight)
-              ? pred.llm.suggestions.increase_weight.slice(0, 3)
-              : [],
-            llmSuggestedDecreases: Array.isArray(pred.llm.suggestions?.decrease_weight)
-              ? pred.llm.suggestions.decrease_weight.slice(0, 3)
-              : [],
-            llmNotes,
+            llmSuggestedIncreases: nullified
+              ? []
+              : (Array.isArray(pred.llm.suggestions?.increase_weight)
+                ? pred.llm.suggestions.increase_weight.slice(0, 3)
+                : []),
+            llmSuggestedDecreases: nullified
+              ? []
+              : (Array.isArray(pred.llm.suggestions?.decrease_weight)
+                ? pred.llm.suggestions.decrease_weight.slice(0, 3)
+                : []),
+            llmNotes: gatedNotes,
           };
 
           if (window.DataLogger?.logLogicDebug) {

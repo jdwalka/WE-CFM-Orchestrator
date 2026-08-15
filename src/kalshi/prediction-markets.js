@@ -1650,24 +1650,58 @@
   // OHLC feed reproduces, so an approximate source is worse than none: a wrong PTB
   // shown as [exact-contract] is actively traded on. Rotating the version also purges
   // the bad values already persisted in localStorage under the v7 key.
-  const POLY5M_PTB_LOCK_VERSION = 9;
+  // v9: trusted rtds-twap30 (boundary open proxy). Still not Polymarket's published
+  // "Price to Beat" — AI/UI could quote a wrong number until event-page/candles arrived,
+  // and the immutable lock blocked the real PTB for the whole window.
+  // v10: ONLY Polymarket-published contract PTB may lock. RTDS TWAP / title / generic
+  // field guesses may display as provisional but never lock and never go to AI as PTB.
+  const POLY5M_PTB_LOCK_VERSION = 10;
   const POLY5M_PTB_TRUSTED_SOURCES = new Set([
     'polymarket-event-page',
     'polymarket-chainlink-candles',
-    'polymarket-rtds-twap30',
     'gamma-market',
     'gamma-event-metadata',
     'gamma-price-to-beat',
+  ]);
+  // Sources allowed on market objects for *display* only (never immutable lock / AI PTB)
+  const POLY5M_PTB_PROVISIONAL_SOURCES = new Set([
+    'polymarket-rtds-twap30',
+    'polymarket-title',
     'gamma-market-metadata',
     'gamma-market-field',
+    'provisional',
   ]);
+
+  /** Coin quote decimals: BTC/ETH/BNB/SOL/HYPE = 2 (cents); XRP/DOGE = 4. */
+  function _priceDecimalsForSymbol(symbol = '', value) {
+    const s = String(symbol || '').toUpperCase();
+    const m = s.match(/^(BTC|ETH|SOL|XRP|DOGE|BNB|HYPE)/);
+    const sym = m ? m[1] : s.replace(/[^A-Z]/g, '').slice(0, 5);
+    if (sym === 'BTC' || sym === 'ETH' || sym === 'BNB' || sym === 'SOL' || sym === 'HYPE') return 2;
+    if (sym === 'XRP' || sym === 'DOGE') return 4;
+    const n = Number(value);
+    if (Number.isFinite(n) && n > 0 && n < 1) return 4;
+    return 2;
+  }
+
+  function _roundPriceForSymbol(value, symbol = '') {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return null;
+    const d = _priceDecimalsForSymbol(symbol, n);
+    const f = 10 ** d;
+    return Math.round(n * f) / f;
+  }
 
   function _formatPolyPriceToBeat(value, symbol = '') {
     const n = Number(value);
     if (!Number.isFinite(n) || n <= 0) return null;
-    if (n >= 1000) return `$${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-    if (n >= 1) return `$${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 })}`;
-    return `$${n.toLocaleString(undefined, { minimumFractionDigits: 4, maximumFractionDigits: 8 })}`;
+    const d = _priceDecimalsForSymbol(symbol, n);
+    const rounded = _roundPriceForSymbol(n, symbol);
+    return `$${Number(rounded).toLocaleString('en-US', {
+      minimumFractionDigits: d,
+      maximumFractionDigits: d,
+      useGrouping: true,
+    })}`;
   }
 
   function _lockPolymarketPriceToBeat(slug, value, source) {
@@ -2119,7 +2153,7 @@
         // "Price To Beat" UI calls.
         const candleOpen = await fetchPolymarketChainlinkCandleOpen(sym, horizonTag, startSec);
         if (candleOpen != null && candleOpen > 0) {
-          _lockPolymarketPriceToBeat(slug, candleOpen, 'polymarket-event-page');
+          _lockPolymarketPriceToBeat(slug, candleOpen, 'polymarket-chainlink-candles');
           _poly5mPriceToBeatCache[slug] = { value: candleOpen, fetchedAt: Date.now() };
           return candleOpen;
         }
@@ -3020,7 +3054,7 @@ function polymarketSentiment(markets, sym) {
         if (currentBoundary > lastBoundarySec && lastBoundarySec > 0) {
           lastBoundarySec = currentBoundary;
           console.info(`[BoundaryClock] 🏁 5-minute boundary rollover hit (${currentBoundary})! Executing instant local rollover.`);
-          
+
           let touched = false;
           Object.keys(POLY_5M_COIN_SLUGS).forEach(sym => {
             const coin = cache[sym];
@@ -3028,10 +3062,19 @@ function polymarketSentiment(markets, sym) {
               const nextMkt = coin.poly5mMkts.find(m => m.ts === currentBoundary);
               if (nextMkt) {
                 const liveOpenTwap = _rtdsLiveTwap[sym]?.price;
-                const initialPtb = nextMkt.targetPriceNum || (liveOpenTwap > 0 ? liveOpenTwap : null);
-                const initialPtbStr = nextMkt.targetPrice || (initialPtb ? _formatPolyPriceToBeat(initialPtb, sym) : null);
-                if (initialPtb && !nextMkt.targetPriceNum) {
-                  _lockPolymarketPriceToBeat(nextMkt.slug, initialPtb, 'polymarket-rtds-twap30');
+                // Canonical PTB only: already-resolved next market fields, or null.
+                // NEVER lock RTDS TWAP as PTB — it is not Polymarket's published
+                // Price to Beat and an immutable lock would poison the whole window.
+                const hasCanonical = Number.isFinite(nextMkt.targetPriceNum) && nextMkt.targetPriceNum > 0
+                  && nextMkt.priceToBeatSource
+                  && POLY5M_PTB_TRUSTED_SOURCES.has(nextMkt.priceToBeatSource);
+                const initialPtb = hasCanonical ? nextMkt.targetPriceNum : null;
+                const initialPtbStr = hasCanonical
+                  ? (nextMkt.targetPrice || _formatPolyPriceToBeat(initialPtb, sym))
+                  : null;
+                const ptbSource = hasCanonical ? nextMkt.priceToBeatSource : null;
+                if (initialPtb != null) {
+                  _lockPolymarketPriceToBeat(nextMkt.slug, initialPtb, ptbSource);
                 }
                 const updatedPoly5m = {
                   probability: nextMkt.yes,
@@ -3050,13 +3093,15 @@ function polymarketSentiment(markets, sym) {
                   targetPriceNum: initialPtb,
                   priceToBeat: initialPtbStr,
                   priceToBeatNum: initialPtb,
-                  priceToBeatSource: nextMkt.priceToBeatSource || (initialPtb ? 'polymarket-rtds-twap30' : null),
+                  priceToBeatSource: ptbSource,
+                  // Provisional open TWAP is spot context only — not PTB
+                  provisionalOpenTwap: liveOpenTwap > 0 ? liveOpenTwap : null,
                   currentPrice: liveOpenTwap ? _formatPolyPriceToBeat(liveOpenTwap, sym) : null,
                   currentPriceNum: liveOpenTwap || null,
                   currentPriceTs: _rtdsLiveTwap[sym]?.obsTs || Date.now(),
                   currentPriceSource: liveOpenTwap ? 'polymarket-rtds-twap30' : null,
                   currentPriceAgeMs: 0,
-                  currentPriceJustification: 'Captured exact opening Chainlink 30s TWAP at boundary rollover.',
+                  currentPriceJustification: 'Opening Chainlink 30s TWAP is spot context only. PTB stays pending until Polymarket publishes contract price-to-beat.',
                   markets: coin.poly5mMkts.map(m => ({
                     ...m,
                     isFuture: m.ts > currentBoundary

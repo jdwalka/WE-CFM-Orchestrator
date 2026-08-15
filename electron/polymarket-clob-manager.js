@@ -39,6 +39,13 @@ function _readSecrets() {
     content.match(/"address":\s*"([^"]+)"/i) ||
     content.match(/"funder":\s*"([^"]+)"/i) ||
     content.match(/0x[a-fA-F0-9]{40}/);
+  // Signer EOA private key — required to sign+post orders (L1 EIP-712 signature).
+  // L2 key/secret/passphrase alone only authenticates reads, not order placement.
+  const pkMatch =
+    content.match(/"privateKey":\s*"(0x[a-fA-F0-9]{64})"/i) ||
+    content.match(/"private_key":\s*"(0x[a-fA-F0-9]{64})"/i);
+  // 0 = EOA, 1 = POLY_PROXY (email/Magic login), 2 = POLY_GNOSIS_SAFE (browser wallet / MetaMask)
+  const sigTypeMatch = content.match(/"signatureType":\s*(\d)/i);
 
   if (!keyMatch || !secretMatch || !passMatch) {
     return { error: 'L2 key/secret/passphrase not found in POLYMARKET_API.txt' };
@@ -51,6 +58,8 @@ function _readSecrets() {
       passphrase: passMatch[1],
     },
     address: addrMatch ? (addrMatch[1] || addrMatch[0]) : '',
+    privateKey: pkMatch ? pkMatch[1] : '',
+    signatureType: sigTypeMatch ? Number(sigTypeMatch[1]) : 2, // default: browser-wallet proxy (most common Polymarket login)
   };
 }
 
@@ -79,15 +88,38 @@ function initClobClient() {
       ({ ClobClient } = require('@polymarket/clob-client'));
     }
 
+    let signer;
+    if (parsed.privateKey) {
+      const { Wallet } = require('ethers');
+      const wallet = new Wallet(parsed.privateKey);
+      // clob-client-v2's EthersSigner type expects the ethers v5 method name
+      // (_signTypedData). ethers v6's Wallet only exposes signTypedData(), so
+      // without this shim the duck-type check fails, the client falls through
+      // to treating the wallet as a viem WalletClient, and order signing
+      // throws "wallet client is missing account address".
+      signer = wallet;
+      signer._signTypedData = (domain, types, value) => wallet.signTypedData(domain, types, value);
+    } else if (_liveTrading) {
+      console.warn(
+        '[Polymarket CLOB] POLY_LIVE_TRADING=1 but no "privateKey" set in secrets/POLYMARKET_API.txt — ' +
+        'order placement will fail with "signer is needed". Add "privateKey": "0x<64 hex chars>" ' +
+        '(the EOA that controls your Polymarket wallet, never your Polymarket account password/seed phrase) ' +
+        'to that file to enable signing.'
+      );
+    }
+
     clobClient = new ClobClient({
       host: 'https://clob.polymarket.com',
       chain: 137,
       creds: parsed.creds,
+      signer,
+      signatureType: parsed.signatureType,
+      funderAddress: _address || undefined,
     });
 
     _initError = '';
     console.log(
-      `[Polymarket CLOB] Authenticated client ready (liveTrading=${_liveTrading}, address=${_address ? _address.slice(0, 8) + '…' : 'n/a'})`
+      `[Polymarket CLOB] Authenticated client ready (liveTrading=${_liveTrading}, signer=${signer ? 'yes' : 'NO — reads only'}, address=${_address ? _address.slice(0, 8) + '…' : 'n/a'})`
     );
   } catch (err) {
     _initError = err.message || String(err);
@@ -202,6 +234,12 @@ function registerIpcHandlers() {
       return {
         error: 'Live trading disabled. Set POLY_LIVE_TRADING=1 or "liveTrading": true in secrets/POLYMARKET_API.txt',
         paper: true,
+      };
+    }
+    if (!clobClient.signer) {
+      return {
+        error: 'No signer configured — add "privateKey": "0x<64 hex chars>" to secrets/POLYMARKET_API.txt ' +
+          '(the EOA private key that controls your Polymarket wallet) to enable order signing.',
       };
     }
     const v = _validateOrder(order);

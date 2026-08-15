@@ -4144,7 +4144,15 @@ function render() {
       switch (view) {
         case 'markets': runPanelRender(view, renderMarkets, renderToken); break;
         case 'markets5m': runPanelRender(view, renderMarkets5M, renderToken); break;
-        case 'polymarket': window.PolymarketTerminal?.render?.(); break;
+        case 'polymarket':
+          if (window.PolymarketTerminal?.render) {
+            // Paint into #content immediately (same host as every other panel)
+            runPanelRender(view, () => window.PolymarketTerminal.render(), renderToken);
+          } else {
+            content.innerHTML = `<div class="error-notice">⚠ Polymarket Pro failed to load (PolymarketTerminal missing).<br>
+              <small>Check that src/ui/polymarket-terminal.js is loaded in index.html.</small></div>`;
+          }
+          break;
         case 'debuglog': runPanelRender(view, renderDebugLog, renderToken); break;
         case 'observability': runPanelRender(view, renderObservability, renderToken); break;
         case 'portfolio': runPanelRender(view, renderPortfolio, renderToken); break;

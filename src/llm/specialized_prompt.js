@@ -533,37 +533,395 @@ Return strict JSON only in the required schema.`;
  * Same JSON schema so normalizeResponse() consumes both identically.
  */
 
-function resolveFiveMinTarget(snapshot) {
-  if (!snapshot || typeof snapshot !== "object") return null;
-  const m = (snapshot.market && typeof snapshot.market === "object") ? snapshot.market : {};
-  const candidates = [
-    snapshot.priceToBeat, snapshot.price_to_beat, snapshot.targetPrice, snapshot.target,
-    m.priceToBeat, m.price_to_beat, m.targetPrice, m.target,
-  ];
-  for (const c of candidates) {
-    const n = Number(c);
-    if (Number.isFinite(n) && n > 0) return n;
+/** Polymarket-published contract PTB only — never RTDS/title/spot proxies. */
+const POLY_PTB_CANONICAL_SOURCES = new Set([
+  'polymarket-event-page',
+  'polymarket-chainlink-candles',
+  'gamma-market',
+  'gamma-event-metadata',
+  'gamma-price-to-beat',
+  'polymarket', // oracle-snapshot default label when field locked on market
+]);
+
+function _numPtb(v) {
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+/**
+ * Display decimals for quote prices / PTB (avoid float trails like 62814.80096237142).
+ * BTC/ETH/BNB/SOL/HYPE → 2 (cents); XRP/DOGE → 4; else by magnitude.
+ */
+function priceDecimalsForCoin(coinOrSlug, value) {
+  const raw = String(coinOrSlug || '');
+  const key = raw.toUpperCase();
+  // slug like btc-updown-15m-… or plain BTC
+  const fromSlug = (raw.match(/^(btc|eth|sol|xrp|doge|bnb|hype)/i) || [])[1];
+  const sym = (fromSlug || key.replace(/[^A-Z]/g, '').slice(0, 5) || key).toUpperCase();
+  if (sym === 'BTC' || sym === 'ETH' || sym === 'BNB' || sym === 'SOL' || sym === 'HYPE') return 2;
+  if (sym === 'XRP' || sym === 'DOGE') return 4;
+  const n = Number(value);
+  if (Number.isFinite(n) && n > 0 && n < 1) return 4;
+  return 2;
+}
+
+function roundPriceForCoin(coinOrSlug, value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return null;
+  const d = priceDecimalsForCoin(coinOrSlug, n);
+  const f = 10 ** d;
+  return Math.round(n * f) / f;
+}
+
+/** Human USD string with fixed decimals (no float garbage). */
+function formatUsdForCoin(coinOrSlug, value) {
+  const n = roundPriceForCoin(coinOrSlug, value);
+  if (n == null) return null;
+  const d = priceDecimalsForCoin(coinOrSlug, n);
+  return '$' + n.toLocaleString('en-US', {
+    minimumFractionDigits: d,
+    maximumFractionDigits: d,
+    useGrouping: true,
+  });
+}
+
+function _coinFromSnapshot(snapshot, slugHint) {
+  const trySym = (v) => {
+    if (v == null) return '';
+    const s = String(v).trim();
+    if (!s || /^the\s+asset$/i.test(s)) return '';
+    const up = s.toUpperCase();
+    if (/^(BTC|ETH|SOL|XRP|DOGE|BNB|HYPE)$/.test(up)) return up;
+    const m = up.match(/\b(BTC|ETH|SOL|XRP|DOGE|BNB|HYPE)\b/);
+    return m ? m[1] : '';
+  };
+  const direct = trySym(snapshot?.coin) || trySym(snapshot?.sym) || trySym(snapshot?.symbol);
+  if (direct) return direct;
+  const slug = slugHint
+    || snapshot?.slug
+    || snapshot?.poly5m?.slug
+    || snapshot?.poly15m?.slug
+    || snapshot?.activeContract?.slug
+    || '';
+  const m = String(slug).match(/^(btc|eth|sol|xrp|doge|bnb|hype)/i);
+  return m ? m[1].toUpperCase() : '';
+}
+
+/**
+ * Rewrite long float money in model prose: $75.44527553043135 → $75.45 (SOL)
+ * Also bare multi-dp numbers after PTB/price wording.
+ */
+function scrubMoneyFloatsInText(text, coinOrSlug) {
+  let s = String(text || '');
+  if (!s) return s;
+  const coin = String(coinOrSlug || '');
+  const reformat = (raw) => {
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n <= 0) return null;
+    return formatUsdForCoin(coin, n);
+  };
+  // $75.44527553043135 or $62,814.80 or $62814.80096237142
+  // Prefer ungrouped full digits; avoid matching only first 3 digits of 62814.
+  s = s.replace(/\$([0-9]{1,3}(?:,[0-9]{3})+(?:\.[0-9]+)?|[0-9]+\.[0-9]+|[0-9]+)/g, (full, body) => {
+    const frac = (String(body).split('.')[1] || '');
+    const want = priceDecimalsForCoin(coin, Number(String(body).replace(/,/g, '')));
+    if (!frac) return full; // bare $75 — leave alone
+    if (frac.length <= want && !/0{4,}$/.test(frac)) return full;
+    return reformat(String(body).replace(/,/g, '')) || full;
+  });
+  // bare "PTB of 75.44527553043135" (no dollar)
+  s = s.replace(
+    /\b(PTB|price-to-beat|price to beat)\b([^0-9$]{0,12})([0-9]{1,7}\.[0-9]{3,})/gi,
+    (full, label, mid, num) => {
+      const fmt = reformat(num);
+      return fmt ? `${label}${mid}${fmt}` : full;
+    }
+  );
+  return s;
+}
+
+function _sourceOk(src) {
+  if (src == null || src === '') return true; // field present on poly market object, no tag
+  const s = String(src).toLowerCase();
+  if (s.startsWith('rejected:')) return false;
+  if (/rtds|twap30|title|provisional|coinbase|binance|gecko|rti|pyth.*proxy|crypto-price|boundary/.test(s)) {
+    return false;
   }
-  return null;
+  if (POLY_PTB_CANONICAL_SOURCES.has(s)) return true;
+  // gamma / chainlink / poly / event / candle / lock / twap (market) tags
+  return /poly|gamma|chainlink|clob|candle|lock|event|openprice|pricetobeat/.test(s)
+    && !/rtds|title|provisional/.test(s);
+}
+
+/**
+ * Resolve Polymarket-only price-to-beat for prompts.
+ * Prefer poly5m / poly15m / activeContract / polymarketOracle — never invent from spot.
+ * @returns {{ ptb: number|null, source: string|null, slug: string|null, pending: boolean }}
+ */
+function resolvePolymarketPtb(snapshot) {
+  if (!snapshot || typeof snapshot !== 'object') {
+    return { ptb: null, source: null, slug: null, pending: true, coin: null, decimals: 2 };
+  }
+  const oracle = snapshot.polymarketOracle || {};
+  const blocks = [
+    snapshot.activeContract,
+    snapshot.poly5m,
+    snapshot.poly15m,
+    snapshot.market && snapshot.market.poly5m,
+    snapshot.market && snapshot.market.poly15m,
+    oracle,
+    snapshot,
+    snapshot.market,
+  ].filter(Boolean);
+
+  for (const b of blocks) {
+    const raw = _numPtb(
+      b.priceToBeatNum ?? b.targetPriceNum ?? b.priceToBeat ?? b.price_to_beat ?? b.targetPrice ?? b.target
+    );
+    if (raw == null) continue;
+    const source = b.priceToBeatSource || b.ptbSource || b._ptbSource || oracle.priceToBeatSource || null;
+    if (!_sourceOk(source)) continue;
+    const slug = b.slug || oracle.slug || snapshot.slug || null;
+    const coin = _coinFromSnapshot(snapshot, slug);
+    const ptb = roundPriceForCoin(coin || slug, raw);
+    const decimals = priceDecimalsForCoin(coin || slug, ptb);
+    return {
+      ptb,
+      ptbRaw: raw,
+      source: source || 'polymarket',
+      slug,
+      coin,
+      decimals,
+      pending: false,
+      display: formatUsdForCoin(coin || slug, raw),
+    };
+  }
+  const slug = snapshot.poly5m?.slug || snapshot.poly15m?.slug || snapshot.activeContract?.slug || null;
+  const coin = _coinFromSnapshot(snapshot, slug);
+  return {
+    ptb: null,
+    ptbRaw: null,
+    source: null,
+    slug,
+    coin,
+    decimals: priceDecimalsForCoin(coin || slug, 1),
+    pending: true,
+    display: null,
+  };
+}
+
+function formatOracleStrictBlock(snapshot) {
+  const { ptb, source, slug, pending, coin, decimals, display } = resolvePolymarketPtb(snapshot);
+  const coinKey = coin || _coinFromSnapshot(snapshot, slug);
+  const spotRaw = _numPtb(snapshot.currentPrice ?? snapshot.price ?? snapshot.polymarketOracle?.pythSpot);
+  const spot = spotRaw != null ? roundPriceForCoin(coinKey, spotRaw) : null;
+  const spotDisp = spotRaw != null ? formatUsdForCoin(coinKey, spotRaw) : null;
+  const spotSrc = snapshot.priceSource || snapshot.polymarketOracle?.pythSource || snapshot.spotSource || 'pyth';
+  const delta = ptb != null && spot != null ? spot - ptb : null;
+  const path = delta == null ? 'n/a' : (Math.abs(delta / ptb) < 0.00005 ? 'FLAT' : (delta > 0 ? 'UP' : 'DOWN'));
+  const deltaStr = delta != null
+    ? `${delta >= 0 ? '+' : '-'}${formatUsdForCoin(coinKey, Math.abs(delta)).slice(1)}`
+    : 'n/a';
+  const om = snapshot.orbitalMomentum || snapshot.polymarketOracle?.orbitalMomentum || null;
+  const orbitalLine = om
+    ? `Orbital momentum (SUPPLEMENTARY ONLY, not spot/PTB, do not quote as price): state=${om.structuralState ?? 'n/a'} oeq=${om.oeq ?? 'n/a'} confidence=${om.confidence ?? 'n/a'}`
+    : null;
+  return `## ORACLE STRICT (MANDATORY — quote these numbers, never invent)
+Policy: PTB = Polymarket contract price-to-beat ONLY (Gamma / event page / chainlink-candles).
+Spot = Pyth only for path. Do NOT use Coinbase/Binance/RTI/Gecko as PTB or as a PTB substitute.
+Slug: ${slug || 'n/a'}
+Coin: ${coinKey || 'n/a'} (quote USD to ${decimals} decimal places — no float trails)
+Polymarket PTB: ${display || (pending ? 'PENDING (not published yet — do not invent a PTB)' : 'n/a')}
+PTB source: ${source || (pending ? 'waiting-for-polymarket' : 'n/a')}
+Pyth spot: ${spotDisp || 'n/a'} (${spotSrc})
+Spot vs Polymarket PTB: ${delta != null ? deltaStr + ' (' + path + ')' : 'n/a'}
+RULE: In notes and rationales you MUST quote Polymarket PTB exactly as shown above (${decimals} decimals, e.g. ${display || '$62,814.80'}). Never write long floats like 62814.80096237142.
+If PTB is PENDING, say "PTB pending" and do not fabricate a dollar level.${orbitalLine ? '\n' + orbitalLine : ''}`.trim();
+}
+
+function resolveFiveMinTarget(snapshot) {
+  const r = resolvePolymarketPtb(snapshot);
+  return r.ptb;
+}
+
+/**
+ * Strip non-canonical PTB from a snapshot so every prompt path sees the same oracle.
+ * Mutates a shallow clone (does not mutate caller object deeply for top-level).
+ */
+function sanitizeOracleSnapshot(snapshot) {
+  if (!snapshot || typeof snapshot !== 'object') return snapshot || {};
+  const s = { ...snapshot };
+  const meta = resolvePolymarketPtb(s);
+  // Rounded for prompts/UI quotes; raw kept on _ptbRaw when present
+  const ptb = meta.ptb;
+  const src = meta.source;
+  const coinKey = meta.coin || _coinFromSnapshot(s, meta.slug);
+  s.coin = s.coin || coinKey;
+  if (s.currentPrice != null) {
+    const sp = roundPriceForCoin(coinKey, s.currentPrice);
+    if (sp != null) { s.currentPrice = sp; s.price = sp; }
+  } else if (s.price != null) {
+    const sp = roundPriceForCoin(coinKey, s.price);
+    if (sp != null) { s.price = sp; s.currentPrice = sp; }
+  }
+
+  const scrub = (block) => {
+    if (!block || typeof block !== 'object') return block;
+    const b = { ...block };
+    if (ptb != null) {
+      b.priceToBeatNum = ptb;
+      b.targetPriceNum = ptb;
+      b.priceToBeat = ptb;
+      b.priceToBeatSource = src || b.priceToBeatSource || 'polymarket';
+      b.targetPrice = formatUsdForCoin(coinKey, ptb);
+    } else {
+      // Reject provisional/wrong sources — leave pending for the model
+      const bad = b.priceToBeatSource || b.ptbSource;
+      if (bad && !_sourceOk(bad)) {
+        b.priceToBeatNum = null;
+        b.targetPriceNum = null;
+        b.priceToBeat = null;
+        b.priceToBeatSource = `rejected:${bad}`;
+      } else if (!_sourceOk(b.priceToBeatSource) && b.priceToBeatNum != null) {
+        // no source but number only kept if already accepted by resolve
+        if (ptb == null) {
+          b.priceToBeatNum = null;
+          b.targetPriceNum = null;
+        }
+      }
+    }
+    return b;
+  };
+
+  if (s.poly5m) s.poly5m = scrub(s.poly5m);
+  if (s.poly15m) s.poly15m = scrub(s.poly15m);
+  if (s.activeContract) s.activeContract = scrub(s.activeContract);
+  if (s.market && typeof s.market === 'object') {
+    s.market = { ...s.market };
+    if (s.market.poly5m) s.market.poly5m = scrub(s.market.poly5m);
+    if (s.market.poly15m) s.market.poly15m = scrub(s.market.poly15m);
+    if (ptb != null) {
+      s.market.priceToBeatNum = ptb;
+      s.market.priceToBeatSource = src;
+    }
+  }
+
+  s.priceToBeat = ptb;
+  s.priceToBeatNum = ptb;
+  s.priceToBeatSource = src;
+  s.priceDecimals = meta.decimals;
+  s.targetPrice = ptb != null ? formatUsdForCoin(coinKey, ptb) : null;
+  s.targetPriceNum = ptb;
+  if (meta.ptbRaw != null) s._ptbRaw = meta.ptbRaw;
+
+  const spot = _numPtb(s.currentPrice ?? s.price ?? s.polymarketOracle?.pythSpot);
+  const pathDir = (ptb != null && spot != null)
+    ? (Math.abs((spot - ptb) / ptb) < 0.00005 ? 'FLAT' : (spot > ptb ? 'UP' : 'DOWN'))
+    : null;
+
+  s.polymarketOracle = {
+    ...(s.polymarketOracle || {}),
+    slug: meta.slug || s.polymarketOracle?.slug || null,
+    priceToBeatNum: ptb,
+    priceToBeatSource: src,
+    pythSpot: spot,
+    pythSource: s.priceSource || s.polymarketOracle?.pythSource || 'pyth',
+    pathDir,
+    deltaVsPtb: ptb != null && spot != null ? spot - ptb : null,
+    rule: 'PTB is Polymarket window open only. Spot is Pyth only. Do not invent PTB.',
+  };
+  s.oraclePolicy = s.oraclePolicy || 'pyth_spot_plus_polymarket_ptb_only';
+  if (ptb == null) {
+    s.oracleWarnings = [...(s.oracleWarnings || []), 'no_polymarket_ptb'];
+  }
+  return s;
+}
+
+/**
+ * Compact PredictionEngine quant guide for LLM prompts.
+ * Models must blend this with Polymarket odds + PTB path — not ignore it.
+ */
+function formatModelGuideBlock(snapshot) {
+  const dir = String(
+    snapshot.modelDirection || snapshot.direction || snapshot.market?.modelDirection || 'n/a'
+  ).toUpperCase();
+  const scoreRaw = snapshot.modelScore ?? snapshot.score ?? snapshot.market?.modelScore ?? snapshot.market?.score;
+  const score = Number(scoreRaw);
+  const confRaw = snapshot.confidence ?? snapshot.market?.confidencePct;
+  let confPct = null;
+  if (confRaw != null && Number.isFinite(Number(confRaw))) {
+    const c = Number(confRaw);
+    confPct = c <= 1 ? c * 100 : c;
+  }
+  const regime = snapshot.regimeLocal || snapshot.regime || snapshot.market?.regime || 'n/a';
+  const agreement = snapshot.modelAgreement ?? snapshot.agreement ?? snapshot.market?.agreement;
+  const indicators = snapshot.indicators || snapshot.market?.indicators || {};
+
+  const pickLabel = (key) => {
+    const row = indicators[key];
+    if (!row || typeof row !== 'object') return null;
+    const lab = row.label || row.signal;
+    const val = row.value != null ? row.value : (row.slope != null ? row.slope : null);
+    if (lab == null && val == null) return null;
+    return `${key}=${lab != null ? lab : ''}${val != null && Number.isFinite(Number(val)) ? `(${Number(val).toFixed(3)})` : ''}`;
+  };
+  const indBits = ['rsi', 'ema', 'vwap', 'momentum', 'volume', 'book', 'macd', 'structure']
+    .map(pickLabel)
+    .filter(Boolean)
+    .slice(0, 8);
+
+  const ptbMeta = resolvePolymarketPtb(snapshot);
+  const spot = _numPtb(snapshot.currentPrice ?? snapshot.price ?? snapshot.polymarketOracle?.pythSpot);
+  let pathVsModel = 'n/a';
+  if (ptbMeta.ptb != null && spot != null && (dir === 'UP' || dir === 'DOWN')) {
+    const path = spot >= ptbMeta.ptb ? 'UP' : 'DOWN';
+    pathVsModel = path === dir ? `ALIGNED (path ${path} = model ${dir})` : `CONFLICT (path ${path} vs model ${dir})`;
+  }
+
+  const scoreStr = Number.isFinite(score) ? score.toFixed(3) : 'n/a';
+  const confStr = confPct != null ? confPct.toFixed(0) + '%' : 'n/a';
+  const agreeStr = agreement != null
+    ? (typeof agreement === 'object'
+      ? `agreement=${agreement.agreement != null ? Number(agreement.agreement).toFixed(2) : 'n/a'} label=${agreement.label || 'n/a'}`
+      : String(agreement))
+    : 'n/a';
+
+  return `## QUANTITATIVE MODEL GUIDE (PredictionEngine — blend, do not ignore)
+Model direction: ${dir}
+Model score: ${scoreStr} (−1..+1)
+Model confidence: ${confStr}
+Regime: ${regime}
+Indicator agreement: ${agreeStr}
+Path (Pyth vs Polymarket PTB) vs model: ${pathVsModel}
+Top indicators: ${indBits.length ? indBits.join(' | ') : 'n/a'}
+RULES:
+- Treat model direction/score as a primary prior; blend with Polymarket P(Up), book imbalance, and spot-vs-PTB path.
+- If model and path ALIGN, lean that side unless book/odds scream otherwise.
+- If model and path CONFLICT, say so in notes, lower confidence, and prefer path near settlement (late TTC) or model when early + strong |score|.
+- Never invent PTB; never replace Polymarket PTB with model price levels.`.trim();
 }
 
 function generateFiveMinSystemPrompt() {
-  return `You are a world-class ultra-short-term crypto scalper specialized in 5-MINUTE binary UP/DOWN contracts on polycool.app (Polymarket 5m venues). These contracts settle strictly against an immutable Chainlink oracle "price-to-beat" (PTB). YES wins only if the mark is ABOVE the PTB at the exact 5-minute candle close; NO if BELOW. Never guess or move the PTB.
+  return `You are a world-class ultra-short-term crypto scalper specialized in 5-MINUTE binary UP/DOWN contracts on polycool.app (Polymarket 5m venues). These contracts settle strictly against Polymarket's published "price-to-beat" (PTB) — the contract open / Chainlink window benchmark that Polymarket shows on the event page. YES wins only if settlement mark is ABOVE that PTB at the exact 5-minute close; NO if BELOW. Never guess, average, or substitute another feed for the PTB.
+
+ORACLE LAW (NON-NEGOTIABLE):
+- The ONLY valid PTB is the number in the user message labeled "Polymarket PTB" / "Price-to-beat (fixed settlement target)" from Polymarket (source: event page, chainlink-candles, or Gamma priceToBeat).
+- NEVER invent a PTB from Pyth, Coinbase, Binance, RTI, Gecko, RTDS TWAP, or "about $X".
+- If the snapshot says PTB is PENDING / unavailable, say so and do not fabricate a dollar level.
+- When you cite PTB in notes, copy the formatted PTB exactly (BTC/ETH/SOL: 2 decimals; XRP/DOGE: 4). Never emit long floats (e.g. write $62,814.80 not $62814.80096237142).
 
 SYSTEM CONTEXT YOU MUST INTERNALIZE:
-- Data arrives via a high-velocity Redpanda (Kafka) cluster from multiple feeds (Coinbase, DEX, on-chain).
-- The entire ingestion + signal matrix runs in Docker.
-- Session sample ticks are streamed durably to a Redpanda/Kafka topic. Some deployments also persist PTB-window outcomes and session-memory snapshots to Firestore — when real history exists for the current PTB level, it is given to you below in the "PTB defense history" section (testedCount/defendedCount/brokenCount/defendRate). If that section says none is recorded yet, no defense history exists for this level — say so plainly. Never invent a defense count, and never claim "Firebase history shows..." unless you are quoting the PTB defense history section directly.
-- Snapshots you receive are as fresh as the pipeline allows (sub-second to low seconds possible). Respect possible micro-latency or brief gaps in the stream.
-- This is pure scalping: you are deciding entries that live for ~300 seconds max. Microstructure, tick momentum, distance-to-PTB in basis points, and remaining time dominate everything.
+- Spot for path context is Pyth; settlement reference for the binary is Polymarket PTB.
+- Session sample ticks and optional Firestore PTB-defense history may appear below — never invent defense counts.
+- This is pure scalping: entries live ~300 seconds max. Microstructure, distance-to-PTB in bps, and remaining time dominate.
 
-DETERMINISTIC HTF + ON-CHAIN + X REASONING (MANDATORY):
-1. Start with the 15m and 30m / hourly context AND the session analytics memory (sampleCount, closed 15m/1h window stats, open OHLC, past Grok range accuracy). The longer the app has been open, the denser this memory — weight it more as sampleCount grows.
-2. Incorporate the MOST RECENT RAW BLOCKCHAIN / ON-CHAIN data (whale flows, large transfers > threshold, smart-money accumulation or distribution in the last 15-30 minutes). Quote counts, sizes, net bias.
-3. Factor recent X (Twitter) sentiment that was scraped for this coin (last 15-30m): score, volume, dominant tone, key narratives. Treat this as real-time crowd flow.
-4. Factor the ORDER-FLOW / TAIL-RISK block when present (VPIN, whale trade counts in the last 60s, volume multiplier, Hurst exponent / variance ratio persistence). This is real-time CEX aggressor-side flow, not a lagging indicator — an active tail-risk flag (VPIN spike + whale buy/sell trades + persistent volume multiplier) means a real order-flow event is unfolding RIGHT NOW and should dominate over stale HTF bias if they conflict.
-5. Only after the above, analyze the exact 5m microstructure vs the fixed PTB: distance in bps, time remaining, tick velocity, volume texture.
-6. Synthesize: the BEST SIDE for this specific 5m binary is the one with the strongest confluence (or a high-probability fade when 5m is stretched against the HTF + on-chain + X). Be evidence-based only.
+DETERMINISTIC HTF + MODEL + ON-CHAIN + X REASONING (MANDATORY):
+1. Start with the QUANTITATIVE MODEL GUIDE (PredictionEngine direction/score/confidence/regime/indicators). This is your quant prior — do not ignore it.
+2. Use 15m/30m / session memory for HTF bias. Weight denser session memory more as sampleCount grows.
+3. Incorporate recent on-chain (whale flows, large transfers) and X sentiment when present.
+4. Factor ORDER-FLOW / TAIL-RISK when active (VPIN, whale trades, vol-mult) — can dominate stale HTF if conflicting.
+5. Then analyze exact 5m microstructure vs the fixed Polymarket PTB: distance in bps, TTC, tick velocity.
+6. Synthesize confluence of: model + path(spot vs Polymarket PTB) + odds + book. Best side wins.
 7. If data is thin or conflicting inside the remaining window, default to WAIT with low confidence. Never force a side.
 
 SNIPE / SCALP-FLIP PLAYS (when tail-risk order-flow is active):
@@ -627,9 +985,13 @@ CRITICAL RULES FOR HIGH SPECIALIZATION (DETERMINISTIC):
 
 function generateFiveMinUserPrompt(snapshot) {
   const coin = String(snapshot.coin || "the asset");
-  const target = resolveFiveMinTarget(snapshot);
-  const current = Number(snapshot.currentPrice ?? snapshot.price);
-  const hasCur = Number.isFinite(current) && current > 0;
+  const ptbMetaEarly = resolvePolymarketPtb(snapshot);
+  const target = ptbMetaEarly.ptb;
+  const currentRaw = Number(snapshot.currentPrice ?? snapshot.price);
+  const current = Number.isFinite(currentRaw) && currentRaw > 0
+    ? roundPriceForCoin(coin, currentRaw)
+    : null;
+  const hasCur = current != null;
   const indicators = snapshot.indicators || {};
   const vNum = Number(snapshot.volatility ?? indicators.atrPct ?? 0);
   const localRegime = String(snapshot.regimeLocal || snapshot.regime || "unknown");
@@ -642,9 +1004,9 @@ function generateFiveMinUserPrompt(snapshot) {
   if (hasCur && target != null) {
     const deltaPct = ((current - target) / target) * 100;
     const side = deltaPct >= 0 ? "ABOVE" : "BELOW";
-    distanceLine = `Current price: $${current} — ${Math.abs(deltaPct).toFixed(3)}% ${side} the price-to-beat.`;
+    distanceLine = `Current price: ${formatUsdForCoin(coin, current)} — ${Math.abs(deltaPct).toFixed(3)}% ${side} the price-to-beat ${ptbMetaEarly.display || formatUsdForCoin(coin, target)}.`;
   } else if (hasCur) {
-    distanceLine = `Current price: $${current}.`;
+    distanceLine = `Current price: ${formatUsdForCoin(coin, current)}.`;
   }
 
   // Higher timeframe context (15m / 30m) — use for bias into the 5m decision
@@ -675,15 +1037,25 @@ function generateFiveMinUserPrompt(snapshot) {
     ? upcoming.map((w, i) => `  +${i + 1}: opens in ${w.etaSeconds}s, momentum-persistence preview bias=${w.biasPreview || 'n/a'}`).join('\n')
     : '  (none — only the current window is in scope this cycle)';
 
-  return `5-minute binary PTB (polycool.app / Polymarket, Chainlink price-to-beat) snapshot — data from a Redpanda/Kafka tick stream, live in-session state, and (where available) Firestore-backed PTB defense history:
+  const ptbMeta = resolvePolymarketPtb(snapshot);
+  const confPct = Number.isFinite(confidencePct)
+    ? (confidencePct <= 1 ? confidencePct * 100 : confidencePct)
+    : 0;
+  return `5-minute binary PTB (polycool.app / Polymarket) snapshot — Polymarket contract PTB + Pyth spot only:
 
 Coin: ${coin}
-Price-to-beat (fixed settlement target): ${target != null ? `$${target}` : "unavailable"}
+${formatOracleStrictBlock(snapshot)}
+
+${formatModelGuideBlock(snapshot)}
+
+Price-to-beat (fixed settlement target — Polymarket only): ${target != null ? (ptbMeta.display || formatUsdForCoin(coin, target) || ('$' + target)) : "PENDING / unavailable — do not invent"}
+PTB source: ${ptbMeta.source || 'waiting-for-polymarket'}
+Quote decimals: ${ptbMeta.decimals ?? priceDecimalsForCoin(coin, target)} (use this precision only)
 ${distanceLine}
 Time to settlement: ${secsToClose != null ? `${secsToClose}s` : "~5 minutes"}
 Local engine regime: ${localRegime}
 Model direction: ${modelDir}
-Model confidence: ${confidencePct.toFixed(0)}%
+Model confidence: ${confPct.toFixed(0)}%
 Polymarket-implied probability (UP): ${polyProb != null ? `${(Number(polyProb) * 100).toFixed(1)}%` : "n/a"}
 Volatility (ATR%): ${vNum.toFixed(3)} (${classifyVolatilityRegime(vNum)})
 Timestamp: ${new Date().toISOString()}
@@ -825,12 +1197,17 @@ ROLE — PRE-CONTRACT / IN-WINDOW GUIDE:
 - Be decisive and specific (levels, TTC buckets, invalidation). No vague fluff.
 
 CRITICAL SEMANTICS:
-- call/direction UP|DOWN = your view of **price direction** by settlement (spot vs window open / price-to-beat).
+- call/direction UP|DOWN = your view of **price direction** by settlement (spot vs Polymarket window open / price-to-beat).
 - Polymarket "Up" token = price finished above PTB (no Kalshi strike inversion).
 - Always set polyPeg.side to "Up" or "Down" consistent with your price call.
 - NEVER say WAIT as the call. Always UP or DOWN. If edge is tiny, still pick a side and set confidence low + sizing note "size down / skip if already positioned".
 
-Use: slug, yesProb/P(Up), priceToBeatNum, secondsToClose, currentPrice vs PTB, depthImbalance/spread if present, session path, model direction/score.
+ORACLE LAW (NON-NEGOTIABLE):
+- Quote ONLY the Polymarket PTB given in the user message (source: event page / chainlink-candles / Gamma).
+- NEVER invent PTB from Pyth/CEX/RTI or "about $X". If PTB is PENDING, say "PTB pending".
+- notes must include the exact PTB figure when present (e.g. "PTB $97,432.15").
+
+Use: slug, yesProb/P(Up), priceToBeatNum (Polymarket), secondsToClose, Pyth spot vs that PTB, depthImbalance/spread, session path, model direction/score.
 
 Return ONLY valid JSON:
 {
@@ -905,34 +1282,44 @@ function generateRangeUserPrompt(snapshot) {
     const imb = ac.depthImbalance ?? k15.depthImbalance;
     const spread = ac.spread ?? k15.spread;
     const mid = ac.mid ?? k15.mid;
+    const ptbMeta = resolvePolymarketPtb(snapshot);
+    const ptbDisplay = ptbMeta.ptb != null
+      ? ptbMeta.ptb
+      : (ac.priceToBeatNum ?? k15.priceToBeatNum ?? null);
+    // If resolve rejected provisional sources, force pending for the model
+    const ptbForModel = ptbMeta.ptb != null ? ptbMeta.ptb : null;
     return `ASI1 pre-contract brief — Polymarket 15M (this market only):
 
 Coin: ${coin}
-Spot: ${Number.isFinite(current) && current > 0 ? '$' + current : 'n/a'}
 Timestamp: ${new Date().toISOString()}
+
+${formatOracleStrictBlock(snapshot)}
 
 ## LIVE POLYMARKET CONTRACT
 Slug: ${ac.slug || k15.slug || 'n/a'}
 P(Up) / yesProb: ${yesP != null ? (Number(yesP) * 100).toFixed(1) + '%' : 'n/a'}
-Price-to-beat (PTB): ${ac.priceToBeatNum ?? k15.priceToBeatNum ?? 'n/a'}
+Price-to-beat (PTB — Polymarket only): ${ptbForModel != null ? (ptbMeta.display || formatUsdForCoin(coin, ptbForModel)) : 'PENDING — do not invent'}
+PTB source: ${ptbMeta.source || ac.priceToBeatSource || k15.priceToBeatSource || 'waiting-for-polymarket'}
+Quote decimals: ${ptbMeta.decimals ?? priceDecimalsForCoin(coin, ptbForModel)} (BTC/SOL=2, XRP=4 — no float trails)
 Seconds to close: ${ac.secondsToClose ?? k15.secondsToClose ?? 'n/a'}
 Best bid/ask (Up): ${ac.bestBid ?? k15.bestBid ?? 'n/a'} / ${ac.bestAsk ?? k15.bestAsk ?? 'n/a'}
-Mid / spread / depthImbalance: ${mid ?? 'n/a'} / ${spread ?? 'n/a'} / ${imb ?? 'n/a'}
-Live direction vs PTB: ${ac.liveDirection || k15.liveDirection || 'n/a'}
+Mid / spread / depthImbalance: ${mid ?? 'n/a'} / ${spread ?? 'n/a'} / ${imb != null ? Number(imb).toFixed(2) : 'n/a'}
+Live direction vs Polymarket PTB: ${ac.liveDirection || k15.liveDirection || 'n/a'}
 
-## QUANTITATIVE MODEL PREDICTION (blend with market — do not ignore odds)
-Model Direction: ${modelDir}
-Model Confidence: ${modelConf}
-Model Score: ${modelScore}
-Regime: ${snapshot.regimeLocal || 'n/a'}
+${formatModelGuideBlock(snapshot)}
 
 ## ACTIVE 15M MARKET (MUST bind call to this)
-${JSON.stringify(ac, null, 2).slice(0, 1200)}
+${JSON.stringify({
+  ...ac,
+  priceToBeatNum: ptbForModel,
+  priceToBeatSource: ptbMeta.source || ac.priceToBeatSource || null,
+  _rawPtbIfAny: ptbDisplay,
+}, null, 2).slice(0, 1200)}
 
-Settlement: ${ac.settlementRule || 'Up if price finishes above the window open (price-to-beat) at 15m close'}
+Settlement: ${ac.settlementRule || 'Up if price finishes above Polymarket window open (price-to-beat) at 15m close'}
 Market Up mid: ${ac.yesProb != null ? (Number(ac.yesProb) * 100).toFixed(1) + '%' : 'n/a'}
 Seconds to close: ${ac.secondsToClose ?? 'n/a'}
-Price-to-beat: ${ac.priceToBeatNum ?? 'n/a'}
+Price-to-beat (quote this exactly): ${ptbForModel != null ? (ptbMeta.display || formatUsdForCoin(coin, ptbForModel)) : 'PENDING'}
 
 ## Session memory (support only)
 samples=${mem.sampleCount ?? 0}, sessionMin=${mem.sessionMinutes ?? 0}, pathReturnPct=${mem.pathReturnPct ?? 'n/a'},
@@ -946,8 +1333,8 @@ On-chain: ${typeof onchain === 'string' ? onchain : JSON.stringify(onchain).slic
 TASK:
 1. Synthesize Quantitative Model Prediction (${modelDir}, conf=${modelConf}) with the live Polymarket 15M market state.
 2. Decide Up or Down on market ${ac.slug || 'ACTIVE_15M'} only.
-3. Up token means price finished up over the window; Down means it finished down. Never WAIT.
-4. notes start with UP|DOWN then slug then Up% and ttc.
+3. Up token means price finished above Polymarket PTB; Down means below. Never WAIT.
+4. notes start with UP|DOWN then slug then Up% then exact Polymarket PTB (or "PTB pending") then ttc.
 5. polyPeg.slug must equal ${ac.slug || 'the market slug'}.
 6. Valid JSON only.`.trim();
   }
@@ -959,11 +1346,7 @@ Horizon: 60 minutes
 Current spot: ${Number.isFinite(current) && current > 0 ? '$' + current : 'n/a'}
 Timestamp: ${new Date().toISOString()}
 
-## QUANTITATIVE MODEL PREDICTION (PRIMARY DIRECTIONAL INPUT)
-Model Direction: ${modelDir}
-Model Confidence: ${modelConf}
-Model Score: ${modelScore}
-Regime: ${snapshot.regimeLocal || 'n/a'}
+${formatModelGuideBlock(snapshot)}
 
 ## HOURLY RANGE LADDER (spot-centered synthetic buckets, peg preferredRange to one row)
 spotBucket=${JSON.stringify(here)}
@@ -991,6 +1374,16 @@ module.exports = {
   generateFiveMinUserPrompt,
   generateRangeSystemPrompt,
   generateRangeUserPrompt,
+  resolvePolymarketPtb,
+  resolveFiveMinTarget,
+  sanitizeOracleSnapshot,
+  formatOracleStrictBlock,
+  formatModelGuideBlock,
+  priceDecimalsForCoin,
+  roundPriceForCoin,
+  formatUsdForCoin,
+  scrubMoneyFloatsInText,
+  POLY_PTB_CANONICAL_SOURCES,
 };
 
 console.log("[SpecializedPrompt] Module loaded");

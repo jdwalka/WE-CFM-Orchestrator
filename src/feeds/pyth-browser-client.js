@@ -85,10 +85,6 @@
       const headers = {};
       if (PYTH_API_KEY) {
         url += '&api_key=' + encodeURIComponent(PYTH_API_KEY);
-      let url = PYTH_HERMES;
-      const headers = {};
-      if (PYTH_API_KEY) {
-        url += (PYTH_HERMES.includes('?') ? '&' : '?') + 'api_key=' + encodeURIComponent(PYTH_API_KEY);
         headers['x-api-key'] = PYTH_API_KEY;
       }
       
@@ -204,6 +200,8 @@
     isReady: () => Object.keys(window._pythPrices).length > 0,
     lastPollTime: () => _lastPollTs,
   };
+  // Alias — oracle-snapshot.js / grok-range-overlay.js look for window.PythBrowser first.
+  window.PythBrowser = window.PythClient;
 
   console.log(`[PythClient] ✓ Module initialized`);
 })();

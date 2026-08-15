@@ -565,6 +565,26 @@ function pushMatrixElement(element) {
   _pushOrbitalState(sym, payload).catch(() => { });
   _pushToRTDB(sym, payload).catch(() => { });
 }
+/**
+ * Read back the latest orbital-matrix synthesis for a symbol — the
+ * Firestore doc pushMatrixElement()/_pushOrbitalState() write to.
+ * Non-authoritative supplementary signal; never used as spot/PTB.
+ */
+async function getLatestState(sym) {
+  const asset = _toUpper(sym, 'UNKNOWN');
+  _initFirebase();
+  if (_bootstrapInFlight) await _bootstrapInFlight.catch(() => {});
+  if (!_firestore) return null;
+  try {
+    const rootRef = _firestore.collection(ROOT_COLLECTION).doc(ROOT_DOC_ID);
+    const snap = await rootRef.collection('orbital_states').doc(asset).get();
+    if (!snap.exists) return null;
+    return { asset, ...snap.data() };
+  } catch (e) {
+    return null;
+  }
+}
+
 module.exports = {
   push,
   pushBatch,
@@ -572,5 +592,6 @@ module.exports = {
   pushVertexExecution,
   pushMatrixElement,
   getDiagnostics,
+  getLatestState,
 };
 
