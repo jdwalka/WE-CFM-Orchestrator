@@ -294,8 +294,14 @@
     const pack = packPredForLlm(rawPred) || {};
     const market = resolveMarket(coin) || {};
     const current = resolvePrice(coin);
-    const sessionMemory = mem() ? mem().memoryPackForPrompt(coin) : { sampleCount: 0, sessionMinutes: 0 };
     const poly15m = buildPoly15m(coin, market);
+    // ptb must be computed before memoryPackForPrompt() so ptbDefenseStats can
+    // actually query for this level — it silently returns null without it,
+    // which meant "PTB defense history: none recorded" regardless of whether
+    // the underlying Firestore data existed.
+    const sessionMemory = mem()
+      ? mem().memoryPackForPrompt(coin, { ptb: poly15m.priceToBeatNum })
+      : { sampleCount: 0, sessionMinutes: 0 };
     const { ladder, spotBucket } = buildHourlyLadder(coin, current);
     let xSent = { score: 0, summary: 'n/a', momentum: 'flat' };
     try {
