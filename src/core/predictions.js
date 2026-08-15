@@ -3039,7 +3039,7 @@
     // Fisher Transform
     // FIX (2026-05-04 CRITICAL): Remove negation that inverts Fisher signal 100% of the time
     const fisherVal = calcFisher(candles, 10);
-    const fisherSig = clamp(fisherVal / 2.5, -1, 1);  // ✅ FIXED: Removed negation
+    let fisherSig = clamp(fisherVal / 2.5, -1, 1);  // ✅ FIXED: Removed negation
 
     // Keltner Channels
     const kelt = calcKeltner(candles, 20, 2.0);
@@ -6083,6 +6083,12 @@
           effectiveExpectedMove = Math.max(effectiveExpectedMove, -Math.abs(gap) * 0.2);
         }
 
+        // Was referenced but never declared/assigned (ReferenceError, caught and
+        // logged every cycle as "5m re-score failed: liveDrift1m is not defined",
+        // aborting this whole re-score block every time). Derived from the same
+        // liveTimingGuard.drift1mPct field already used just above for liveDir's
+        // sign, scaled to dollars to match meanFinal's other terms.
+        const liveDrift1m = livePx * (Number(liveTimingGuard?.drift1mPct) || 0) / 100;
         const meanFinal = livePx + effectiveExpectedMove + liveDrift1m;
         const sigma = Math.max(livePx * 0.0015, atrDollar * Math.sqrt(remainingFrac));
         const z = (meanFinal - ptb) / (sigma || 1);
