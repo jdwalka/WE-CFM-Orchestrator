@@ -524,6 +524,13 @@ contextBridge.exposeInMainWorld('_orbitalBroadcaster', {
   },
 });
 
+// Warm tier for src/core/tiered-cache.js — plain Redis GET/SET/DEL.
+contextBridge.exposeInMainWorld('_tieredCacheWarm', {
+  get: (key) => ipcRenderer.invoke('tieredCache:warmGet', { key }),
+  set: (key, value, ttlMs) => ipcRenderer.invoke('tieredCache:warmSet', { key, value, ttlMs }),
+  del: (key) => ipcRenderer.invoke('tieredCache:warmDel', { key }),
+});
+
 // Grok memory bridge — session-memory ticks to Kafka, session snapshots +
 // PTB-defense history to Firestore. Renderer side: src/llm/grok-analytics-memory.js.
 contextBridge.exposeInMainWorld('_grokMemoryBridge', {

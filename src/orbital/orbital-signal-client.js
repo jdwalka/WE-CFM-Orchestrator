@@ -33,8 +33,13 @@
 
   async function fetchOne(coin) {
     try {
-      if (!window.electron?._orbitalBroadcaster?.getSignal) return;
-      const res = await window.electron._orbitalBroadcaster.getSignal(coin);
+      // NOTE: exposed at window._orbitalBroadcaster (top-level), NOT
+      // window.electron._orbitalBroadcaster -- see electron/preload.js's
+      // contextBridge.exposeInMainWorld('_orbitalBroadcaster', ...). The old
+      // window.electron._orbitalBroadcaster path never existed, so this
+      // poll (and every getSignal() call) had been silently no-op'ing.
+      if (!window._orbitalBroadcaster?.getSignal) return;
+      const res = await window._orbitalBroadcaster.getSignal(coin);
       if (res?.success && res.state) {
         window._orbitalSignals[coin] = { ...res.state, fetchedAt: Date.now() };
       }
@@ -49,11 +54,11 @@
   }
 
   function startRedisLive() {
-    if (_redisUnsub || !window.electron?._orbitalBroadcaster?.onRedisTick) return;
-    _redisUnsub = window.electron._orbitalBroadcaster.onRedisTick(({ type, asset, payload }) => {
+    if (_redisUnsub || !window._orbitalBroadcaster?.onRedisTick) return;
+    _redisUnsub = window._orbitalBroadcaster.onRedisTick(({ type, asset, payload }) => {
       applyRedisTick(type, asset, payload);
     });
-    window.electron._orbitalBroadcaster.getRedisStatus?.()
+    window._orbitalBroadcaster.getRedisStatus?.()
       .then((res) => { if (res?.success) _redisStatus = res.status; })
       .catch(() => {});
   }

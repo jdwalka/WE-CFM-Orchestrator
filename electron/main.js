@@ -690,6 +690,16 @@ try {
   console.warn('[OrbitalRedisSubscriber] Module unavailable:', e.message);
 }
 
+// Warm tier of src/core/tiered-cache.js — plain Redis GET/SET/DEL on a
+// separate connection from the subscriber above (subscriber-mode connections
+// can't issue ordinary commands).
+let TieredCacheRedis = null;
+try {
+  TieredCacheRedis = require('../src/infra/tiered-cache-redis');
+} catch (e) {
+  console.warn('[TieredCacheRedis] Module unavailable:', e.message);
+}
+
 // ── Grok Firestore Bridge (session memory + PTB defense history) ────────────
 let GrokFirestoreBridge = null;
 try {
@@ -3452,6 +3462,37 @@ ipcMain.handle('orbital:getLatestTick', (_event, { type, asset } = {}) => {
 ipcMain.handle('orbital:redisStatus', () => {
   if (!OrbitalRedisSubscriber) return { success: false, error: 'Redis subscriber unavailable' };
   return { success: true, status: OrbitalRedisSubscriber.getStatus() };
+});
+
+// Warm tier for src/core/tiered-cache.js.
+ipcMain.handle('tieredCache:warmGet', async (_event, { key } = {}) => {
+  if (!TieredCacheRedis) return { success: false, error: 'Redis KV unavailable' };
+  try {
+    const value = await TieredCacheRedis.warmGet(key);
+    return { success: true, value };
+  } catch (error) {
+    return { success: false, error: error.message || 'warmGet failed' };
+  }
+});
+
+ipcMain.handle('tieredCache:warmSet', async (_event, { key, value, ttlMs } = {}) => {
+  if (!TieredCacheRedis) return { success: false, error: 'Redis KV unavailable' };
+  try {
+    const ok = await TieredCacheRedis.warmSet(key, value, ttlMs);
+    return { success: ok };
+  } catch (error) {
+    return { success: false, error: error.message || 'warmSet failed' };
+  }
+});
+
+ipcMain.handle('tieredCache:warmDel', async (_event, { key } = {}) => {
+  if (!TieredCacheRedis) return { success: false, error: 'Redis KV unavailable' };
+  try {
+    const ok = await TieredCacheRedis.warmDel(key);
+    return { success: ok };
+  } catch (error) {
+    return { success: false, error: error.message || 'warmDel failed' };
+  }
 });
 
 // Orbital broadcaster: renderer fires-and-forgets after each processInterval().
