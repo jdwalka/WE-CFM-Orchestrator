@@ -240,12 +240,18 @@
       if (typeof window === 'undefined' || !window.OrbitalSignal?.get) return null;
       const s = window.OrbitalSignal.get(sym);
       if (!s) return null;
+      let liveFeedAgeMs = null;
+      try {
+        const tick = window.OrbitalSignal.getLiveTick?.(sym, 's');
+        if (tick?.ts) liveFeedAgeMs = Date.now() - tick.ts;
+      } catch (_) { /* live Redis feed optional — Firestore-bridged fields above remain authoritative */ }
       return {
         structuralState: s.latest_state ?? null,
         oeq: s.latest_oeq ?? null,
         confidence: s.latest_confidence ?? null,
         quantumState: s.quantum_state ?? null,
         updatedAt: s.updated_at ?? null,
+        liveFeedAgeMs,
       };
     } catch (_) {
       return null;

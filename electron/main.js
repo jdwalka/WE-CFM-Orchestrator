@@ -677,6 +677,19 @@ try {
   console.warn('[OrbitalRedpandaBridge] Module unavailable:', e.message);
 }
 
+// ── Orbital Redis Subscriber (real-time ticks, sub-second vs. the Kafka -> ──
+// 15m-barrier -> Firestore -> 60s-poll round trip). Redis pub/sub was
+// publish-only across the whole app until this — orbital-ingestor-daemon.js
+// publishes every tick to orbital:ticks:{type}:{asset} and nothing ever
+// subscribed. Started lazily in app.whenReady() once `win` exists, so ticks
+// can be pushed straight to the renderer.
+let OrbitalRedisSubscriber = null;
+try {
+  OrbitalRedisSubscriber = require('../src/infra/orbital-redis-subscriber');
+} catch (e) {
+  console.warn('[OrbitalRedisSubscriber] Module unavailable:', e.message);
+}
+
 // ── Grok Firestore Bridge (session memory + PTB defense history) ────────────
 let GrokFirestoreBridge = null;
 try {
@@ -3423,6 +3436,24 @@ ipcMain.handle('orbital:getSignal', async (_event, sym) => {
   }
 });
 
+// Pull-style fallback for the Redis tick subscriber above — mainly for the
+// renderer's initial read on load, before any live push has arrived yet.
+// Live updates come via the 'orbital:redisTick' push event instead.
+ipcMain.handle('orbital:getLatestTick', (_event, { type, asset } = {}) => {
+  if (!OrbitalRedisSubscriber) return { success: false, error: 'Redis subscriber unavailable' };
+  try {
+    const tick = OrbitalRedisSubscriber.getLatest(type, asset);
+    return { success: true, tick };
+  } catch (error) {
+    return { success: false, error: error.message || 'Redis tick read failed' };
+  }
+});
+
+ipcMain.handle('orbital:redisStatus', () => {
+  if (!OrbitalRedisSubscriber) return { success: false, error: 'Redis subscriber unavailable' };
+  return { success: true, status: OrbitalRedisSubscriber.getStatus() };
+});
+
 // Orbital broadcaster: renderer fires-and-forgets after each processInterval().
 ipcMain.on('orbital:push', (_event, orbitalResult) => {
   if (!OrbitalBroadcaster || !orbitalResult) return;
@@ -3829,6 +3860,23 @@ app.whenReady().then(async () => {
 
   createWindow();
   logStartupHealth('post-bootstrap');
+
+  // Real-time orbital ticks via Redis pub/sub, pushed straight to the
+  // renderer as they arrive (sub-second) instead of the existing Kafka ->
+  // 15m-barrier -> Firestore -> 60s-poll path. Best-effort: if Redis isn't
+  // reachable this just never fires, same degrade-gracefully posture as
+  // every other orbital piece.
+  if (OrbitalRedisSubscriber) {
+    try {
+      OrbitalRedisSubscriber.start((type, asset, payload) => {
+        if (mainWin && !mainWin.isDestroyed()) {
+          mainWin.webContents.send('orbital:redisTick', { type, asset, payload });
+        }
+      });
+    } catch (e) {
+      console.warn('[OrbitalRedisSubscriber] start failed:', e.message);
+    }
+  }
 
   // Optional cloud checks must not block the desktop window from opening.
   (async () => {
