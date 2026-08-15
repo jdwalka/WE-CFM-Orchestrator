@@ -470,6 +470,16 @@
   const PTB_LOCK_GRACE_MS = 120_000;
   const PTB_SCRAPE_RETRY_MS = 4_000;
   const PTB_SCRAPE_MAX_ATTEMPTS = 30;
+  // Polymarket's chainlink-candles endpoint is queried with twapLookbackSeconds=30
+  // (see fetchPolymarketChainlinkCandleOpen) -- its "open" is a 30s trailing TWAP,
+  // not a fixed snapshot. Verified live (2026-08-15): the just-opened boundary's
+  // candle already exists at +17s with open===high===low===close (a single tick,
+  // not a settled TWAP). Since the lock is immutable (first success wins,
+  // forever), locking that early captures a value that hasn't finished forming
+  // yet and never catches up to what Polymarket's own UI eventually settles on --
+  // the "PTB is a cent off and keeps drifting" symptom. Refuse to lock before the
+  // TWAP window has had time to fully accumulate.
+  const PTB_TWAP_SETTLE_SEC = 32;
 
   function _seedPendingPtbLock(sym, slug, boundaryMs) {
     if (_getPolymarketPriceToBeatLock(slug)) return;
@@ -2138,6 +2148,14 @@
       const windowSec = horizonTag === '15m' ? 900 : 300;
       const startSec = Number(slugMatch[3]);
       if (sym && Number.isFinite(startSec)) {
+        const elapsedSec = (Date.now() / 1000) - startSec;
+        if (elapsedSec < PTB_TWAP_SETTLE_SEC) {
+          // Too early -- the 30s TWAP hasn't settled. Stay pending; the
+          // pending-lock retry queue (_tickPendingPtbLocks, 4s cadence) will
+          // try again once enough real time has passed. Don't cache this as
+          // a miss either -- just return null for this call.
+          return null;
+        }
         const startIso = new Date(startSec * 1000).toISOString().split('.')[0] + 'Z';
         const prevIso = new Date((startSec - windowSec) * 1000).toISOString().split('.')[0] + 'Z';
 
