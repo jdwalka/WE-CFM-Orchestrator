@@ -105,7 +105,7 @@ const PER_COIN_INDICATOR_BIAS = {
    BTC: {
      bands: 1.09,
      williamsR: 1.08,
-     obv: 0.97,
+     obv: 0.956,
      vwap: 1.05,
      hma: 0.9,
      momentum: 0.55,
@@ -113,17 +113,17 @@ const PER_COIN_INDICATOR_BIAS = {
      sma: 0.95,
      adx: 1.01,
      mfi: 1.13,
-     supertrend: 0.96,
-     ichimoku: 0.896,
-     keltner: 1.116,
+     supertrend: 0.942,
+     ichimoku: 0.885,
+     keltner: 1.131,
      volume: 0.94,
      ema: 0.891,
      vwma: 0.86,
      macd: 0.91,
-     structure: 1.142,
+     structure: 1.158,
      fisher: 1.08,
-     persistence: 0.983,
-     rsi: 0.63,
+     persistence: 0.963,
+     rsi: 0.637,
      cci: 1.07,
      cmf: 1.01,
      fearGreed: 1,
@@ -133,55 +133,55 @@ const PER_COIN_INDICATOR_BIAS = {
    ETH: {
      bands: 1.33,
      mfi: 1.1,
-     sma: 0.97,
+     sma: 0.957,
      adx: 1.11,
-     supertrend: 1.086,
-     ichimoku: 0.977,
+     supertrend: 1.069,
+     ichimoku: 0.964,
      hma: 0.85,
      vwap: 0.82,
-     ema: 0.92,
+     ema: 0.908,
      cmf: 1.1,
      momentum: 0.55,
-     obv: 0.932,
+     obv: 0.918,
      fisher: 1.24,
      vwma: 0.94,
      macd: 0.851,
      cci: 1.22,
      rsi: 0.81,
-     structure: 1.185,
-     persistence: 1.004,
+     structure: 1.2,
+     persistence: 0.981,
      stochrsi: 1.11,
      williamsR: 1.3,
-     keltner: 1.276,
+     keltner: 1.291,
      volume: 0.92,
      fearGreed: 1,
      book: 0.9,
      flow: 0.85,
    },
    SOL: {
-     williamsR: 1.14,
+     williamsR: 1.152,
      cci: 1.12,
-     sma: 1.074,
+     sma: 1.061,
      mfi: 1.13,
      rsi: 1.02,
-     supertrend: 0.983,
-     ema: 0.888,
+     supertrend: 0.963,
+     ema: 0.876,
      bands: 1.18,
      stochrsi: 0.86,
      volume: 0.95,
      cmf: 0.8,
-     ichimoku: 0.894,
-     persistence: 0.732,
+     ichimoku: 0.88,
+     persistence: 0.709,
      adx: 0.9,
      hma: 0.76,
      vwap: 0.7,
-     vwma: 0.72,
+     vwma: 0.712,
      macd: 0.9,
-     keltner: 1.336,
+     keltner: 1.351,
      fisher: 1.13,
      momentum: 0.55,
-     obv: 0.875,
-     structure: 1.27,
+     obv: 0.863,
+     structure: 1.285,
      fearGreed: 0.9,
      book: 0.75,
      flow: 0.7,
@@ -193,26 +193,26 @@ const PER_COIN_INDICATOR_BIAS = {
      hma: 1.009,
      mfi: 1.02,
      momentum: 0.55,
-     sma: 0.764,
+     sma: 0.765,
      macd: 1.063,
-     vwma: 0.802,
-     persistence: 0.863,
-     ichimoku: 0.863,
-     obv: 0.82,
+     vwma: 0.803,
+     persistence: 0.865,
+     ichimoku: 0.859,
+     obv: 0.809,
      volume: 0.84,
      adx: 0.83,
      ema: 0.733,
-     keltner: 0.942,
-     cci: 0.95,
-     williamsR: 0.86,
-     supertrend: 0.734,
+     keltner: 0.947,
+     cci: 0.936,
+     williamsR: 0.875,
+     supertrend: 0.728,
      cmf: 0.84,
-     stochrsi: 0.977,
-     bands: 0.995,
-     structure: 1.123,
+     stochrsi: 0.988,
+     bands: 0.992,
+     structure: 1.127,
      fearGreed: 0.7,
-     book: 0.6,
-     flow: 0.55,
+     book: 0.606,
+     flow: 0.556,
    },
    HYPE: {
      williamsR: 6.5,
@@ -778,7 +778,7 @@ function buildSignalModel(candles, sym = null) {
   const hmaSlope   = (hmaCurr - hmaPrev2) / (Math.abs(hmaPrev2) || 1) * 100;
   const hmaDevPct  = (lastPrice - hmaCurr) / (Math.abs(hmaCurr) || 1) * 100;
   let hmaSig = clamp(hmaSlope * 8, -0.7, 0.7);
-  if (Math.abs(hmaDevPct) > 0.4) hmaSig += clamp(-hmaDevPct * 0.28, -0.3, 0.3);
+  if (Math.abs(hmaDevPct) > 0.4) hmaSig += clamp(hmaDevPct * 0.28, -0.3, 0.3); // FIX: was negated (see predictions.js live logic)
   hmaSig = clamp(hmaSig, -1, 1);
 
   // VWMA signal
@@ -806,7 +806,7 @@ function buildSignalModel(candles, sym = null) {
   let cciSig = 0;
   if (cciVal > 150) cciSig = -clamp((cciVal - 100) / 150, 0, 1);
   else if (cciVal < -150) cciSig = clamp((-100 - cciVal) / 150, 0, 1);
-  else cciSig = clamp(-cciVal / 200, -0.3, 0.3);
+  else cciSig = clamp(cciVal / 200, -0.3, 0.3); // FIX: was negated (see predictions.js 2026-05-04 CRITICAL fix)
   cciSig = clamp(cciSig, -1, 1);
 
   // CMF signal — Chaikin Money Flow
@@ -815,7 +815,7 @@ function buildSignalModel(candles, sym = null) {
 
   // Fisher Transform signal
   const fisherVal = calcFisher(candles, 10);
-  const fisherSig = clamp(-fisherVal / 2.5, -1, 1);
+  const fisherSig = clamp(fisherVal / 2.5, -1, 1); // FIX: was negated (see predictions.js 2026-05-04 CRITICAL fix)
 
   // Keltner Channels
   const kelt = calcKeltner(candles, 20, 2.0);
