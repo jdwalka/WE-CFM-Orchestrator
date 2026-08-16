@@ -11,6 +11,14 @@
   let _activeTab = 'predictions'; // 'predictions' | 'perps' | 'portfolio'
   let _autoRefreshTimer = null;
   let _geoStatus = null;
+  // Tracks the embed slug currently loaded into the live iframe DOM node, so
+  // re-renders (as often as every 250-900ms via refreshActiveView) can leave
+  // the iframe alone instead of recreating it every cycle. Recreating it via
+  // innerHTML on every render was the tab-flicker bug: on 5m markets the
+  // underlying data changes fast enough that the iframe was torn down before
+  // it ever finished loading, so it flickered constantly and sometimes never
+  // rendered at all.
+  let _embedSlug = null;
 
   async function _initGeoblock() {
     if (window.PolymarketClient?.checkGeoblock) {
@@ -327,14 +335,7 @@
           <!-- Left: Live Polymarket Embed & Orderbook Depth -->
           <div style="display:flex;flex-direction:column;gap:16px;">
             <div style="background:var(--color-surface);border:1px solid var(--color-border);border-radius:8px;overflow:hidden;padding:8px;">
-              <iframe
-                id="poly-pro-embed-${_activeSymbol}"
-                title="${_activeSymbol} Polymarket Live"
-                src="https://embed.polymarket.com/market?market=${encodeURIComponent(poly5m.slug || `${_activeSymbol.toLowerCase()}-updown-5m`)}&theme=dark&border=false&creator=JohnDaWalka&height=340"
-                style="width:100%;height:340px;border:0;border-radius:6px;display:block;"
-                frameborder="0"
-                allowtransparency="true"
-                loading="lazy"></iframe>
+              <div id="poly-pro-embed-slot" style="width:100%;height:340px;"></div>
             </div>
 
             <!-- Rolling 5M Contract Queue -->
@@ -423,6 +424,42 @@
 
       </div>
     `;
+
+    _reconcileEmbed(container, poly5m);
+  }
+
+  /**
+   * Moves the live Polymarket iframe in/out of its slot without recreating
+   * it unless the target market slug actually changed. Called after every
+   * innerHTML rewrite of the panel (see comment on _embedSlug above).
+   */
+  function _reconcileEmbed(container, poly5m) {
+    const slot = container.querySelector('#poly-pro-embed-slot');
+    if (!slot) return;
+    const slug = poly5m.slug || `${_activeSymbol.toLowerCase()}-updown-5m`;
+
+    // The panel's innerHTML rewrite always produces a brand-new slot div, so
+    // any previously-loaded iframe is now detached (its old parent is gone).
+    // Same slug => just reinsert the SAME node (no reload). Different slug
+    // => the embed genuinely needs to point elsewhere, so create fresh.
+    if (_embedSlug === slug && window._polyProEmbedFrame) {
+      slot.appendChild(window._polyProEmbedFrame);
+      return;
+    }
+
+    const iframe = document.createElement('iframe');
+    iframe.id = `poly-pro-embed-${_activeSymbol}`;
+    iframe.title = `${_activeSymbol} Polymarket Live`;
+    iframe.src = `https://embed.polymarket.com/market?market=${encodeURIComponent(slug)}&theme=dark&border=false&creator=JohnDaWalka&height=340`;
+    iframe.style.cssText = 'width:100%;height:340px;border:0;border-radius:6px;display:block;';
+    iframe.setAttribute('frameborder', '0');
+    iframe.setAttribute('allowtransparency', 'true');
+    iframe.loading = 'lazy';
+
+    slot.innerHTML = '';
+    slot.appendChild(iframe);
+    window._polyProEmbedFrame = iframe;
+    _embedSlug = slug;
   }
 
   const PolymarketTerminal = {
