@@ -311,6 +311,10 @@
   <script src="../src/orbital/signal-router-cfm.js"></script>
   <script src="../src/orbital/temporal-edge.js"></script>
   <script src="../src/orbital/orbital-engine.js"></script>
+  <!-- Actually runs OrbitalEngine.processInterval() -- the module was fully
+       built (including a real forward-looking probUp forecast via
+       TemporalEdge) but had zero callers anywhere until this driver. -->
+  <script src="../src/orbital/orbital-engine-driver.js"></script>
   <script src="../src/core/anomaly-detector.js" defer></script>
   <script src="../src/core/cfm-engine.js" defer></script>
   <script src="../src/kalshi/prediction-markets.js"></script>
@@ -343,6 +347,7 @@
   <script src="../src/adaptive-learning-engine.js" defer></script>
   <script src="../src/core/contract-cache-manager.js" defer></script>
   <script src="../src/core/multi-drive-cache.js" defer></script>
+  <script src="../src/core/tiered-cache.js" defer></script>
   <script src="../src/core/pyth-settlement.js" defer></script>
   <script src="../src/core/allocation-engine.js" defer></script>
   <script src="../src/feeds/microstructure-engine.js" defer></script>

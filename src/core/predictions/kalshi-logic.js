@@ -57,6 +57,15 @@
     const kalshiStDir = mkt?.strikeDir ?? 'above';
     const rtiData = window._rtiPrices?.[key] ?? null;
     const rtiPrice = rtiData?.price ?? null;
+    const venue = mkt ? (coin?.poly15m || coin?.poly5m ? 'polymarket' : 'legacy') : null;
+    // Polymarket 5m/15m Up/Down settle on Chainlink TWAP, not CME CF RTI.
+    // RTI is Kalshi-only. Prefer RTDS/micro TWAP, then candle — never RTI on PM.
+    const rtds = window.PredictionMarkets?.getFreshRtdsTwap?.(key, 15_000);
+    const microTwap = window.Microstructure?.getTwap?.(key, 30_000);
+    const twapPx = Number(rtds?.price ?? microTwap);
+    const settlementPrice = venue === 'polymarket'
+      ? ((Number.isFinite(twapPx) && twapPx > 0) ? twapPx : fallbackPrice)
+      : (rtiPrice ?? ((Number.isFinite(twapPx) && twapPx > 0) ? twapPx : fallbackPrice));
 
     return {
       k15m: mkt,
@@ -68,8 +77,8 @@
       isBelowK: kalshiStDir === 'below',
       rtiData,
       rtiPrice,
-      settlementPrice: rtiPrice ?? fallbackPrice,
-      venue: mkt ? (coin?.poly15m || coin?.poly5m ? 'polymarket' : 'legacy') : null,
+      settlementPrice,
+      venue,
     };
   }
 

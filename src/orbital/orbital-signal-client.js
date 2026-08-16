@@ -22,17 +22,55 @@
   const MAX_AGE_MS = 20 * 60 * 1000; // stale beyond one synthesis window + margin
 
   window._orbitalSignals = window._orbitalSignals || {};
+  // Raw per-tick s/p/d/f payloads pushed live from orbital-redis-subscriber.js
+  // (Electron main) via IPC — sub-second, no 15m synthesis barrier, no
+  // Firestore round trip. Keyed by asset: { s, p, d, f } -> { payload, ts }.
+  window._orbitalRedisTicks = window._orbitalRedisTicks || {};
   let _pollTimer = null;
   let _lastPollTs = 0;
+  let _redisUnsub = null;
+  let _redisStatus = { ready: false, lastError: null, cachedKeys: 0 };
 
   async function fetchOne(coin) {
     try {
-      if (!window.electron?._orbitalBroadcaster?.getSignal) return;
-      const res = await window.electron._orbitalBroadcaster.getSignal(coin);
+      // NOTE: exposed at window._orbitalBroadcaster (top-level), NOT
+      // window.electron._orbitalBroadcaster -- see electron/preload.js's
+      // contextBridge.exposeInMainWorld('_orbitalBroadcaster', ...). The old
+      // window.electron._orbitalBroadcaster path never existed, so this
+      // poll (and every getSignal() call) had been silently no-op'ing.
+      if (!window._orbitalBroadcaster?.getSignal) return;
+      const res = await window._orbitalBroadcaster.getSignal(coin);
       if (res?.success && res.state) {
         window._orbitalSignals[coin] = { ...res.state, fetchedAt: Date.now() };
       }
     } catch (_) { /* pipeline not running / Firestore unavailable — normal, not fatal */ }
+  }
+
+  function applyRedisTick(type, asset, payload) {
+    const sym = String(asset || '').toUpperCase();
+    if (!sym) return;
+    window._orbitalRedisTicks[sym] = window._orbitalRedisTicks[sym] || {};
+    window._orbitalRedisTicks[sym][type] = { payload, ts: Date.now() };
+  }
+
+  function startRedisLive() {
+    if (_redisUnsub || !window._orbitalBroadcaster?.onRedisTick) return;
+    _redisUnsub = window._orbitalBroadcaster.onRedisTick(({ type, asset, payload }) => {
+      applyRedisTick(type, asset, payload);
+    });
+    window._orbitalBroadcaster.getRedisStatus?.()
+      .then((res) => { if (res?.success) _redisStatus = res.status; })
+      .catch(() => {});
+  }
+
+  function stopRedisLive() {
+    if (_redisUnsub) { try { _redisUnsub(); } catch (_) { /* */ } _redisUnsub = null; }
+  }
+
+  /** Latest raw live tick for a coin/type ('s'|'p'|'d'|'f'), or null. */
+  function getLiveTick(coin, type) {
+    const entry = window._orbitalRedisTicks[String(coin || '').toUpperCase()]?.[type];
+    return entry || null;
   }
 
   async function pollAll() {
@@ -65,10 +103,16 @@
     get,
     getAll: () => ({ ...window._orbitalSignals }),
     lastPollTime: () => _lastPollTs,
+    startRedisLive,
+    stopRedisLive,
+    getLiveTick,
+    redisStatus: () => ({ ..._redisStatus }),
   };
 
   // Auto-start — harmless no-op when the orbital pipeline isn't running
   // (start:server only); fetchOne() swallows the IPC/Firestore-unavailable
-  // case as a normal empty state.
+  // case as a normal empty state. startRedisLive() is likewise a no-op when
+  // the preload bridge or main-process Redis subscriber isn't present.
   startPolling();
+  startRedisLive();
 })();

@@ -1461,6 +1461,69 @@
     return Math.min(max, Math.max(min, value));
   }
 
+  // Live px for Polymarket binary settlement (Chainlink 30s TWAP). Official
+  // Pyth Crypto.*/USD feeds stay as AI spot — they are not the 5m/15m oracle.
+  function resolveLiveSettlementPx(sym, fallback) {
+    const key = String(sym || '').toUpperCase();
+    const rtds = window.PredictionMarkets?.getFreshRtdsTwap?.(key, 15_000);
+    if (Number.isFinite(rtds?.price) && rtds.price > 0) return { px: rtds.price, src: 'rtds-twap30' };
+    const twap = window.Microstructure?.getTwap?.(key, 30_000);
+    if (Number.isFinite(twap) && twap > 0) return { px: twap, src: 'micro-twap30' };
+    if (Number.isFinite(fallback) && fallback > 0) return { px: fallback, src: 'fallback' };
+    return { px: null, src: null };
+  }
+
+  // P(settle ≥ PTB) with time-decayed sigma. Lagging CEX score cannot invent a
+  // late-window cross when live TWAP is on the wrong side of PTB.
+  function computeBinaryPtbCdf({ ptb, livePx, windowMin, remainingMs, atrDollar, score, liveDir, momDir }) {
+    const windowMs = Math.max(60_000, Number(windowMin || 15) * 60_000);
+    const remMs = Number.isFinite(remainingMs) ? Math.max(0, remainingMs) : windowMs;
+    const remainingFrac = clamp(remMs / windowMs, 0.01, 1);
+    const gap = livePx - ptb;
+    const gapFrac = gap / ptb;
+    const breakingUp = liveDir > 0 || momDir === 'UP';
+    const breakingDown = liveDir < 0 || momDir === 'DOWN';
+    const late = remainingFrac < 0.12;
+    const ultraLate = remMs < 45_000;
+
+    let expectedMove = (Number(score) || 0) * atrDollar * 0.35 * remainingFrac;
+    if (late) expectedMove *= 0.15;
+    if (ultraLate) expectedMove = 0;
+    if (gap < 0 && expectedMove > 0 && !breakingUp) expectedMove = Math.min(expectedMove, Math.abs(gap) * 0.12);
+    if (gap > 0 && expectedMove < 0 && !breakingDown) expectedMove = Math.max(expectedMove, -Math.abs(gap) * 0.12);
+
+    const meanFinal = livePx + expectedMove;
+    const sigma = Math.max(livePx * 0.00012, atrDollar * Math.sqrt(remainingFrac) * (late ? 0.32 : 0.48));
+    let pUp = normalCDF((meanFinal - ptb) / (sigma || 1));
+
+    if (ultraLate && Math.abs(gapFrac) > 0.00008) {
+      pUp = gap > 0 ? Math.max(pUp, 0.93) : Math.min(pUp, 0.07);
+    } else if (remainingFrac < 0.20 && gap < 0 && !breakingUp) {
+      pUp = Math.min(pUp, 0.18);
+    } else if (remainingFrac < 0.20 && gap > 0 && !breakingDown) {
+      pUp = Math.max(pUp, 0.82);
+    } else if (gap < 0 && !breakingUp) {
+      pUp = Math.min(pUp, 0.38);
+    } else if (gap > 0 && !breakingDown) {
+      pUp = Math.max(pUp, 0.62);
+    }
+
+    pUp = clamp(pUp, 0.02, 0.98);
+    return {
+      pUp,
+      modelYesPct: Math.round(pUp * 100),
+      meanFinal,
+      sigma,
+      remainingFrac,
+      remainingMs: remMs,
+      gap,
+      gapFrac,
+      livePx,
+      ptb,
+      expectedMove,
+    };
+  }
+
   function average(values) {
     return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : 0;
   }
@@ -3039,7 +3102,7 @@
     // Fisher Transform
     // FIX (2026-05-04 CRITICAL): Remove negation that inverts Fisher signal 100% of the time
     const fisherVal = calcFisher(candles, 10);
-    const fisherSig = clamp(fisherVal / 2.5, -1, 1);  // ✅ FIXED: Removed negation
+    let fisherSig = clamp(fisherVal / 2.5, -1, 1);  // ✅ FIXED: Removed negation
 
     // Keltner Channels
     const kelt = calcKeltner(candles, 20, 2.0);
@@ -3605,58 +3668,44 @@
           if (Number.isFinite(polyRef) && polyRef > 0) {
             const closeTimeMs = p5m?.closeTime ? new Date(p5m.closeTime).getTime() : null;
             const remainingMs = Number.isFinite(closeTimeMs) ? Math.max(0, closeTimeMs - Date.now()) : 5 * 60_000;
-            const remainingFrac = clamp(remainingMs / (5 * 60_000), 0.08, 1);
             const atrDollar = (Number.isFinite(atr) && atr > 0) ? atr : lastPrice * 0.0017;
+            const live = resolveLiveSettlementPx(coinKey, lastPrice);
+            const livePx = live.px || lastPrice;
+            const momDir = window.Microstructure?.getSnapshot?.(coinKey)?.momentum?.dir || null;
+            const cdf = computeBinaryPtbCdf({
+              ptb: polyRef,
+              livePx,
+              windowMin: 5,
+              remainingMs,
+              atrDollar,
+              score,
+              liveDir: Math.sign(mom) || 0,
+              momDir,
+            });
+            target = cdf.meanFinal;
+            acc[entry].target = cdf.meanFinal;
+            acc[entry].high = cdf.meanFinal + atrDollar * rangeScale * Math.sqrt(cdf.remainingFrac);
+            acc[entry].low = cdf.meanFinal - atrDollar * rangeScale * Math.sqrt(cdf.remainingFrac);
 
-            // Expected end-of-window price: current + score-driven move that can
-            // actually cross PTB within remaining time (score ±1 ≈ ~0.55 ATR full window).
-            const expectedMove = score * atrDollar * 0.55 * remainingFrac * projectionTargetDriftMult;
-            // Live momentum (1-bar) also counts — lagging composite often still UP while tape is DOWN.
-            const liveMomBoost = clamp((mom / 100) * lastPrice * 0.35 * remainingFrac, -atrDollar * 0.4, atrDollar * 0.4);
-            const meanFinal = lastPrice + expectedMove + liveMomBoost;
-            target = meanFinal;
-            acc[entry].target = meanFinal;
-            acc[entry].high = meanFinal + atrDollar * rangeScale * Math.sqrt(remainingFrac);
-            acc[entry].low = meanFinal - atrDollar * rangeScale * Math.sqrt(remainingFrac);
-
-            // Uncertainty shrinks as the window expires (path already realized).
-            const sigma = Math.max(
-              lastPrice * 0.00004,
-              atrDollar * 0.42 * Math.sqrt(remainingFrac) * projectionRangeExpansionMult
-            );
-            const z = (meanFinal - polyRef) / sigma;
-            const pAbove = normalCDF(z);
-            // Soft-clamp extreme certainties early in the window when gap is tiny
-            const gapFrac = (lastPrice - polyRef) / polyRef;
-            let modelYesPct = Math.round(pAbove * 100);
-            if (remainingFrac > 0.55 && Math.abs(gapFrac) < 0.00035 && Math.abs(score) < 0.22) {
-              // Coin-flip zone: refuse fake 70%+ from noise
-              modelYesPct = Math.round(clamp(modelYesPct, 38, 62));
-            }
             const polyYesPct = polyYes !== null ? Math.round(polyYes * 100) : null;
-            const divergence = polyYesPct !== null ? Math.abs(modelYesPct - polyYesPct) : null;
-            const gapPct = ((polyRef - lastPrice) / lastPrice) * 100;
-
-            const yesDir = 'UP';
-            const noDir = 'DOWN';
-            const cdfImpliedDir = modelYesPct >= 50 ? yesDir : noDir;
-            // Prefer CDF direction for 5m binary (settlement objective) over free momentum dir
-            const dirConflict = dir !== 'FLAT' && cdfImpliedDir !== dir;
-
+            const divergence = polyYesPct !== null ? Math.abs(cdf.modelYesPct - polyYesPct) : null;
+            const cdfImpliedDir = cdf.modelYesPct >= 50 ? 'UP' : 'DOWN';
             acc[entry].polyAlign = {
               ref: polyRef,
-              gapPct,
-              modelYesPct,
+              gapPct: ((polyRef - livePx) / livePx) * 100,
+              modelYesPct: cdf.modelYesPct,
               polyYesPct,
               divergence,
               strikeDir: 'above',
               closeTimeMs,
               remainingMs,
-              remainingFrac,
-              meanFinal,
-              sigma,
-              dirConflict,
+              remainingFrac: cdf.remainingFrac,
+              meanFinal: cdf.meanFinal,
+              sigma: cdf.sigma,
+              dirConflict: dir !== 'FLAT' && cdfImpliedDir !== dir,
               cdfImpliedDir,
+              livePx,
+              liveSrc: live.src,
               status: divergence === null ? 'no-market'
                 : divergence <= 12 ? 'aligned'
                   : divergence <= 25 ? 'soft-split'
@@ -3698,19 +3747,29 @@
           } = getKalshi15mSettlementContext(options.sym, lastPrice);
 
           if (kalshiRef !== null && kalshiRef > 0) {
-            // sigma: one-sigma price move over 15 min based on ATR
-            const sigma = (atr * rangeScale) || (settlementPrice * 0.003 * projectionRangeExpansionMult);
-            // z: how far our projected target is above/below the reference threshold
-            const z = (target - kalshiRef) / sigma;
-            // P(closePrice ≥ kalshiRef) via normal CDF
-            // For 'above' contracts: YES = close ≥ ref  → modelYesPct = CDF(z)
-            // For 'below' contracts: YES = close <  ref → modelYesPct = 1 - CDF(z)
-            const pAbove = normalCDF(z);
-            const modelYesPct = Math.round((isBelowK ? 1 - pAbove : pAbove) * 100);
+            const closeTimeMs = k15m?.closeTime ? new Date(k15m.closeTime).getTime() : null;
+            const remainingMs = Number.isFinite(closeTimeMs) ? Math.max(0, closeTimeMs - Date.now()) : 15 * 60_000;
+            const atrDollar = (Number.isFinite(atr) && atr > 0) ? atr : lastPrice * 0.0017;
+            const live = resolveLiveSettlementPx(options.sym, settlementPrice || lastPrice);
+            const livePx = live.px || settlementPrice || lastPrice;
+            const momDir = window.Microstructure?.getSnapshot?.(options.sym)?.momentum?.dir || null;
+            const cdf = computeBinaryPtbCdf({
+              ptb: kalshiRef,
+              livePx,
+              windowMin: 15,
+              remainingMs,
+              atrDollar,
+              score,
+              liveDir: Math.sign(mom) || 0,
+              momDir,
+            });
+            // P(YES) for above-strike = P(settle ≥ PTB). Below-strike flips.
+            const modelYesPct = isBelowK ? (100 - cdf.modelYesPct) : cdf.modelYesPct;
             const kalshiYesPct = kalshiYes !== null ? Math.round(kalshiYes * 100) : null;
             const divergence = kalshiYesPct !== null ? Math.abs(modelYesPct - kalshiYesPct) : null;
-            // Distance from settlement price to reference
-            const gapPct = ((kalshiRef - settlementPrice) / settlementPrice) * 100;
+            const gapPct = ((kalshiRef - livePx) / livePx) * 100;
+            target = cdf.meanFinal;
+            acc[entry].target = cdf.meanFinal;
 
             // Direction consistency check:
             // modelYesPct ≥ 50 means model thinks YES wins.
@@ -3730,36 +3789,44 @@
               );
             }
 
-            acc[entry].kalshiAlign = {
+            const align15 = {
               ref: kalshiRef,
               gapPct,
               modelYesPct,
               kalshiYesPct,
+              polyYesPct: kalshiYesPct,
               divergence,
               yesAsk: k15m?.yesAsk ?? null,
               yesBid: k15m?.yesBid ?? null,
               noAsk: k15m?.noAsk ?? null,
               noBid: k15m?.noBid ?? null,
-              strikeDir: kalshiStDir,  // 'above'|'below' — passed through to snapshot
+              strikeDir: kalshiStDir,
               floorPrice: k15m?.floorPrice ?? kalshiRef,
               capPrice: k15m?.capPrice ?? null,
               strikeType: k15m?.strikeType ?? null,
-              ticker: k15m?.ticker ?? null,   // contract ticker for window alignment
-              closeTimeMs: k15m?.closeTime ? new Date(k15m.closeTime).getTime() : null,
-              // RTI settlement data — Kalshi settles on CME CF RTI, not Binance pool
+              ticker: k15m?.ticker ?? null,
+              closeTimeMs,
+              remainingMs,
+              remainingFrac: cdf.remainingFrac,
+              meanFinal: cdf.meanFinal,
+              sigma: cdf.sigma,
+              livePx,
+              liveSrc: live.src,
               rtiPrice: rtiPrice,
               rtiData: rtiData ? { openAvg: rtiData.openAvg, closeAvg: rtiData.closeAvg, delta: rtiData.delta } : null,
-              priceSource: rtiPrice ? 'RTI' : 'candle',
+              priceSource: live.src || 'twap',
               tapeVelocityState: tapeVelocity.state,
               targetDriftMult: projectionTargetDriftMult,
               rangeExpansionMult: projectionRangeExpansionMult,
-              dirConflict,      // true when momentum direction contradicts CDF direction
-              cdfImpliedDir,    // direction implied by model probability
+              dirConflict,
+              cdfImpliedDir,
               status: divergence === null ? 'no-market'
                 : divergence <= 12 ? 'aligned'
                   : divergence <= 25 ? 'soft-split'
                     : 'divergent',
             };
+            acc[entry].kalshiAlign = align15;
+            acc[entry].polyAlign = align15;
           }
         }
         return acc;
@@ -6083,6 +6150,12 @@
           effectiveExpectedMove = Math.max(effectiveExpectedMove, -Math.abs(gap) * 0.2);
         }
 
+        // Was referenced but never declared/assigned (ReferenceError, caught and
+        // logged every cycle as "5m re-score failed: liveDrift1m is not defined",
+        // aborting this whole re-score block every time). Derived from the same
+        // liveTimingGuard.drift1mPct field already used just above for liveDir's
+        // sign, scaled to dollars to match meanFinal's other terms.
+        const liveDrift1m = livePx * (Number(liveTimingGuard?.drift1mPct) || 0) / 100;
         const meanFinal = livePx + effectiveExpectedMove + liveDrift1m;
         const sigma = Math.max(livePx * 0.0015, atrDollar * Math.sqrt(remainingFrac));
         const z = (meanFinal - ptb) / (sigma || 1);
@@ -6092,6 +6165,13 @@
         // If price is BELOW PTB and not actively breaking up, pUp MUST NOT be >= 50%
         if (gap < 0 && liveDir <= 0 && pUp > 0.45) {
           pUp = Math.min(pUp, 0.40);
+        }
+        // Late window: being below PTB is DOWN even if lagging tape still prints "buy".
+        if (remainingFrac < 0.22 && gap < 0) {
+          pUp = Math.min(pUp, 0.16);
+        }
+        if (remainingMs < 45_000 && gap < 0) {
+          pUp = Math.min(pUp, 0.07);
         }
         // If price is ABOVE PTB and not actively breaking down, pUp MUST NOT be <= 50%
         if (gap > 0 && liveDir >= 0 && pUp < 0.55) {
@@ -6105,6 +6185,7 @@
         // Lagging bull composites after multi-green 15m runs were the main false-UP source.
         const falseUp = normalizedScore > 0.08 && (
           (gapFrac < 0 && liveDir <= 0) ||
+          (gapFrac < 0 && remainingFrac < 0.22) ||
           (gapFrac < 0.00020 && liveDir < 0 && remainingFrac < 0.60) ||
           (gapFrac < 0 && modelYesPct < 55) ||
           (modelYesPct <= 45 && liveDir <= 0)

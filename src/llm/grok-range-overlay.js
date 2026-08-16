@@ -240,7 +240,7 @@
     const ptbSource = p.priceToBeatSource || p.ptbSource || null;
     // AI must only see Polymarket-published PTB — not RTDS/title proxies
     const ptbOk = rawPtb != null && rawPtb > 0 && isCanonicalPtbSource(ptbSource);
-    const dec = /^(XRP|DOGE)$/i.test(coin) ? 4 : 2;
+    const dec = /^DOGE$/i.test(coin) ? 6 : /^XRP$/i.test(coin) ? 4 : 2;
     const ptb = ptbOk ? Math.round(rawPtb * (10 ** dec)) / (10 ** dec) : null;
 
     return {
@@ -300,7 +300,11 @@
     // which meant "PTB defense history: none recorded" regardless of whether
     // the underlying Firestore data existed.
     const sessionMemory = mem()
-      ? mem().memoryPackForPrompt(coin, { ptb: poly15m.priceToBeatNum })
+      ? mem().memoryPackForPrompt(coin, {
+        ptb: poly15m.priceToBeatNum,
+        ptb15: poly15m.priceToBeatNum,
+        ptb5: Number(market.poly5m && (market.poly5m.priceToBeatNum || market.poly5m.targetPriceNum)) || null,
+      })
       : { sampleCount: 0, sessionMinutes: 0 };
     const { ladder, spotBucket } = buildHourlyLadder(coin, current);
     let xSent = { score: 0, summary: 'n/a', momentum: 'flat' };

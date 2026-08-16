@@ -314,12 +314,20 @@ function fmtSignedPct(n, dp = 2) {
 
 function predictionDirection(pred, fallback = 0) {
     if (!pred) return fallback;
-    const kalshiAlign = pred.projections?.p15?.kalshiAlign;
+    const kalshiAlign = pred.projections?.p15?.polyAlign || pred.projections?.p15?.kalshiAlign;
     const mYesPct = Number.isFinite(kalshiAlign?.modelYesPct) ? kalshiAlign.modelYesPct : null;
+    const msLeft = Number.isFinite(kalshiAlign?.closeTimeMs)
+      ? kalshiAlign.closeTimeMs - Date.now()
+      : (Number.isFinite(kalshiAlign?.remainingMs) ? kalshiAlign.remainingMs : null);
+    const strikeDir = kalshiAlign?.strikeDir === 'below' ? 'below' : 'above';
+    const yesDir = strikeDir === 'below' ? -1 : 1;
+    const noDir = -yesDir;
+    // Last 90s: live gap vs PTB wins over lagging composite score.
+    if (msLeft != null && msLeft < 90_000 && Number.isFinite(kalshiAlign?.gapPct)) {
+      if (kalshiAlign.gapPct > 0.02) return noDir;
+      if (kalshiAlign.gapPct < -0.02) return yesDir;
+    }
     if (mYesPct != null) {
-      const strikeDir = kalshiAlign?.strikeDir === 'below' ? 'below' : 'above';
-      const yesDir = strikeDir === 'below' ? -1 : 1;
-      const noDir = -yesDir;
       if (mYesPct >= 55) return yesDir;
       if (mYesPct <= 45) return noDir;
     }
@@ -516,9 +524,14 @@ function renderMarkets5M() {
       const icon = sig.dir === 'UP' ? '▲' : '▼';
       return `<span class="${cls}" style="${sz}">${icon} ${sig.state}</span>`;
     }
-    function _fmtSignedPriceDelta(v) {
+    function _fmtSignedPriceDelta(v, sym) {
       if (!Number.isFinite(v)) return '—';
-      return `${v >= 0 ? '+' : '-'}${fmtPrice(Math.abs(v))}`;
+      // fmtPrice() picks decimals by magnitude, not by coin -- for a tiny
+      // delta near zero that always falls into its 8-decimal fallback branch
+      // regardless of coin. Use the same per-coin precision (DOGE=6, XRP=4,
+      // else=2) applied everywhere else PTB is shown instead.
+      const dp = /^DOGE$/i.test(sym) ? 6 : /^XRP$/i.test(sym) ? 4 : 2;
+      return `${v >= 0 ? '+' : '-'}$${Math.abs(v).toFixed(dp)}`;
     }
     function _confBar(prob) {
       if (prob == null) return '';
@@ -662,7 +675,7 @@ function renderMarkets5M() {
           })()}
           ${live5m ? `
             <div style="font-size:9px;color:${live5m.dir === 'UP' ? 'var(--color-green)' : 'var(--color-red)'};margin-top:5px;">
-              ${live5m.state} PTB by <strong>${_fmtSignedPriceDelta(live5m.delta)}</strong> (${(Math.abs(live5m.deltaPct) * 100).toFixed(3)}%)
+              ${live5m.state} PTB by <strong>${_fmtSignedPriceDelta(live5m.delta, sym)}</strong> (${(Math.abs(live5m.deltaPct) * 100).toFixed(3)}%)
             </div>
           ` : ''}
           ${(() => {
@@ -757,7 +770,9 @@ function renderMarkets5M() {
         let prob = normalCDF(z);
         
         // Strict real-time state anchor against live TWAP:
-        if (gap < 0 && (momDir !== 'UP' || h5Score <= 0)) {
+        if (remainingFrac < 0.22 && gap < 0) {
+          prob = Math.min(prob, 0.16);
+        } else if (gap < 0 && (momDir !== 'UP' || h5Score <= 0)) {
           // Live TWAP is BELOW PTB and tape is not breaking upward -> MUST be <= 40% YES (>= 60% NO)
           prob = Math.min(prob, 0.40);
         } else if (gap > 0 && (momDir !== 'DOWN' || h5Score >= 0)) {
@@ -1207,7 +1222,7 @@ function renderMarkets5M() {
             </div>
             <div style="display:flex;align-items:center;gap:8px;">
               ${p5 ? _liveSide(live5m, true) : ''}
-              ${live5m ? `<span id="p5-header-delta-${sym}" style="font-size:12px;color:var(--color-text-muted)">${_fmtSignedPriceDelta(live5m.delta)} vs PTB</span>` : combined5m != null ? `<span style="font-size:12px;color:var(--color-text-muted)">${_pct(combined5m)} UP odds</span>` : ''}
+              ${live5m ? `<span id="p5-header-delta-${sym}" style="font-size:12px;color:var(--color-text-muted)">${_fmtSignedPriceDelta(live5m.delta, sym)} vs PTB</span>` : combined5m != null ? `<span style="font-size:12px;color:var(--color-text-muted)">${_pct(combined5m)} UP odds</span>` : ''}
             </div>
           </div>
 

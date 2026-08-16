@@ -726,6 +726,10 @@ function formatOracleStrictBlock(snapshot) {
   const orbitalLine = om
     ? `Orbital momentum (SUPPLEMENTARY ONLY, not spot/PTB, do not quote as price): state=${om.structuralState ?? 'n/a'} oeq=${om.oeq ?? 'n/a'} confidence=${om.confidence ?? 'n/a'}`
     : null;
+  const tf = snapshot.temporalForecast || snapshot.polymarketOracle?.temporalForecast || null;
+  const forecastLine = (tf && tf.probUp != null)
+    ? `Temporal forecast (SUPPLEMENTARY ONLY, an internal quant model's own probability estimate — NOT Polymarket's odds, do not conflate): probUp=${(tf.probUp * 100).toFixed(1)}% probDown=${(tf.probDown * 100).toFixed(1)}% signal=${tf.signal ?? 'n/a'} secToExpiry=${tf.secToExpiry ?? 'n/a'}${tf.isDangerZone ? ' [DANGER ZONE — late window, pin risk]' : ''}${tf.isVolumeBacked ? ' [volume-backed]' : ' [low-conviction drift]'}`
+    : null;
   return `## ORACLE STRICT (MANDATORY — quote these numbers, never invent)
 Policy: PTB = Polymarket contract price-to-beat ONLY (Gamma / event page / chainlink-candles).
 Spot = Pyth only for path. Do NOT use Coinbase/Binance/RTI/Gecko as PTB or as a PTB substitute.
@@ -736,7 +740,7 @@ PTB source: ${source || (pending ? 'waiting-for-polymarket' : 'n/a')}
 Pyth spot: ${spotDisp || 'n/a'} (${spotSrc})
 Spot vs Polymarket PTB: ${delta != null ? deltaStr + ' (' + path + ')' : 'n/a'}
 RULE: In notes and rationales you MUST quote Polymarket PTB exactly as shown above (${decimals} decimals, e.g. ${display || '$62,814.80'}). Never write long floats like 62814.80096237142.
-If PTB is PENDING, say "PTB pending" and do not fabricate a dollar level.${orbitalLine ? '\n' + orbitalLine : ''}`.trim();
+If PTB is PENDING, say "PTB pending" and do not fabricate a dollar level.${orbitalLine ? '\n' + orbitalLine : ''}${forecastLine ? '\n' + forecastLine : ''}`.trim();
 }
 
 function resolveFiveMinTarget(snapshot) {
@@ -908,7 +912,7 @@ ORACLE LAW (NON-NEGOTIABLE):
 - The ONLY valid PTB is the number in the user message labeled "Polymarket PTB" / "Price-to-beat (fixed settlement target)" from Polymarket (source: event page, chainlink-candles, or Gamma priceToBeat).
 - NEVER invent a PTB from Pyth, Coinbase, Binance, RTI, Gecko, RTDS TWAP, or "about $X".
 - If the snapshot says PTB is PENDING / unavailable, say so and do not fabricate a dollar level.
-- When you cite PTB in notes, copy the formatted PTB exactly (BTC/ETH/SOL: 2 decimals; XRP/DOGE: 4). Never emit long floats (e.g. write $62,814.80 not $62814.80096237142).
+- When you cite PTB in notes, copy the formatted PTB exactly (BTC/ETH/SOL: 2 decimals; XRP: 4; DOGE: 6). Never emit long floats (e.g. write $62,814.80 not $62814.80096237142).
 
 SYSTEM CONTEXT YOU MUST INTERNALIZE:
 - Spot for path context is Pyth; settlement reference for the binary is Polymarket PTB.
@@ -978,7 +982,7 @@ CRITICAL RULES FOR HIGH SPECIALIZATION (DETERMINISTIC):
 - ai_wording fields must be concrete and timing-oriented (e.g. "edge best captured by selling into first 90s repricing if it moves 8bps toward PTB").
 - scalp_setups: optional high-quality micro-setups only.
 - snipe_plan: only set should_flip=true when the order-flow/tail-risk block genuinely supports a timed flip; otherwise should_flip=false and leave flip_to null.
-- broader_observations: Use ONLY when you have non-coin-specific value. Good examples: "Kafka stream shows synchronized selling pressure across majors", and — only when the PTB defense history section above has a nonzero testedCount — cite it directly, e.g. "PTB defense history: defended 2/3 times in the lookback window". Never fabricate a defense count when that section says none is recorded. Leave as "" if nothing material.
+- broader_observations: Cite the Cross-coin flow and PTB defense sections when they contain numbers. If sync is synchronized_bid or synchronized_offer, say so with the up/down counts. If matchedLevel/local5m/local15m testedCount > 0, cite defended/broken. Do not write "no cross-coin flow data" or "no PTB defense history" when those sections have n>=2 or testedCount>0. Leave "" only if both sections say not enough / none recorded.
 - Never invent PTB value. Never give multi-hour thesis. Stay inside the 5-minute binary resolution.
 - Output must be valid JSON that JSON.parse() succeeds on with zero surrounding text. Realistic scalper tone — measured, numbers-first, time-aware.`.trim();
 }
@@ -1069,11 +1073,26 @@ ${(function () {
   return `sessionMinutes=${sm.sessionMinutes ?? 0}, sampleCount=${sm.sampleCount ?? 0}, pathReturnPct=${sm.pathReturnPct ?? 'n/a'}, 15mWindows=${JSON.stringify(sm.windows15m || {})}, 1hWindows=${JSON.stringify(sm.windows1h || {})}, open15m=${JSON.stringify(sm.open15m || null)}, open1h=${JSON.stringify(sm.open1h || null)}, acc15=${JSON.stringify(sm.predAccuracy15m || {})}, acc1h=${JSON.stringify(sm.predAccuracy1h || {})}, note="${sm.note || ''}"`;
 })()}
 
-## PTB defense history (Firestore-backed, when available)
+## Cross-coin flow (live majors — this IS the cross-coin data; do not say none)
 ${(function () {
-  const stats = snapshot.sessionMemory && snapshot.sessionMemory.ptbDefenseStats;
-  if (!stats || !stats.testedCount) return 'none recorded yet for this level — do not claim any defense history.';
-  return `testedCount=${stats.testedCount}, defendedCount=${stats.defendedCount}, brokenCount=${stats.brokenCount}, defendRate=${stats.defendRate != null ? (stats.defendRate * 100).toFixed(0) + '%' : 'n/a'}`;
+  const flow = snapshot.sessionMemory && snapshot.sessionMemory.crossCoinFlow;
+  if (!flow || !flow.n) return 'not enough majors sampled yet.';
+  return `n=${flow.n} sync=${flow.sync} up=${flow.upCount} down=${flow.downCount} abovePtb5=${flow.abovePtb5} belowPtb5=${flow.belowPtb5} note="${flow.note}" coins=${JSON.stringify(flow.coins || [])}`;
+})()}
+
+## PTB defense history (local closed windows + Firestore when present)
+${(function () {
+  const sm = snapshot.sessionMemory || {};
+  const stats = sm.ptbDefenseStats;
+  const loc5 = sm.localPtbDefense5m;
+  const loc15 = sm.localPtbDefense15m;
+  const bits = [];
+  if (stats && stats.testedCount) {
+    bits.push(`matchedLevel: tested=${stats.testedCount} defended=${stats.defendedCount} broken=${stats.brokenCount} rate=${stats.defendRate != null ? (stats.defendRate * 100).toFixed(0) + '%' : 'n/a'} src=${stats.source || 'n/a'}`);
+  }
+  if (loc5 && loc5.testedCount) bits.push(`local5m: tested=${loc5.testedCount} defended=${loc5.defendedCount} broken=${loc5.brokenCount} last=${JSON.stringify(loc5.last)}`);
+  if (loc15 && loc15.testedCount) bits.push(`local15m: tested=${loc15.testedCount} defended=${loc15.defendedCount} broken=${loc15.brokenCount} last=${JSON.stringify(loc15.last)}`);
+  return bits.length ? bits.join(' | ') : 'none recorded yet for this level — do not invent a defense count.';
 })()}
 
 ## Grok 15m / hourly range calls (if available)
@@ -1246,6 +1265,7 @@ Return ONLY valid JSON:
 RULES:
 - suggestions.notes MUST start with UP or DOWN, then slug, mkt Up%, ttc, spot vs PTB, then 2–4 sentences of trader guidance (what to do now).
 - ai_wording.primary_rationale = fuller pre-contract brief (what changed, book, crowd).
+- broader_observations: use the Cross-coin flow and PTB defense blocks from the user message. Cite sync/up/down counts when n>=2. Cite defended/broken when testedCount>0. Do not write "no cross-coin flow" or "no PTB defense history" when those blocks have numbers.
 - polyPeg.slug must equal the active market's slug.
 - Valid JSON only.`.trim();
   }
@@ -1325,6 +1345,27 @@ Price-to-beat (quote this exactly): ${ptbForModel != null ? (ptbMeta.display || 
 samples=${mem.sampleCount ?? 0}, sessionMin=${mem.sessionMinutes ?? 0}, pathReturnPct=${mem.pathReturnPct ?? 'n/a'},
 open15m=${JSON.stringify(mem.open15m || null)}, closed15m=${JSON.stringify(mem.windows15m || {})},
 acc15=${JSON.stringify(mem.predAccuracy15m || {})}
+
+## Cross-coin flow (live majors — this IS the cross-coin data; do not say none)
+${(function () {
+  const flow = mem.crossCoinFlow;
+  if (!flow || !flow.n) return 'not enough majors sampled yet.';
+  return `n=${flow.n} sync=${flow.sync} up=${flow.upCount} down=${flow.downCount} abovePtb5=${flow.abovePtb5} belowPtb5=${flow.belowPtb5} note="${flow.note}" coins=${JSON.stringify(flow.coins || [])}`;
+})()}
+
+## PTB defense (local closed windows + Firestore when present)
+${(function () {
+  const stats = mem.ptbDefenseStats;
+  const loc5 = mem.localPtbDefense5m;
+  const loc15 = mem.localPtbDefense15m;
+  const bits = [];
+  if (stats && stats.testedCount) {
+    bits.push(`matchedLevel: tested=${stats.testedCount} defended=${stats.defendedCount} broken=${stats.brokenCount} rate=${stats.defendRate != null ? (stats.defendRate * 100).toFixed(0) + '%' : 'n/a'} src=${stats.source || 'n/a'}`);
+  }
+  if (loc5 && loc5.testedCount) bits.push(`local5m: tested=${loc5.testedCount} defended=${loc5.defendedCount} broken=${loc5.brokenCount} last=${JSON.stringify(loc5.last)}`);
+  if (loc15 && loc15.testedCount) bits.push(`local15m: tested=${loc15.testedCount} defended=${loc15.defendedCount} broken=${loc15.brokenCount} last=${JSON.stringify(loc15.last)}`);
+  return bits.length ? bits.join(' | ') : 'none recorded yet for this level — do not invent a defense count.';
+})()}
 
 ## X / chain (support)
 X score=${xs.score ?? 0} "${xs.summary || 'n/a'}"

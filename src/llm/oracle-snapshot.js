@@ -240,12 +240,49 @@
       if (typeof window === 'undefined' || !window.OrbitalSignal?.get) return null;
       const s = window.OrbitalSignal.get(sym);
       if (!s) return null;
+      let liveFeedAgeMs = null;
+      try {
+        const tick = window.OrbitalSignal.getLiveTick?.(sym, 's');
+        if (tick?.ts) liveFeedAgeMs = Date.now() - tick.ts;
+      } catch (_) { /* live Redis feed optional — Firestore-bridged fields above remain authoritative */ }
       return {
         structuralState: s.latest_state ?? null,
         oeq: s.latest_oeq ?? null,
         confidence: s.latest_confidence ?? null,
         quantumState: s.quantum_state ?? null,
         updatedAt: s.updated_at ?? null,
+        liveFeedAgeMs,
+      };
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /**
+   * Forward-looking probUp forecast from OrbitalEngine/TemporalEdge — a
+   * z-score/normal-CDF model of the 15m window's likely settlement direction
+   * that accounts for time-remaining decay (danger-zone/pin-risk tagging in
+   * the final 2min/30s). Runs entirely in-renderer (orbital-engine-driver.js),
+   * no Firestore round-trip. Non-authoritative supplementary signal — never
+   * spot/PTB, and distinct from both Polymarket's own odds and the AI's call.
+   */
+  function getTemporalForecast(sym) {
+    try {
+      if (typeof window === 'undefined' || !window.OrbitalEngine?.getState) return null;
+      const s = window.OrbitalEngine.getState(sym);
+      const te = s?.temporalEdge;
+      if (!te) return null;
+      return {
+        probUp: te.probUp ?? null,
+        probDown: te.probUp != null ? Math.round((1 - te.probUp) * 10000) / 10000 : null,
+        signal: te.metadataSignal ?? null,
+        secToExpiry: te.secToExpiry ?? null,
+        isDangerZone: !!te.isDangerZone,
+        isVolumeBacked: !!te.isVolumeBacked,
+        tags: te.tags || [],
+        oeq: s.oeq ?? null,
+        engineState: s.state ?? null,
+        updatedAt: s.ts ?? null,
       };
     } catch (_) {
       return null;
@@ -314,6 +351,7 @@
       hourlySource: hourly.source,
       // Supplementary only — never treated as spot/PTB/authoritative.
       orbitalMomentum: getOrbitalMomentum(key),
+      temporalForecast: getTemporalForecast(key),
       warnings: [
         ...(spot == null ? ['no_pyth_spot'] : []),
         ...(primary && primary.priceToBeatNum == null ? ['no_polymarket_ptb'] : []),
@@ -392,6 +430,9 @@
       // Supplementary momentum context from the orbital pipeline — never
       // spot/PTB, may be null (pipeline not running is a normal state).
       orbitalMomentum: o.orbitalMomentum,
+      // Forward-looking probUp/probDown forecast (OrbitalEngine/TemporalEdge)
+      // — supplementary, never spot/PTB, distinct from Polymarket's own odds.
+      temporalForecast: o.temporalForecast,
       // Explicit PTB block so models cannot invent
       polymarketOracle: {
         slug: o.slug,

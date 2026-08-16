@@ -1095,7 +1095,9 @@
   function translate(sym, pred, cfm) {
     var pm = window.PredictionMarkets && window.PredictionMarkets.getCoin && window.PredictionMarkets.getCoin(sym);
     var polyMarket = (pm && (pm.poly15m || pm.poly5m || pm.poly)) || null;
-    var kAlign = pred && pred.projections && pred.projections.p15 && (pred.projections.p15.polyAlign || pred.projections.p15.kalshiAlign) ? (pred.projections.p15.polyAlign || pred.projections.p15.kalshiAlign) : null;
+    var kAlign = pred && pred.projections && pred.projections.p15
+      ? (pred.projections.p15.polyAlign || pred.projections.p15.kalshiAlign)
+      : null;
     var strikeDirRaw = (kAlign && kAlign.strikeDir) || (polyMarket && polyMarket.strikeDir) || 'above';
     var strikeDir = strikeDirRaw === 'below' ? 'below' : 'above';
     var dirs = yesNoFromStrikeDir(strikeDir);
@@ -1142,10 +1144,23 @@
     var confidenceActive = (calibratedConfidence != null ? calibratedConfidence : 0) >= FINAL_MODEL_CONF_MIN_TRADE;
     var modelActive = !modelHardVeto && !signalGateBlocked && scoreActive && confidenceActive;
 
-    // DIRECTION FROM RAW MODEL ONLY — blockchain signals, not venue crowd odds
+    // Settlement direction: live TWAP vs PTB (CDF), not lagging CEX composite.
     var modelDir = null;
-    if (modelScore > MODEL_THRESHOLD) modelDir = 'UP';
-    else if (modelScore < -MODEL_THRESHOLD) modelDir = 'DOWN';
+    var cdfMsLeft = kAlign && Number.isFinite(kAlign.closeTimeMs)
+      ? kAlign.closeTimeMs - Date.now()
+      : (kAlign && Number.isFinite(kAlign.remainingMs) ? kAlign.remainingMs : null);
+    if (cdfMsLeft != null && cdfMsLeft < 90_000 && kAlign && Number.isFinite(kAlign.gapPct)) {
+      if (kAlign.gapPct > 0.02) modelDir = dirs.noDir;
+      else if (kAlign.gapPct < -0.02) modelDir = dirs.yesDir;
+    }
+    if (!modelDir && hasBinaryCdf) {
+      if (modelYesProb >= 0.55) modelDir = dirs.yesDir;
+      else if (modelYesProb <= 0.45) modelDir = dirs.noDir;
+    }
+    if (!modelDir) {
+      if (modelScore > MODEL_THRESHOLD) modelDir = 'UP';
+      else if (modelScore < -MODEL_THRESHOLD) modelDir = 'DOWN';
+    }
     var modelBullish = modelDir === 'UP';
     var venueDirHint = !polyActive ? null
       : polyYesPrice >= 0.55 ? dirs.yesDir

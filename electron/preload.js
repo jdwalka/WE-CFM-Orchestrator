@@ -512,6 +512,23 @@ contextBridge.exposeInMainWorld('_orbitalBroadcaster', {
   getOrbitalStatus: () => ipcRenderer.invoke('orbital:status'),
   restartOrbitalSystem: () => ipcRenderer.invoke('orbital:restart'),
   getSignal: (sym) => ipcRenderer.invoke('orbital:getSignal', sym),
+  getLatestTick: (type, asset) => ipcRenderer.invoke('orbital:getLatestTick', { type, asset }),
+  getRedisStatus: () => ipcRenderer.invoke('orbital:redisStatus'),
+  // Real-time push: main process forwards every Redis-subscribed orbital
+  // tick immediately (sub-second), no barrier/poll. Returns an unsubscribe fn.
+  onRedisTick: (callback) => {
+    if (typeof callback !== 'function') return () => {};
+    const handler = (_event, data) => callback(data);
+    ipcRenderer.on('orbital:redisTick', handler);
+    return () => ipcRenderer.removeListener('orbital:redisTick', handler);
+  },
+});
+
+// Warm tier for src/core/tiered-cache.js — plain Redis GET/SET/DEL.
+contextBridge.exposeInMainWorld('_tieredCacheWarm', {
+  get: (key) => ipcRenderer.invoke('tieredCache:warmGet', { key }),
+  set: (key, value, ttlMs) => ipcRenderer.invoke('tieredCache:warmSet', { key, value, ttlMs }),
+  del: (key) => ipcRenderer.invoke('tieredCache:warmDel', { key }),
 });
 
 // Grok memory bridge — session-memory ticks to Kafka, session snapshots +

@@ -60,6 +60,10 @@
         correlations: [],
         marketContexts: [],
         inferences: [],
+        // Cold tier for src/core/tiered-cache.js -- generic key/value bucket
+        // riding the same debounced multi-target sync as everything else in
+        // this file, instead of a new persistence path.
+        tieredCacheCold: {},
         lastSyncTime: Date.now(),
       };
 
@@ -454,6 +458,37 @@
       }
 
       return record;
+    }
+
+    /**
+     * Cold tier for src/core/tiered-cache.js. Debounced (same _syncAllDrives
+     * path as predictions/settlements/etc, so a write here doesn't trigger an
+     * extra immediate multi-target rewrite) and mirrored to localStorage for
+     * an instant same-session read.
+     */
+    setCold(key, value) {
+      if (!key) return;
+      this.data.tieredCacheCold[key] = { value, ts: Date.now() };
+      this._syncAllDrives();
+      if (typeof window !== 'undefined' && window.localStorage) {
+        try {
+          localStorage.setItem(`tiered-cache-cold:${key}`, JSON.stringify(this.data.tieredCacheCold[key]));
+        } catch (e) {
+          console.warn('[MultiDriveCache] localStorage cold write failed:', e.message);
+        }
+      }
+    }
+
+    getCold(key) {
+      const entry = this.data.tieredCacheCold[key];
+      if (entry) return entry;
+      if (typeof window !== 'undefined' && window.localStorage) {
+        try {
+          const raw = localStorage.getItem(`tiered-cache-cold:${key}`);
+          if (raw) return JSON.parse(raw);
+        } catch (_) { /* corrupt/unavailable localStorage entry — treat as miss */ }
+      }
+      return null;
     }
 
     /**

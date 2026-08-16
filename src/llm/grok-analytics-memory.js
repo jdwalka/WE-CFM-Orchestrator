@@ -10,7 +10,7 @@
 (function () {
   'use strict';
 
-  const COINS = ['BTC', 'ETH', 'SOL', 'XRP'];
+  const COINS = ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'BNB', 'HYPE'];
   const SAMPLE_MS = 20_000;
   const MAX_SAMPLES_PER_COIN = 2_400; // ~13h at 20s
   const MAX_WINDOWS_PER_COIN = 120;
@@ -29,7 +29,9 @@
     open15m: Object.fromEntries(COINS.map((c) => [c, null])),
     open1h: Object.fromEntries(COINS.map((c) => [c, null])),
     windowsPTB5m: Object.fromEntries(COINS.map((c) => [c, []])),
+    windowsPTB15m: Object.fromEntries(COINS.map((c) => [c, []])),
     openPtb5m: Object.fromEntries(COINS.map((c) => [c, null])),
+    openPtb15m: Object.fromEntries(COINS.map((c) => [c, null])),
     predictions: Object.fromEntries(COINS.map((c) => [c, { '15m': [], '60m': [] }])),
     lastSampleTs: 0,
     sampleTicks: 0,
@@ -127,6 +129,7 @@
       poly5Up: poly5.upProb ?? poly5.probability ?? null,
       poly15Up: poly15.probability ?? k15.probability ?? null,
       ptb5: Number(poly5.priceToBeatNum || poly5.targetPriceNum) || null,
+      ptb15: Number(poly15.priceToBeatNum || poly15.targetPriceNum) || null,
       xScore: xSent && xSent.score != null ? Number(xSent.score) : null,
       onChainLean: onChain && (onChain.lean || onChain.netBias || onChain.side) || null,
     };
@@ -295,6 +298,122 @@
     open.sampleCount = (open.sampleCount || 0) + 1;
   }
 
+  function updatePtbWindow15(coin, now, price, ptb) {
+    if (!(price > 0)) return;
+    if (!_state.windowsPTB15m[coin]) _state.windowsPTB15m[coin] = [];
+    const start = floorWindow(now, 15 * 60_000);
+    const open = _state.openPtb15m[coin];
+    if (!open || open.start !== start) {
+      if (open && open.ptb > 0) {
+        const sideOpen = _sideOfPtb(open.open, open.ptb);
+        const sideClose = _sideOfPtb(open.close, open.ptb);
+        const closed = {
+          sym: coin,
+          windowStart: open.start,
+          windowEnd: open.start + 15 * 60_000,
+          horizon: '15m',
+          ptb: open.ptb,
+          open: open.open,
+          high: open.high,
+          low: open.low,
+          close: open.close,
+          sideOpen,
+          sideClose,
+          outcome: sideOpen === sideClose ? 'DEFENDED' : 'BROKEN',
+          distanceOpenBps: _bpsFromPtb(open.open, open.ptb),
+          distanceCloseBps: _bpsFromPtb(open.close, open.ptb),
+          crossCount: open.crossCount || 0,
+          sampleCount: open.sampleCount || 0,
+        };
+        pushCapped(_state.windowsPTB15m[coin], closed, MAX_WINDOWS_PER_COIN);
+      }
+      if (ptb > 0) {
+        _state.openPtb15m[coin] = {
+          start, ptb, open: price, high: price, low: price, close: price,
+          sampleCount: 1, crossCount: 0, lastSide: _sideOfPtb(price, ptb),
+        };
+      } else {
+        _state.openPtb15m[coin] = null;
+      }
+      return;
+    }
+    const side = _sideOfPtb(price, open.ptb);
+    if (open.lastSide && side !== open.lastSide) open.crossCount = (open.crossCount || 0) + 1;
+    open.lastSide = side;
+    open.high = Math.max(open.high, price);
+    open.low = Math.min(open.low, price);
+    open.close = price;
+    open.sampleCount = (open.sampleCount || 0) + 1;
+  }
+
+  function summarizePtbWindows(list, nearPtb) {
+    const rows = Array.isArray(list) ? list : [];
+    const filtered = Number.isFinite(nearPtb) && nearPtb > 0
+      ? rows.filter((w) => w.ptb > 0 && Math.abs(w.ptb - nearPtb) / nearPtb <= PTB_DEFENSE_TOLERANCE_FRAC)
+      : rows;
+    const n = filtered.length;
+    if (!n) {
+      return { testedCount: 0, defendedCount: 0, brokenCount: 0, defendRate: null, source: 'local', last: null };
+    }
+    const defended = filtered.filter((w) => w.outcome === 'DEFENDED').length;
+    const last = filtered[filtered.length - 1];
+    return {
+      testedCount: n,
+      defendedCount: defended,
+      brokenCount: n - defended,
+      defendRate: defended / n,
+      source: 'local-windows',
+      last: last ? {
+        outcome: last.outcome,
+        sideOpen: last.sideOpen,
+        sideClose: last.sideClose,
+        ptb: last.ptb,
+        crossCount: last.crossCount,
+      } : null,
+    };
+  }
+
+  function buildCrossCoinFlow() {
+    const coins = [];
+    for (const c of COINS) {
+      const samples = _state.samples[c] || [];
+      const last = samples[samples.length - 1];
+      if (!last || !(last.price > 0)) continue;
+      const prev = samples.length >= 6 ? samples[samples.length - 6] : samples[0];
+      const ret = prev && prev.price > 0 ? ((last.price - prev.price) / prev.price) * 100 : null;
+      coins.push({
+        coin: c,
+        retPct: ret != null ? Number(ret.toFixed(4)) : null,
+        dir: last.direction || null,
+        poly5Up: last.poly5Up,
+        poly15Up: last.poly15Up,
+        onChainLean: last.onChainLean || null,
+        vsPtb5: last.ptb5 && last.price ? (last.price >= last.ptb5 ? 'ABOVE' : 'BELOW') : null,
+        vsPtb15: last.ptb15 && last.price ? (last.price >= last.ptb15 ? 'ABOVE' : 'BELOW') : null,
+      });
+    }
+    const withRet = coins.filter((x) => Number.isFinite(x.retPct));
+    const upN = withRet.filter((x) => x.retPct > 0.015).length;
+    const dnN = withRet.filter((x) => x.retPct < -0.015).length;
+    const below5 = coins.filter((x) => x.vsPtb5 === 'BELOW').length;
+    const above5 = coins.filter((x) => x.vsPtb5 === 'ABOVE').length;
+    let sync = 'mixed';
+    if (withRet.length >= 3 && upN >= withRet.length - 1) sync = 'synchronized_bid';
+    else if (withRet.length >= 3 && dnN >= withRet.length - 1) sync = 'synchronized_offer';
+    return {
+      n: coins.length,
+      sync,
+      upCount: upN,
+      downCount: dnN,
+      abovePtb5: above5,
+      belowPtb5: below5,
+      coins,
+      note: coins.length < 2
+        ? 'Insufficient majors sampled for cross-coin flow.'
+        : `${sync}: ${upN} up / ${dnN} down over last ~2m; 5m PTB side ${above5} above / ${below5} below.`,
+    };
+  }
+
   function tick() {
     const now = Date.now();
     _state.sampleTicks += 1;
@@ -306,6 +425,7 @@
       updateOpenWindow(_state.windows15m, _state.open15m, coin, now, s.price, 15 * 60_000);
       updateOpenWindow(_state.windows1h, _state.open1h, coin, now, s.price, 60 * 60_000);
       updatePtbWindow(coin, now, s.price, s.ptb5);
+      updatePtbWindow15(coin, now, s.price, s.ptb15);
       const bridge = _grokBridge();
       if (bridge && typeof bridge.pushTick === 'function') {
         try { bridge.pushTick(coin, s); } catch (_) {}
@@ -325,13 +445,22 @@
         windows15m: {},
         windows1h: {},
         predictions: _state.predictions,
+        windowsPTB5m: {},
+        windowsPTB15m: {},
       };
       for (const c of COINS) {
         slim.samples[c] = (_state.samples[c] || []).slice(-120);
         slim.windows15m[c] = (_state.windows15m[c] || []).slice(-48);
         slim.windows1h[c] = (_state.windows1h[c] || []).slice(-24);
+        slim.windowsPTB5m[c] = (_state.windowsPTB5m[c] || []).slice(-96);
+        slim.windowsPTB15m[c] = (_state.windowsPTB15m[c] || []).slice(-48);
       }
       localStorage.setItem(STORAGE_KEY, JSON.stringify(slim));
+      try {
+        if (typeof window !== 'undefined' && window.TieredCache && typeof window.TieredCache.set === 'function') {
+          window.TieredCache.set(STORAGE_KEY, slim, { tier: 'all', ttlMs: 6 * 60 * 60_000 });
+        }
+      } catch (_) {}
     } catch (_) {}
 
     // Fan out a durable per-coin snapshot to Firestore (via the bridge) so
@@ -375,8 +504,39 @@
             if (slim.predictions && slim.predictions[c]) {
               _state.predictions[c] = slim.predictions[c];
             }
+            if (Array.isArray(slim.windowsPTB5m && slim.windowsPTB5m[c])) {
+              _state.windowsPTB5m[c] = slim.windowsPTB5m[c].slice(-MAX_PTB_WINDOWS_PER_COIN);
+            }
+            if (Array.isArray(slim.windowsPTB15m && slim.windowsPTB15m[c])) {
+              _state.windowsPTB15m[c] = slim.windowsPTB15m[c].slice(-MAX_WINDOWS_PER_COIN);
+            }
           }
           _state.sampleTicks = Number(slim.sampleTicks) || _state.sampleTicks;
+        }
+      }
+    } catch (_) {}
+
+    try {
+      if (typeof window !== 'undefined' && window.TieredCache && typeof window.TieredCache.get === 'function') {
+        const empty = COINS.every((c) => !(_state.windowsPTB5m[c] || []).length && !(_state.windows15m[c] || []).length);
+        if (empty) {
+          window.TieredCache.get(STORAGE_KEY, { hotTtlMs: 120_000 }).then((slim) => {
+            if (!slim || typeof slim !== 'object') return;
+            for (const c of COINS) {
+              if (!(_state.samples[c] || []).length && Array.isArray(slim.samples && slim.samples[c])) {
+                _state.samples[c] = slim.samples[c].slice(-MAX_SAMPLES_PER_COIN);
+              }
+              if (!(_state.windows15m[c] || []).length && Array.isArray(slim.windows15m && slim.windows15m[c])) {
+                _state.windows15m[c] = slim.windows15m[c].slice(-MAX_WINDOWS_PER_COIN);
+              }
+              if (!(_state.windowsPTB5m[c] || []).length && Array.isArray(slim.windowsPTB5m && slim.windowsPTB5m[c])) {
+                _state.windowsPTB5m[c] = slim.windowsPTB5m[c].slice(-MAX_PTB_WINDOWS_PER_COIN);
+              }
+              if (!(_state.windowsPTB15m[c] || []).length && Array.isArray(slim.windowsPTB15m && slim.windowsPTB15m[c])) {
+                _state.windowsPTB15m[c] = slim.windowsPTB15m[c].slice(-MAX_WINDOWS_PER_COIN);
+              }
+            }
+          }).catch(() => {});
         }
       }
     } catch (_) {}
@@ -485,18 +645,30 @@
       } : null,
       predAccuracy15m: predictionAccuracy(coin, '15m'),
       predAccuracy1h: predictionAccuracy(coin, '60m'),
+      localPtbDefense5m: summarizePtbWindows(_state.windowsPTB5m[coin], Number(opts.ptb5 || opts.ptb)),
+      localPtbDefense15m: summarizePtbWindows(_state.windowsPTB15m[coin], Number(opts.ptb15 || opts.ptb)),
+      crossCoinFlow: buildCrossCoinFlow(),
       ptbDefenseStats: (() => {
+        const wantPtb = Number(opts.ptb5 || opts.ptb);
         const cached = _ptbDefenseCache[coin];
-        const wantPtb = Number(opts.ptb);
-        if (!cached || !Number.isFinite(wantPtb) || wantPtb <= 0 || !(cached.ptb > 0)) return null;
-        if (Math.abs(cached.ptb - wantPtb) / wantPtb > PTB_DEFENSE_TOLERANCE_FRAC) return null;
-        return {
-          testedCount: cached.testedCount,
-          defendedCount: cached.defendedCount,
-          brokenCount: cached.brokenCount,
-          defendRate: cached.defendRate,
-          asOf: cached.fetchedAt,
-        };
+        if (cached && Number.isFinite(wantPtb) && wantPtb > 0 && cached.ptb > 0
+          && Math.abs(cached.ptb - wantPtb) / wantPtb <= PTB_DEFENSE_TOLERANCE_FRAC
+          && cached.testedCount) {
+          return {
+            testedCount: cached.testedCount,
+            defendedCount: cached.defendedCount,
+            brokenCount: cached.brokenCount,
+            defendRate: cached.defendRate,
+            asOf: cached.fetchedAt,
+            source: 'firestore',
+          };
+        }
+        const local = summarizePtbWindows(
+          [...(_state.windowsPTB5m[coin] || []), ...(_state.windowsPTB15m[coin] || [])],
+          wantPtb
+        );
+        if (!local.testedCount) return null;
+        return local;
       })(),
       note: samples.length < 6
         ? 'Thin session memory — treat HTF bias cautiously until more samples accumulate.'
@@ -545,6 +717,8 @@
         samples: (_state.samples[c] || []).length,
         windows15m: (_state.windows15m[c] || []).length,
         windows1h: (_state.windows1h[c] || []).length,
+        ptb5: (_state.windowsPTB5m[c] || []).length,
+        ptb15: (_state.windowsPTB15m[c] || []).length,
         acc15: predictionAccuracy(c, '15m'),
         acc60: predictionAccuracy(c, '60m'),
       };
