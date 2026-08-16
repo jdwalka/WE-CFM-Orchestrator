@@ -912,7 +912,7 @@ ORACLE LAW (NON-NEGOTIABLE):
 - The ONLY valid PTB is the number in the user message labeled "Polymarket PTB" / "Price-to-beat (fixed settlement target)" from Polymarket (source: event page, chainlink-candles, or Gamma priceToBeat).
 - NEVER invent a PTB from Pyth, Coinbase, Binance, RTI, Gecko, RTDS TWAP, or "about $X".
 - If the snapshot says PTB is PENDING / unavailable, say so and do not fabricate a dollar level.
-- When you cite PTB in notes, copy the formatted PTB exactly (BTC/ETH/SOL: 2 decimals; XRP/DOGE: 4). Never emit long floats (e.g. write $62,814.80 not $62814.80096237142).
+- When you cite PTB in notes, copy the formatted PTB exactly (BTC/ETH/SOL: 2 decimals; XRP: 4; DOGE: 6). Never emit long floats (e.g. write $62,814.80 not $62814.80096237142).
 
 SYSTEM CONTEXT YOU MUST INTERNALIZE:
 - Spot for path context is Pyth; settlement reference for the binary is Polymarket PTB.

@@ -137,10 +137,10 @@
     const rawPtb = Number(m.priceToBeatNum || m.targetPriceNum || 0);
     const ptbSource = m.priceToBeatSource || m.ptbSource || null;
     const ptbOk = Number.isFinite(rawPtb) && rawPtb > 0 && isCanonicalPtbSource(ptbSource);
-    // Coin decimals: BTC/SOL=2, XRP=4 — never pass float trails to AI
+    // Coin decimals: BTC/SOL=2, XRP=4, DOGE=6 — never pass float trails to AI
     const roundPtb = (n) => {
       if (!Number.isFinite(n) || n <= 0) return null;
-      const d = /^(XRP|DOGE)$/i.test(sym) ? 4 : 2;
+      const d = /^DOGE$/i.test(sym) ? 6 : /^XRP$/i.test(sym) ? 4 : 2;
       const f = 10 ** d;
       return Math.round(n * f) / f;
     };
@@ -420,7 +420,7 @@
         s = s.replace(/\$\s*([0-9]{1,3}(?:,[0-9]{3})*|[0-9]+)\.([0-9]{3,})/g, (full, intP, frac) => {
           const raw = Number(String(intP).replace(/,/g, '') + '.' + frac);
           if (!Number.isFinite(raw) || raw <= 0) return full;
-          const d = /^(XRP|DOGE)$/i.test(sym) ? 4 : 2;
+          const d = /^DOGE$/i.test(sym) ? 6 : /^XRP$/i.test(sym) ? 4 : 2;
           const f = 10 ** d;
           const n = Math.round(raw * f) / f;
           return '$' + n.toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });

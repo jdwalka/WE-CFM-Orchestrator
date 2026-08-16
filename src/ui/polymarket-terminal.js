@@ -171,7 +171,7 @@
     const fmtUsd = (v) => {
       const n = Number(v);
       if (!Number.isFinite(n) || n <= 0) return null;
-      const d = /^(XRP|DOGE)$/i.test(_activeSymbol) ? 4 : 2;
+      const d = /^DOGE$/i.test(_activeSymbol) ? 6 : /^XRP$/i.test(_activeSymbol) ? 4 : 2;
       return '$' + n.toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
     };
     const targetPrice = poly5m.targetPrice
