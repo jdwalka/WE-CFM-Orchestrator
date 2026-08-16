@@ -314,12 +314,20 @@ function fmtSignedPct(n, dp = 2) {
 
 function predictionDirection(pred, fallback = 0) {
     if (!pred) return fallback;
-    const kalshiAlign = pred.projections?.p15?.kalshiAlign;
+    const kalshiAlign = pred.projections?.p15?.polyAlign || pred.projections?.p15?.kalshiAlign;
     const mYesPct = Number.isFinite(kalshiAlign?.modelYesPct) ? kalshiAlign.modelYesPct : null;
+    const msLeft = Number.isFinite(kalshiAlign?.closeTimeMs)
+      ? kalshiAlign.closeTimeMs - Date.now()
+      : (Number.isFinite(kalshiAlign?.remainingMs) ? kalshiAlign.remainingMs : null);
+    const strikeDir = kalshiAlign?.strikeDir === 'below' ? 'below' : 'above';
+    const yesDir = strikeDir === 'below' ? -1 : 1;
+    const noDir = -yesDir;
+    // Last 90s: live gap vs PTB wins over lagging composite score.
+    if (msLeft != null && msLeft < 90_000 && Number.isFinite(kalshiAlign?.gapPct)) {
+      if (kalshiAlign.gapPct > 0.02) return noDir;
+      if (kalshiAlign.gapPct < -0.02) return yesDir;
+    }
     if (mYesPct != null) {
-      const strikeDir = kalshiAlign?.strikeDir === 'below' ? 'below' : 'above';
-      const yesDir = strikeDir === 'below' ? -1 : 1;
-      const noDir = -yesDir;
       if (mYesPct >= 55) return yesDir;
       if (mYesPct <= 45) return noDir;
     }
@@ -762,7 +770,9 @@ function renderMarkets5M() {
         let prob = normalCDF(z);
         
         // Strict real-time state anchor against live TWAP:
-        if (gap < 0 && (momDir !== 'UP' || h5Score <= 0)) {
+        if (remainingFrac < 0.22 && gap < 0) {
+          prob = Math.min(prob, 0.16);
+        } else if (gap < 0 && (momDir !== 'UP' || h5Score <= 0)) {
           // Live TWAP is BELOW PTB and tape is not breaking upward -> MUST be <= 40% YES (>= 60% NO)
           prob = Math.min(prob, 0.40);
         } else if (gap > 0 && (momDir !== 'DOWN' || h5Score >= 0)) {

@@ -29,7 +29,7 @@ function predictionCard(p) {
     const kalshiProb = _poly15mV?.probability ?? _k15mV?.probability ?? _k15mCV?.combinedProb ?? null;
     const kalshiPct = kalshiProb !== null ? Math.round(kalshiProb * 100) : null;
     const kalshiEdge = kalshiProb !== null ? Math.abs(kalshiProb - 0.5) : null;
-    let _kAlignEarly = p.projections?.p15?.kalshiAlign ?? null;
+    let _kAlignEarly = p.projections?.p15?.polyAlign ?? p.projections?.p15?.kalshiAlign ?? null;
     if (_kAlignEarly && _k15mV && _kAlignEarly.ticker && _k15mV.ticker && _kAlignEarly.ticker !== _k15mV.ticker) {
       _kAlignEarly = null;
     }
@@ -135,9 +135,12 @@ function predictionCard(p) {
     const scoreStr = Number.isFinite(p.score) ? (p.score > 0 ? '+' : '') + p.score.toFixed(2) : '—';
 
     // ── Pre-compute model probability (outer scope — used in verdict banner + comparison bar) ──
-    const _modelUpPct = Math.round(Math.min(99, Math.max(1, 50 + (p.score || 0) * 50)));
+    const _cdfYesPct = Number.isFinite(_kAlignEarly?.modelYesPct) ? _kAlignEarly.modelYesPct : null;
+    const _modelUpPct = _cdfYesPct != null
+      ? Math.round(_cdfYesPct)
+      : Math.round(Math.min(99, Math.max(1, 50 + (p.score || 0) * 50)));
     const _modelDownPct = 100 - _modelUpPct;
-    const _modelYesPctCard = _kAlignEarly?.modelYesPct ?? (_strikeDirEarly === 'below' ? _modelDownPct : _modelUpPct);
+    const _modelYesPctCard = _cdfYesPct ?? (_strikeDirEarly === 'below' ? _modelDownPct : _modelUpPct);
     const _modelProbStr = verdictDir === 'up' ? `${_modelUpPct}% UP`
       : verdictDir === 'down' ? `${_modelDownPct}% DOWN` : 'NEUTRAL';
     const _modelProbColor = verdictDir === 'up' ? 'var(--color-green)'

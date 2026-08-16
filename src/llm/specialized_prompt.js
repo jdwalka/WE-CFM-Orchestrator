@@ -982,7 +982,7 @@ CRITICAL RULES FOR HIGH SPECIALIZATION (DETERMINISTIC):
 - ai_wording fields must be concrete and timing-oriented (e.g. "edge best captured by selling into first 90s repricing if it moves 8bps toward PTB").
 - scalp_setups: optional high-quality micro-setups only.
 - snipe_plan: only set should_flip=true when the order-flow/tail-risk block genuinely supports a timed flip; otherwise should_flip=false and leave flip_to null.
-- broader_observations: Use ONLY when you have non-coin-specific value drawn from the actual data given to you above — never invent or verify against the illustrative formats below, and never echo their wording. Format examples only (not real data, not something to check "is this true?" against): a cross-coin flow observation phrased like "<source> shows synchronized selling pressure across majors" IF you were actually given cross-coin flow data above (if you were not, do not mention Kafka, cross-coin flow, or synchronized pressure at all — leave this "" instead); OR — only when the PTB defense history section above has a nonzero testedCount — cite it directly, e.g. "PTB defense history: defended 2/3 times in the lookback window". Never fabricate a defense count when that section says none is recorded. Leave as "" if nothing material.
+- broader_observations: Cite the Cross-coin flow and PTB defense sections when they contain numbers. If sync is synchronized_bid or synchronized_offer, say so with the up/down counts. If matchedLevel/local5m/local15m testedCount > 0, cite defended/broken. Do not write "no cross-coin flow data" or "no PTB defense history" when those sections have n>=2 or testedCount>0. Leave "" only if both sections say not enough / none recorded.
 - Never invent PTB value. Never give multi-hour thesis. Stay inside the 5-minute binary resolution.
 - Output must be valid JSON that JSON.parse() succeeds on with zero surrounding text. Realistic scalper tone — measured, numbers-first, time-aware.`.trim();
 }
@@ -1073,11 +1073,26 @@ ${(function () {
   return `sessionMinutes=${sm.sessionMinutes ?? 0}, sampleCount=${sm.sampleCount ?? 0}, pathReturnPct=${sm.pathReturnPct ?? 'n/a'}, 15mWindows=${JSON.stringify(sm.windows15m || {})}, 1hWindows=${JSON.stringify(sm.windows1h || {})}, open15m=${JSON.stringify(sm.open15m || null)}, open1h=${JSON.stringify(sm.open1h || null)}, acc15=${JSON.stringify(sm.predAccuracy15m || {})}, acc1h=${JSON.stringify(sm.predAccuracy1h || {})}, note="${sm.note || ''}"`;
 })()}
 
-## PTB defense history (Firestore-backed, when available)
+## Cross-coin flow (live majors — this IS the cross-coin data; do not say none)
 ${(function () {
-  const stats = snapshot.sessionMemory && snapshot.sessionMemory.ptbDefenseStats;
-  if (!stats || !stats.testedCount) return 'none recorded yet for this level — do not claim any defense history.';
-  return `testedCount=${stats.testedCount}, defendedCount=${stats.defendedCount}, brokenCount=${stats.brokenCount}, defendRate=${stats.defendRate != null ? (stats.defendRate * 100).toFixed(0) + '%' : 'n/a'}`;
+  const flow = snapshot.sessionMemory && snapshot.sessionMemory.crossCoinFlow;
+  if (!flow || !flow.n) return 'not enough majors sampled yet.';
+  return `n=${flow.n} sync=${flow.sync} up=${flow.upCount} down=${flow.downCount} abovePtb5=${flow.abovePtb5} belowPtb5=${flow.belowPtb5} note="${flow.note}" coins=${JSON.stringify(flow.coins || [])}`;
+})()}
+
+## PTB defense history (local closed windows + Firestore when present)
+${(function () {
+  const sm = snapshot.sessionMemory || {};
+  const stats = sm.ptbDefenseStats;
+  const loc5 = sm.localPtbDefense5m;
+  const loc15 = sm.localPtbDefense15m;
+  const bits = [];
+  if (stats && stats.testedCount) {
+    bits.push(`matchedLevel: tested=${stats.testedCount} defended=${stats.defendedCount} broken=${stats.brokenCount} rate=${stats.defendRate != null ? (stats.defendRate * 100).toFixed(0) + '%' : 'n/a'} src=${stats.source || 'n/a'}`);
+  }
+  if (loc5 && loc5.testedCount) bits.push(`local5m: tested=${loc5.testedCount} defended=${loc5.defendedCount} broken=${loc5.brokenCount} last=${JSON.stringify(loc5.last)}`);
+  if (loc15 && loc15.testedCount) bits.push(`local15m: tested=${loc15.testedCount} defended=${loc15.defendedCount} broken=${loc15.brokenCount} last=${JSON.stringify(loc15.last)}`);
+  return bits.length ? bits.join(' | ') : 'none recorded yet for this level — do not invent a defense count.';
 })()}
 
 ## Grok 15m / hourly range calls (if available)
@@ -1250,6 +1265,7 @@ Return ONLY valid JSON:
 RULES:
 - suggestions.notes MUST start with UP or DOWN, then slug, mkt Up%, ttc, spot vs PTB, then 2–4 sentences of trader guidance (what to do now).
 - ai_wording.primary_rationale = fuller pre-contract brief (what changed, book, crowd).
+- broader_observations: use the Cross-coin flow and PTB defense blocks from the user message. Cite sync/up/down counts when n>=2. Cite defended/broken when testedCount>0. Do not write "no cross-coin flow" or "no PTB defense history" when those blocks have numbers.
 - polyPeg.slug must equal the active market's slug.
 - Valid JSON only.`.trim();
   }
@@ -1329,6 +1345,27 @@ Price-to-beat (quote this exactly): ${ptbForModel != null ? (ptbMeta.display || 
 samples=${mem.sampleCount ?? 0}, sessionMin=${mem.sessionMinutes ?? 0}, pathReturnPct=${mem.pathReturnPct ?? 'n/a'},
 open15m=${JSON.stringify(mem.open15m || null)}, closed15m=${JSON.stringify(mem.windows15m || {})},
 acc15=${JSON.stringify(mem.predAccuracy15m || {})}
+
+## Cross-coin flow (live majors — this IS the cross-coin data; do not say none)
+${(function () {
+  const flow = mem.crossCoinFlow;
+  if (!flow || !flow.n) return 'not enough majors sampled yet.';
+  return `n=${flow.n} sync=${flow.sync} up=${flow.upCount} down=${flow.downCount} abovePtb5=${flow.abovePtb5} belowPtb5=${flow.belowPtb5} note="${flow.note}" coins=${JSON.stringify(flow.coins || [])}`;
+})()}
+
+## PTB defense (local closed windows + Firestore when present)
+${(function () {
+  const stats = mem.ptbDefenseStats;
+  const loc5 = mem.localPtbDefense5m;
+  const loc15 = mem.localPtbDefense15m;
+  const bits = [];
+  if (stats && stats.testedCount) {
+    bits.push(`matchedLevel: tested=${stats.testedCount} defended=${stats.defendedCount} broken=${stats.brokenCount} rate=${stats.defendRate != null ? (stats.defendRate * 100).toFixed(0) + '%' : 'n/a'} src=${stats.source || 'n/a'}`);
+  }
+  if (loc5 && loc5.testedCount) bits.push(`local5m: tested=${loc5.testedCount} defended=${loc5.defendedCount} broken=${loc5.brokenCount} last=${JSON.stringify(loc5.last)}`);
+  if (loc15 && loc15.testedCount) bits.push(`local15m: tested=${loc15.testedCount} defended=${loc15.defendedCount} broken=${loc15.brokenCount} last=${JSON.stringify(loc15.last)}`);
+  return bits.length ? bits.join(' | ') : 'none recorded yet for this level — do not invent a defense count.';
+})()}
 
 ## X / chain (support)
 X score=${xs.score ?? 0} "${xs.summary || 'n/a'}"
