@@ -20,6 +20,9 @@
   let _apiKeyResolved = false;
   let _apiKeyResolveInFlight = null;
   let _authRejectedUntil = 0; // backoff after 401/403 so we don't hot-loop
+  let _rateLimitedUntil = 0; // backoff after 429 -- whale-alert.io's limit is per API key
+                              // (shared across chains), so this is global, not per-chain.
+  const RATE_LIMIT_BACKOFF_MS = 60_000; // used when the API doesn't send Retry-After
 
   const CHAIN_MAP = {
     BTC: 'bitcoin',
@@ -207,6 +210,11 @@
         return _whaleCache.get(chain)?.txs || [];
       }
 
+      // 429 backoff — avoid re-triggering the rate limit every 20s poll tick
+      if (Date.now() < _rateLimitedUntil) {
+        return _whaleCache.get(chain)?.txs || [];
+      }
+
       // Rate limit check
       const lastFetch = _rateLimits.lastFetch[chain] || 0;
       if (Date.now() - lastFetch < _rateLimits.minInterval) {
@@ -251,6 +259,17 @@
           _apiKey = '';
           _reportHealth(false, res.status, `upstream API reject ${res.status} — check secrets/WHALE_ALERT_API.txt`);
           console.warn(`[WhaleAlert] ${res.status} auth reject — backoff 15m`);
+        } else if (res.status === 429) {
+          // Was previously unhandled: no cooldown meant every chain re-hit the same
+          // rate limit on the next 20s poll tick, indefinitely. whale-alert.io's
+          // limit is per API key (shared across all chains), so back off globally.
+          const retryAfterSec = Number(res.headers.get('Retry-After'));
+          const backoffMs = Number.isFinite(retryAfterSec) && retryAfterSec > 0
+            ? retryAfterSec * 1000
+            : RATE_LIMIT_BACKOFF_MS;
+          _rateLimitedUntil = Date.now() + backoffMs;
+          _reportHealth(false, res.status, `rate limited — backoff ${Math.round(backoffMs / 1000)}s`);
+          console.warn(`[WhaleAlert] 429 rate limited — backoff ${Math.round(backoffMs / 1000)}s`);
         } else {
           _reportHealth(false, res.status, `HTTP ${res.status}`);
         }
