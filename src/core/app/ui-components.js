@@ -419,10 +419,11 @@ function predictionCard(p) {
       const _gapRaw = _kAlign?.gapPct ?? null;
       const _gapDollar = (_kAlign?.ref != null && p.price > 0)
         ? (_kAlign.ref - p.price) : null;
+      const _gapDec = /^DOGE$/i.test(p.sym) ? 6 : /^XRP$/i.test(p.sym) ? 4 : 2;
       const _borderline = _gapRaw !== null && Math.abs(_gapRaw) < 0.12; // within 0.12% of strike
       const gapLine = _gapRaw !== null && Math.abs(_gapRaw) > 0.001
         ? ` <span class="k15-gap ${_gapRaw > 0 ? 'k15-gap-up' : 'k15-gap-down'} ${_borderline ? 'k15-borderline' : ''}">` +
-        `${_gapRaw > 0 ? '▲' : '▼'} ${_gapDollar !== null ? '$' + Math.abs(_gapDollar).toFixed(4) + ' ' : ''}` +
+        `${_gapRaw > 0 ? '▲' : '▼'} ${_gapDollar !== null ? '$' + Math.abs(_gapDollar).toFixed(_gapDec) + ' ' : ''}` +
         `(${_gapRaw > 0 ? '+' : ''}${_gapRaw.toFixed(3)}%)` +
         `${_borderline ? ' ⚠ BORDERLINE' : ''}</span>`
         : (_gapRaw !== null ? ` <span class="k15-gap k15-gap-down k15-borderline">✓ AT STRIKE</span>` : '');
@@ -464,7 +465,8 @@ function predictionCard(p) {
       const cls = dir === 'UP' ? 'bull' : 'bear';
       const gapPct = ((p5.target - p.price) / p.price) * 100;
       const gapDollar = Math.abs(p5.target - p.price);
-      const gapLine = ` <span class="k15-gap ${gapPct > 0 ? 'k15-gap-up' : 'k15-gap-down'}">${gapPct > 0 ? '▲' : '▼'} $${gapDollar.toFixed(4)} (${gapPct > 0 ? '+' : ''}${gapPct.toFixed(3)}%)</span>`;
+      const gapDec = /^DOGE$/i.test(p.sym) ? 6 : /^XRP$/i.test(p.sym) ? 4 : 2;
+      const gapLine = ` <span class="k15-gap ${gapPct > 0 ? 'k15-gap-up' : 'k15-gap-down'}">${gapPct > 0 ? '▲' : '▼'} $${gapDollar.toFixed(gapDec)} (${gapPct > 0 ? '+' : ''}${gapPct.toFixed(3)}%)</span>`;
       return `<div class="ind-item k15m-row" style="background:rgba(255,255,255,0.03); border-left:2px solid var(--color-${dir === 'UP' ? 'green' : 'red'}); padding-left: 6px;"><span class="ind-name">Model 5M</span><span class="ind-val ${cls}"><span class="k15-side-label" style="opacity:0.6">PROJ</span><span class="k15-${dir.toLowerCase()}" style="font-weight:700">${dir}</span><span class="k15-target"> ≥ $${fmtPrice(p5.target)}</span>${gapLine}</span></div>`;
     })();
 
