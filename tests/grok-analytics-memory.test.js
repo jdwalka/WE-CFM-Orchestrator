@@ -227,6 +227,53 @@ async function flushMicrotasks() {
     assert.strictEqual(farOff.ptbDefenseStats, null, 'PTB far outside tolerance -> null, not stale stats');
   });
 
+  await test('getCoin + late PTB bind + 5m carry into 15m pack', async () => {
+    const startMs = Date.UTC(2026, 5, 18, 10, 0, 30);
+    const windowStart = floorWindow(startMs, PTB_WINDOW_MS);
+    const state = {};
+    const clock = createFakeClock(startMs);
+    const windowObj = {
+      PredictionMarkets: {
+        getCoin(coin) { return state[coin] || null; },
+        getPrice(coin) { return state[coin] ? state[coin].price : null; },
+      },
+    };
+    const context = {
+      window: windowObj,
+      console,
+      Date: clock.DateClass,
+      setTimeout,
+      clearTimeout,
+      setInterval,
+      clearInterval,
+    };
+    context.globalThis = context;
+    vm.runInNewContext(source, context, { filename: sourcePath });
+    const hooks = windowObj.GrokAnalyticsMemory;
+
+    state.BTC = { price: 65000, poly5m: { upProbability: 0.62 }, poly15m: { probability: 0.55 } };
+    hooks.tick();
+    let pack = hooks.memoryPackForPrompt('BTC');
+    assert.strictEqual(pack.lastSample.poly5Up, 0.62);
+    assert.strictEqual(pack.lastSample.ptb5, null);
+
+    state.BTC = { price: 65020, poly5m: { priceToBeatNum: 64980, upProbability: 0.58 } };
+    hooks.tick();
+    pack = hooks.memoryPackForPrompt('BTC', { ptb5: 64980, ptb15: 64950 });
+    assert.strictEqual(pack.lastSample.ptb5, 64980);
+    assert.strictEqual(pack.lastSample.vsPtb5, 'ABOVE');
+    assert.ok(pack.ptbCarry15m);
+    assert.ok(pack.ptbCarry15m.open5m);
+    assert.strictEqual(pack.ptbCarry15m.carryInto15m, 'UP');
+
+    clock.set(windowStart + PTB_WINDOW_MS + 5_000);
+    state.BTC = { price: 65040, poly5m: { priceToBeatNum: 65010, upProbability: 0.51 } };
+    hooks.tick();
+    pack = hooks.memoryPackForPrompt('BTC', { ptb5: 65010 });
+    assert.ok(pack.localPtbDefense5m.allCount >= 1, 'closed 5m window should land in all-levels count');
+    hooks.stop();
+  });
+
   await test('_hydrate() restores windows15m/windows1h/predictions from Firestore when localStorage is empty', async () => {
     const startMs = Date.UTC(2026, 5, 18, 10, 0, 30);
     // Shape must match what updateOpenWindow()/_persistLight() actually produce

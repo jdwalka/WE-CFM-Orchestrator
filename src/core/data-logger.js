@@ -18,6 +18,7 @@
   let DRIVE_PATHS = [];
   const GOOGLE_DRIVE_ROOTS = [
     'H:\\My Drive\\WECRYP\\data',
+    'H:\\WECRYPTO\\data',
     'I:\\My Drive\\WECRYP\\data',
   ];
   // polymarket_raw is an unbounded firehose (observed 2.7GB in a single day,
@@ -81,7 +82,7 @@
     const letters = (drives || [])
       .filter(d => d && d.type === 'local' && d.letter)
       .map(d => String(d.letter).toUpperCase());
-    const preferred = ['G', 'F', 'D', 'C'];
+    const preferred = ['H', 'G', 'F', 'D', 'C'];
     const picked = preferred.find(letter => letters.includes(letter)) || letters[0];
     return picked ? `${picked}:\\WECRYPTO\\data` : LOCAL_ROOT;
   }
@@ -221,6 +222,7 @@
 
       const candidateRoots = uniquePaths([
         pickPrimaryLocalRoot(drives),
+        ...GOOGLE_DRIVE_ROOTS,
         ...cloudRoots,
         ...googleRoots,
         ...networkRoots,
@@ -639,6 +641,11 @@
         _stats.session.cloudSyncFailures++;
         _stats.session.lastWriteFailure = failureSummary;
         console.warn('[DataLogger] Google My Drive sync failed; local spool retained:', `${cloudPath}: ${result.error || result.code || 'failed'}`);
+        const errText = String(result.error || result.code || '');
+        if (errText.includes('ENOSPC')) {
+          DRIVE_PATHS = DRIVE_PATHS.filter(p => p !== root);
+          console.warn('[DataLogger] dropped full mirror', root);
+        }
       }
     }
   }

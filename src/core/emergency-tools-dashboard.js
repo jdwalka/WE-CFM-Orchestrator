@@ -136,28 +136,7 @@
                 'find-inversions': () => window.ContractWinRateCalculator?.findInversions(),
             }
         },
-        'kalshi-accuracy': {
-            name: 'Kalshi Accuracy Debug',
-            enabled: () => !!window.KalshiAccuracyDebug,
-            desc: 'Kalshi settlement debugging + prediction validation',
-            api: () => window.KalshiAccuracyDebug,
-            commands: {
-                'scorecard': (coin = 'BTC') => window.KalshiAccuracyDebug?.scorecard(coin),
-                'find-inversions': () => window.KalshiAccuracyDebug?.findInversions(),
-                'export-csv': () => window.KalshiAccuracyDebug?.exportCSV(),
-            }
-        },
-        'kalshi-forensics': {
-            name: 'Kalshi Forensic Replay',
-            enabled: () => !!(window.KalshiForensics || window.KalshiDebug?.replayIncident),
-            desc: 'Suspect detection + timeline replay + root-cause classification',
-            api: () => window.KalshiForensics || window.KalshiDebug,
-            commands: {
-                'suspects': (opts = {}) => window.KalshiDebug?.suspects?.(opts) || window.KalshiForensics?.identifySuspects?.(opts),
-                'replay-incident': (opts = { topN: 2 }) => window.KalshiDebug?.replayIncident?.(opts) || window.KalshiForensics?.replay?.(opts),
-                'replay-trade': (suspect, opts = {}) => window.KalshiDebug?.replayTrade?.(suspect, opts) || window.KalshiForensics?.replayTrade?.(suspect, opts),
-            }
-        },
+
     };
 
     const __EMERGENCY_TOOLS = {

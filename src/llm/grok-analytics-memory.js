@@ -90,13 +90,51 @@
 
   function resolveMarket(coin) {
     try {
-      if (window.PredictionMarkets && window.PredictionMarkets.getMarket) {
+      if (window.PredictionMarkets && typeof window.PredictionMarkets.getCoin === 'function') {
+        const c = window.PredictionMarkets.getCoin(coin);
+        if (c) return c;
+      }
+    } catch (_) {}
+    try {
+      if (window.PredictionMarkets && typeof window.PredictionMarkets.getMarket === 'function') {
         return window.PredictionMarkets.getMarket(coin);
       }
       const st = window.PredictionMarkets && window.PredictionMarkets.state;
       return (st && st[coin]) || null;
     } catch (_) {}
     return null;
+  }
+
+  function _numPos(v) {
+    const n = Number(v);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  }
+
+  function _num01(v) {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return null;
+    if (n > 1.5 && n <= 100) return n / 100;
+    if (n >= 0 && n <= 1.5) return n;
+    return null;
+  }
+
+  function extractPolyPtb(poly) {
+    if (!poly || typeof poly !== 'object') return null;
+    return _numPos(poly.priceToBeatNum)
+      || _numPos(poly.targetPriceNum)
+      || _numPos(poly.priceToBeat)
+      || _numPos(poly.ptb)
+      || _numPos(poly.openPrice)
+      || _numPos(poly.benchmarkPrice);
+  }
+
+  function extractPolyUp(poly) {
+    if (!poly || typeof poly !== 'object') return null;
+    return _num01(poly.upProb)
+      || _num01(poly.upProbability)
+      || _num01(poly.probability)
+      || _num01(poly.yesProb)
+      || _num01(poly.yesMid);
   }
 
   function sampleCoin(coin, now) {
@@ -126,10 +164,11 @@
       direction: pred.direction || pred.signal || null,
       confidence: pred.confidence != null ? Number(pred.confidence) : null,
       regime: pred.regime || null,
-      poly5Up: poly5.upProb ?? poly5.probability ?? null,
-      poly15Up: poly15.probability ?? k15.probability ?? null,
-      ptb5: Number(poly5.priceToBeatNum || poly5.targetPriceNum) || null,
-      ptb15: Number(poly15.priceToBeatNum || poly15.targetPriceNum) || null,
+      poly5Up: extractPolyUp(poly5),
+      poly15Up: extractPolyUp(poly15) ?? _num01(k15.probability),
+      ptb5: extractPolyPtb(poly5),
+      ptb15: extractPolyPtb(poly15) || _numPos(k15.priceToBeatNum || k15.targetPriceNum),
+      liveDir5: poly5.liveDirection || null,
       xScore: xSent && xSent.score != null ? Number(xSent.score) : null,
       onChainLean: onChain && (onChain.lean || onChain.netBias || onChain.side) || null,
     };
@@ -282,8 +321,32 @@
           lastSide: _sideOfPtb(price, ptb),
         };
       } else {
-        _state.openPtb5m[coin] = null;
+        _state.openPtb5m[coin] = {
+          start,
+          ptb: 0,
+          open: price,
+          high: price,
+          low: price,
+          close: price,
+          sampleCount: 1,
+          crossCount: 0,
+          lastSide: null,
+        };
       }
+      return;
+    }
+
+    // Late-bind PTB once if the window opened before Polymarket published it.
+    if (!(open.ptb > 0) && ptb > 0) {
+      open.ptb = ptb;
+      open.lastSide = _sideOfPtb(open.close || price, ptb);
+    }
+
+    if (!(open.ptb > 0)) {
+      open.high = Math.max(open.high, price);
+      open.low = Math.min(open.low, price);
+      open.close = price;
+      open.sampleCount = (open.sampleCount || 0) + 1;
       return;
     }
 
@@ -326,6 +389,11 @@
           sampleCount: open.sampleCount || 0,
         };
         pushCapped(_state.windowsPTB15m[coin], closed, MAX_WINDOWS_PER_COIN);
+        const bridge15 = _grokBridge();
+        if (bridge15 && typeof bridge15.pushPtbWindowClose === 'function') {
+          try { bridge15.pushPtbWindowClose(closed); } catch (_) {}
+        }
+        refreshPtbDefenseStats(coin, closed.ptb);
       }
       if (ptb > 0) {
         _state.openPtb15m[coin] = {
@@ -333,8 +401,22 @@
           sampleCount: 1, crossCount: 0, lastSide: _sideOfPtb(price, ptb),
         };
       } else {
-        _state.openPtb15m[coin] = null;
+        _state.openPtb15m[coin] = {
+          start, ptb: 0, open: price, high: price, low: price, close: price,
+          sampleCount: 1, crossCount: 0, lastSide: null,
+        };
       }
+      return;
+    }
+    if (!(open.ptb > 0) && ptb > 0) {
+      open.ptb = ptb;
+      open.lastSide = _sideOfPtb(open.close || price, ptb);
+    }
+    if (!(open.ptb > 0)) {
+      open.high = Math.max(open.high, price);
+      open.low = Math.min(open.low, price);
+      open.close = price;
+      open.sampleCount = (open.sampleCount || 0) + 1;
       return;
     }
     const side = _sideOfPtb(price, open.ptb);
@@ -352,8 +434,13 @@
       ? rows.filter((w) => w.ptb > 0 && Math.abs(w.ptb - nearPtb) / nearPtb <= PTB_DEFENSE_TOLERANCE_FRAC)
       : rows;
     const n = filtered.length;
+    const allN = rows.length;
+    const allDefended = rows.filter((w) => w.outcome === 'DEFENDED').length;
     if (!n) {
-      return { testedCount: 0, defendedCount: 0, brokenCount: 0, defendRate: null, source: 'local', last: null };
+      return {
+        testedCount: 0, defendedCount: 0, brokenCount: 0, defendRate: null, source: 'local', last: null,
+        allCount: allN, allDefended, allBroken: allN - allDefended,
+      };
     }
     const defended = filtered.filter((w) => w.outcome === 'DEFENDED').length;
     const last = filtered[filtered.length - 1];
@@ -370,6 +457,52 @@
         ptb: last.ptb,
         crossCount: last.crossCount,
       } : null,
+      allCount: allN,
+      allDefended,
+      allBroken: allN - allDefended,
+    };
+  }
+
+  function buildPtbCarry15m(coin) {
+    const now = Date.now();
+    const win15 = floorWindow(now, 15 * 60_000);
+    const closed5 = (_state.windowsPTB5m[coin] || []).filter((w) => w.windowStart >= win15 && w.ptb > 0);
+    const last3 = (_state.windowsPTB5m[coin] || []).filter((w) => w.ptb > 0).slice(-3);
+    const open5 = _state.openPtb5m[coin];
+    const def = closed5.filter((w) => w.outcome === 'DEFENDED').length;
+    const brk = closed5.filter((w) => w.outcome === 'BROKEN').length;
+    let lean = 'NONE';
+    if (def > brk) lean = 'DEFEND_CONTINUES';
+    else if (brk > def) lean = 'BREAK_CONTINUES';
+    const last = last3[last3.length - 1] || null;
+    let carryDir = last && last.sideClose ? last.sideClose : null;
+    let openPack = null;
+    if (open5 && open5.ptb > 0 && open5.close > 0) {
+      const side = open5.lastSide || _sideOfPtb(open5.close, open5.ptb);
+      carryDir = side;
+      openPack = {
+        ptb: open5.ptb,
+        side,
+        vsPtbBps: _bpsFromPtb(open5.close, open5.ptb),
+        crosses: open5.crossCount || 0,
+        samples: open5.sampleCount || 0,
+      };
+    }
+    return {
+      closedInThis15m: closed5.length,
+      defendedInThis15m: def,
+      brokenInThis15m: brk,
+      lean,
+      last5mOutcome: last ? last.outcome : null,
+      last5mSideClose: last ? last.sideClose : null,
+      open5m: openPack,
+      carryInto15m: carryDir,
+      recent5m: last3.map((w) => ({
+        outcome: w.outcome,
+        sideClose: w.sideClose,
+        ptb: w.ptb,
+        crosses: w.crossCount || 0,
+      })),
     };
   }
 
@@ -381,15 +514,19 @@
       if (!last || !(last.price > 0)) continue;
       const prev = samples.length >= 6 ? samples[samples.length - 6] : samples[0];
       const ret = prev && prev.price > 0 ? ((last.price - prev.price) / prev.price) * 100 : null;
+      const open5 = _state.openPtb5m[c];
+      const ptb5 = last.ptb5 || (open5 && open5.ptb > 0 ? open5.ptb : null);
+      const open15 = _state.openPtb15m[c];
+      const ptb15 = last.ptb15 || (open15 && open15.ptb > 0 ? open15.ptb : null);
       coins.push({
         coin: c,
         retPct: ret != null ? Number(ret.toFixed(4)) : null,
-        dir: last.direction || null,
+        dir: last.direction || last.liveDir5 || null,
         poly5Up: last.poly5Up,
         poly15Up: last.poly15Up,
         onChainLean: last.onChainLean || null,
-        vsPtb5: last.ptb5 && last.price ? (last.price >= last.ptb5 ? 'ABOVE' : 'BELOW') : null,
-        vsPtb15: last.ptb15 && last.price ? (last.price >= last.ptb15 ? 'ABOVE' : 'BELOW') : null,
+        vsPtb5: ptb5 && last.price ? (last.price >= ptb5 ? 'ABOVE' : 'BELOW') : null,
+        vsPtb15: ptb15 && last.price ? (last.price >= ptb15 ? 'ABOVE' : 'BELOW') : null,
       });
     }
     const withRet = coins.filter((x) => Number.isFinite(x.retPct));
@@ -477,6 +614,8 @@
             sampleCount: (_state.samples[c] || []).length,
             windows15m: (_state.windows15m[c] || []).slice(-48),
             windows1h: (_state.windows1h[c] || []).slice(-24),
+            windowsPTB5m: (_state.windowsPTB5m[c] || []).slice(-96),
+            windowsPTB15m: (_state.windowsPTB15m[c] || []).slice(-48),
             predictions: _state.predictions[c] || { '15m': [], '60m': [] },
           });
         }
@@ -548,14 +687,23 @@
       const bridge = _grokBridge();
       if (bridge && typeof bridge.getSessionSnapshot === 'function') {
         for (const c of COINS) {
-          if ((_state.windows15m[c] || []).length > 0) continue;
+          const need15 = !(_state.windows15m[c] || []).length;
+          const needPtb = !(_state.windowsPTB5m[c] || []).length;
+          if (!need15 && !needPtb) continue;
           bridge.getSessionSnapshot(c).then((res) => {
             const snap = res && res.success ? res.snapshot : null;
             if (!snap) return;
-            if ((_state.windows15m[c] || []).length > 0) return; // populated since (localStorage/tick)
-            if (Array.isArray(snap.windows15m)) _state.windows15m[c] = snap.windows15m.slice(-MAX_WINDOWS_PER_COIN);
-            if (Array.isArray(snap.windows1h)) _state.windows1h[c] = snap.windows1h.slice(-MAX_WINDOWS_PER_COIN);
-            if (snap.predictions) _state.predictions[c] = snap.predictions;
+            if (need15 && !(_state.windows15m[c] || []).length) {
+              if (Array.isArray(snap.windows15m)) _state.windows15m[c] = snap.windows15m.slice(-MAX_WINDOWS_PER_COIN);
+              if (Array.isArray(snap.windows1h)) _state.windows1h[c] = snap.windows1h.slice(-MAX_WINDOWS_PER_COIN);
+              if (snap.predictions) _state.predictions[c] = snap.predictions;
+            }
+            if (needPtb && !(_state.windowsPTB5m[c] || []).length && Array.isArray(snap.windowsPTB5m)) {
+              _state.windowsPTB5m[c] = snap.windowsPTB5m.slice(-MAX_PTB_WINDOWS_PER_COIN);
+            }
+            if (!(_state.windowsPTB15m[c] || []).length && Array.isArray(snap.windowsPTB15m)) {
+              _state.windowsPTB15m[c] = snap.windowsPTB15m.slice(-MAX_WINDOWS_PER_COIN);
+            }
           }).catch(() => {});
         }
       }
@@ -645,11 +793,27 @@
       } : null,
       predAccuracy15m: predictionAccuracy(coin, '15m'),
       predAccuracy1h: predictionAccuracy(coin, '60m'),
+      lastSample: (() => {
+        const last = samples[samples.length - 1];
+        if (!last) return null;
+        const open5 = _state.openPtb5m[coin];
+        const ptb5 = last.ptb5 || (open5 && open5.ptb > 0 ? open5.ptb : null);
+        return {
+          price: last.price,
+          poly5Up: last.poly5Up,
+          poly15Up: last.poly15Up,
+          ptb5,
+          ptb15: last.ptb15,
+          vsPtb5: ptb5 && last.price ? (last.price >= ptb5 ? 'ABOVE' : 'BELOW') : null,
+          liveDir5: last.liveDir5 || null,
+        };
+      })(),
+      ptbCarry15m: buildPtbCarry15m(coin),
       localPtbDefense5m: summarizePtbWindows(_state.windowsPTB5m[coin], Number(opts.ptb5 || opts.ptb)),
       localPtbDefense15m: summarizePtbWindows(_state.windowsPTB15m[coin], Number(opts.ptb15 || opts.ptb)),
       crossCoinFlow: buildCrossCoinFlow(),
       ptbDefenseStats: (() => {
-        const wantPtb = Number(opts.ptb5 || opts.ptb);
+        const wantPtb = Number(opts.ptb5 || opts.ptb15 || opts.ptb);
         const cached = _ptbDefenseCache[coin];
         if (cached && Number.isFinite(wantPtb) && wantPtb > 0 && cached.ptb > 0
           && Math.abs(cached.ptb - wantPtb) / wantPtb <= PTB_DEFENSE_TOLERANCE_FRAC

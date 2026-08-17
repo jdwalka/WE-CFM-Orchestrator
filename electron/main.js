@@ -598,6 +598,54 @@ if (process.env.WECRYPTO_TOR_SOCKS) {
   }
 }
 
+// Mullvad Stockholm SOCKS5 (in-tunnel 10.64.0.1:1080). Inverse of TOR: only
+// exchange/feed hosts go through the proxy so Fast-lane Ethernet stays native.
+if (process.env.WECRYPTO_SWEDEN_SOCKS) {
+  try {
+    const { SocksProxyAgent } = require('socks-proxy-agent');
+    const http = require('http');
+    const https = require('https');
+    const swedenUrl = process.env.WECRYPTO_SWEDEN_SOCKS;
+    const swedenAgent = new SocksProxyAgent(swedenUrl);
+    const swedenNeedles = [
+      'binance', 'bybit', 'okx', 'kraken', 'kucoin', 'mexc', 'bitfinex',
+      'gateio', 'crypto.com', 'coinbase', 'coingecko', 'dexscreener',
+      'hyperliquid', 'polymarket', 'kalshi', 'pyth.network', 'etherscan',
+      'ripple.com', 'xrplcluster',
+    ];
+
+    const originalHttpRequestSe = http.request;
+    const originalHttpsRequestSe = https.request;
+
+    function patchedSwedenRequest(original) {
+      return function (...args) {
+        let urlStr = '';
+        if (typeof args[0] === 'string') urlStr = args[0];
+        else if (args[0] instanceof URL) urlStr = String(args[0]);
+        else if (args[0] && (args[0].hostname || args[0].host)) urlStr = args[0].hostname || args[0].host;
+
+        const hit = swedenNeedles.some(d => urlStr.toLowerCase().includes(d));
+        if (hit) {
+          if (typeof args[0] === 'object' && args[0] !== null && !(args[0] instanceof URL)) {
+            args[0].agent = swedenAgent;
+          } else if (args[1] && typeof args[1] === 'object') {
+            args[1].agent = swedenAgent;
+          } else {
+            args.splice(1, 0, { agent: swedenAgent });
+          }
+        }
+        return original.apply(this, args);
+      };
+    }
+
+    http.request = patchedSwedenRequest(originalHttpRequestSe);
+    https.request = patchedSwedenRequest(originalHttpsRequestSe);
+    console.warn(`[NETWORK] Sweden SOCKS5 for exchange hosts: ${swedenUrl}`);
+  } catch (e) {
+    console.error('[NETWORK] Failed to instantiate Sweden SOCKS5:', e.message);
+  }
+}
+
 
 // ── Tor-routed Fetch Bridge ─────────────────────────────────────────────────
 require('./tor-fetch-ipc-bridge.js');
@@ -782,7 +830,10 @@ function configureCachePaths() {
     app.commandLine.appendSwitch('js-flags', '--use-largepages=on --max-old-space-size=8192 --no-lazy --turbo-fast-api-calls --experimental-wasm-simd');
     app.commandLine.appendSwitch('enable-features', 'SharedArrayBuffer');
 
-    if (process.env.WECRYPTO_TOR_SOCKS) {
+    if (process.env.WECRYPTO_SWEDEN_SOCKS) {
+      const pacPath = require('path').join(__dirname, '..', 'cloudflared', 'sweden-proxy.pac').replace(/\\/g, '/');
+      app.commandLine.appendSwitch('proxy-pac-url', `file:///${pacPath}`);
+    } else if (process.env.WECRYPTO_TOR_SOCKS) {
       const pacPath = require('path').join(__dirname, '..', 'proxy.pac').replace(/\\/g, '/');
       app.commandLine.appendSwitch('proxy-pac-url', `file:///${pacPath}`);
     }
@@ -1740,7 +1791,11 @@ async function startProxy() {
 
   const spawnEnv = {
     ...process.env,
-    ...(process.env.WECRYPTO_TOR_SOCKS ? { ALL_PROXY: process.env.WECRYPTO_TOR_SOCKS } : {})
+    ...(process.env.WECRYPTO_SWEDEN_SOCKS
+      ? { ALL_PROXY: process.env.WECRYPTO_SWEDEN_SOCKS }
+      : process.env.WECRYPTO_TOR_SOCKS
+        ? { ALL_PROXY: process.env.WECRYPTO_TOR_SOCKS }
+        : {})
   };
 
   if (exePath) {

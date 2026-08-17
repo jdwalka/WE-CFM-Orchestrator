@@ -1091,7 +1091,7 @@ function snapshotPredictions() {
         // ── Update Market Divergence tracker for this coin ──────────────────
         const _mdiv = updateMarketDivergence(coin.sym, _modelDir, _kalshiDir, ka.kalshiYesPct, _modelScore);
 
-        window._lastKalshiSnapshot[coin.sym] = {
+        if (false) window._lastKalshiSnapshot[coin.sym] = {
           ref: ka.ref,
           kYesPct: ka.kalshiYesPct,
           mYesPct: ka.modelYesPct,
@@ -1127,7 +1127,9 @@ function snapshotPredictions() {
           // Signal components for per-indicator gradient descent retuner
           signalComponents: p.diagnostics?.components ?? null,
         };
-        capturePredictionTrail2m(coin.sym, window._lastKalshiSnapshot[coin.sym]);
+        if (window._lastKalshiSnapshot[coin.sym]) {
+          capturePredictionTrail2m(coin.sym, window._lastKalshiSnapshot[coin.sym]);
+        }
         if (ka.dirConflict) {
           // console.warn(
           //   `[Snapshot] ⚠️ ${coin.sym} momentum=${dir} conflicts with CDF direction=${ka.cdfImpliedDir} ` +

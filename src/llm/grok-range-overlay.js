@@ -378,6 +378,18 @@
         rule: 'PTB is Polymarket window open only. Spot is Pyth only. Do not invent PTB.',
       },
       higherTF: {
+        '5m': {
+          carry: sessionMemory.ptbCarry15m || null,
+          lastSample: sessionMemory.lastSample || null,
+          defense: sessionMemory.localPtbDefense5m || null,
+          fiveMinCall: (function () {
+            try {
+              return window.FiveMinGrok?.getGuidance?.(coin)
+                || window.FiveMinClaude?.getGuidance?.(coin)
+                || null;
+            } catch (_) { return null; }
+          })(),
+        },
         '15m': {
           prob: poly15m.yesProb ?? null,
           slug: poly15m.slug,

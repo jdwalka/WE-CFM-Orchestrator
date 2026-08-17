@@ -264,6 +264,8 @@ function _journalSettlement(sym, outcomeUpDown, closePrice = null, meta = {}) {
   }
 
 function logContractError(type, sym, data) {
+    // Kalshi retired — do not persist or console.error contract mismatches.
+    return;
     const entry = { type, sym, ts: Date.now(), tsIso: new Date().toISOString(), ...data };
     window._kalshiErrors.push(entry);
     if (window._kalshiErrors.length > window.LOG_CAP || 1000) window._kalshiErrors.shift();

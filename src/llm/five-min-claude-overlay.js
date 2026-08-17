@@ -414,7 +414,8 @@
       sessionMemory: (function () {
         try {
           if (window.GrokAnalyticsMemory && typeof window.GrokAnalyticsMemory.memoryPackForPrompt === 'function') {
-            return window.GrokAnalyticsMemory.memoryPackForPrompt(coin, { ptb: target, ptb5: target });
+            const p15 = Number(pmCoin.poly15m && (pmCoin.poly15m.priceToBeatNum || pmCoin.poly15m.targetPriceNum)) || null;
+            return window.GrokAnalyticsMemory.memoryPackForPrompt(coin, { ptb: target, ptb5: target, ptb15: p15 });
           }
         } catch (_) {}
         return { sampleCount: 0, sessionMinutes: 0, note: 'memory not started' };

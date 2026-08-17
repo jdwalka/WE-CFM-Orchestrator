@@ -45,12 +45,12 @@ window._orchLog = window._orchLog || [];
     };
 
     try { const r = localStorage.getItem(PRED_LOG_STORE); if (r && !shouldClearOldLogs(r)) window._predLog = JSON.parse(r); else localStorage.removeItem(PRED_LOG_STORE); } catch (e) { }
-    try { const r = localStorage.getItem(KALSHI_LOG_STORE); if (r && !shouldClearOldLogs(r)) window._kalshiLog = JSON.parse(r); else localStorage.removeItem(KALSHI_LOG_STORE); } catch (e) { }
+    try { localStorage.removeItem(KALSHI_LOG_STORE); } catch (e) { }
     try { const r = localStorage.getItem(LAST_PRED_STORE); if (r) window._lastPrediction = JSON.parse(r); } catch (e) { }
-    try { const r = localStorage.getItem(LAST_KALSHI_STORE); if (r) window._lastKalshiSnapshot = JSON.parse(r); } catch (e) { }
-    try { const r = localStorage.getItem(KALSHI_ERR_STORE); if (r) window._kalshiErrors = JSON.parse(r); } catch (e) { }
+    try { localStorage.removeItem(LAST_KALSHI_STORE); window._lastKalshiSnapshot = {}; } catch (e) { }
+    try { localStorage.removeItem(KALSHI_ERR_STORE); window._kalshiErrors = []; } catch (e) { }
     try { const r = localStorage.getItem(ORCH_LOG_STORE); if (r) window._orchLog = JSON.parse(r); } catch (e) { }
-    try { const r = localStorage.getItem(KALSHI_TRAIL_STORE); if (r) window._kalshiPredictionTrail = JSON.parse(r); } catch (e) { }
+    try { localStorage.removeItem(KALSHI_TRAIL_STORE); window._kalshiPredictionTrail = {}; } catch (e) { }
     try {
       const r = localStorage.getItem(TRADE_BELL_STORE);
       if (r == null) {
@@ -294,8 +294,9 @@ window.addEventListener('candleWS:bucketClosed', (e) => {
     if (window._predLog.length > LOG_CAP) window._predLog.shift();
     savePredLog();
 
-    // ── Kalshi outcome tracking ───────────────────────────────────────────
-    // YES resolves if closing price ≥ reference threshold (meet or exceed)
+    // Kalshi settlement tracker retired (Polymarket-only).
+    if (window._lastKalshiSnapshot?.[sym]) delete window._lastKalshiSnapshot[sym];
+    if (false) {
     const kSnap = window._lastKalshiSnapshot[sym];
     if (kSnap?.ref != null && kSnap.ts <= bucketClose) {
       // Guard: verify this snapshot's Kalshi contract belongs to THIS 15m bucket.
@@ -526,6 +527,7 @@ window.addEventListener('candleWS:bucketClosed', (e) => {
       }
     } else if (kSnap == null) {
       console.warn(`[KalshiTracker] ${sym} — no snapshot at bucket close (no Kalshi data polled for this window)`);
+    }
     }
 
     // Refresh accuracy display if predictions tab is visible

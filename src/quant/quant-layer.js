@@ -1060,43 +1060,46 @@ function snapshotPredictions() {
             const _betAction = _snapDir === _yesDir ? 'YES' : _snapDir === _noDir ? 'NO' : null;
             // ── Update Market Divergence tracker for this coin ──────────────────
             const _mdiv = updateMarketDivergence(coin.sym, _modelDir, _kalshiDir, ka.kalshiYesPct, _modelScore);
-            window._lastKalshiSnapshot[coin.sym] = {
-                ref: ka.ref,
-                kYesPct: ka.kalshiYesPct,
-                mYesPct: ka.modelYesPct,
-                yesAsk: ka.yesAsk,
-                yesBid: ka.yesBid,
-                noAsk: ka.noAsk,
-                noBid: ka.noBid,
-                modelDir: _snapDir,
-                ts: nowMs,
-                // Contract structural fields — now passed through from prediction-markets.js
-                floorPrice: ka.floorPrice ?? ka.ref,
-                capPrice: ka.capPrice ?? null,
-                strikeDir: _strikeDir,
-                strikeType: ka.strikeType ?? null,
-                ticker: ka.ticker ?? null,
-                closeTimeMs: ka.closeTimeMs ?? null,
-                // Diagnostic flags
-                dirConflict: ka.dirConflict ?? false,
-                cdfImpliedDir: ka.cdfImpliedDir ?? null,
-                // Fade & model state
-                fadeActive: _fadeActive,
-                fadeSolid: _fadeSolid,
-                betAction: _betAction,
-                modelScore: _modelScore,
-                modelConf: _modelConf,
-                quantRegime: p.diagnostics?.quantRegime || null,
-                cfmCalibration: p.diagnostics?.cfmCalibration || null,
-                executionGuard: p.diagnostics?.executionGuard || null,
-                // Market Divergence state
-                mdivPhase: _mdiv.phase ?? 'STALE',
-                mdivDurationMs: _mdiv.durationMs ?? 0,
-                mdivCatchupDelta: _mdiv.catchupDelta ?? 0,
-                // Signal components for per-indicator gradient descent retuner
-                signalComponents: p.diagnostics?.components ?? null,
-            };
-            capturePredictionTrail2m(coin.sym, window._lastKalshiSnapshot[coin.sym]);
+            if (false)
+                window._lastKalshiSnapshot[coin.sym] = {
+                    ref: ka.ref,
+                    kYesPct: ka.kalshiYesPct,
+                    mYesPct: ka.modelYesPct,
+                    yesAsk: ka.yesAsk,
+                    yesBid: ka.yesBid,
+                    noAsk: ka.noAsk,
+                    noBid: ka.noBid,
+                    modelDir: _snapDir,
+                    ts: nowMs,
+                    // Contract structural fields — now passed through from prediction-markets.js
+                    floorPrice: ka.floorPrice ?? ka.ref,
+                    capPrice: ka.capPrice ?? null,
+                    strikeDir: _strikeDir,
+                    strikeType: ka.strikeType ?? null,
+                    ticker: ka.ticker ?? null,
+                    closeTimeMs: ka.closeTimeMs ?? null,
+                    // Diagnostic flags
+                    dirConflict: ka.dirConflict ?? false,
+                    cdfImpliedDir: ka.cdfImpliedDir ?? null,
+                    // Fade & model state
+                    fadeActive: _fadeActive,
+                    fadeSolid: _fadeSolid,
+                    betAction: _betAction,
+                    modelScore: _modelScore,
+                    modelConf: _modelConf,
+                    quantRegime: p.diagnostics?.quantRegime || null,
+                    cfmCalibration: p.diagnostics?.cfmCalibration || null,
+                    executionGuard: p.diagnostics?.executionGuard || null,
+                    // Market Divergence state
+                    mdivPhase: _mdiv.phase ?? 'STALE',
+                    mdivDurationMs: _mdiv.durationMs ?? 0,
+                    mdivCatchupDelta: _mdiv.catchupDelta ?? 0,
+                    // Signal components for per-indicator gradient descent retuner
+                    signalComponents: p.diagnostics?.components ?? null,
+                };
+            if (window._lastKalshiSnapshot[coin.sym]) {
+                capturePredictionTrail2m(coin.sym, window._lastKalshiSnapshot[coin.sym]);
+            }
             if (ka.dirConflict) {
                 // console.warn(
                 //   `[Snapshot] ⚠️ ${coin.sym} momentum=${dir} conflicts with CDF direction=${ka.cdfImpliedDir} ` +

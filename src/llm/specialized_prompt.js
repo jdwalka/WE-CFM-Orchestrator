@@ -1090,8 +1090,10 @@ ${(function () {
   if (stats && stats.testedCount) {
     bits.push(`matchedLevel: tested=${stats.testedCount} defended=${stats.defendedCount} broken=${stats.brokenCount} rate=${stats.defendRate != null ? (stats.defendRate * 100).toFixed(0) + '%' : 'n/a'} src=${stats.source || 'n/a'}`);
   }
-  if (loc5 && loc5.testedCount) bits.push(`local5m: tested=${loc5.testedCount} defended=${loc5.defendedCount} broken=${loc5.brokenCount} last=${JSON.stringify(loc5.last)}`);
-  if (loc15 && loc15.testedCount) bits.push(`local15m: tested=${loc15.testedCount} defended=${loc15.defendedCount} broken=${loc15.brokenCount} last=${JSON.stringify(loc15.last)}`);
+  if (loc5 && loc5.testedCount) bits.push(`local5m-sameLevel: tested=${loc5.testedCount} defended=${loc5.defendedCount} broken=${loc5.brokenCount} last=${JSON.stringify(loc5.last)}`);
+  else if (loc5 && loc5.allCount) bits.push(`local5m-allLevels: n=${loc5.allCount} defended=${loc5.allDefended} broken=${loc5.allBroken} (no match at this exact PTB)`);
+  if (loc15 && loc15.testedCount) bits.push(`local15m-sameLevel: tested=${loc15.testedCount} defended=${loc15.defendedCount} broken=${loc15.brokenCount} last=${JSON.stringify(loc15.last)}`);
+  else if (loc15 && loc15.allCount) bits.push(`local15m-allLevels: n=${loc15.allCount} defended=${loc15.allDefended} broken=${loc15.allBroken}`);
   return bits.length ? bits.join(' | ') : 'none recorded yet for this level — do not invent a defense count.';
 })()}
 
@@ -1353,6 +1355,9 @@ ${(function () {
   return `n=${flow.n} sync=${flow.sync} up=${flow.upCount} down=${flow.downCount} abovePtb5=${flow.abovePtb5} belowPtb5=${flow.belowPtb5} note="${flow.note}" coins=${JSON.stringify(flow.coins || [])}`;
 })()}
 
+## 5m PTB carry into this 15m (use this — do not say no 5m data if carry/open5m present)
+${JSON.stringify(mem.ptbCarry15m || mem.lastSample || null)}
+
 ## PTB defense (local closed windows + Firestore when present)
 ${(function () {
   const stats = mem.ptbDefenseStats;
@@ -1362,8 +1367,10 @@ ${(function () {
   if (stats && stats.testedCount) {
     bits.push(`matchedLevel: tested=${stats.testedCount} defended=${stats.defendedCount} broken=${stats.brokenCount} rate=${stats.defendRate != null ? (stats.defendRate * 100).toFixed(0) + '%' : 'n/a'} src=${stats.source || 'n/a'}`);
   }
-  if (loc5 && loc5.testedCount) bits.push(`local5m: tested=${loc5.testedCount} defended=${loc5.defendedCount} broken=${loc5.brokenCount} last=${JSON.stringify(loc5.last)}`);
-  if (loc15 && loc15.testedCount) bits.push(`local15m: tested=${loc15.testedCount} defended=${loc15.defendedCount} broken=${loc15.brokenCount} last=${JSON.stringify(loc15.last)}`);
+  if (loc5 && loc5.testedCount) bits.push(`local5m-sameLevel: tested=${loc5.testedCount} defended=${loc5.defendedCount} broken=${loc5.brokenCount} last=${JSON.stringify(loc5.last)}`);
+  else if (loc5 && loc5.allCount) bits.push(`local5m-allLevels: n=${loc5.allCount} defended=${loc5.allDefended} broken=${loc5.allBroken} (no match at this exact PTB)`);
+  if (loc15 && loc15.testedCount) bits.push(`local15m-sameLevel: tested=${loc15.testedCount} defended=${loc15.defendedCount} broken=${loc15.brokenCount} last=${JSON.stringify(loc15.last)}`);
+  else if (loc15 && loc15.allCount) bits.push(`local15m-allLevels: n=${loc15.allCount} defended=${loc15.allDefended} broken=${loc15.allBroken}`);
   return bits.length ? bits.join(' | ') : 'none recorded yet for this level — do not invent a defense count.';
 })()}
 
@@ -1373,6 +1380,7 @@ On-chain: ${typeof onchain === 'string' ? onchain : JSON.stringify(onchain).slic
 
 TASK:
 1. Synthesize Quantitative Model Prediction (${modelDir}, conf=${modelConf}) with the live Polymarket 15M market state.
+1b. Fold the 5m PTB carry block into the 15m call: if carryInto15m is UP/DOWN or lean is DEFEND_CONTINUES/BREAK_CONTINUES, say how that 5m path supports or fights the 15m Up token. Cite closedInThis15m / last5mOutcome when present. Do not write "no 5m PTB data" when ptbCarry15m.open5m or recent5m is non-empty.
 2. Decide Up or Down on market ${ac.slug || 'ACTIVE_15M'} only.
 3. Up token means price finished above Polymarket PTB; Down means below. Never WAIT.
 4. notes start with UP|DOWN then slug then Up% then exact Polymarket PTB (or "PTB pending") then ttc.
