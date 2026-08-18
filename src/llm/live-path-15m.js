@@ -7,6 +7,7 @@
  * should follow this, not the last model prediction.
  *
  *   window.LivePath15m.resolve(sym, ctx)
+ *   window.LivePath15m.fromAny(snapshotOrSym, ctx?)
  *   window.LivePath15m.noteTick(sym, px)
  */
 (function (root, factory) {
@@ -85,6 +86,40 @@
       return null;
     }
     return raw;
+  }
+
+  /**
+   * Normalize the three UI shapes (Grok snapshot, prediction card, hourly
+   * panel) into the ctx `resolve()` already understands. New paint sites
+   * should call `fromAny` so live-path semantics cannot drift.
+   */
+  function normalizeCtx(src) {
+    const s = src || {};
+    const poly = s.poly15m || s.market || s.poly || {};
+    const session = s.sessionMemory || {};
+    return {
+      spot: s.spot ?? s.price ?? s.currentPrice,
+      poly15m: poly,
+      market: poly,
+      open15: s.open15 || s.sessionOpen || session.open15m,
+      modelScore: s.modelScore ?? s.score,
+      liveDirection: s.liveDirection ?? poly.liveDirection,
+      settlementLiveDirection: s.settlementLiveDirection ?? poly.settlementLiveDirection,
+      yesProb: s.yesProb,
+      depthImbalance: s.depthImbalance,
+      ts: s.ts,
+      ptb: s.ptb,
+      ptbSource: s.ptbSource,
+    };
+  }
+
+  function fromAny(symOrInput, maybeCtx) {
+    if (typeof symOrInput === 'string') {
+      return resolve(symOrInput, normalizeCtx(maybeCtx || {}));
+    }
+    const src = Object.assign({}, symOrInput || {}, maybeCtx || {});
+    const coin = String(src.sym || src.coin || src.symbol || '').toUpperCase();
+    return resolve(coin, normalizeCtx(src));
   }
 
   /**
@@ -230,6 +265,8 @@
 
   return {
     resolve,
+    fromAny,
+    normalizeCtx,
     noteTick,
     tickMomentumBps,
     PATH_BPS_MIN,
