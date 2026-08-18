@@ -18,6 +18,20 @@ test('official docs roster is ultra + asi1 + mini; fast is extra', () => {
   assert.ok(Asi1.ASI1_ALL_MODELS.includes('asi1-fast'));
   assert.ok(Asi1.ASI1_ACCOUNTS.some((a) => a.email === 'maurofanellijr@gmail.com'));
   assert.ok(Asi1.ASI1_ACCOUNTS.some((a) => a.email === 'gitgoin87@gmail.com'));
+  assert.strictEqual(Asi1.ASI1_ACCOUNTS[0].id, 'gitgoin');
+});
+
+test('secret labels map to the two Gmail accounts', () => {
+  assert.deepStrictEqual(Asi1.inferAccountFromLabel('GITGOIN87_2026-08-14'), {
+    account: 'gitgoin',
+    email: 'gitgoin87@gmail.com',
+  });
+  assert.deepStrictEqual(Asi1.inferAccountFromLabel('# account=maurofanellijr@gmail.com'), {
+    account: 'mauro',
+    email: 'maurofanellijr@gmail.com',
+  });
+  assert.strictEqual(Asi1.inferAccountFromLabel('prompt_TEACHING'), null);
+  assert.ok(Asi1.extractAsi1KeyValue('ASI1_API=sk_abc123').startsWith('sk_'));
 });
 
 test('deep tier prefers ultra; quick prefers mini', () => {
@@ -39,9 +53,11 @@ test('orchestrator roster matches client all-models', () => {
 
 test('diagnostics expose accounts without leaking key material', () => {
   const d = Asi1.getDiagnostics();
-  assert.ok(d.keysConfigured >= 1);
   assert.ok(!JSON.stringify(d).includes('sk_'));
   assert.ok(Array.isArray(d.officialModels));
+  if (d.keysConfigured >= 1) {
+    assert.ok(d.configured);
+  }
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

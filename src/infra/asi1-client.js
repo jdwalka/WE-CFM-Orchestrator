@@ -5,10 +5,11 @@
  * shape per account: asi1 (default), asi1-ultra (deep), asi1-mini (fast).
  * We also try undocumented `asi1-fast` last because this repo used it.
  *
- * Two Fetch.ai / ASI:One accounts:
- *   maurofanellijr@gmail.com  → ASI1_API_KEY_MAURO / secrets/ASI1_MAURO.txt
+ * Two Fetch.ai / ASI:One accounts (gitgoin first — only key that serves ultra):
  *   gitgoin87@gmail.com       → ASI1_API_KEY_GITGOIN / secrets/ASI1_GITGOIN.txt
+ *   maurofanellijr@gmail.com  → ASI1_API_KEY_MAURO / secrets/ASI1_MAURO.txt
  * Plus legacy aliases (ASI_ONE_API_KEY, ASI1_API_KEY_FALLBACK, ASI1_API.txt).
+ * Label lines / `# account=` / `# skip` in those files tag or drop keys.
  *
  * Auth: Authorization: Bearer $ASI_ONE_API_KEY
  * Agentic: model "asi1" + optional x-session-id (ASI1_SESSION_<ACCOUNT>).
@@ -30,14 +31,9 @@ const ASI1_OFFICIAL_MODELS = Object.freeze(['asi1-ultra', 'asi1', 'asi1-mini']);
 const ASI1_EXTRA_MODELS = Object.freeze(['asi1-fast']);
 const ASI1_ALL_MODELS = Object.freeze([...ASI1_OFFICIAL_MODELS, ...ASI1_EXTRA_MODELS]);
 
+// gitgoin first: 2026-08-14 key still serves asi1-ultra. mauro keys share
+// that account's rate limit (ultra currently 429; mini/asi1/fast still work).
 const ASI1_ACCOUNTS = Object.freeze([
-  {
-    id: 'mauro',
-    email: 'maurofanellijr@gmail.com',
-    envNames: ['ASI1_API_KEY_MAURO', 'ASI_ONE_API_KEY_MAURO'],
-    sessionEnv: 'ASI1_SESSION_MAURO',
-    secretFiles: ['ASI1_MAURO.txt', 'ASI1_maurofanellijr.txt'],
-  },
   {
     id: 'gitgoin',
     email: 'gitgoin87@gmail.com',
@@ -45,7 +41,28 @@ const ASI1_ACCOUNTS = Object.freeze([
     sessionEnv: 'ASI1_SESSION_GITGOIN',
     secretFiles: ['ASI1_GITGOIN.txt', 'ASI1_gitgoin87.txt'],
   },
+  {
+    id: 'mauro',
+    email: 'maurofanellijr@gmail.com',
+    envNames: ['ASI1_API_KEY_MAURO', 'ASI_ONE_API_KEY_MAURO'],
+    sessionEnv: 'ASI1_SESSION_MAURO',
+    secretFiles: ['ASI1_MAURO.txt', 'ASI1_maurofanellijr.txt'],
+  },
 ]);
+
+function inferAccountFromLabel(token) {
+  const s = String(token || '').toLowerCase();
+  if (s.includes('gitgoin')) return { account: 'gitgoin', email: 'gitgoin87@gmail.com' };
+  if (s.includes('mauro')) return { account: 'mauro', email: 'maurofanellijr@gmail.com' };
+  return null;
+}
+
+function extractAsi1KeyValue(line) {
+  const trimmed = String(line || '').trim();
+  if (trimmed.startsWith('sk_')) return trimmed;
+  const kv = trimmed.match(/=\s*(sk_[0-9a-f]+)\s*$/i);
+  return kv ? kv[1] : '';
+}
 
 function resolveModelForTier(tier, requestedModel) {
   if (requestedModel) return requestedModel;
@@ -92,18 +109,42 @@ function collectKeysFromFile(fullPath, meta) {
     const content = fs.readFileSync(fullPath, 'utf8');
     let account = meta.account;
     let email = meta.email;
+    let skipNext = false;
     for (const raw of content.split(/\r?\n/)) {
       const trimmed = raw.trim();
+      if (!trimmed) continue;
       const tag = trimmed.match(/^#\s*account\s*[:=]\s*(\S+)/i);
       if (tag) {
-        email = tag[1];
-        account = email.includes('mauro') ? 'mauro' : email.includes('gitgoin') ? 'gitgoin' : account;
+        const inferred = inferAccountFromLabel(tag[1]);
+        if (inferred) {
+          account = inferred.account;
+          email = inferred.email;
+        } else {
+          email = tag[1];
+        }
+        skipNext = false;
         continue;
       }
-      if (!trimmed.startsWith('sk_')) continue;
+      if (/^#\s*(skip|dead|revoked|invalid)\b/i.test(trimmed)) {
+        skipNext = true;
+        continue;
+      }
+      const labeled = inferAccountFromLabel(trimmed);
+      if (labeled && !extractAsi1KeyValue(trimmed)) {
+        account = labeled.account;
+        email = labeled.email;
+        skipNext = false;
+        continue;
+      }
+      const value = extractAsi1KeyValue(trimmed);
+      if (!value) continue;
+      if (skipNext) {
+        skipNext = false;
+        continue;
+      }
       found.push({
         env: meta.env || `file:${pathMod.basename(fullPath)}`,
-        value: trimmed,
+        value,
         account,
         email,
       });
@@ -403,6 +444,8 @@ module.exports = {
   ASI1_EXTRA_MODELS,
   ASI1_ALL_MODELS,
   ASI1_ACCOUNTS,
+  inferAccountFromLabel,
+  extractAsi1KeyValue,
   resolveModelForTier,
   defaultCandidateModels,
   resolveAsi1ApiKey,
