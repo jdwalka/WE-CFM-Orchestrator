@@ -446,6 +446,38 @@
    * Deterministic 15m call from live contract + model prediction + momentum.
    * Blends quantitative model directional prediction, market YES odds, and spot vs floor.
    */
+  function livePathFromSnapshot(snapshot) {
+    const api = (typeof window !== 'undefined' && window.LivePath15m) || null;
+    if (!api) return null;
+    if (typeof api.fromAny === 'function') return api.fromAny(snapshot);
+    if (typeof api.resolve !== 'function') return null;
+    const k = snapshot.poly15m || {};
+    return api.resolve(snapshot.coin || snapshot.sym, {
+      spot: snapshot.currentPrice || snapshot.price,
+      poly15m: k,
+      open15: snapshot.sessionMemory && snapshot.sessionMemory.open15m,
+      modelScore: snapshot.score ?? snapshot.modelScore,
+      liveDirection: k.liveDirection,
+      settlementLiveDirection: k.settlementLiveDirection,
+    });
+  }
+
+  function attachLivePathToGuidance(coin, g) {
+    if (!g) return g;
+    try {
+      const snap = buildRangeSnapshot(coin, 15);
+      const live = livePathFromSnapshot(snap);
+      if (!live) return g;
+      g.livePath = live;
+      if (live.dir) {
+        if (!g.aiCall && (g.call === 'UP' || g.call === 'DOWN')) g.aiCall = g.call;
+        g.displayCall = live.dir;
+        g.call = live.dir;
+      }
+    } catch (_) { /* */ }
+    return g;
+  }
+
   function decide15mMechanically(snapshot) {
     const k = snapshot.poly15m || {};
     const spot = Number(snapshot.currentPrice);
@@ -459,48 +491,57 @@
     let score = 0; // >0 → UP
     const reasons = [];
 
-    // 1. Quantitative Model directional prediction (primary factor: 40% weight)
-    if (modelDir === 'UP' || modelDir === 'DOWN') {
-      const dirSign = modelDir === 'UP' ? 1 : -1;
-      const weight = Math.max(0.3, Math.min(1.0, (modelConf - 0.5) * 2 + Math.abs(modelScore)));
-      score += dirSign * weight * 1.5;
-      reasons.push(`model=${modelDir} conf=${(modelConf * 100).toFixed(0)}% score=${modelScore.toFixed(3)}`);
+    const live = livePathFromSnapshot(snapshot);
+    if (live && live.dir) {
+      const liveSign = live.dir === 'UP' ? 1 : -1;
+      score += liveSign * Math.max(1.1, (live.confidence || 0.6) * 2.2);
+      reasons.push(`livePath=${live.dir} ${live.reason}`);
     }
 
-    // 2. Polymarket Up-token Probability (35% weight)
-    if (Number.isFinite(pUpMkt)) {
-      const edge = (pUpMkt - 0.5) * 2; // -1..1
-      score += edge * 1.2;
-      reasons.push(`mktP(up)=${(pUpMkt * 100).toFixed(1)}%`);
-    }
-
-    // 3. Spot vs Price-to-Beat Distance
+    // Settlement path (spot vs PTB) dominates. Old weights let the model
+    // (×1.5) drown a ±0.5 capped PTB term, so the painted color only
+    // flipped on extreme swings.
     if (Number.isFinite(spot) && Number.isFinite(floor) && floor > 0) {
       const bps = ((spot - floor) / floor) * 10000;
-      score += Math.max(-0.5, Math.min(0.5, bps / 30));
+      score += Math.max(-1.8, Math.min(1.8, bps / 8));
       reasons.push(`spotVsFloor=${bps.toFixed(1)}bps`);
     }
 
-    // 4. Session Momentum
     if (open15 && Number.isFinite(open15.o) && Number.isFinite(open15.c) && open15.o > 0) {
       const winRet = ((open15.c - open15.o) / open15.o) * 100;
-      score += Math.max(-0.4, Math.min(0.4, winRet / 0.15));
+      score += Math.max(-0.6, Math.min(0.6, winRet / 0.12));
       reasons.push(`open15ret=${winRet.toFixed(3)}%`);
     } else if (Number.isFinite(path)) {
-      score += Math.max(-0.3, Math.min(0.3, path / 0.2));
+      score += Math.max(-0.4, Math.min(0.4, path / 0.18));
       reasons.push(`path=${path.toFixed(3)}%`);
     }
 
-    // Late window: lean harder into market odds (less time for mean reversion)
-    const ttc = Number(k.secondsToClose);
-    if (Number.isFinite(ttc) && ttc < 180 && Number.isFinite(pUpMkt)) {
-      score += (pUpMkt - 0.5) * 0.8;
-      reasons.push('late-window-mkt-weight');
+    if (Number.isFinite(pUpMkt)) {
+      const edge = (pUpMkt - 0.5) * 2;
+      score += edge * 0.55;
+      reasons.push(`mktP(up)=${(pUpMkt * 100).toFixed(1)}%`);
     }
 
+    if (modelDir === 'UP' || modelDir === 'DOWN') {
+      const dirSign = modelDir === 'UP' ? 1 : -1;
+      const weight = Math.max(0.15, Math.min(0.45, (modelConf - 0.5) + Math.abs(modelScore) * 0.3));
+      score += dirSign * weight;
+      reasons.push(`model=${modelDir} (weak)`);
+    }
+
+    const ttc = Number(k.secondsToClose);
+    if (Number.isFinite(ttc) && ttc < 180 && Number.isFinite(spot) && Number.isFinite(floor) && floor > 0) {
+      const bps = ((spot - floor) / floor) * 10000;
+      score += Math.max(-0.8, Math.min(0.8, bps / 6));
+      reasons.push('late-window-path-weight');
+    }
+
+    if (live && live.dir && Math.abs(live.bps || 0) >= 0.8) {
+      return { call: live.dir, confidence: live.confidence, reasons, score, livePath: live };
+    }
     const call = score >= 0 ? 'UP' : 'DOWN';
     const conf = clamp01(0.52 + Math.min(0.38, Math.abs(score) * 0.30));
-    return { call, confidence: conf, reasons, score };
+    return { call, confidence: conf, reasons, score, livePath: live };
   }
 
   /**
@@ -582,17 +623,17 @@
   function finalizeCall(horizonMinutes, grokCall, snapshot) {
     if (horizonMinutes === 15) {
       const mech = decide15mMechanically(snapshot);
-      let call = grokCall === 'UP' || grokCall === 'DOWN' ? grokCall : mech.call;
-      // If Grok fights strong market ( |pUp-0.5| > 0.12 ), trust market/mech
+      const live = mech.livePath || livePathFromSnapshot(snapshot);
+      // Live settlement path paints the label. Grok/model is a lean, not a lock.
+      let call = (live && live.dir) || mech.call || ((grokCall === 'UP' || grokCall === 'DOWN') ? grokCall : null);
       const k = snapshot.poly15m || {};
       const pUp = yesProbToPriceUpProb(k.yesProb);
-      if (Number.isFinite(pUp) && Math.abs(pUp - 0.5) >= 0.12) {
-        const mktCall = pUp >= 0.5 ? 'UP' : 'DOWN';
-        if (call !== mktCall && call !== mech.call) call = mech.call;
-        else if (call !== mktCall && Math.abs(pUp - 0.5) >= 0.18) call = mktCall;
-      } else if (call !== mech.call && mech.confidence >= 0.62) {
+      if (!(live && live.dir) && Number.isFinite(pUp) && Math.abs(pUp - 0.5) >= 0.08) {
+        call = pUp >= 0.5 ? 'UP' : 'DOWN';
+      } else if (!(live && live.dir) && call !== mech.call && mech.confidence >= 0.58) {
         call = mech.call;
       }
+      if (!call) call = grokCall === 'DOWN' ? 'DOWN' : 'UP';
       let conf = Math.max(mech.confidence, 0.52);
       let nullified = false;
       let truthReason = null;
@@ -813,6 +854,7 @@
             : ((res && res.providerStatus && res.providerStatus.provider) || 'asi1'),
           horizonMinutes,
           call,
+          aiCall: (grokDir === 'UP' || grokDir === 'DOWN') ? grokDir : null,
           direction: call,
           confidence,
           regime: o.regime || 'unknown',
@@ -965,6 +1007,7 @@
     }
 
     if (!g) return null;
+    if (key === '15m') attachLivePathToGuidance(coin, g);
 
     // Sanity check 60m range against live spot price
     if (key === '60m') {
@@ -1084,15 +1127,18 @@
         const isBelowContract = String(k15.strikeDir).toLowerCase() === 'below';
         const spotDir = isBelowContract ? (isAbove ? 'DOWN' : 'UP') : (isAbove ? 'UP' : 'DOWN');
 
-        // Only override call in final 15 seconds of expiry if settlement is imminent
-        if (Number.isFinite(ttc) && ttc <= 15 && Math.abs(distPct) >= 0.05) {
-          g15.call = spotDir;
+        if (!g15.aiCall && (g15.call === 'UP' || g15.call === 'DOWN')) g15.aiCall = g15.call;
+        const live = livePathFromSnapshot(snapshot15);
+        const paint = (live && live.dir) || spotDir;
+        g15.livePath = live;
+        g15.displayCall = paint;
+        g15.call = paint;
+        const aiBit = g15.aiCall && g15.aiCall !== paint ? ` · grok ${g15.aiCall}` : '';
+        if (Number.isFinite(ttc) && ttc <= 15 && Math.abs(distPct) >= 0.03) {
           g15.confidence = 0.95;
-          g15.notes = `⚡ Expiry Lock: Spot $${spot.toFixed(2)} vs Strike $${floor.toFixed(2)} (${distPct >= 0 ? '+' : ''}${distPct.toFixed(2)}%) → ${spotDir}`;
+          g15.notes = `⚡ Expiry Lock: Spot $${spot.toFixed(2)} vs Strike $${floor.toFixed(2)} (${distPct >= 0 ? '+' : ''}${distPct.toFixed(2)}%) → ${paint}${aiBit}`;
         } else {
-          // Update live telemetry in notes without destroying the AI / model call
-          const currentCall = g15.call || spotDir;
-          g15.notes = `${currentCall} ${k15.ticker || ''} · Spot $${spot.toFixed(2)} vs Strike $${floor.toFixed(2)} (${distPct >= 0 ? '+' : ''}${distPct.toFixed(2)}%)`;
+          g15.notes = `LIVE ${paint}${aiBit} · Spot $${spot.toFixed(2)} vs Strike $${floor.toFixed(2)} (${distPct >= 0 ? '+' : ''}${distPct.toFixed(2)}%)`;
         }
       }
 
@@ -1136,6 +1182,7 @@
     getGuidance,
     getAll,
     buildRangeSnapshot,
+    livePathFromSnapshot,
   };
 
   if (typeof window !== 'undefined') {
