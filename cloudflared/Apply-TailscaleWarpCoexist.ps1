@@ -23,7 +23,7 @@
   .\Apply-TailscaleWarpCoexist.ps1 -Action PushDns
 #>
 param(
-  [ValidateSet('Status', 'Together', 'PushDns')]
+  [ValidateSet('Status', 'Together', 'Overlay', 'PushDns')]
   [string]$Action = 'Status',
   [string]$SwedenExit = 'se-sto-wg-209.mullvad.ts.net',
   [string]$SwedenVnet = 'bc743e42-bbf6-4506-b5b2-db7c12f573cc',
@@ -56,15 +56,18 @@ function Invoke-TailscaleApi {
 }
 
 function Install-WarpPunch {
+  # Official Cloudflare One Client firewall set (docs.developers.cloudflare.com
+  # .../devices/cloudflare-one-client/deployment/firewall/). Must stay on
+  # Ethernet so Tailscale RouteAll cannot black-hole WARP connect.
   $prefixes = @(
-    @{ Dest = '162.159.193.0'; Mask = '255.255.255.0' },
-    @{ Dest = '162.159.197.0'; Mask = '255.255.255.0' },
-    @{ Dest = '162.159.192.0'; Mask = '255.255.255.0' },
+    @{ Dest = '162.159.193.0'; Mask = '255.255.255.0' }, # WireGuard ingress
+    @{ Dest = '162.159.197.0'; Mask = '255.255.255.0' }, # MASQUE + engage/connectivity
+    @{ Dest = '162.159.192.0'; Mask = '255.255.255.0' }, # consumer WARP
     @{ Dest = '162.159.136.0'; Mask = '255.255.255.0' },
-    @{ Dest = '162.159.137.0'; Mask = '255.255.255.0' },
-    @{ Dest = '162.159.138.0'; Mask = '255.255.255.0' },
-    @{ Dest = '162.159.36.0';  Mask = '255.255.255.0' },
-    @{ Dest = '162.159.46.0';  Mask = '255.255.255.0' }
+    @{ Dest = '162.159.137.0'; Mask = '255.255.255.0' }, # orchestration API
+    @{ Dest = '162.159.138.0'; Mask = '255.255.255.0' }, # orchestration API
+    @{ Dest = '162.159.36.0';  Mask = '255.255.255.0' }, # DoH
+    @{ Dest = '162.159.46.0';  Mask = '255.255.255.0' }  # DoH
   )
   foreach ($p in $prefixes) {
     cmd /c "route -p add $($p.Dest) mask $($p.Mask) $EthernetGw metric 5 >nul 2>&1" | Out-Null
@@ -141,7 +144,38 @@ switch ($Action) {
     Show-Status
     Write-Host 'Do not enable WARP exclude-all while Tailscale RouteAll is on.'
     Write-Host 'Sweden source IP: .\Set-WeCryptoLanes.ps1 -Lane Sweden (exit node + SOCKS5).'
-    Write-Host 'ASI1 stays off the WARP include list so it exits the Tailscale node (not the NA-only Gateway L4 block).'
+    Write-Host 'CF_DNS_LOOKUP_FAILURE: use -Action Overlay (WARP first, Tailscale accept-dns=false).'
+  }
+  'Overlay' {
+    # CF_DNS_LOOKUP_FAILURE: Tailscale CorpDNS stole WARP's local DNS proxy.
+    # Docs: no third-party tool may control DNS while WARP connects.
+    # Order: punch Ethernet -> Tailscale DNS off -> WARP connect -> Sweden exit on top.
+    Write-Host 'Overlay: WARP on Ethernet, then Tailscale Sweden on top (accept-dns=false).'
+    Install-WarpPunch
+    Push-Location $env:TEMP
+    try { cmd /c "tailscale up --accept-dns=false >nul 2>&1" | Out-Null }
+    finally { Pop-Location }
+    tailscale set --accept-dns=false | Out-Null
+    if (Test-Path $warp) {
+      # Keep network-policy WarpWithDnsOverHttps (include). Do not force mode doh —
+      # that override was failing the connectivity check.
+      & $warp disconnect | Out-Null
+      Start-Sleep -Seconds 2
+      & $warp connect | Out-Null
+      $deadline = (Get-Date).AddSeconds(25)
+      do {
+        Start-Sleep -Seconds 2
+        $st = & $warp status 2>&1 | Out-String
+        if ($st -match 'Status update: Connected') { break }
+      } while ((Get-Date) -lt $deadline)
+    }
+    tailscale set --exit-node-allow-lan-access=true | Out-Null
+    # Keep whatever Sweden/CH exit is already selected; do not clear it.
+    Show-Status
+    Write-Host 'WARP must say Connected + healthy. Tailscale CorpDNS must be false.'
+    Write-Host 'Do NOT set a Mullvad --exit-node while WARP is up: RouteAll overwrites'
+    Write-Host 'Ethernet DNS with 127.0.2.2 and WARP dies (CF_DNS_LOOKUP_FAILURE).'
+    Write-Host 'Gigabit = this overlay (home IP). Sweden = -Lane Sweden (WARP will drop).'
   }
   default { Show-Status }
 }
