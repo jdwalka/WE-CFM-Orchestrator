@@ -90,6 +90,17 @@ test('Polymarket price-to-beat parser stays scoped to the requested slug', () =>
   }
 });
 
+test('5m PTB uses 60s Chainlink TWAP, not the old 30s series', () => {
+  const { hooks, restore } = loadPredictionMarkets();
+  try {
+    assert.strictEqual(hooks.POLY_TWAP_LOOKBACK_SEC, 60);
+    assert.strictEqual(hooks.PTB_TWAP_SETTLE_SEC, 62);
+    assert.strictEqual(hooks.POLY5M_PTB_LOCK_VERSION, 11);
+  } finally {
+    restore();
+  }
+});
+
 test('generic metadata parser handles common Polymarket price-to-beat shapes', () => {
   const { hooks, restore } = loadPredictionMarkets();
   try {
