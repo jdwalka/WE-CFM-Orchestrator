@@ -1743,9 +1743,12 @@ function proxyHttpGet(url, timeoutMs = 4000) {
 }
 
 async function proxyUpstreamWorks(port) {
-  const r = await proxyHttpGet(`http://127.0.0.1:${port}/kucoin/api/v1/timestamp`, 4000);
+  const timeoutMs = 1500;
+  const [r, t] = await Promise.all([
+    proxyHttpGet(`http://127.0.0.1:${port}/kucoin/api/v1/timestamp`, timeoutMs),
+    proxyHttpGet(`http://127.0.0.1:${port}/test/kucoin`, timeoutMs),
+  ]);
   if (r.status === 200 && /200000|"data"\s*:/.test(r.body || '')) return true;
-  const t = await proxyHttpGet(`http://127.0.0.1:${port}/test/kucoin`, 4000);
   if (t.status === 200) {
     try {
       const j = JSON.parse(t.body || '{}');

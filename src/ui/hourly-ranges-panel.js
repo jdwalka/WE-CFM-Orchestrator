@@ -448,8 +448,11 @@
       if (p15 && p15.slug) {
         const upProb = Number(p15.probability);
         const hasProb = Number.isFinite(upProb);
-        const live = (typeof window !== 'undefined' && window.LivePath15m?.resolve)
-          ? window.LivePath15m.resolve(sym, { spot: price, poly15m: p15 })
+        const livePathApi = (typeof window !== 'undefined' && window.LivePath15m) || null;
+        const live = livePathApi
+          ? (typeof livePathApi.fromAny === 'function'
+              ? livePathApi.fromAny(sym, { spot: price, poly15m: p15 })
+              : livePathApi.resolve(sym, { spot: price, poly15m: p15 }))
           : null;
         const call = (live && live.dir)
           || (p15.liveDirection === 'UP' || p15.liveDirection === 'DOWN' ? p15.liveDirection : null)

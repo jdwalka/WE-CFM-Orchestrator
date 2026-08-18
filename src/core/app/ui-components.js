@@ -56,12 +56,11 @@ function predictionCard(p) {
     const modelDir = p.score > 0.02 ? 'up' : p.score < -0.02 ? 'down' : 'wait';
     const kalshiDir = kalshiProb !== null ? (kalshiProb >= 0.5 ? _yesDirEarly : _noDirEarly) : null;
 
-    const livePath = (typeof window !== 'undefined' && window.LivePath15m?.resolve)
-      ? window.LivePath15m.resolve(p.sym, {
-          spot: p.price,
-          poly15m: _poly15mV,
-          modelScore: p.score,
-        })
+    const livePathApi = (typeof window !== 'undefined' && window.LivePath15m) || null;
+    const livePath = livePathApi
+      ? (typeof livePathApi.fromAny === 'function'
+          ? livePathApi.fromAny(p.sym, { spot: p.price, poly15m: _poly15mV, modelScore: p.score })
+          : livePathApi.resolve(p.sym, { spot: p.price, poly15m: _poly15mV, modelScore: p.score }))
       : null;
     const livePathDir = livePath && livePath.dir
       ? (livePath.dir === 'UP' ? _yesDirEarly : _noDirEarly)

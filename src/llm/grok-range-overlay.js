@@ -447,10 +447,12 @@
    * Blends quantitative model directional prediction, market YES odds, and spot vs floor.
    */
   function livePathFromSnapshot(snapshot) {
-    const resolve = (typeof window !== 'undefined' && window.LivePath15m?.resolve) || null;
-    if (!resolve) return null;
+    const api = (typeof window !== 'undefined' && window.LivePath15m) || null;
+    if (!api) return null;
+    if (typeof api.fromAny === 'function') return api.fromAny(snapshot);
+    if (typeof api.resolve !== 'function') return null;
     const k = snapshot.poly15m || {};
-    return resolve(snapshot.coin || snapshot.sym, {
+    return api.resolve(snapshot.coin || snapshot.sym, {
       spot: snapshot.currentPrice || snapshot.price,
       poly15m: k,
       open15: snapshot.sessionMemory && snapshot.sessionMemory.open15m,
