@@ -949,11 +949,7 @@ Use this recall only as context, and prioritize current market snapshot data if 
             {
               model,
               // Always include fast fallback chain inside the client
-              candidateModels: skipTokenmix
-                ? Asi1CreditOrch.rosterFor({ model })
-                : (preContract
-                  ? [model, 'asi1-fast', 'asi1-mini', 'asi1']
-                  : [model, 'asi1-fast', 'asi1']),
+              candidateModels: Asi1CreditOrch.rosterFor({ model }),
               tier: preContract ? 'deep-insight' : 'quick-tick',
               temperature: 0.12,
               max_tokens: maxTokens,
@@ -1370,7 +1366,7 @@ Use this recall only as context, and prioritize current market snapshot data if 
       ],
       {
         model: asi1Model,
-        candidateModels: [asi1Model, 'asi1-fast', 'asi1-mini', 'asi1'],
+        candidateModels: Asi1CreditOrch.rosterFor({ model: asi1Model }),
         tier: 'deep-insight',
         temperature: 0.12,
         max_tokens: Number(process.env.ASI1_PRECONTRACT_MAX_TOKENS || 1600),
@@ -1531,7 +1527,7 @@ Use this recall only as context, and prioritize current market snapshot data if 
       ],
       {
         model: asi1Model,
-        candidateModels: [asi1Model, 'asi1-fast', 'asi1-mini', 'asi1'],
+        candidateModels: Asi1CreditOrch.rosterFor({ model: asi1Model }),
         tier: 'deep-insight',
         temperature: 0.12,
         max_tokens: Number(process.env.ASI1_PRECONTRACT_MAX_TOKENS || 1600),

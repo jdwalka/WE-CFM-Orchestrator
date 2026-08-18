@@ -9,11 +9,11 @@
 
 const Asi1Client = require('../infra/asi1-client');
 
-const ASI1_ALL_MODELS = Object.freeze([
+const ASI1_ALL_MODELS = Asi1Client.ASI1_ALL_MODELS || Object.freeze([
   'asi1-ultra',
-  'asi1-fast',
-  'asi1-mini',
   'asi1',
+  'asi1-mini',
+  'asi1-fast',
 ]);
 
 // TokenMix / OpenAI-compat credit exhaustion only. Do not treat 429 quota,
