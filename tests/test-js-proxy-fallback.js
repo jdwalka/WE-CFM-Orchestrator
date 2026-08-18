@@ -73,6 +73,12 @@ vm.runInContext(source.slice(start, end), context);
   assert.strictEqual(responseHeaders.get('content-length'), undefined);
   assert.strictEqual(responseHeaders.get('content-type'), 'application/json');
   console.log('JS proxy fallback content-encoding test passed');
+
+  const upstreamFn = source.match(/async function proxyUpstreamWorks\([\s\S]*?\n\}/);
+  assert(upstreamFn, 'proxyUpstreamWorks not found');
+  assert(upstreamFn[0].includes('Promise.all'), 'proxyUpstreamWorks must probe in parallel');
+  assert(/timeoutMs = 1500/.test(upstreamFn[0]), 'proxyUpstreamWorks timeout should be 1500ms');
+  console.log('proxyUpstreamWorks parallel probe check passed');
 })().catch(error => {
   console.error(error);
   process.exitCode = 1;

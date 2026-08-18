@@ -45,8 +45,8 @@ function predictionCard(p) {
     let grokBinaryCall = null;
     let grokConfPct = null;
     let grokNotesText = '';
-    if (grok15mGuidance && !grok15mGuidance.error && grok15mGuidance.call) {
-      const gCall = String(grok15mGuidance.call).toUpperCase();
+    if (grok15mGuidance && !grok15mGuidance.error && (grok15mGuidance.aiCall || grok15mGuidance.call)) {
+      const gCall = String(grok15mGuidance.aiCall || grok15mGuidance.call).toUpperCase();
       grokBinaryCall = gCall === 'UP' ? _yesDirEarly : gCall === 'DOWN' ? _noDirEarly : null;
       const cRaw = Number(grok15mGuidance.confidence) || 0.60;
       grokConfPct = cRaw <= 1 ? Math.round(cRaw * 100) : Math.round(cRaw);
@@ -56,9 +56,20 @@ function predictionCard(p) {
     const modelDir = p.score > 0.02 ? 'up' : p.score < -0.02 ? 'down' : 'wait';
     const kalshiDir = kalshiProb !== null ? (kalshiProb >= 0.5 ? _yesDirEarly : _noDirEarly) : null;
 
+    const livePathApi = (typeof window !== 'undefined' && window.LivePath15m) || null;
+    const livePath = livePathApi
+      ? (typeof livePathApi.fromAny === 'function'
+          ? livePathApi.fromAny(p.sym, { spot: p.price, poly15m: _poly15mV, modelScore: p.score })
+          : livePathApi.resolve(p.sym, { spot: p.price, poly15m: _poly15mV, modelScore: p.score }))
+      : null;
+    const livePathDir = livePath && livePath.dir
+      ? (livePath.dir === 'UP' ? _yesDirEarly : _noDirEarly)
+      : null;
+
     let verdictDir, verdictSource;
-    // MODEL-AGNOSTIC PRINCIPLE: Verdict color reflects MODEL conviction ONLY, never Kalshi odds.
-    // Always project an explicit binary decision belief (YES / NO / UP / DOWN) rather than defaulting to WAIT.
+    // 15m paint follows the live settlement path (Pyth vs Polymarket PTB,
+    // ticks, window return). Model/Grok stay visible as a lean, but they
+    // must not lock the green/red label until an extreme swing.
 
     if (_kAlignEarly?.modelYesPct != null) {
       // Use CDF P(close ≥ strike) — correct for binary contracts
@@ -81,6 +92,13 @@ function predictionCard(p) {
     } else {
       verdictDir = 'up';
       verdictSource = 'default-lean';
+    }
+
+    const modelVerdictDir = verdictDir;
+    const modelVerdictSource = verdictSource;
+    if (livePathDir) {
+      verdictDir = livePathDir;
+      verdictSource = 'live-path-15m';
     }
 
     // Safety gate: note late/borderline entry risks without obliterating the binary belief
@@ -141,10 +159,10 @@ function predictionCard(p) {
       : Math.round(Math.min(99, Math.max(1, 50 + (p.score || 0) * 50)));
     const _modelDownPct = 100 - _modelUpPct;
     const _modelYesPctCard = _cdfYesPct ?? (_strikeDirEarly === 'below' ? _modelDownPct : _modelUpPct);
-    const _modelProbStr = verdictDir === 'up' ? `${_modelUpPct}% UP`
-      : verdictDir === 'down' ? `${_modelDownPct}% DOWN` : 'NEUTRAL';
-    const _modelProbColor = verdictDir === 'up' ? 'var(--color-green)'
-      : verdictDir === 'down' ? 'var(--color-red)' : 'var(--color-text-muted)';
+    const _modelProbStr = modelVerdictDir === 'up' ? `${_modelUpPct}% UP`
+      : modelVerdictDir === 'down' ? `${_modelDownPct}% DOWN` : 'NEUTRAL';
+    const _modelProbColor = modelVerdictDir === 'up' ? 'var(--color-green)'
+      : modelVerdictDir === 'down' ? 'var(--color-red)' : 'var(--color-text-muted)';
     const _liveKProbCard = window.PredictionMarkets?.getCoin?.(p.sym)?.kalshi15m?.probability ?? kalshiProb;
     const _liveKPctCard = _liveKProbCard != null ? Math.round(_liveKProbCard * 100) : null;
     const _edgePpCard = _liveKPctCard != null ? Math.abs(_modelYesPctCard - _liveKPctCard) : null;
@@ -164,7 +182,7 @@ function predictionCard(p) {
       : '';
 
     // Weak signal notice — light bucket (absScore <0.25) in model-only verdict has poor backtest WR
-    const _isLightModel = verdictSource === 'model' && Math.abs(p.score) < 0.25 && verdictDir !== 'wait';
+    const _isLightModel = modelVerdictSource === 'model' && Math.abs(p.score) < 0.25 && modelVerdictDir !== 'wait';
     const weakBadge = _isLightModel
       ? `<span class="pred-weak-warn" title="Low-conviction signal — backtest accuracy below 50%">⚡ WEAK</span>`
       : '';
@@ -572,6 +590,7 @@ function predictionCard(p) {
             <span class="pred-verdict-strength">${strength}</span>
           </div>
           <div class="pred-verdict-meta">
+            ${livePathDir ? `<span class="pred-source-badge" style="border-color:${verdictDir === 'up' ? 'var(--color-green)' : 'var(--color-red)'};color:${verdictDir === 'up' ? 'var(--color-green)' : 'var(--color-red)'}" title="${escapeHtml(livePath.reason || 'live path')}">LIVE ${livePath.dir}${Number.isFinite(livePath.bps) ? ` ${livePath.bps >= 0 ? '+' : ''}${livePath.bps.toFixed(1)}bps` : ''}</span>` : ''}
             <span class="pred-source-badge model">MODEL</span>
             ${llmBadge}
             ${_liveKPctCard !== null
@@ -580,7 +599,7 @@ function predictionCard(p) {
             <span style="color:${_modelProbColor};font-weight:700">${_modelProbStr}</span>
             <span>·</span>
             <span>${p.confidence}% conf</span>
-            ${grokBinaryCall ? `<span class="pred-source-badge" style="border-color:rgba(0,229,255,0.45);color:#00e5ff" title="${escapeHtml(grokNotesText)}">🤖 GROK ${grok15mGuidance.call} ${grokConfPct}%</span>` : ''}
+            ${grokBinaryCall ? `<span class="pred-source-badge" style="border-color:rgba(0,229,255,0.45);color:#00e5ff" title="${escapeHtml(grokNotesText)}">🤖 GROK ${grok15mGuidance.aiCall || grok15mGuidance.call} ${grokConfPct}%</span>` : ''}
             ${_edgePpCard != null && _edgePpCard >= 10 ? `<span style="color:${_edgePpCard >= 20 ? 'var(--color-green)' : '#ffd700'};font-weight:800;font-size:9px;padding:1px 5px;border-radius:3px;background:${_edgePpCard >= 20 ? 'rgba(38,212,126,0.12)' : 'rgba(255,215,0,0.12)'}">${_edgePpCard}pp ${_fadeActive ? 'FADE' : 'EDGE'}</span>` : ''}
             ${londonBadge}${calibBadge}${weakBadge}${safetyBadge}${hcBadge}
             <span style="font-size:9px;padding:2px 6px;border-radius:9999px;background:var(--color-surface-2);color:${setup15.cls === 'bull' ? 'var(--color-green)' : setup15.cls === 'bear' ? 'var(--color-red)' : 'var(--color-text-muted)'};font-weight:700;text-transform:uppercase">${setup15.label}</span>

@@ -1726,6 +1726,66 @@ async function startJsProxyFallback(port) {
   console.log(`[proxy-js] fallback proxy listening on http://127.0.0.1:${port}`);
 }
 
+function proxyHttpGet(url, timeoutMs = 4000) {
+  const http = require('http');
+  return new Promise((resolve) => {
+    const req = http.get(url, { timeout: timeoutMs }, (res) => {
+      let body = '';
+      res.on('data', (chunk) => { body += chunk; });
+      res.on('end', () => resolve({ status: res.statusCode, body }));
+    });
+    req.on('error', (err) => resolve({ status: 0, body: '', error: err.message }));
+    req.on('timeout', () => {
+      req.destroy();
+      resolve({ status: 0, body: '', error: 'timeout' });
+    });
+  });
+}
+
+async function proxyUpstreamWorks(port) {
+  const timeoutMs = 1500;
+  const [r, t] = await Promise.all([
+    proxyHttpGet(`http://127.0.0.1:${port}/kucoin/api/v1/timestamp`, timeoutMs),
+    proxyHttpGet(`http://127.0.0.1:${port}/test/kucoin`, timeoutMs),
+  ]);
+  if (r.status === 200 && /200000|"data"\s*:/.test(r.body || '')) return true;
+  if (t.status === 200) {
+    try {
+      const j = JSON.parse(t.body || '{}');
+      if (j.pass === true) return true;
+    } catch (_) { /* ignore */ }
+  }
+  return false;
+}
+
+// The packaged rustls proxy often cannot complete HTTPS while WARP/Tailscale
+// are both up (PowerShell/Node using the Windows cert store still work).
+// /health stays 200, so waitForProxy thinks everything is fine while the
+// renderer gets a 502 storm. Promote the Node fallback in that case.
+async function ensureProxyForwards() {
+  const port = proxyPort || 3010;
+  if (await proxyUpstreamWorks(port)) {
+    console.log(`[proxy] upstream OK on ${port}`);
+    return;
+  }
+  console.warn(`[proxy] native proxy on ${port} cannot reach exchanges; switching to Node TLS fallback`);
+  stopProxy();
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  try {
+    await startJsProxyFallback(port);
+  } catch (err) {
+    const alt = await findFreePort(PROXY_PORT_CASCADE);
+    console.warn(`[proxy] JS fallback bind ${port} failed (${err.message}); trying ${alt}`);
+    await startJsProxyFallback(alt);
+  }
+  if (await proxyUpstreamWorks(proxyPort)) {
+    console.log(`[proxy-js] upstream OK on ${proxyPort}`);
+  } else {
+    console.error('[proxy-js] fallback also cannot reach exchanges');
+    proxyHealthy = false;
+  }
+}
+
 async function startProxy() {
   if (proxyProcess && !proxyProcess.killed) {
     return;
@@ -3949,6 +4009,7 @@ app.whenReady().then(async () => {
 
   Menu.setApplicationMenu(null);
   await waitForProxy();   // give proxy ~3s to bind before renderer fires fetchAll
+  await ensureProxyForwards();
 
   // Start web service (HTTPS)
   webServiceHealth = startWebService() || webServiceHealth;
