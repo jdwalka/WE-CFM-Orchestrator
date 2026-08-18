@@ -148,10 +148,12 @@ switch ($Lane) {
     Install-WarpPunch -Gateway $EthernetGw
     Start-TailscaleMesh
     Set-WarpMode -Mode doh
+    if (Test-Path $warp) { & $warp connect | Out-Null }
     tailscale set --exit-node-allow-lan-access=true | Out-Null
     Show-Status
     Write-Host 'If WARP shows Exclude mode, switch the WeCrypto Windows include profile.'
     Write-Host 'For Sweden IP after this: -Lane Sweden. For tailnet Gateway DNS: Apply-TailscaleWarpCoexist.ps1 -Action PushDns'
+    Write-Host 'ASI1 uses the Tailscale node (not WARP include) so Gateway L4 NA-only does not drop api.asi1.ai.'
   }
   'WarpSweden' {
     Write-Host "Lane WarpSweden: punch, Tailscale $SwedenExit, warp+doh, Sweden vnet, reconnect"

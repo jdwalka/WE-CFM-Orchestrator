@@ -72,8 +72,10 @@ function Install-WarpPunch {
 }
 
 function Start-TailscaleMesh {
+  # Do not pass --accept-dns=false: Gateway NS (172.64.36.1/2) are already
+  # the tailnet resolvers. Flipping CorpDNS off fights WARP DoH again.
   Push-Location $env:TEMP
-  try { cmd /c "tailscale up --accept-dns=false >nul 2>&1" | Out-Null }
+  try { cmd /c "tailscale up >nul 2>&1" | Out-Null }
   finally { Pop-Location }
 }
 
@@ -133,11 +135,13 @@ switch ($Action) {
     Start-TailscaleMesh
     if (Test-Path $warp) {
       & $warp mode doh | Out-Null
+      & $warp connect | Out-Null
     }
     tailscale set --exit-node-allow-lan-access=true | Out-Null
     Show-Status
     Write-Host 'Do not enable WARP exclude-all while Tailscale RouteAll is on.'
     Write-Host 'Sweden source IP: .\Set-WeCryptoLanes.ps1 -Lane Sweden (exit node + SOCKS5).'
+    Write-Host 'ASI1 stays off the WARP include list so it exits the Tailscale node (not the NA-only Gateway L4 block).'
   }
   default { Show-Status }
 }
