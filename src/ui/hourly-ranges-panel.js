@@ -372,8 +372,8 @@
           return `<div class="hr-grok-row"><span class="hr-grok-label">${label}</span>
             <span class="hr-grok-meta" style="color:var(--color-orange,#f59e0b)">${g.error}</span></div>`;
         }
-        if (!g.call) return '';
-        const call = g.call === 'DOWN' ? 'DOWN' : 'UP';
+        if (!g.call && !(g.livePath && g.livePath.dir) && !g.displayCall) return '';
+        const call = (g.displayCall || (g.livePath && g.livePath.dir) || g.call) === 'DOWN' ? 'DOWN' : 'UP';
         const col = call === 'UP' ? 'var(--color-green,#26a69a)' : 'var(--color-red,#ef5350)';
         const confRaw = Number(g.confidence) || 0;
         const pct = confRaw <= 1 ? Math.round(confRaw * 100) : Math.round(confRaw);
@@ -448,7 +448,12 @@
       if (p15 && p15.slug) {
         const upProb = Number(p15.probability);
         const hasProb = Number.isFinite(upProb);
-        const call = hasProb ? (upProb >= 0.5 ? 'UP' : 'DOWN') : null;
+        const live = (typeof window !== 'undefined' && window.LivePath15m?.resolve)
+          ? window.LivePath15m.resolve(sym, { spot: price, poly15m: p15 })
+          : null;
+        const call = (live && live.dir)
+          || (p15.liveDirection === 'UP' || p15.liveDirection === 'DOWN' ? p15.liveDirection : null)
+          || (hasProb ? (upProb >= 0.5 ? 'UP' : 'DOWN') : null);
         const col = call === 'UP' ? 'var(--color-green,#26a69a)' : call === 'DOWN' ? 'var(--color-red,#ef5350)' : 'var(--color-text-faint)';
         const ptbNum = Number(p15.priceToBeatNum ?? p15.targetPriceNum);
         const ptbLabel = p15.targetPrice || (Number.isFinite(ptbNum) && ptbNum > 0
