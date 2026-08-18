@@ -20,7 +20,7 @@
   .\Set-WeCryptoLanes.ps1 -Lane WarpSweden
 #>
 param(
-  [ValidateSet('Status', 'Fast', 'Sweden', 'WarpSweden')]
+  [ValidateSet('Status', 'Fast', 'Sweden', 'WarpSweden', 'Together')]
   [string]$Lane = 'Status',
   [string]$SwedenExit = 'se-sto-wg-209.mullvad.ts.net',
   [string]$SwedenVnet = 'bc743e42-bbf6-4506-b5b2-db7c12f573cc',
@@ -142,6 +142,16 @@ switch ($Lane) {
     Start-Sleep -Seconds 3
     Show-Status
     Write-Host 'Expect ~500 Mbps, source 170.62.100.238 / SOCKS5 Stockholm. Include profile must be active on this box.'
+  }
+  'Together' {
+    Write-Host 'Lane Together: WARP DoH/include + Tailscale mesh + Ethernet punch. No default-route fight.'
+    Install-WarpPunch -Gateway $EthernetGw
+    Start-TailscaleMesh
+    Set-WarpMode -Mode doh
+    tailscale set --exit-node-allow-lan-access=true | Out-Null
+    Show-Status
+    Write-Host 'If WARP shows Exclude mode, switch the WeCrypto Windows include profile.'
+    Write-Host 'For Sweden IP after this: -Lane Sweden. For tailnet Gateway DNS: Apply-TailscaleWarpCoexist.ps1 -Action PushDns'
   }
   'WarpSweden' {
     Write-Host "Lane WarpSweden: punch, Tailscale $SwedenExit, warp+doh, Sweden vnet, reconnect"
