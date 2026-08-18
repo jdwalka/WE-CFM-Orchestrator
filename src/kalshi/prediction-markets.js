@@ -470,16 +470,15 @@
   const PTB_LOCK_GRACE_MS = 120_000;
   const PTB_SCRAPE_RETRY_MS = 4_000;
   const PTB_SCRAPE_MAX_ATTEMPTS = 30;
-  // Polymarket's chainlink-candles endpoint is queried with twapLookbackSeconds=30
-  // (see fetchPolymarketChainlinkCandleOpen) -- its "open" is a 30s trailing TWAP,
-  // not a fixed snapshot. Verified live (2026-08-15): the just-opened boundary's
-  // candle already exists at +17s with open===high===low===close (a single tick,
-  // not a settled TWAP). Since the lock is immutable (first success wins,
-  // forever), locking that early captures a value that hasn't finished forming
-  // yet and never catches up to what Polymarket's own UI eventually settles on --
-  // the "PTB is a cent off and keeps drifting" symptom. Refuse to lock before the
-  // TWAP window has had time to fully accumulate.
-  const PTB_TWAP_SETTLE_SEC = 32;
+  // Live-verified (2026-08-18): Gamma `cryptoMarketConfig` for current 5m and
+  // 15m Up/Down markets is `btc-5m-twap-60` / `btc-15m-twap-60` with
+  // twapLookbackSeconds=60. Querying chainlink-candles with lookback=30
+  // produced a different open (e.g. BTC 16:10 window 64758.01 vs official
+  // 64759.43) and that wrong number locked for the whole contract.
+  const POLY_TWAP_LOOKBACK_SEC = 60;
+  // Refuse to lock before the TWAP window has fully accumulated. 32s was
+  // sized for the old 30s lookback; at 60s that captured a half-formed open.
+  const PTB_TWAP_SETTLE_SEC = POLY_TWAP_LOOKBACK_SEC + 2;
 
   function _seedPendingPtbLock(sym, slug, boundaryMs) {
     if (_getPolymarketPriceToBeatLock(slug)) return;
@@ -1665,7 +1664,9 @@
   // and the immutable lock blocked the real PTB for the whole window.
   // v10: ONLY Polymarket-published contract PTB may lock. RTDS TWAP / title / generic
   // field guesses may display as provisional but never lock and never go to AI as PTB.
-  const POLY5M_PTB_LOCK_VERSION = 10;
+  // v11: 5m/15m contracts now settle on Chainlink TWAP-60 (cryptoMarketConfig
+  // twapLookbackSeconds=60). Purge v10 locks that used the 30s candle open.
+  const POLY5M_PTB_LOCK_VERSION = 11;
   const POLY5M_PTB_TRUSTED_SOURCES = new Set([
     'polymarket-event-page',
     'polymarket-chainlink-candles',
@@ -2037,16 +2038,11 @@
     return null;
   }
 
-  // Verified live (2026-08-10) by watching the actual Polymarket page make this
-  // exact request: clicking the "Price To Beat" chart view on an event page
-  // fires GET /api/chainlink-candles?symbol=..&interval=5m|15m&limit=30&
-  // endTime=<ms>&twapEnabled=true&twapLookbackSeconds=30, returning proper OHLC
-  // candles keyed by window-start unix-seconds. This is the exact source the
-  // "Price To Beat: $X" figure on Polymarket's own UI comes from -- a real,
-  // documented-shape REST endpoint, not something that depends on what the SSR
-  // payload happens to include on any given request (confirmed unreliable: a
-  // live test found zero occurrences of the SSR-embedded data 78 seconds into
-  // an active window). limit must be exactly 30 -- any other value 400s.
+  // Verified live (2026-08-18): Polymarket's Price To Beat chart calls
+  // GET /api/chainlink-candles?symbol=..&interval=5m|15m&limit=30&
+  // endTime=<ms>&twapEnabled=true&twapLookbackSeconds=60. The 5m/15m
+  // cryptoMarketConfig id is `*-twap-60`. lookback=30 is a different series
+  // and must not be used. limit must be exactly 30 -- any other value 400s.
   // Live-verified (2026-08-13): a 4-minute audit of the real fetch pipeline
   // caught every single symbol/horizon combination failing with HTTP 429 from
   // this endpoint. Root cause: fetchPolymarketChainlinkCandleOpen used to fire
@@ -2061,7 +2057,7 @@
   // rate-limited cache below -- mirrors the existing Kalshi 429-cooldown
   // pattern (_ipcLooksRateLimited/_tripKalshiCooldown above) rather than
   // inventing a new one.
-  const _chainlinkCandleCache = {}; // `${sym}:${interval}` -> { candles, fetchedAt, inFlight }
+  const _chainlinkCandleCache = {}; // `${sym}:${interval}:${lookback}` -> { candles, fetchedAt, inFlight }
   const CHAINLINK_CANDLE_TTL_MS = 45_000;
   const CHAINLINK_MIN_GLOBAL_INTERVAL_MS = 1_500; // gate across ALL keys, not per-key
   let _chainlinkLastRequestAt = 0;
@@ -2076,8 +2072,14 @@
     return wait;
   }
 
-  async function _fetchChainlinkCandlesCached(sym, interval) {
-    const key = `${sym}:${interval}`;
+  function _twapLookbackSeconds(market) {
+    const n = Number(market?.cryptoMarketConfig?.twapLookbackSeconds);
+    return Number.isFinite(n) && n > 0 ? n : POLY_TWAP_LOOKBACK_SEC;
+  }
+
+  async function _fetchChainlinkCandlesCached(sym, interval, lookbackSec = POLY_TWAP_LOOKBACK_SEC) {
+    const lookback = Number(lookbackSec) > 0 ? Number(lookbackSec) : POLY_TWAP_LOOKBACK_SEC;
+    const key = `${sym}:${interval}:${lookback}`;
     const now = Date.now();
     const entry = _chainlinkCandleCache[key];
 
@@ -2090,7 +2092,7 @@
       if (wait > 0) await new Promise(r => setTimeout(r, wait));
       _chainlinkLastRequestAt = Date.now();
       try {
-        const url = `https://polymarket.com/api/chainlink-candles?symbol=${encodeURIComponent(sym)}&interval=${interval}&limit=30&endTime=${Date.now()}&twapEnabled=true&twapLookbackSeconds=30`;
+        const url = `https://polymarket.com/api/chainlink-candles?symbol=${encodeURIComponent(sym)}&interval=${interval}&limit=30&endTime=${Date.now()}&twapEnabled=true&twapLookbackSeconds=${lookback}`;
         const txt = await textFetch(url, {
           headers: {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151 Safari/537.36',
@@ -2118,9 +2120,9 @@
     return doFetch;
   }
 
-  async function fetchPolymarketChainlinkCandleOpen(sym, horizonTag, boundarySec) {
+  async function fetchPolymarketChainlinkCandleOpen(sym, horizonTag, boundarySec, lookbackSec = POLY_TWAP_LOOKBACK_SEC) {
     const interval = horizonTag === '15m' ? '15m' : '5m';
-    const candles = await _fetchChainlinkCandlesCached(sym, interval);
+    const candles = await _fetchChainlinkCandlesCached(sym, interval, lookbackSec);
     const candle = Array.isArray(candles) ? candles.find(c => c.time === boundarySec) : null;
     return toPositiveFiniteNumber(candle?.open);
   }
@@ -2128,9 +2130,10 @@
   // Exposed for the (planned) Polymarket 5m resolution tracker to read a
   // window's settlement close price off the same cache, without issuing any
   // fetch of its own.
-  function _getCachedChainlinkCandle(sym, horizonTag, boundarySec) {
+  function _getCachedChainlinkCandle(sym, horizonTag, boundarySec, lookbackSec = POLY_TWAP_LOOKBACK_SEC) {
     const interval = horizonTag === '15m' ? '15m' : '5m';
-    const entry = _chainlinkCandleCache[`${sym}:${interval}`];
+    const lookback = Number(lookbackSec) > 0 ? Number(lookbackSec) : POLY_TWAP_LOOKBACK_SEC;
+    const entry = _chainlinkCandleCache[`${sym}:${interval}:${lookback}`];
     if (!entry) return null;
     return (entry.candles || []).find(c => c.time === boundarySec) || null;
   }
@@ -2273,46 +2276,18 @@
         let priceToBeatSource = null;
         let priceToBeatNum = null;
 
-        // Parse PTB from title/question (note: many 5m slugs use time-range in title; $ strike not always present)
-        if (!priceToBeatNum && title) {
-          const match = title.match(/\$([0-9,.]+)/);
-          if (match) {
-            const num = parseFloat(match[1].replace(/,/g, ''));
-            if (Number.isFinite(num) && num > 0) {
-              priceToBeatNum = num;
-              priceToBeatSource = 'polymarket-title';
-            }
-          }
-        }
-
-        // 1. Try gamma metadata / m object first (reliable, no scrape)
-        if (!priceToBeatNum && Number.isFinite(m.priceToBeat) && m.priceToBeat > 0) {
+        // Trusted Gamma fields only. Title $ scrapes and generic strike/openPrice
+        // guesses used to run first and skip the candle/event-page fetch, so the
+        // overlay locked a rounded/wrong number for the whole 5m window.
+        if (Number.isFinite(m.priceToBeat) && m.priceToBeat > 0) {
           priceToBeatNum = m.priceToBeat;
           priceToBeatSource = 'gamma-market';
-        } else if (!priceToBeatNum && m.eventMetadata && Number.isFinite(m.eventMetadata.priceToBeat)) {
+        } else if (m.eventMetadata && Number.isFinite(m.eventMetadata.priceToBeat)) {
           priceToBeatNum = m.eventMetadata.priceToBeat;
           priceToBeatSource = 'gamma-event-metadata';
-        } else if (!priceToBeatNum && m.price_to_beat && Number.isFinite(m.price_to_beat)) {
+        } else if (m.price_to_beat && Number.isFinite(m.price_to_beat)) {
           priceToBeatNum = m.price_to_beat;
           priceToBeatSource = 'gamma-price-to-beat';
-        }
-
-        // 1b. Generic parse from full market JSON for other fields
-        if (!priceToBeatNum) {
-          const gen = _parseGenericPriceToBeat(JSON.stringify(m), marketSlug);
-          if (Number.isFinite(gen) && gen > 0) {
-            priceToBeatNum = gen;
-            priceToBeatSource = 'gamma-market-metadata';
-          }
-        }
-
-        // 1c. Also try broader keys on the raw market object (some gamma responses use different casing)
-        if (!priceToBeatNum) {
-          const cands = [m.initialPrice, m.openPrice, m.startPrice, m.benchmarkPrice, m.strike, m.strikePrice, m.referencePrice];
-          for (const c of cands) {
-            const n = toPositiveFiniteNumber(c);
-            if (n != null) { priceToBeatNum = n; priceToBeatSource = 'gamma-market-field'; break; }
-          }
         }
 
         const startMs = startDate ? new Date(startDate).getTime() : ts * 1000;
@@ -2331,10 +2306,8 @@
           if (existingLock) {
             priceToBeatNum = existingLock.price;
             priceToBeatSource = existingLock.source;
-          } else if (priceToBeatNum == null) {
-            // Only scrape when no trusted value was already resolved from Gamma/title
-            // metadata above — a fragile HTML scrape must never override a value the
-            // fast, reliable Gamma API already gave us.
+          } else if (!priceToBeatNum || !POLY5M_PTB_TRUSTED_SOURCES.has(priceToBeatSource)) {
+            // Scrape unless Gamma already published an explicit priceToBeat.
             let scraped = null;
             try {
               scraped = await fetchPolymarketPriceToBeat(slug) || await fetchPolymarketPriceToBeat(marketSlug);
@@ -3243,6 +3216,9 @@ function polymarketSentiment(markets, sym) {
       _parseGenericPriceToBeat,
       _parsePolymarketPriceToBeat,
       _parseUpProb,
+      POLY_TWAP_LOOKBACK_SEC,
+      PTB_TWAP_SETTLE_SEC,
+      POLY5M_PTB_LOCK_VERSION,
     };
   }
 
