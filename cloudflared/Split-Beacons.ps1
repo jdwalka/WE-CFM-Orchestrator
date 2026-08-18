@@ -7,20 +7,20 @@
   Ethernet (192.168.18.38, 1 Gbps) keeps the default route, WARP include,
   Tailscale mesh, and cloudflared origin.
 
-  Wi-Fi (saved profile NOKIA-2461) is associated for LeakSnipe / poker
-  clients. Higher interface metric so it never steals the default route.
+  Wi-Fi is for LeakSnipe / poker. Prefer the modem beacon B1063A_5G
+  when a Windows profile exists; otherwise NOKIA-2461. Metric is worse
+  than Ethernet so Wi-Fi never steals the default route.
 
-  Same LAN today (Wi-Fi also lands on 192.168.18.0/24). The split is
-  NIC/queue isolation, not a second WAN. For a true second uplink, join
-  Wi-Fi to a phone hotspot on a different subnet.
+  Same gateway as Ethernet = same 192.168.18.0/24 (queue split only).
+  Guest/isolated SSID on another subnet = real second WAN.
 
 .EXAMPLE
   .\cloudflared\Split-Beacons.ps1
-  .\cloudflared\Split-Beacons.ps1 -WifiProfile 'NOKIA-2461'
+  .\cloudflared\Split-Beacons.ps1 -WifiProfile 'B1063A_5G'
   .\cloudflared\Split-Beacons.ps1 -DisconnectWifi
 #>
 param(
-  [string]$WifiProfile = 'NOKIA-2461',
+  [string]$WifiProfile = '',
   [string]$EthernetName = 'Ethernet',
   [string]$WifiName = 'Wi-Fi',
   [int]$EthernetMetric = 10,
@@ -29,6 +29,13 @@ param(
 )
 
 $ErrorActionPreference = 'Continue'
+
+if (-not $WifiProfile) {
+  $saved = (netsh wlan show profiles) | Out-String
+  if ($saved -match 'B1063A_5G') { $WifiProfile = 'B1063A_5G' }
+  elseif ($saved -match 'NOKIA-2461') { $WifiProfile = 'NOKIA-2461' }
+  else { $WifiProfile = 'B1063A_5G' }
+}
 
 function Show-Split {
   Write-Host '== adapters =='
