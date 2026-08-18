@@ -55,6 +55,7 @@ test('diagnostics expose accounts without leaking key material', () => {
   const d = Asi1.getDiagnostics();
   assert.ok(!JSON.stringify(d).includes('sk_'));
   assert.ok(Array.isArray(d.officialModels));
+  assert.strictEqual(typeof d.plannerMode, 'boolean');
   if (d.keysConfigured >= 1) {
     assert.ok(d.configured);
   }

@@ -12,7 +12,9 @@
  * Label lines / `# account=` / `# skip` in those files tag or drop keys.
  *
  * Auth: Authorization: Bearer $ASI_ONE_API_KEY
- * Agentic: model "asi1" + optional x-session-id (ASI1_SESSION_<ACCOUNT>).
+ * Planner / Agentverse (playground): planner_mode + required x-session-id.
+ *   opt in per call (options.plannerMode) or ASI1_PLANNER_MODE=1.
+ *   Do not enable on 5m ticks — a planner run can take minutes.
  */
 
 const ASI1_BASE_URL = (
@@ -268,7 +270,16 @@ async function chatCompletion(messages, options = {}) {
           : account === 'gitgoin'
             ? process.env.ASI1_SESSION_GITGOIN
             : '';
-        const sessionId = options.sessionId || accountSession;
+        const plannerOn = options.plannerMode === true
+          || options.planner_mode === true
+          || process.env.ASI1_PLANNER_MODE === '1';
+        if (plannerOn) payload.planner_mode = true;
+        if (Array.isArray(options.agents) && options.agents.length) {
+          payload.agents = options.agents.slice();
+        }
+        // Planner requires x-session-id for the whole run (docs.asi1.ai planner).
+        const sessionId = options.sessionId || accountSession
+          || (plannerOn ? `wecrypto-${account || 'shared'}-${Date.now().toString(36)}` : '');
         if (sessionId) headers['x-session-id'] = String(sessionId);
         const response = await fetchWithTimeout(
           ASI1_CHAT_URL,
@@ -297,13 +308,16 @@ async function chatCompletion(messages, options = {}) {
         }
 
         if (payload.stream && response.body) {
-          const text = await readSseContent(response);
+          const streamed = await readSseContent(response);
           return {
-            content: text,
+            content: streamed.content,
             model: payload.model,
             keyEnv: env,
             account,
             email,
+            sessionId: sessionId || null,
+            plannerMode: !!payload.planner_mode,
+            plan: streamed.plan,
             raw: null,
           };
         }
@@ -326,6 +340,8 @@ async function chatCompletion(messages, options = {}) {
           keyEnv: env,
           account,
           email,
+          sessionId: sessionId || null,
+          plannerMode: !!payload.planner_mode,
           raw: data,
           usage: data?.usage || null,
           executable_data: data?.executable_data || null,
@@ -350,6 +366,7 @@ async function chatCompletion(messages, options = {}) {
 async function readSseContent(response) {
   const decoder = new TextDecoder('utf-8');
   let content = '';
+  let plan = null;
   for await (const chunk of response.body) {
     const text = decoder.decode(chunk, { stream: true });
     for (const line of text.split('\n')) {
@@ -358,13 +375,16 @@ async function readSseContent(response) {
       if (dataStr === '[DONE]') continue;
       try {
         const data = JSON.parse(dataStr);
+        if (data.metadata) {
+          plan = plan && typeof plan === 'object' ? { ...plan, ...data.metadata } : data.metadata;
+        }
         if (data.choices?.[0]?.delta?.content) {
           content += data.choices[0].delta.content;
         }
       } catch (_) { /* partial SSE chunk */ }
     }
   }
-  return content.trim();
+  return { content: content.trim(), plan };
 }
 
 /**
@@ -430,7 +450,8 @@ function getDiagnostics() {
     allModels: ASI1_ALL_MODELS.slice(),
     baseUrl: ASI1_BASE_URL,
     defaultModel: ASI1_DEFAULT_MODEL,
-    agenticNote: 'Use model asi1 + x-session-id for Agentverse agent universe routing',
+    plannerMode: process.env.ASI1_PLANNER_MODE === '1',
+    agenticNote: 'planner_mode + x-session-id routes through Agentverse; official models are asi1 / asi1-ultra / asi1-mini',
   };
 }
 
