@@ -17,6 +17,12 @@
       "org": "leaksnipe",
       "profile": "56ba0668-183e-491c-840d-254c0e075e9f",
       "public": "64.25.2.144"
+    },
+    "isp": {
+      "modem_wan": "100.64.91.167",
+      "modem_wan_note": "RFC6598 CGNAT (Optimum). Not a public address. Do not add to Cloudflare Gateway locations or Tailscale ACLs.",
+      "public_egress": "64.25.2.144",
+      "public_egress_note": "What the internet sees when Tailscale exit is off. Use this as the 233 Roseville Gateway source /32."
     }
   },
   "wifi": {

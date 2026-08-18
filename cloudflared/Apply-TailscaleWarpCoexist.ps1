@@ -147,22 +147,25 @@ switch ($Action) {
     Write-Host 'CF_DNS_LOOKUP_FAILURE: use -Action Overlay (WARP first, Tailscale accept-dns=false).'
   }
   'Overlay' {
-    # CF_DNS_LOOKUP_FAILURE: Tailscale CorpDNS stole WARP's local DNS proxy.
-    # Docs: no third-party tool may control DNS while WARP connects.
-    # Order: punch Ethernet -> Tailscale DNS off -> WARP connect -> Sweden exit on top.
-    Write-Host 'Overlay: WARP on Ethernet, then Tailscale Sweden on top (accept-dns=false).'
+    # DNS-only WARP (mode doh) + Tailscale mesh/Serve. No WARP tunnel.
+    # CF_DNS_LOOKUP_FAILURE: Tailscale must not own system DNS (accept-dns=false).
+    # Connect WARP DoH first; Sweden exit can stay — DoH has no tunnel to fight RouteAll.
+    Write-Host 'Overlay: WARP DNS-only (doh) on Ethernet, Tailscale Serve on localhost:3450.'
     Install-WarpPunch
     Push-Location $env:TEMP
     try { cmd /c "tailscale up --accept-dns=false >nul 2>&1" | Out-Null }
     finally { Pop-Location }
     tailscale set --accept-dns=false | Out-Null
+    try {
+      Get-DnsClientNrptRule -ErrorAction SilentlyContinue |
+        Where-Object { $_.Namespace -match 'ts\.net' } |
+        ForEach-Object { Remove-DnsClientNrptRule -Name $_.Name -Force -ErrorAction SilentlyContinue }
+      Add-DnsClientNrptRule -Namespace '.ts.net' -NameServers '100.100.100.100' -ErrorAction SilentlyContinue
+    } catch { }
     if (Test-Path $warp) {
-      # Keep network-policy WarpWithDnsOverHttps (include). Do not force mode doh —
-      # that override was failing the connectivity check.
-      & $warp disconnect | Out-Null
-      Start-Sleep -Seconds 2
+      & $warp mode doh | Out-Null
       & $warp connect | Out-Null
-      $deadline = (Get-Date).AddSeconds(25)
+      $deadline = (Get-Date).AddSeconds(20)
       do {
         Start-Sleep -Seconds 2
         $st = & $warp status 2>&1 | Out-String
@@ -170,12 +173,9 @@ switch ($Action) {
       } while ((Get-Date) -lt $deadline)
     }
     tailscale set --exit-node-allow-lan-access=true | Out-Null
-    # Keep whatever Sweden/CH exit is already selected; do not clear it.
     Show-Status
-    Write-Host 'WARP must say Connected + healthy. Tailscale CorpDNS must be false.'
-    Write-Host 'Do NOT set a Mullvad --exit-node while WARP is up: RouteAll overwrites'
-    Write-Host 'Ethernet DNS with 127.0.2.2 and WARP dies (CF_DNS_LOOKUP_FAILURE).'
-    Write-Host 'Gigabit = this overlay (home IP). Sweden = -Lane Sweden (WARP will drop).'
+    Write-Host 'WARP should be DnsOverHttps (no tunnel). Local app: https://mauro.prairiedog-godzilla.ts.net/'
+    Write-Host 'svc:wecrypto: https://wecrypto.prairiedog-godzilla.ts.net/ (Approve in admin if NXDOMAIN).'
   }
   default { Show-Status }
 }
