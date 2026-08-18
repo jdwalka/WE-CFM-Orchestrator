@@ -7,16 +7,16 @@
   Ethernet (192.168.18.38, 1 Gbps) keeps the default route, WARP include,
   Tailscale mesh, and cloudflared origin.
 
-  Wi-Fi is for LeakSnipe / poker. Prefer the modem beacon B1063A_5G
-  when a Windows profile exists; otherwise NOKIA-2461. Metric is worse
-  than Ethernet so Wi-Fi never steals the default route.
+  Wi-Fi is for LeakSnipe / poker. Prefer SSID LeakSnipe
+  (BSSID 62:07:f8:49:59:9a) when a Windows profile exists.
+  Metric is worse than Ethernet so Wi-Fi never steals the default route.
 
   Same gateway as Ethernet = same 192.168.18.0/24 (queue split only).
   Guest/isolated SSID on another subnet = real second WAN.
 
 .EXAMPLE
   .\cloudflared\Split-Beacons.ps1
-  .\cloudflared\Split-Beacons.ps1 -WifiProfile 'B1063A_5G'
+  .\cloudflared\Split-Beacons.ps1 -WifiProfile 'LeakSnipe'
   .\cloudflared\Split-Beacons.ps1 -DisconnectWifi
 #>
 param(
@@ -32,9 +32,10 @@ $ErrorActionPreference = 'Continue'
 
 if (-not $WifiProfile) {
   $saved = (netsh wlan show profiles) | Out-String
-  if ($saved -match 'B1063A_5G') { $WifiProfile = 'B1063A_5G' }
+  if ($saved -match 'LeakSnipe') { $WifiProfile = 'LeakSnipe' }
   elseif ($saved -match 'NOKIA-2461') { $WifiProfile = 'NOKIA-2461' }
-  else { $WifiProfile = 'B1063A_5G' }
+  elseif ($saved -match 'B1063A_5G') { $WifiProfile = 'B1063A_5G' }
+  else { $WifiProfile = 'LeakSnipe' }
 }
 
 function Show-Split {
@@ -98,6 +99,42 @@ if ($ethIp) {
 }
 
 Show-Split
-Write-Host 'WARP/Tailscale stay on Ethernet. Launch poker after this so it sees LEAKSNIPE_BIND_IP.'
-Write-Host '  G:\LeakSnipe\Launch-LeakSnipe.bat'
-Write-Host 'Same /24 today. For a second WAN, connect Wi-Fi to a hotspot that is not 192.168.18.0/24.'
+function Set-OnRampFirewall {
+  $wifi = Get-NetAdapter -Name $WifiName -ErrorAction SilentlyContinue
+  if (-not $wifi) { return }
+  $rules = @(
+    @{ Name = 'WeCrypto-WARP-NoWifi'; Display = 'WeCrypto WARP Ethernet only'; Dir = 'Outbound'; Program = 'C:\Program Files\Cloudflare\Cloudflare WARP\warp-svc.exe' },
+    @{ Name = 'WeCrypto-TS-NoWifi-Out'; Display = 'WeCrypto Tailscale no Wi-Fi out'; Dir = 'Outbound'; Program = 'C:\Program Files\Tailscale\tailscaled.exe' }
+  )
+  foreach ($r in $rules) {
+    if (Get-NetFirewallRule -Name $r.Name -ErrorAction SilentlyContinue) {
+      Remove-NetFirewallRule -Name $r.Name -ErrorAction SilentlyContinue
+    }
+    try {
+      New-NetFirewallRule -Name $r.Name -DisplayName $r.Display -Direction $r.Dir -Action Block -Program $r.Program -InterfaceAlias $WifiName -Profile Any -ErrorAction Stop | Out-Null
+      Write-Host ("firewall {0}: block {1} on {2}" -f $r.Name, (Split-Path $r.Program -Leaf), $WifiName)
+    } catch {
+      Write-Host ("firewall {0}: need elevation ({1})" -f $r.Name, $_.Exception.Message)
+    }
+  }
+  if (Get-NetFirewallRule -Name 'WeCrypto-TS-NoWifi-In41641' -ErrorAction SilentlyContinue) {
+    Remove-NetFirewallRule -Name 'WeCrypto-TS-NoWifi-In41641' -ErrorAction SilentlyContinue
+  }
+  try {
+    New-NetFirewallRule -Name 'WeCrypto-TS-NoWifi-In41641' -DisplayName 'WeCrypto Tailscale no Wi-Fi UDP 41641' -Direction Inbound -Action Block -Protocol UDP -LocalPort 41641 -InterfaceAlias $WifiName -Profile Any -ErrorAction Stop | Out-Null
+    Write-Host "firewall WeCrypto-TS-NoWifi-In41641: block Tailscale stun on $WifiName"
+  } catch {
+    Write-Host ("firewall inbound 41641: need elevation ({0})" -f $_.Exception.Message)
+  }
+}
+
+Set-OnRampFirewall
+
+$ethMac = (Get-NetAdapter -Name $EthernetName).MacAddress
+$wifiMac = (Get-NetAdapter -Name $WifiName -ErrorAction SilentlyContinue).MacAddress
+Write-Host ''
+Write-Host 'MAC lift (local on-ramp only — Gateway/Tailscale see machine IPs, not NIC MACs):'
+Write-Host ("  Ethernet {0}  {1}  -> tailscale 100.107.195.35 / WARP profile 56ba0668" -f $ethMac, $ethIp)
+Write-Host ("  Wi-Fi    {0}  {1}  -> poker only (SSID LeakSnipe AP 62:07:f8:49:59:9a)" -f $wifiMac, $wifiIp)
+Write-Host 'Launch poker: G:\LeakSnipe\Launch-LeakSnipe.bat'
+Write-Host 'Same /24 today. Guest SSID on another subnet = real second WAN.'

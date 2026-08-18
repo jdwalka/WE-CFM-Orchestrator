@@ -1,0 +1,33 @@
+{
+  "note": "Local NIC/AP MACs. WARP Gateway and Tailscale ACLs cannot match a client MAC over the Internet — we pin Ethernet as the only on-ramp so mauro's machine IP stays 100.107.195.35.",
+  "ethernet": {
+    "role": "wecrypto-warp-tailscale",
+    "adapter": "Ethernet",
+    "mac": "7C-10-C9-44-08-23",
+    "lan": "192.168.18.38/24",
+    "gateway": "192.168.18.1",
+    "tailscale": {
+      "node": "mauro",
+      "magic": "mauro.prairiedog-godzilla.ts.net",
+      "ipv4": "100.107.195.35",
+      "ipv6": "fd7a:115c:a1e0::2f3a:c324",
+      "tags": ["tag:trading", "tag:core", "tag:mullvad"]
+    },
+    "warp": {
+      "org": "leaksnipe",
+      "profile": "56ba0668-183e-491c-840d-254c0e075e9f",
+      "public": "64.25.2.144"
+    }
+  },
+  "wifi": {
+    "role": "poker-leaksnipe",
+    "adapter": "Wi-Fi",
+    "ssid": "LeakSnipe",
+    "ap_bssid": "62:07:f8:49:59:9a",
+    "client_mac": "86-E3-90-99-F2-5C",
+    "lan": "192.168.18.56/24",
+    "metric": 80,
+    "not_on_warp": true,
+    "not_tailscale_endpoint": true
+  }
+}
