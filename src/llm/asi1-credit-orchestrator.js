@@ -39,18 +39,16 @@ function plannerEnabled(horizonOrPacket) {
   return true;
 }
 
-// TokenMix / OpenAI-compat credit exhaustion only. Do not treat 429 quota,
-// generic "billing", or prepaid-plan copy as a permanent skip.
+// TokenMix / OpenAI-compat credit exhaustion only. Explicit 402 or
+// credit-token phrases — never generic billing, wallet balance, or 429 quota.
 const CREDIT_RES = [
   /\bhttp\s*402\b/,
   /\bstatus(?:code)?[:\s]*402\b/,
   /\bpayment required\b/,
+  /\b(?:tokenmix|openai)(?:['’]s)?\s+(?:is\s+)?(?:out of|insufficient)\s+credits?\b/,
   /\binsufficient credits?\b/,
-  /\bno credits?\b/,
-  /\bcredits? exhausted\b/,
   /\bout of credits?\b/,
-  /\bbalance too low\b/,
-  /\binsufficient[_ ](?:funds|balance)\b/,
+  /\bcredits?\s+exhausted\b/,
 ];
 
 function isCreditError(err) {
@@ -94,9 +92,10 @@ function rosterFor(options = {}) {
   return all;
 }
 
-function reshapeCascade(cascade, assistant) {
+function reshapeCascade(cascade, assistant, skipCached) {
   const next = Array.isArray(cascade) ? cascade.slice() : [];
-  if (!shouldSkipTokenmix(assistant)) return next;
+  const skip = skipCached != null ? !!skipCached : shouldSkipTokenmix(assistant);
+  if (!skip) return next;
   const filtered = next.filter((p) => p !== 'tokenmix');
   if (!filtered.includes('asi1')) filtered.unshift('asi1');
   return filtered;

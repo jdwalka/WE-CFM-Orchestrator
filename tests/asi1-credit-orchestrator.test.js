@@ -32,6 +32,17 @@ test('generic billing or 429 quota copy is not permanent credit exhaustion', () 
   assert.strictEqual(orch.isCreditError(new Error('prepaid plan details')), false);
   assert.strictEqual(orch.isCreditError({ status: 429, message: 'quota exceeded' }), false);
   assert.strictEqual(orch.isCreditError(new Error('request-id 4021abc timeout')), false);
+  assert.strictEqual(orch.isCreditError(new Error('no credit card on file')), false);
+  assert.strictEqual(orch.isCreditError(new Error('wallet balance too low')), false);
+  assert.strictEqual(orch.isCreditError(new Error('insufficient funds for this fill')), false);
+});
+
+test('reshapeCascade honors a cached skip flag without re-reading assistant state', () => {
+  const assistant = { _tokenmixCreditExhausted: false };
+  const skipped = orch.reshapeCascade(['tokenmix', 'xai'], assistant, true);
+  assert.deepStrictEqual(skipped, ['asi1', 'xai']);
+  const kept = orch.reshapeCascade(['tokenmix', 'xai'], assistant, false);
+  assert.deepStrictEqual(kept, ['tokenmix', 'xai']);
 });
 
 test('roster walks every ASI1 model and prefers the requested one first', () => {

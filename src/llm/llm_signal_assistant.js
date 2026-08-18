@@ -832,7 +832,7 @@ Use this recall only as context, and prioritize current market snapshot data if 
       : 'dual_fire';
     const skipTokenmix = Asi1CreditOrch.shouldSkipTokenmix(this);
     if (skipTokenmix) {
-      cascade = Asi1CreditOrch.reshapeCascade(cascade, this);
+      cascade = Asi1CreditOrch.reshapeCascade(cascade, this, skipTokenmix);
       console.warn(
         deskMode === 'asi1_only' || deskMode === 'planner'
           ? `[LLM] ASI1 desk mode=${deskMode} — TokenMix skipped (economy path)`
