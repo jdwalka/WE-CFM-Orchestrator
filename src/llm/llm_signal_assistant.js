@@ -827,15 +827,22 @@ Use this recall only as context, and prioritize current market snapshot data if 
     // of cascade order.
     const onlyProvider = String(process.env.LLM_ONLY_PROVIDER || '').trim().toLowerCase();
     if (onlyProvider) cascade = [onlyProvider];
+    const deskMode = typeof Asi1CreditOrch.getMode === 'function'
+      ? Asi1CreditOrch.getMode()
+      : 'dual_fire';
     const skipTokenmix = Asi1CreditOrch.shouldSkipTokenmix(this);
     if (skipTokenmix) {
       cascade = Asi1CreditOrch.reshapeCascade(cascade, this);
-      console.warn('[LLM] TokenMix credits exhausted — ASI1 roster orchestrator owns the path');
+      console.warn(
+        deskMode === 'asi1_only' || deskMode === 'planner'
+          ? `[LLM] ASI1 desk mode=${deskMode} — TokenMix skipped (economy path)`
+          : '[LLM] TokenMix credits exhausted — ASI1 roster orchestrator owns the path'
+      );
     }
     console.log(
       `[LLM] is5mPtb=${is5mPtb} preContract=${isPreContractRange} useXai=${useXai} ` +
       `tokenmixKey=${!!TOKENMIX_API_KEY} asi1Key=${Asi1Client.hasAsi1Credentials()} ` +
-      `tokenmixCreditSkip=${skipTokenmix} path=${cascade.join('→')}`
+      `deskMode=${deskMode} tokenmixSkip=${skipTokenmix} path=${cascade.join('→')}`
     );
 
     // Inference router: pre-contract (15m/60m) always hits both providers when
@@ -956,6 +963,8 @@ Use this recall only as context, and prioritize current market snapshot data if 
               stream: false,
               response_format: { type: 'json_object' },
               web_search: preContract && process.env.ASI1_WEB_SEARCH === '1',
+              plannerMode: typeof Asi1CreditOrch.plannerEnabled === 'function'
+                && Asi1CreditOrch.plannerEnabled(horizon),
               timeoutMs: preContract
                 ? Number(process.env.ASI1_PRECONTRACT_TIMEOUT_MS || 55000)
                 : Number(process.env.ASI1_TIMEOUT_MS || 35000),
@@ -2419,6 +2428,7 @@ Use this recall only as context, and prioritize current market snapshot data if 
           : LLM_MODEL))
         : "disabled",
       // Pre-contract 15m/60m: ASI1 primary. 5m PTB: xAI primary when keyed.
+      asi1DeskMode: typeof Asi1CreditOrch.getMode === 'function' ? Asi1CreditOrch.getMode() : null,
       preContractProvider: Asi1Client.hasAsi1Credentials() ? "asi1" : (XAI_API_KEY ? "xai" : null),
       fiveMinuteProvider: XAI_API_KEY ? "xai" : (Asi1Client.hasAsi1Credentials() ? "asi1" : (ANTHROPIC_API_KEY ? "anthropic" : null)),
       fiveMinuteModel: XAI_API_KEY ? XAI_MODEL : (Asi1Client.hasAsi1Credentials() ? "asi1-mini" : (ANTHROPIC_API_KEY ? ANTHROPIC_MODEL : null)),

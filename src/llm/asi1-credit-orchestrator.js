@@ -8,6 +8,7 @@
 'use strict';
 
 const Asi1Client = require('../infra/asi1-client');
+const Desk = require('./asi1-desk-contract');
 
 const ASI1_ALL_MODELS = Asi1Client.ASI1_ALL_MODELS || Object.freeze([
   'asi1-ultra',
@@ -15,6 +16,28 @@ const ASI1_ALL_MODELS = Asi1Client.ASI1_ALL_MODELS || Object.freeze([
   'asi1-mini',
   'asi1-fast',
 ]);
+
+const DESK_MODES = Desk.MODES;
+let _deskMode = Desk.normalizeMode(process.env.ASI1_DESK_MODE || 'dual_fire');
+
+function getMode() {
+  return _deskMode;
+}
+
+function setMode(mode) {
+  _deskMode = Desk.normalizeMode(mode);
+  return _deskMode;
+}
+
+function plannerEnabled(horizonOrPacket) {
+  if (_deskMode !== 'planner') return false;
+  if (horizonOrPacket && typeof horizonOrPacket === 'object') {
+    return Desk.plannerAllowed(horizonOrPacket, _deskMode);
+  }
+  const h = String(horizonOrPacket || '').toLowerCase().replace(/\s+/g, '');
+  if (h === '5m' || h === '5' || h.startsWith('5m-') || h === '5m-ptb') return false;
+  return true;
+}
 
 // TokenMix / OpenAI-compat credit exhaustion only. Do not treat 429 quota,
 // generic "billing", or prepaid-plan copy as a permanent skip.
@@ -42,6 +65,8 @@ function tokenmixCreditReason(assistant) {
 }
 
 function shouldSkipTokenmix(assistant) {
+  // Economy / planner desk: do not spend TokenMix even if the key still works.
+  if (_deskMode === 'asi1_only' || _deskMode === 'planner') return true;
   if (assistant?._tokenmixCreditExhausted) return true;
   const remaining = typeof assistant?._providerCooldownRemaining === 'function'
     ? assistant._providerCooldownRemaining('tokenmix')
@@ -84,12 +109,68 @@ async function chat(messages, options = {}) {
   });
 }
 
+async function deskInfer(packet, mode) {
+  if (mode) setMode(mode);
+  const m = getMode();
+  const local = Desk.inferLocal(packet, m);
+  const model = Desk.selectModel(packet, m);
+  const plannerOn = Desk.plannerAllowed(packet, m);
+  const started = Date.now();
+  try {
+    const result = await Asi1Client.chatCompletion(
+      [
+        { role: 'system', content: Desk.SYSTEM_PROMPT },
+        { role: 'user', content: Desk.userPrompt(packet) },
+      ],
+      {
+        model,
+        candidateModels: rosterFor({ model }),
+        plannerMode: plannerOn,
+        temperature: 0.12,
+        max_tokens: plannerOn ? 1800 : 900,
+        response_format: Desk.RESPONSE_FORMAT,
+        timeoutMs: plannerOn ? 90000 : (Desk.isFastPath(packet) ? 20000 : 45000),
+      },
+    );
+    let parsed = null;
+    try { parsed = JSON.parse(String(result.content || '')); } catch (_) { parsed = null; }
+    const contract = Desk.normalizeContract(parsed || local, m, packet);
+    contract._meta = {
+      model: result.model || model,
+      account: result.account || null,
+      email: result.email || null,
+      latency: Date.now() - started,
+      source: parsed ? 'asi1' : 'inferLocal',
+      thought: result.thought || null,
+    };
+    return { ok: true, contract, fallback: !parsed };
+  } catch (err) {
+    local._meta = {
+      ...(local._meta || {}),
+      source: 'inferLocal',
+      latency: Date.now() - started,
+      error: String(err?.message || err).slice(0, 180),
+    };
+    return {
+      ok: true,
+      contract: local,
+      fallback: true,
+      error: String(err?.message || err).slice(0, 180),
+    };
+  }
+}
+
 module.exports = {
   ASI1_ALL_MODELS,
+  DESK_MODES,
   isCreditError,
   shouldSkipTokenmix,
   markTokenmixExhausted,
   rosterFor,
   reshapeCascade,
   chat,
+  getMode,
+  setMode,
+  plannerEnabled,
+  deskInfer,
 };

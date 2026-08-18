@@ -258,8 +258,10 @@ async function chatCompletion(messages, options = {}) {
       ...(options.web_search != null ? { web_search: options.web_search } : {}),
     };
 
+    const rateLimitedAccounts = new Set();
     for (const key of keys) {
       const { env, value, account, email } = key;
+      if (account && rateLimitedAccounts.has(`${account}::${targetModel}`)) continue;
       try {
         const headers = {
           'Content-Type': 'application/json',
@@ -299,6 +301,11 @@ async function chatCompletion(messages, options = {}) {
           err.account = account;
           err.email = email;
           lastErr = err;
+          // Same-account keys share the ultra 429 — skip the rest of this account
+          // for this model instead of burning four mauro keys on the same limit.
+          if (response.status === 429 && account) {
+            rateLimitedAccounts.add(`${account}::${targetModel}`);
+          }
           // Retry next key/model on 5xx, 429, auth
           if (isRetryableAsi1Error(err)) {
             continue;
