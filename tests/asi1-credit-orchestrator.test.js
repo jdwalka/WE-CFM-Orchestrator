@@ -23,7 +23,15 @@ test('signal-math clamp / num / normCall', () => {
 test('402 is a credit error; timeout is not', () => {
   assert.strictEqual(orch.isCreditError({ status: 402 }), true);
   assert.strictEqual(orch.isCreditError(new Error('out of credits on tokenmix')), true);
+  assert.strictEqual(orch.isCreditError(new Error('HTTP 402 payment required')), true);
   assert.strictEqual(orch.isCreditError({ status: 504, message: 'timeout' }), false);
+});
+
+test('generic billing or 429 quota copy is not permanent credit exhaustion', () => {
+  assert.strictEqual(orch.isCreditError(new Error('billing portal unavailable')), false);
+  assert.strictEqual(orch.isCreditError(new Error('prepaid plan details')), false);
+  assert.strictEqual(orch.isCreditError({ status: 429, message: 'quota exceeded' }), false);
+  assert.strictEqual(orch.isCreditError(new Error('request-id 4021abc timeout')), false);
 });
 
 test('roster walks every ASI1 model and prefers the requested one first', () => {

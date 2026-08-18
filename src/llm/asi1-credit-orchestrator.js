@@ -16,12 +16,25 @@ const ASI1_ALL_MODELS = Object.freeze([
   'asi1',
 ]);
 
-const CREDIT_RE = /402|payment required|insufficient credit|no credits|credit exhausted|out of credits|quota exceeded|billing|prepaid|balance too low/;
+// TokenMix / OpenAI-compat credit exhaustion only. Do not treat 429 quota,
+// generic "billing", or prepaid-plan copy as a permanent skip.
+const CREDIT_RES = [
+  /\bhttp\s*402\b/,
+  /\bstatus(?:code)?[:\s]*402\b/,
+  /\bpayment required\b/,
+  /\binsufficient credits?\b/,
+  /\bno credits?\b/,
+  /\bcredits? exhausted\b/,
+  /\bout of credits?\b/,
+  /\bbalance too low\b/,
+  /\binsufficient[_ ](?:funds|balance)\b/,
+];
 
 function isCreditError(err) {
   const status = Number(err?.status || err?.statusCode || 0);
+  if (status === 402) return true;
   const msg = String(err?.message || err || '').toLowerCase();
-  return status === 402 || CREDIT_RE.test(msg);
+  return CREDIT_RES.some((re) => re.test(msg));
 }
 
 function tokenmixCreditReason(assistant) {
@@ -33,7 +46,7 @@ function shouldSkipTokenmix(assistant) {
   const remaining = typeof assistant?._providerCooldownRemaining === 'function'
     ? assistant._providerCooldownRemaining('tokenmix')
     : 0;
-  if (remaining > 0 && /credit|402|payment/i.test(tokenmixCreditReason(assistant))) return true;
+  if (remaining > 0 && isCreditError({ message: tokenmixCreditReason(assistant) })) return true;
   return false;
 }
 
