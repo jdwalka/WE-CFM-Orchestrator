@@ -421,7 +421,13 @@ Use this recall only as context, and prioritize current market snapshot data if 
     );
 
     if (!Asi1Client.hasAsi1Credentials() || process.env.LLM_DISABLE_ASI1 === '1') {
-      throw new Error('[LLMSignalAssistant] ASI1 unavailable -- no ASI1 API key configured');
+      const coin = String(snapshot?.coin || 'GLOBAL');
+      const horizon = is5mPtb ? '5m-ptb' : String(snapshot?.horizon || snapshot?.horizonMinutes || '15m');
+      const deskMode = typeof Asi1CreditOrch.getMode === 'function' ? Asi1CreditOrch.getMode() : 'unknown';
+      throw new Error(
+        `[LLMSignalAssistant] ASI1 unavailable (coin=${coin} horizon=${horizon} deskMode=${deskMode}) -- `
+        + `${process.env.LLM_DISABLE_ASI1 === '1' ? 'LLM_DISABLE_ASI1=1' : 'no ASI1 API key configured'}`
+      );
     }
 
     // Pre-contract (15m/60m) fires two ASI1 tiers in parallel -- a fast/mini
@@ -674,7 +680,10 @@ Use this recall only as context, and prioritize current market snapshot data if 
     const [shortRes, longRes] = await Promise.all([shortPromise, longPromise]);
 
     if (!shortRes.ok && !longRes.ok) {
-      throw (longRes.error || shortRes.error || new Error('relay: both ASI1 specialist legs failed'));
+      throw (longRes.error || shortRes.error || new Error(
+        `relay: both ASI1 specialist legs failed (coin=${coin} horizon=${horizon} `
+        + `shortModel=${shortModel} longModel=${longModel})`
+      ));
     }
 
     const shortLeg = shortRes.ok ? shortRes.parsed : null;
