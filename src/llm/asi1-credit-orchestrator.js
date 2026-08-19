@@ -1,9 +1,10 @@
 /**
- * TokenMix-credit failover → full ASI1 roster.
+ * ASI1 desk-mode + model-roster orchestrator.
  *
- * When tokenmix.ai returns 402 / "out of credits", skip TokenMix and walk
- * every ASI:One model (ultra → fast → mini → agentic asi1) across every
- * configured ASI1 key. Node-only; required by llm_signal_assistant.
+ * TokenMix has been removed as an inference provider -- this app is ASI1-only.
+ * Walks every ASI:One model (ultra → fast → mini → agentic asi1) across every
+ * configured ASI1 key as an automatic fallback chain. Node-only; required by
+ * llm_signal_assistant.
  */
 'use strict';
 
@@ -18,7 +19,11 @@ const ASI1_ALL_MODELS = Asi1Client.ASI1_ALL_MODELS || Object.freeze([
 ]);
 
 const DESK_MODES = Desk.MODES;
-let _deskMode = Desk.normalizeMode(process.env.ASI1_DESK_MODE || 'dual_fire');
+// TokenMix has been removed as an inference provider (ASI1-only app), so
+// 'dual_fire' no longer has a second provider to fire alongside ASI1 --
+// 'asi1_only' is the accurate default. Set ASI1_DESK_MODE=planner to also
+// enable reasoning/agentic planner mode on non-5m horizons.
+let _deskMode = Desk.normalizeMode(process.env.ASI1_DESK_MODE || 'asi1_only');
 
 function getMode() {
   return _deskMode;
@@ -39,68 +44,12 @@ function plannerEnabled(horizonOrPacket) {
   return true;
 }
 
-// TokenMix / OpenAI-compat credit exhaustion only. Do not treat 429 quota,
-// generic "billing", or prepaid-plan copy as a permanent skip.
-const CREDIT_RES = [
-  /\bhttp\s*402\b/,
-  /\bstatus(?:code)?[:\s]*402\b/,
-  /\bpayment required\b/,
-  /\binsufficient (?:api )?credits?\b/,
-  /\bno credits? (?:remaining|left|available)\b/,
-  /\bcredits? exhausted\b/,
-  /\bout of credits?\b/,
-  /\b(?:account|credit|token) balance too low\b/,
-  /\binsufficient[_ ](?:funds|balance)\b/,
-];
-
-function isCreditError(err) {
-  const status = Number(err?.status || err?.statusCode || 0);
-  if (status === 402) return true;
-  const msg = String(err?.message || err || '').toLowerCase();
-  return CREDIT_RES.some((re) => re.test(msg));
-}
-
-function tokenmixCreditReason(assistant) {
-  return String(assistant?._providerCooldowns?.tokenmix?.reason || '');
-}
-
-function shouldSkipTokenmix(assistant) {
-  // Economy / planner desk: do not spend TokenMix even if the key still works.
-  if (_deskMode === 'asi1_only' || _deskMode === 'planner') return true;
-  if (assistant?._tokenmixCreditExhausted) return true;
-  const remaining = typeof assistant?._providerCooldownRemaining === 'function'
-    ? assistant._providerCooldownRemaining('tokenmix')
-    : 0;
-  if (remaining > 0 && isCreditError({ message: tokenmixCreditReason(assistant) })) return true;
-  return false;
-}
-
-function markTokenmixExhausted(assistant, err) {
-  if (!assistant || !isCreditError(err)) return false;
-  assistant._tokenmixCreditExhausted = true;
-  assistant._providerCooldowns = assistant._providerCooldowns || {};
-  assistant._providerCooldowns.tokenmix = {
-    until: Date.now() + 30 * 60 * 1000,
-    reason: 'payment required (402) -- no credits on this account',
-  };
-  return true;
-}
-
 function rosterFor(options = {}) {
   const preferred = String(options.model || '').trim();
   const all = ASI1_ALL_MODELS.slice();
   if (preferred && !all.includes(preferred)) return [preferred, ...all];
   if (preferred) return [preferred, ...all.filter((m) => m !== preferred)];
   return all;
-}
-
-function reshapeCascade(cascade, assistant, skipTokenmix) {
-  const next = Array.isArray(cascade) ? cascade.slice() : [];
-  const skip = typeof skipTokenmix === 'boolean' ? skipTokenmix : shouldSkipTokenmix(assistant);
-  if (!skip) return next;
-  const filtered = next.filter((p) => p !== 'tokenmix');
-  if (!filtered.includes('asi1')) filtered.unshift('asi1');
-  return filtered;
 }
 
 async function chat(messages, options = {}) {
@@ -164,11 +113,7 @@ async function deskInfer(packet, mode) {
 module.exports = {
   ASI1_ALL_MODELS,
   DESK_MODES,
-  isCreditError,
-  shouldSkipTokenmix,
-  markTokenmixExhausted,
   rosterFor,
-  reshapeCascade,
   chat,
   getMode,
   setMode,

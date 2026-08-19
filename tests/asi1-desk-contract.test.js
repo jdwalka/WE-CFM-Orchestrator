@@ -47,15 +47,13 @@ test('normalizeContract rejects illegal actions', () => {
   assert.ok(c.confidence <= 1);
 });
 
-test('asi1_only and planner skip TokenMix even with credits', () => {
+test('planner mode enables reasoning off 5m only; asi1_only never does', () => {
   const prev = orch.getMode();
   try {
-    orch.setMode('dual_fire');
-    assert.strictEqual(orch.shouldSkipTokenmix({}), false);
     orch.setMode('asi1_only');
-    assert.strictEqual(orch.shouldSkipTokenmix({}), true);
+    assert.strictEqual(orch.plannerEnabled('5m'), false);
+    assert.strictEqual(orch.plannerEnabled('15m'), false);
     orch.setMode('planner');
-    assert.strictEqual(orch.shouldSkipTokenmix({}), true);
     assert.strictEqual(orch.plannerEnabled('5m'), false);
     assert.strictEqual(orch.plannerEnabled('15m'), true);
   } finally {

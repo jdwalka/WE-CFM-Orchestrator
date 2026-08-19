@@ -674,7 +674,7 @@ try {
       console.log(`[LLM] 5m PTB binary markets (polycool.app / Chainlink) using: ${diagnostics.fiveMinuteProvider} / ${diagnostics.fiveMinuteModel}`);
     }
   } else {
-    console.warn('[LLM] Assistant loaded but disabled - check XAI_API_KEY (for 5m Grok) / LLM_API_KEY etc.');
+    console.warn('[LLM] Assistant loaded but disabled - check ASI1 API key (ASI1_API_KEY_GITGOIN / ASI1_API_KEY_MAURO / ASI_ONE_API_KEY or secrets/ASI1_*.txt).');
   }
 } catch (e) {
   console.warn('[LLM] Assistant module unavailable:', e.message);
