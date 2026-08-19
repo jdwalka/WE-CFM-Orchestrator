@@ -21,6 +21,7 @@ const {
   formatUsdForCoin,
 } = require("./specialized_prompt");
 const Asi1Client = require("../infra/asi1-client");
+const Asi1CreditOrch = require("./asi1-credit-orchestrator");
 
 function loadLLMEnv() {
   const loadedPaths = [];
@@ -826,9 +827,22 @@ Use this recall only as context, and prioritize current market snapshot data if 
     // of cascade order.
     const onlyProvider = String(process.env.LLM_ONLY_PROVIDER || '').trim().toLowerCase();
     if (onlyProvider) cascade = [onlyProvider];
+    const deskMode = typeof Asi1CreditOrch.getMode === 'function'
+      ? Asi1CreditOrch.getMode()
+      : 'dual_fire';
+    const skipTokenmix = Asi1CreditOrch.shouldSkipTokenmix(this);
+    if (skipTokenmix) {
+      cascade = Asi1CreditOrch.reshapeCascade(cascade, this);
+      console.warn(
+        deskMode === 'asi1_only' || deskMode === 'planner'
+          ? `[LLM] ASI1 desk mode=${deskMode} — TokenMix skipped (economy path)`
+          : '[LLM] TokenMix credits exhausted — ASI1 roster orchestrator owns the path'
+      );
+    }
     console.log(
       `[LLM] is5mPtb=${is5mPtb} preContract=${isPreContractRange} useXai=${useXai} ` +
-      `tokenmixKey=${!!TOKENMIX_API_KEY} asi1Key=${Asi1Client.hasAsi1Credentials()} path=${cascade.join('→')}`
+      `tokenmixKey=${!!TOKENMIX_API_KEY} asi1Key=${Asi1Client.hasAsi1Credentials()} ` +
+      `deskMode=${deskMode} tokenmixSkip=${skipTokenmix} path=${cascade.join('→')}`
     );
 
     // Inference router: pre-contract (15m/60m) always hits both providers when
@@ -844,6 +858,7 @@ Use this recall only as context, and prioritize current market snapshot data if 
       && process.env.LLM_DISABLE_ASI1 !== '1'
       && TOKENMIX_API_KEY
       && this._providerCooldownRemaining('tokenmix') <= 0
+      && !skipTokenmix
     ) {
       const useSpecialistSplit = process.env.LLM_RELAY_SPECIALIST_SPLIT !== '0';
       try {
@@ -941,15 +956,15 @@ Use this recall only as context, and prioritize current market snapshot data if 
             {
               model,
               // Always include fast fallback chain inside the client
-              candidateModels: preContract
-                ? [model, 'asi1-fast', 'asi1-mini', 'asi1']
-                : [model, 'asi1-fast', 'asi1'],
+              candidateModels: Asi1CreditOrch.rosterFor({ model }),
               tier: preContract ? 'deep-insight' : 'quick-tick',
               temperature: 0.12,
               max_tokens: maxTokens,
               stream: false,
               response_format: { type: 'json_object' },
               web_search: preContract && process.env.ASI1_WEB_SEARCH === '1',
+              plannerMode: typeof Asi1CreditOrch.plannerEnabled === 'function'
+                && Asi1CreditOrch.plannerEnabled(horizon),
               timeoutMs: preContract
                 ? Number(process.env.ASI1_PRECONTRACT_TIMEOUT_MS || 55000)
                 : Number(process.env.ASI1_TIMEOUT_MS || 35000),
@@ -1170,6 +1185,7 @@ Use this recall only as context, and prioritize current market snapshot data if 
       } catch (err) {
         lastErr = err;
         console.warn(`[LLMSignalAssistant] Provider ${p} failed: ${err.message}. Falling back...`);
+        if (p === 'tokenmix') Asi1CreditOrch.markTokenmixExhausted(this, err);
         this._recordProviderCooldown(p, err);
         this._recordQueryExecution({
           id: `llm-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
@@ -1359,7 +1375,7 @@ Use this recall only as context, and prioritize current market snapshot data if 
       ],
       {
         model: asi1Model,
-        candidateModels: [asi1Model, 'asi1-fast', 'asi1-mini', 'asi1'],
+        candidateModels: Asi1CreditOrch.rosterFor({ model: asi1Model }),
         tier: 'deep-insight',
         temperature: 0.12,
         max_tokens: Number(process.env.ASI1_PRECONTRACT_MAX_TOKENS || 1600),
@@ -1417,7 +1433,9 @@ Use this recall only as context, and prioritize current market snapshot data if 
         dualFire: true,
       });
       if (!res.ok && provider === 'tokenmix') {
-        this._recordProviderCooldown('tokenmix', res.error || new Error('tokenmix dual-fire fail'));
+        const tmErr = res.error || new Error('tokenmix dual-fire fail');
+        Asi1CreditOrch.markTokenmixExhausted(this, tmErr);
+        this._recordProviderCooldown('tokenmix', tmErr);
       }
     }
 
@@ -1518,7 +1536,7 @@ Use this recall only as context, and prioritize current market snapshot data if 
       ],
       {
         model: asi1Model,
-        candidateModels: [asi1Model, 'asi1-fast', 'asi1-mini', 'asi1'],
+        candidateModels: Asi1CreditOrch.rosterFor({ model: asi1Model }),
         tier: 'deep-insight',
         temperature: 0.12,
         max_tokens: Number(process.env.ASI1_PRECONTRACT_MAX_TOKENS || 1600),
@@ -2410,6 +2428,7 @@ Use this recall only as context, and prioritize current market snapshot data if 
           : LLM_MODEL))
         : "disabled",
       // Pre-contract 15m/60m: ASI1 primary. 5m PTB: xAI primary when keyed.
+      asi1DeskMode: typeof Asi1CreditOrch.getMode === 'function' ? Asi1CreditOrch.getMode() : null,
       preContractProvider: Asi1Client.hasAsi1Credentials() ? "asi1" : (XAI_API_KEY ? "xai" : null),
       fiveMinuteProvider: XAI_API_KEY ? "xai" : (Asi1Client.hasAsi1Credentials() ? "asi1" : (ANTHROPIC_API_KEY ? "anthropic" : null)),
       fiveMinuteModel: XAI_API_KEY ? XAI_MODEL : (Asi1Client.hasAsi1Credentials() ? "asi1-mini" : (ANTHROPIC_API_KEY ? ANTHROPIC_MODEL : null)),

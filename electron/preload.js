@@ -420,6 +420,11 @@ contextBridge.exposeInMainWorld('electron', {
     getQueryHistory: (limit) => ipcRenderer.invoke('llm:getQueryHistory', limit),
     envStatus: () => ipcRenderer.invoke('llm:envStatus'),
   },
+  asi1: {
+    status: () => ipcRenderer.invoke('asi1:desk-status'),
+    setMode: (mode) => ipcRenderer.invoke('asi1:desk-mode', mode),
+    infer: (payload) => ipcRenderer.invoke('asi1:desk-infer', payload),
+  },
   telegram: {
     status: () => ipcRenderer.invoke('telegram:status'),
     login: (apiId, apiHash) => ipcRenderer.invoke('telegram:login', { apiId, apiHash }),

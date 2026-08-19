@@ -2409,6 +2409,40 @@ ipcMain.handle('asi1:mini-narrative', async (_event, args = {}) => {
 });
 
 // Structured pre-contract brief (used by Asi1PreContract advisor + debugging)
+ipcMain.handle('asi1:desk-status', async () => {
+  try {
+    const Asi1Client = require('../src/infra/asi1-client');
+    const orch = require('../src/llm/asi1-credit-orchestrator');
+    return {
+      ok: true,
+      mode: orch.getMode(),
+      diagnostics: Asi1Client.getDiagnostics(),
+    };
+  } catch (err) {
+    return { ok: false, error: err?.message || 'asi1-desk-status' };
+  }
+});
+
+ipcMain.handle('asi1:desk-mode', async (_event, mode) => {
+  try {
+    const orch = require('../src/llm/asi1-credit-orchestrator');
+    const next = typeof mode === 'string' ? mode : mode?.mode;
+    return { ok: true, mode: orch.setMode(next) };
+  } catch (err) {
+    return { ok: false, error: err?.message || 'asi1-desk-mode' };
+  }
+});
+
+ipcMain.handle('asi1:desk-infer', async (_event, args = {}) => {
+  try {
+    const orch = require('../src/llm/asi1-credit-orchestrator');
+    const packet = args.packet || args;
+    return await orch.deskInfer(packet, args.mode);
+  } catch (err) {
+    return { ok: false, error: err?.message || 'asi1-desk-infer' };
+  }
+});
+
 ipcMain.handle('asi1:precontract-brief', async (_event, args = {}) => {
   try {
     const Asi1Client = require('../src/infra/asi1-client');
