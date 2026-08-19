@@ -45,11 +45,11 @@ const CREDIT_RES = [
   /\bhttp\s*402\b/,
   /\bstatus(?:code)?[:\s]*402\b/,
   /\bpayment required\b/,
-  /\binsufficient credits?\b/,
-  /\bno credits?\b/,
+  /\binsufficient (?:api )?credits?\b/,
+  /\bno credits? (?:remaining|left|available)\b/,
   /\bcredits? exhausted\b/,
   /\bout of credits?\b/,
-  /\bbalance too low\b/,
+  /\b(?:account|credit|token) balance too low\b/,
   /\binsufficient[_ ](?:funds|balance)\b/,
 ];
 
@@ -94,9 +94,10 @@ function rosterFor(options = {}) {
   return all;
 }
 
-function reshapeCascade(cascade, assistant) {
+function reshapeCascade(cascade, assistant, skipTokenmix) {
   const next = Array.isArray(cascade) ? cascade.slice() : [];
-  if (!shouldSkipTokenmix(assistant)) return next;
+  const skip = typeof skipTokenmix === 'boolean' ? skipTokenmix : shouldSkipTokenmix(assistant);
+  if (!skip) return next;
   const filtered = next.filter((p) => p !== 'tokenmix');
   if (!filtered.includes('asi1')) filtered.unshift('asi1');
   return filtered;
