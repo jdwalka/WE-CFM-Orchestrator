@@ -1,10 +1,13 @@
 /**
- * Grok Range Overlay — xAI predictions for 15m and hourly ranges.
+ * Range Overlay — ASI1 (asi1.ai) predictions for 15m and hourly ranges.
  *
- * Depends on window.GrokAnalyticsMemory (session accumulator). The longer the
- * app stays open, the more samples/closed windows Grok sees in each prompt.
+ * Depends on window.GrokAnalyticsMemory (session accumulator, name kept for
+ * compatibility). The longer the app stays open, the more samples/closed
+ * windows ASI1 sees in each prompt.
  *
- * Exposes window.GrokRangeGrok / window.GrokRangeOverlay
+ * Exposes window.GrokRangeGrok / window.GrokRangeOverlay (names kept for
+ * compatibility with existing consumers -- inference itself is ASI1-only,
+ * routed through LLMSignalAssistant).
  */
 (function () {
   'use strict';
