@@ -210,6 +210,48 @@
     const conf = clamp(Number(input.confidence ?? 0.55), 0, 1);
     const sym = String(input.sym || input.market?.sym || '').toUpperCase();
     const market = input.market || (sym ? resolveMarket(sym, input.horizon) : null);
+
+    const Calibrator = (typeof window !== 'undefined' && window.SignalCalibrator)
+      || (typeof globalThis !== 'undefined' && globalThis.SignalCalibrator)
+      || null;
+    if (Calibrator && typeof Calibrator.blend === 'function') {
+      const blended = Calibrator.blend({
+        ...input,
+        call: aiCall,
+        confidence: conf,
+        sym,
+        market: market || input.market,
+        modelScore: input.modelScore,
+        secondsToClose: market?.secondsToClose ?? input.secondsToClose,
+      });
+      const effectiveCall = blended.call || aiCall;
+      const nullified = !!(aiCall && blended.call && blended.call !== aiCall && blended.source !== 'ai');
+      return {
+        ts: blended.ts,
+        sym,
+        horizon: market?.horizon || input.horizon || null,
+        slug: market?.slug || null,
+        aiCall,
+        effectiveCall,
+        nullified,
+        soft: !nullified && blended.modelCapped,
+        weight: nullified ? 0 : clamp(blended.confidence, 0, 1),
+        confidence: blended.confidence,
+        sourceOfTruth: blended.source,
+        reason: blended.reason,
+        pUp: blended.pUp,
+        components: blended.components,
+        modelCapped: blended.modelCapped,
+        votes: (blended.components || []).map((c) => ({
+          source: c.source,
+          call: c.call,
+          strength: c.weight,
+          detail: c.detail,
+        })),
+        calibrator: true,
+      };
+    }
+
     const votes = collectTruthVotes(market);
 
     // Optional: model score from prediction engine as another vote (not LLM)
@@ -245,6 +287,14 @@
       effectiveCall = truth.call;
       sourceOfTruth = 'raw_data';
       reason = `nullified: AI=${aiCall} opposed by ${opposing.map((v) => v.source).join('+')} → truth=${truth.call}`;
+    } else if (opposing.some((v) => v.source === 'spot_vs_ptb') && truth.call && truth.call !== aiCall) {
+      // Settlement path is the contract definition — do not wait for a second
+      // vote or an "extreme" crowd swing to flip the painted color.
+      nullified = true;
+      weight = 0;
+      effectiveCall = opposing.find((v) => v.source === 'spot_vs_ptb').call;
+      sourceOfTruth = 'raw_data_path';
+      reason = `nullified: AI=${aiCall} vs spot_vs_ptb → ${effectiveCall}`;
     } else if (opposing.length === 1 && truth.call && truth.call !== aiCall) {
       soft = true;
       weight = SOFT_WEIGHT;

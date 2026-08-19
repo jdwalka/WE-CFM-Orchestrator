@@ -890,7 +890,7 @@ function formatModelGuideBlock(snapshot) {
       : String(agreement))
     : 'n/a';
 
-  return `## QUANTITATIVE MODEL GUIDE (PredictionEngine — blend, do not ignore)
+  return `## QUANTITATIVE MODEL BASELINE (PredictionEngine — weak prior only)
 Model direction: ${dir}
 Model score: ${scoreStr} (−1..+1)
 Model confidence: ${confStr}
@@ -899,9 +899,10 @@ Indicator agreement: ${agreeStr}
 Path (Pyth vs Polymarket PTB) vs model: ${pathVsModel}
 Top indicators: ${indBits.length ? indBits.join(' | ') : 'n/a'}
 RULES:
-- Treat model direction/score as a primary prior; blend with Polymarket P(Up), book imbalance, and spot-vs-PTB path.
-- If model and path ALIGN, lean that side unless book/odds scream otherwise.
-- If model and path CONFLICT, say so in notes, lower confidence, and prefer path near settlement (late TTC) or model when early + strong |score|.
+- The quant model is a BASELINE prior, not the trade. Live tape has been beating it.
+- PRIMARY: Polymarket PTB path (Pyth spot vs published PTB), CLOB P(Up), order-book imbalance, volume/tick flow, then your own inference.
+- If model CONFLICTS with path + book + odds, IGNORE the model side and say so. Never flip a live consensus to match the model.
+- If model ALIGNS with path/book, you may bump confidence slightly — do not treat alignment as extra information you did not already have.
 - Never invent PTB; never replace Polymarket PTB with model price levels.`.trim();
 }
 
@@ -920,12 +921,12 @@ SYSTEM CONTEXT YOU MUST INTERNALIZE:
 - This is pure scalping: entries live ~300 seconds max. Microstructure, distance-to-PTB in bps, and remaining time dominate.
 
 DETERMINISTIC HTF + MODEL + ON-CHAIN + X REASONING (MANDATORY):
-1. Start with the QUANTITATIVE MODEL GUIDE (PredictionEngine direction/score/confidence/regime/indicators). This is your quant prior — do not ignore it.
-2. Use 15m/30m / session memory for HTF bias. Weight denser session memory more as sampleCount grows.
-3. Incorporate recent on-chain (whale flows, large transfers) and X sentiment when present.
-4. Factor ORDER-FLOW / TAIL-RISK when active (VPIN, whale trades, vol-mult) — can dominate stale HTF if conflicting.
-5. Then analyze exact 5m microstructure vs the fixed Polymarket PTB: distance in bps, TTC, tick velocity.
-6. Synthesize confluence of: model + path(spot vs Polymarket PTB) + odds + book. Best side wins.
+1. Start with LIVE SETTLEMENT PATH: Pyth spot vs the published Polymarket PTB, CLOB P(Up), book imbalance, and volume/tick flow. These dominate the 5-minute binary.
+2. Treat the QUANTITATIVE MODEL BASELINE as a weak prior only. It has been losing to AI + live tape — never let it override a live consensus.
+3. Use 15m/30m / session memory for HTF bias. Weight denser session memory more as sampleCount grows.
+4. Incorporate recent on-chain (whale flows, large transfers) and X sentiment when present.
+5. Factor ORDER-FLOW / TAIL-RISK when active (VPIN, whale trades, vol-mult).
+6. Synthesize: path + odds + book + your inference. Mention the model only if it agrees or if you are explicitly fading it.
 7. If data is thin or conflicting inside the remaining window, default to WAIT with low confidence. Never force a side.
 
 SNIPE / SCALP-FLIP PLAYS (when tail-risk order-flow is active):

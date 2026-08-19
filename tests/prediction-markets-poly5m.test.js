@@ -123,6 +123,20 @@ function createHarness(options = {}) {
         };
       }
 
+      if (href.startsWith('https://polymarket.com/api/chainlink-candles')) {
+        if (!href.includes('twapLookbackSeconds=60')) {
+          throw new Error(`5m candles must use 60s TWAP: ${href}`);
+        }
+        if (!href.includes('limit=30')) {
+          throw new Error(`chainlink-candles limit must be 30: ${href}`);
+        }
+        return {
+          ok: true,
+          json: async () => ({ candles: [] }),
+          text: async () => '{"candles":[]}',
+        };
+      }
+
       throw new Error(`Unexpected fetch: ${href}`);
     },
   };
@@ -154,6 +168,23 @@ function createHarness(options = {}) {
     assert(
       fetchedUrls.every(url => !url.includes('polycool.app')),
       'Poly 5M resolution must not call Polycool routes'
+    );
+  });
+
+  await test('ignores a title $ strike so the 5m PTB can come from Polymarket candles', async () => {
+    const { fetchedUrls, predictionMarkets } = createHarness({
+      titlePrices: { btc: 99999.12 },
+    });
+
+    const results = await predictionMarkets.refreshPoly5M('test-title-not-ptb');
+    const btc = results.BTC;
+
+    assert(btc, 'BTC Poly 5M result should be present');
+    assert.notStrictEqual(btc.priceToBeatNum, 99999.12);
+    assert.notStrictEqual(btc.priceToBeatSource, 'polymarket-title');
+    assert(
+      fetchedUrls.some(url => url.startsWith('https://polymarket.com/api/chainlink-candles') && url.includes('twapLookbackSeconds=60')),
+      'missing Gamma PTB should fetch the official 60s TWAP candles'
     );
   });
 
