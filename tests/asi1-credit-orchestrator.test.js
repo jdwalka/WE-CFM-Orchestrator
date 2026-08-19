@@ -34,6 +34,14 @@ test('generic billing or 429 quota copy is not permanent credit exhaustion', () 
   assert.strictEqual(orch.isCreditError(new Error('request-id 4021abc timeout')), false);
 });
 
+test('CREDIT_RES patterns require explicit credit-exhaustion phrasing, not generic lookalikes', () => {
+  assert.strictEqual(orch.isCreditError(new Error('no credit check required for this trial')), false);
+  assert.strictEqual(orch.isCreditError(new Error('promo: no credit card required')), false);
+  assert.strictEqual(orch.isCreditError(new Error('server load balance too low, retrying')), false);
+  assert.strictEqual(orch.isCreditError(new Error('no credits remaining on this account')), true);
+  assert.strictEqual(orch.isCreditError(new Error('account balance too low to continue')), true);
+});
+
 test('roster walks every ASI1 model and prefers the requested one first', () => {
   assert.ok(orch.ASI1_ALL_MODELS.includes('asi1-ultra'));
   assert.ok(orch.ASI1_ALL_MODELS.includes('asi1'));
