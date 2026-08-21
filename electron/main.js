@@ -799,6 +799,43 @@ const PYTH_FALLBACK_EVENT_COOLDOWN_MS = Number(process.env.PYTH_FALLBACK_EVENT_C
 const PYTH_LAZER_CHANNEL = process.env.PYTH_LAZER_CHANNEL || 'fixed_rate@1000ms';
 const PYTH_LIVE_FEED_BACKOFF_MS = Math.max(0, Number(process.env.PYTH_LIVE_FEED_BACKOFF_MS || 5));
 
+// Timestamp of the last *real* WS tick (set only where latestPythLazerTickers is written
+// from an actual pythLazerClient message, never by a REST fallback writer). Needed because
+// pythLazerStatus.connected is set true by REST writers too, so it can't tell REST fallbacks
+// apart from a live WS -- see isPythWsHealthy() / writePythRestTickers() below.
+let lastPythWsTickTs = 0;
+// WS ticks every ~50-100ms when healthy (real_time/50ms subscription), so anything idle
+// past this is treated as WS-not-healthy and REST is allowed to fill in.
+const PYTH_WS_TICK_STALE_MS = Number(process.env.PYTH_WS_TICK_STALE_MS || 1500);
+
+function isPythWsHealthy() {
+  return lastPythWsTickTs > 0 && (Date.now() - lastPythWsTickTs) < PYTH_WS_TICK_STALE_MS;
+}
+
+// Shared guarded writer for every REST/proxy-sourced ticker update (3s poller, Hermes
+// fallback, initial proxy seed, refreshPythFromProxy). REST calls can straggle and resolve
+// after a fresher WS tick already landed, so without this guard a slow REST response could
+// overwrite newer WS data even while the WS connection is perfectly healthy. Only writes
+// when the WS itself isn't currently healthy -- once isPythWsHealthy() is true, REST is
+// strictly a fallback and must never clobber it, no matter how "fresh" nowP looks (nowP is
+// stamped after this REST call's own network round-trip, so it is always >= the timestamp
+// of whatever WS tick most recently landed -- comparing the two can never usefully detect
+// staleness and must not be used to allow a write through).
+function writePythRestTickers(pmap, nowP, targetWin) {
+  if (!pmap || !Object.keys(pmap).length) return false;
+  if (isPythWsHealthy()) return false;
+  latestPythLazerTickers = pmap;
+  pythLazerStatus.lastDataTs = nowP;
+  pythLazerStatus.dataCount = Math.max(pythLazerStatus.dataCount || 0, 1);
+  pythLazerStatus.connected = true;
+  const w = targetWin || mainWin;
+  if (w && !w.isDestroyed()) {
+    w.webContents.send('pyth:tickers', pmap);
+    w.webContents.send('pyth:status', pythLazerStatus);
+  }
+  return true;
+}
+
 function configureCachePaths() {
   try {
     const localAppData = process.env.LOCALAPPDATA || app.getPath('appData');
@@ -939,16 +976,7 @@ async function startPythLazerService(win) {
               };
             }
           }
-          if (Object.keys(pmap).length) {
-            latestPythLazerTickers = pmap;
-            pythLazerStatus.lastDataTs = nowP;
-            pythLazerStatus.dataCount = Math.max(pythLazerStatus.dataCount || 0, 1);
-            pythLazerStatus.connected = true;
-            if (win && !win.isDestroyed()) {
-              win.webContents.send('pyth:tickers', pmap);
-              win.webContents.send('pyth:status', pythLazerStatus);
-            }
-          }
+          writePythRestTickers(pmap, nowP, win);
         }
       }
     } catch (_) {}
@@ -1023,15 +1051,7 @@ async function startPythLazerService(win) {
           const px = Number(f.price) * Math.pow(10, f.exponent ?? -8);
           if (px > 0) pmap0[instr] = { instrument_name: instr, last: px, source: 'pyth-initial-rest', timestamp: now0 };
         }
-        if (Object.keys(pmap0).length) {
-          latestPythLazerTickers = pmap0;
-          pythLazerStatus.lastDataTs = now0;
-          pythLazerStatus.dataCount = Math.max(pythLazerStatus.dataCount || 0, 1);
-          pythLazerStatus.connected = true;
-          if (!win.isDestroyed()) {
-            win.webContents.send('pyth:tickers', pmap0);
-            win.webContents.send('pyth:status', pythLazerStatus);
-          }
+        if (writePythRestTickers(pmap0, now0, win)) {
           console.log('[PythLazer] Initial REST seed populated prices (dataCount >= 1)');
         }
       } else {
@@ -1200,16 +1220,7 @@ async function startPythLazerService(win) {
                       }
                     }
                   }
-                  if (Object.keys(pmap).length) {
-                    latestPythLazerTickers = pmap;
-                    pythLazerStatus.lastDataTs = nowP;
-                    pythLazerStatus.dataCount = Math.max(pythLazerStatus.dataCount || 0, 1);
-                    pythLazerStatus.connected = true;
-                    if (!win.isDestroyed()) {
-                      win.webContents.send('pyth:tickers', pmap);
-                      win.webContents.send('pyth:status', pythLazerStatus);
-                    }
-                  }
+                  writePythRestTickers(pmap, nowP, win);
                 }
               }
             } catch (_) {}
@@ -1231,18 +1242,8 @@ async function startPythLazerService(win) {
                 };
               }
             }
-            if (Object.keys(pmap).length) {
-              latestPythLazerTickers = pmap;
-              pythLazerStatus.lastDataTs = nowP;
-              pythLazerStatus.dataCount = Math.max(pythLazerStatus.dataCount || 0, 1);
-              pythLazerStatus.connected = true;
-              if (!win.isDestroyed()) {
-                win.webContents.send('pyth:tickers', pmap);
-                win.webContents.send('pyth:status', pythLazerStatus);  // always notify health
-              }
-              if (pythLazerStatus.dataCount <= 3) {
-                console.log(`[PythLazer] REST poller provided ${Object.keys(pmap).length} feeds (dataCount=${pythLazerStatus.dataCount})`);
-              }
+            if (writePythRestTickers(pmap, nowP, win) && pythLazerStatus.dataCount <= 3) {
+              console.log(`[PythLazer] REST poller provided ${Object.keys(pmap).length} feeds (dataCount=${pythLazerStatus.dataCount})`);
             }
           } else if (pythLazerStatus.dataCount === 0) {
             // Only spam occasionally if still no data
@@ -1370,7 +1371,10 @@ async function startPythLazerService(win) {
         }
 
         const now = Date.now();
-        if (now - lastPush < 800) return;    // ~1 push/sec max
+        // Subscription is real_time/50ms -- 800ms throttled this down to ~1.25 push/sec.
+        // Floor at 50ms (matches the subscribed cadence) so IPC only ever coalesces
+        // back-to-back messages faster than the feed itself, not the feed's real rate.
+        if (now - lastPush < 50) return;
         lastPush = now;
 
         // ★ RESET TIMEOUT on successful data arrival
@@ -1412,6 +1416,7 @@ async function startPythLazerService(win) {
         }
         if (Object.keys(prices).length && !win.isDestroyed()) {
           latestPythLazerTickers = prices;
+          lastPythWsTickTs = now; // real WS tick -- gates REST fallback writers, see isPythWsHealthy()
           // ★ UPDATE STATUS: Track Pyth Lazer health
           pythLazerStatus.connected = true;
           pythLazerStatus.lastDataTs = now;
@@ -2104,16 +2109,7 @@ function updatePythStatusFromProxyPrices(prices) {
       };
     }
   });
-  if (Object.keys(pmap).length) {
-    latestPythLazerTickers = pmap;
-    pythLazerStatus.lastDataTs = nowP;
-    pythLazerStatus.dataCount = Math.max(pythLazerStatus.dataCount || 0, 1);
-    pythLazerStatus.connected = true;
-    if (mainWin && !mainWin.isDestroyed()) {
-      mainWin.webContents.send('pyth:tickers', pmap);
-      mainWin.webContents.send('pyth:status', pythLazerStatus);
-    }
-  }
+  writePythRestTickers(pmap, nowP, mainWin);
 }
 
 function refreshPythFromProxy() {

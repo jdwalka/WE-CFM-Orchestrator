@@ -32,6 +32,10 @@
     'Legal actions: BUY_UP | BUY_DOWN | SIZE_DOWN | HOLD_FLAT.',
     'If a number is missing, HOLD_FLAT / skip and add a warning. Never invent spot, PTB, TTC, or P(Up).',
     'Start notes with UP or DOWN (or HOLD_FLAT). Cite spot, PTB, TTC, yesProb, imbalance.',
+    'Timing: secondsToClose is TTC in seconds, authoritative. urgency=late_window when TTC<90; ' +
+      'urgency=now when TTC>=90 and the edge (deltaVsPtb vs yesProb, depthImbalance) is live and consistent; ' +
+      'urgency=wait_pullback otherwise. spotAgeSec is how many seconds old the spot price is -- ' +
+      'if spotAgeSec is large relative to TTC, treat spot as stale and prefer HOLD_FLAT over a timing call.',
     'Return ONLY JSON matching the desk contract schema.',
   ].join(' ');
 
@@ -263,12 +267,15 @@
   function packetFromOracle(oracle, extras = {}) {
     const o = oracle || {};
     const w = o.active || {};
+    const spotTs = num(o.spotTs);
+    const spotAgeSec = spotTs != null ? Math.max(0, Math.round((Date.now() - spotTs) / 1000)) : null;
     return {
       sym: String(extras.sym || o.coin || o.sym || '').toUpperCase(),
       horizon: String(extras.horizon || o.horizon || w.horizon || '15m'),
       slug: o.slug || w.slug || null,
       spot: num(o.spot),
       spotSource: o.spotSource || 'pyth',
+      spotAgeSec,
       priceToBeatNum: num(o.priceToBeatNum ?? w.priceToBeatNum),
       priceToBeatSource: o.priceToBeatSource || w.priceToBeatSource || null,
       deltaVsPtb: num(o.deltaVsPtb),

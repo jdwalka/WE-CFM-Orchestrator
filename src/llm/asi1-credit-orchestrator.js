@@ -18,6 +18,18 @@ const ASI1_ALL_MODELS = Asi1Client.ASI1_ALL_MODELS || Object.freeze([
   'asi1-fast',
 ]);
 
+// Pinned Agentverse agents for planner mode -- curated from
+// https://agentverse.ai/v1/search/agents on 2026-08-21, filtered to
+// active/well-rated/recently-used listings (the open directory is mostly
+// inactive or unrated). Pinning avoids planner_mode's blind live discovery
+// picking a dead or low-quality agent for a real-money decision.
+const AGENTVERSE_PINNED_AGENTS = Object.freeze([
+  'agent1qg6hwwk7zltxq7pamh4ufw04kjywl2ntrkgspmvhdq5yc3mkkjjmk872mxn', // vedetta -- sentiment/price-divergence verdicts (4.8, 19.2k recent interactions)
+  'agent1q240kxgq5u77auplgtypuwtzwe9suk9asayfuczernje4wzzthvzq59agj5', // Crypto Whale Radar -- live token data + ETH whale scans (4.2, 429 recent)
+  'agent1qvcqcty9uay8avljk908hedgynla2gvcmdhhncjzsdt2u0q9wathshwunwn', // macropulse -- US macro health scores from FRED (4.4, 811 recent)
+  'agent1q085746wlr3u2uh4fmwqplude8e0w6fhrmqgsnlp49weawef3ahlutypvu6', // Technical Analysis Agent (4.5, 8.2k recent -- built for stock tickers, TA indicators transfer to crypto)
+]);
+
 const DESK_MODES = Desk.MODES;
 // TokenMix has been removed as an inference provider (ASI1-only app), so
 // 'dual_fire' no longer has a second provider to fire alongside ASI1 --
@@ -116,9 +128,15 @@ async function chat(messages, options = {}) {
 async function deskInfer(packet, mode, options = {}) {
   if (mode) setMode(mode);
   const m = getMode();
+  // 5m (and any sub-90s) fast path is latency-critical -- a 300s window can't
+  // afford a leftover HUD selection (model=asi1-ultra, reasoning effort, web
+  // search, planner mode) surviving from a prior 15m call via localStorage.
+  // Those knobs are caller-controlled options, not desk-selected defaults, so
+  // they must be force-disabled here regardless of what the caller passed.
+  const fastPath = Desk.isFastPath(packet);
   const explicitModel = options.model && options.model !== 'auto' ? options.model : null;
-  const model = explicitModel || Desk.selectModel(packet, m);
-  const plannerOn = options.plannerMode != null ? !!options.plannerMode : Desk.plannerAllowed(packet, m);
+  const model = fastPath ? Desk.selectModel(packet, m) : (explicitModel || Desk.selectModel(packet, m));
+  const plannerOn = fastPath ? false : (options.plannerMode != null ? !!options.plannerMode : Desk.plannerAllowed(packet, m));
   const started = Date.now();
   try {
     const result = await Asi1Client.chatCompletion(
@@ -130,9 +148,10 @@ async function deskInfer(packet, mode, options = {}) {
         model,
         candidateModels: rosterFor({ model }),
         plannerMode: plannerOn,
-        reasoning_effort: options.reasoning_effort || options.effort || undefined,
-        enable_thinking: options.enable_thinking != null ? options.enable_thinking : (options.thinking === false ? false : undefined),
-        web_search: options.web_search != null ? !!options.web_search : undefined,
+        agents: plannerOn ? AGENTVERSE_PINNED_AGENTS.slice() : undefined,
+        reasoning_effort: fastPath ? undefined : (options.reasoning_effort || options.effort || undefined),
+        enable_thinking: fastPath ? false : (options.enable_thinking != null ? options.enable_thinking : (options.thinking === false ? false : undefined)),
+        web_search: fastPath ? false : (options.web_search != null ? !!options.web_search : undefined),
         temperature: options.temperature ?? 0.12,
         max_tokens: options.max_tokens ?? (plannerOn ? 2500 : (model === 'asi1-ultra' ? 2200 : 1200)),
         response_format: Desk.RESPONSE_FORMAT,
