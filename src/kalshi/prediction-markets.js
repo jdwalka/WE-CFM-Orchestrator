@@ -1690,7 +1690,20 @@
   // window). Locking now requires two independent reads, spaced
   // PTB_CONFIRM_MIN_GAP_MS apart, that agree within PTB_CONFIRM_TOLERANCE. See
   // _lockPolymarketPriceToBeat. Purge v11 locks, which could still lock on one read.
-  const POLY5M_PTB_LOCK_VERSION = 12;
+  // v13: the v12 double-read requirement was blocking every 5m contract for up
+  // to PTB_LOCK_GRACE_MS (2 minutes -- 40% of a 300s window) whenever a second
+  // independent read didn't land in time, even though PRIMARY_LOCK_SOURCE
+  // (polymarket-chainlink-candles) queries Polymarket's own settled-TWAP
+  // contract endpoint directly -- the same one Polymarket's "Price To Beat" UI
+  // calls -- so a single read from it already IS the contract value, not an
+  // estimate of it. Only that source now locks on first read; the weaker
+  // sources that caused the v12 incident (Gamma fields, event-page scrape)
+  // still require two-read confirmation. Purge v12 locks.
+  const POLY5M_PTB_LOCK_VERSION = 13;
+  // The only source that queries Polymarket's settled-TWAP contract endpoint
+  // directly -- a single read from it is the contract value, not an estimate,
+  // so it skips the two-read confirmation required for every other source.
+  const PRIMARY_LOCK_SOURCE = 'polymarket-chainlink-candles';
   // Reads must be at least this far apart to count as an independent recheck
   // (rejects two calls in the same poll tick trivially "confirming" each other).
   const PTB_CONFIRM_MIN_GAP_MS = 3_000;
@@ -1749,10 +1762,12 @@
   }
 
   /**
-   * Propose a PTB reading for `slug`. Does NOT lock on the first call -- see
-   * v12 note on POLY5M_PTB_LOCK_VERSION. Records the reading and only
-   * actually locks once two readings spaced PTB_CONFIRM_MIN_GAP_MS apart
-   * agree within PTB_CONFIRM_TOLERANCE (any source combination counts, so a
+   * Propose a PTB reading for `slug`. A PRIMARY_LOCK_SOURCE read (Polymarket's
+   * own settled-TWAP contract endpoint) locks immediately -- see v13 note on
+   * POLY5M_PTB_LOCK_VERSION. Any other source does NOT lock on the first call
+   * -- see v12 note. Records the reading and only actually locks once two
+   * readings spaced PTB_CONFIRM_MIN_GAP_MS apart agree within
+   * PTB_CONFIRM_TOLERANCE (any source combination counts, so a
    * chainlink-candles read can confirm -- or override -- an earlier
    * Gamma-sourced one). Falls back to locking the latest unconfirmed reading
    * once the window's PTB_LOCK_GRACE_MS grace period is nearly spent, so a
@@ -1772,6 +1787,25 @@
     }
 
     const now = Date.now();
+
+    // Polymarket's own settled-TWAP contract endpoint -- a single read from
+    // it already is the contract value, so it locks immediately instead of
+    // waiting for a second independent read to agree with it.
+    if (source === PRIMARY_LOCK_SOURCE) {
+      const locked = Object.freeze({
+        version: POLY5M_PTB_LOCK_VERSION,
+        price,
+        source,
+        lockedAt: now,
+      });
+      _poly5mPriceToBeatLocks.set(slug, locked);
+      _pendingPtbReads.delete(slug);
+      try { localStorage.setItem(`poly5m:ptb:v${POLY5M_PTB_LOCK_VERSION}:${slug}`, JSON.stringify(locked)); } catch (err) {
+        console.warn(`[Poly5M-PTB] Could not persist immutable lock for ${slug}:`, err?.message || err);
+      }
+      return locked;
+    }
+
     const reads = _pendingPtbReads.get(slug) || [];
     reads.push({ value: price, source, at: now });
     if (reads.length > PTB_CONFIRM_MAX_READS) reads.shift();
