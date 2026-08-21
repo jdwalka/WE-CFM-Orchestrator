@@ -674,7 +674,7 @@ try {
       console.log(`[LLM] 5m PTB binary markets (polycool.app / Chainlink) using: ${diagnostics.fiveMinuteProvider} / ${diagnostics.fiveMinuteModel}`);
     }
   } else {
-    console.warn('[LLM] Assistant loaded but disabled - check XAI_API_KEY (for 5m Grok) / LLM_API_KEY etc.');
+    console.warn('[LLM] Assistant loaded but disabled - check ASI1 API key (ASI1_API_KEY_GITGOIN / ASI1_API_KEY_MAURO / ASI_ONE_API_KEY or secrets/ASI1_*.txt).');
   }
 } catch (e) {
   console.warn('[LLM] Assistant module unavailable:', e.message);
@@ -3800,8 +3800,6 @@ ipcMain.handle('llm:envStatus', async () => {
     ? LLMSignalAssistant.getDiagnostics()
     : null;
 
-  const compatibleKey = process.env.LLM_API_KEY || process.env.OPENAI_API_KEY || process.env.OPENAI_KEY || '';
-  const googleKey = process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY || '';
   const asi1Diag = (() => {
     try {
       return require('../src/infra/asi1-client').getDiagnostics();
@@ -3809,18 +3807,14 @@ ipcMain.handle('llm:envStatus', async () => {
       return { configured: false, keysConfigured: 0 };
     }
   })();
-  const model = process.env.LLM_MODEL || process.env.OPENAI_MODEL || process.env.GOOGLE_MODEL || process.env.GEMINI_MODEL || null;
-  const apiUrl = process.env.LLM_API_URL || process.env.OPENAI_BASE_URL || null;
-  const provider = process.env.LLM_PROVIDER || 'auto';
 
   return {
     success: true,
     status: {
-      providerConfigured: provider,
-      selectedModel: model,
-      selectedApiUrl: apiUrl,
-      hasCompatibleKey: !!compatibleKey,
-      hasGoogleKey: !!googleKey,
+      // ASI1-only inference layer -- no other provider keys/URLs are read or used.
+      providerConfigured: 'asi1',
+      selectedModel: asi1Diag.defaultModel || null,
+      selectedApiUrl: asi1Diag.baseUrl || null,
       hasAsi1Key: !!asi1Diag.configured,
       asi1KeysConfigured: asi1Diag.keysConfigured || 0,
       asi1KeyEnvNames: asi1Diag.keyEnvNames || [],

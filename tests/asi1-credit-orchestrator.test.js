@@ -20,30 +20,6 @@ test('signal-math clamp / num / normCall', () => {
   assert.strictEqual(math.normSym('btc'), 'BTC');
 });
 
-test('402 is a credit error; timeout is not', () => {
-  assert.strictEqual(orch.isCreditError({ status: 402 }), true);
-  assert.strictEqual(orch.isCreditError(new Error('out of credits on tokenmix')), true);
-  assert.strictEqual(orch.isCreditError(new Error('HTTP 402 payment required')), true);
-  assert.strictEqual(orch.isCreditError({ status: 504, message: 'timeout' }), false);
-});
-
-test('generic billing or 429 quota copy is not permanent credit exhaustion', () => {
-  assert.strictEqual(orch.isCreditError(new Error('billing portal unavailable')), false);
-  assert.strictEqual(orch.isCreditError(new Error('prepaid plan details')), false);
-  assert.strictEqual(orch.isCreditError({ status: 429, message: 'quota exceeded' }), false);
-  assert.strictEqual(orch.isCreditError(new Error('request-id 4021abc timeout')), false);
-  assert.strictEqual(orch.isCreditError(new Error('no credit card on file')), false);
-  assert.strictEqual(orch.isCreditError(new Error('wallet balance too low')), false);
-  assert.strictEqual(orch.isCreditError(new Error('insufficient funds for this fill')), false);
-});
-
-test('reshapeCascade honors a cached skip flag without re-reading assistant state', () => {
-  const assistant = { _tokenmixCreditExhausted: false };
-  const skipped = orch.reshapeCascade(['tokenmix', 'xai'], assistant, true);
-  assert.deepStrictEqual(skipped, ['asi1', 'xai']);
-  const kept = orch.reshapeCascade(['tokenmix', 'xai'], assistant, false);
-  assert.deepStrictEqual(kept, ['tokenmix', 'xai']);
-});
 
 test('roster walks every ASI1 model and prefers the requested one first', () => {
   assert.ok(orch.ASI1_ALL_MODELS.includes('asi1-ultra'));
@@ -54,18 +30,16 @@ test('roster walks every ASI1 model and prefers the requested one first', () => 
   assert.ok(r.includes('asi1-ultra') && r.includes('asi1-mini') && r.includes('asi1'));
 });
 
-test('reshapeCascade drops tokenmix and pins asi1 when credits are gone', () => {
-  const assistant = { _tokenmixCreditExhausted: true };
-  const next = orch.reshapeCascade(['tokenmix', 'xai', 'google'], assistant);
-  assert.deepStrictEqual(next, ['asi1', 'xai', 'google']);
+test('desk mode defaults to asi1_only (ASI1 is the sole inference provider)', () => {
+  assert.strictEqual(orch.getMode(), 'asi1_only');
 });
 
-test('markTokenmixExhausted only fires on credit errors', () => {
-  const a = { _providerCooldowns: {} };
-  assert.strictEqual(orch.markTokenmixExhausted(a, new Error('ECONNRESET')), false);
-  assert.strictEqual(orch.markTokenmixExhausted(a, { status: 402, message: 'payment required' }), true);
-  assert.strictEqual(a._tokenmixCreditExhausted, true);
-  assert.ok(orch.shouldSkipTokenmix(a));
+test('planner/reasoning mode is available on non-5m horizons when explicitly enabled', () => {
+  const restore = orch.getMode();
+  orch.setMode('planner');
+  assert.strictEqual(orch.plannerEnabled('5m'), false);
+  assert.strictEqual(orch.plannerEnabled('15m'), true);
+  orch.setMode(restore);
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

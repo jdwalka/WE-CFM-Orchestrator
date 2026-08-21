@@ -4542,6 +4542,9 @@
               sym: coin.sym,
               horizon: '15m',
               modelScore: pred.score,
+              modelDirection: pred.direction || pred.signal,
+              volumeDelta: pred.indicators?.volume?.value ?? pred.volumeDelta,
+              depthImbalance: pred.indicators?.book?.value,
             });
           }
 

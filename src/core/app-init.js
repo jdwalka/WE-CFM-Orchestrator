@@ -551,6 +551,14 @@ window.addEventListener('poly5m:resolved', (e) => {
     if (aiCall === 'UP' || aiCall === 'DOWN') {
       window.InferenceStateStore?.recordOutcome?.(sym, '5m', aiCall, actualDirection);
     }
+    try {
+      const modelDir = brief?.modelDirection || brief?.direction;
+      window.SignalCalibrator?.record?.(sym, '5m', {
+        ai: aiCall,
+        model: modelDir,
+        blend: brief?.effectiveCall || brief?.call,
+      }, actualDirection);
+    } catch (_) { /* */ }
   } catch (_) { /* */ }
   if (window.MultiDriveCache?.recordSettlement) {
     try {
@@ -650,6 +658,11 @@ window.addEventListener('market15m:resolved', (e) => {
         if (aiCall === 'UP' || aiCall === 'DOWN') {
           window.InferenceStateStore?.recordOutcome?.(sym, '15m', aiCall, outcome);
         }
+        window.SignalCalibrator?.record?.(sym, '15m', {
+          ai: aiCall,
+          model: entry.modelDir || brief?.modelDirection,
+          blend: brief?.effectiveCall || brief?.call,
+        }, outcome);
       } catch (_) { /* */ }
 
       // ── Persist settlement to every synced drive (H:\ Google Drive, OneDrive, etc.) ──

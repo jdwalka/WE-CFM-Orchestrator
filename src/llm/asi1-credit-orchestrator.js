@@ -1,9 +1,10 @@
 /**
- * TokenMix-credit failover → full ASI1 roster.
+ * ASI1 desk-mode + model-roster orchestrator.
  *
- * When tokenmix.ai returns 402 / "out of credits", skip TokenMix and walk
- * every ASI:One model (ultra → fast → mini → agentic asi1) across every
- * configured ASI1 key. Node-only; required by llm_signal_assistant.
+ * TokenMix has been removed as an inference provider -- this app is ASI1-only.
+ * Walks every ASI:One model (ultra → fast → mini → agentic asi1) across every
+ * configured ASI1 key as an automatic fallback chain. Node-only; required by
+ * llm_signal_assistant.
  */
 'use strict';
 
@@ -18,7 +19,11 @@ const ASI1_ALL_MODELS = Asi1Client.ASI1_ALL_MODELS || Object.freeze([
 ]);
 
 const DESK_MODES = Desk.MODES;
-let _deskMode = Desk.normalizeMode(process.env.ASI1_DESK_MODE || 'dual_fire');
+// TokenMix has been removed as an inference provider (ASI1-only app), so
+// 'dual_fire' no longer has a second provider to fire alongside ASI1 --
+// 'asi1_only' is the accurate default. Set ASI1_DESK_MODE=planner to also
+// enable reasoning/agentic planner mode on non-5m horizons.
+let _deskMode = Desk.normalizeMode(process.env.ASI1_DESK_MODE || 'asi1_only');
 
 function getMode() {
   return _deskMode;
@@ -170,14 +175,13 @@ async function deskInfer(packet, mode, options = {}) {
 module.exports = {
   ASI1_ALL_MODELS,
   DESK_MODES,
-  isCreditError,
-  shouldSkipTokenmix,
-  markTokenmixExhausted,
   rosterFor,
-  reshapeCascade,
   chat,
   getMode,
   setMode,
   plannerEnabled,
   deskInfer,
+  shouldSkipTokenmix,
+  markTokenmixExhausted,
+  reshapeCascade,
 };

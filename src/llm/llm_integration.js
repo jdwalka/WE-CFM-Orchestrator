@@ -6,7 +6,6 @@
  */
 
 const LLMAssistant = require("../llm/llm_signal_assistant");
-const FirebaseAI  = require("../llm/firebase-ai-signal-assistant");
 const fs = require("fs");
 const path = require("path");
 
@@ -102,17 +101,6 @@ class LLMIntegration {
         };
       }
 
-      // Firebase AI Logic: non-blocking signal narration (parallel, no await)
-      FirebaseAI.summarizeSignal(coin, { ...snapshot, ...llmOutput })
-        .then(narration => {
-          if (narration) {
-            if (!this.lastInfluence[coin]) this.lastInfluence[coin] = {};
-            this.lastInfluence[coin].narration = narration;
-            this.lastInfluence[coin].narrationTs = Date.now();
-          }
-        })
-        .catch(() => {});
-
       // Log for forensics (async, don't block)
       this.logAsync(coin, snapshot, llmOutput, changed).catch(() => {});
 
@@ -196,13 +184,6 @@ class LLMIntegration {
       total: this.stats.suggestions,
       errorRate: Math.round((this.stats.errors / this.stats.cycles * 100) || 0),
     };
-  }
-
-  /**
-   * Get Gemini narration for a coin (written by FirebaseAI after each cycle)
-   */
-  getNarration(coin) {
-    return this.lastInfluence[coin]?.narration || null;
   }
 
   /**

@@ -1,16 +1,16 @@
 /**
- * Multi-provider Inference Relay
- * ------------------------------
- * Combines TokenMix (DeepSeek) + ASI1 into one cohesive market view:
+ * ASI1-only Inference Relay
+ * -------------------------
+ * Combines two ASI1 (asi1.ai) model tiers into one cohesive market view:
  *
  *   Stage 1 — Microstructure packet (raw, no LLM)
- *   Stage 2 — Parallel specialists
- *               • DeepSeek: short-horizon + order-book dynamics
- *               • ASI1:     medium/longer-horizon regime + pre-contract guide
- *   Stage 3 — Relay synthesis (DeepSeek preferred for cost; ASI1 fallback)
- *             merges both legs into a single structured call/notes package
+ *   Stage 2 — Parallel specialists, both ASI1
+ *               • fast tier (asi1-mini/asi1-fast): short-horizon + order-book dynamics
+ *               • ultra/deep tier (asi1-ultra): medium/longer-horizon regime + pre-contract guide
+ *   Stage 3 — Local deterministic merge (mergeLegsLocally) combines both legs
+ *             into a single structured call/notes package -- no extra LLM call.
  *
- * Used by LLMSignalAssistant when both providers are keyed.
+ * Used by LLMSignalAssistant._relaySpecialistSplit when ASI1 is keyed.
  */
 
 'use strict';
@@ -97,7 +97,7 @@ function buildMicrostructurePacket(snapshot = {}) {
 }
 
 function specialistSystemShort() {
-  return `You are DeepSeek (via TokenMix) — SHORT-HORIZON + ORDER-BOOK specialist for Polymarket crypto Up/Down.
+  return `You are ASI1 (asi1.ai, fast tier) — SHORT-HORIZON + ORDER-BOOK specialist for Polymarket crypto Up/Down.
 
 Focus ONLY on:
 1) 5m (and near-term 15m) path: spot vs price-to-beat, TTC, liveDirection
@@ -164,7 +164,7 @@ Return ONLY valid JSON:
 function synthesisSystem() {
   return `You are the INFERENCE RELAY synthesizer. You receive:
 1) microstructure packet (raw numbers — SOURCE OF TRUTH for path/odds/book levels)
-2) short_ob leg (DeepSeek): short-horizon + order book
+2) short_ob leg (ASI1 fast tier): short-horizon + order book
 3) medium_long leg (ASI1): regime + pre-contract
 
 Produce ONE cohesive trading view for the operator. Rules:
@@ -251,7 +251,7 @@ function buildSynthesisUser(packet, shortLeg, longLeg) {
     '## MICROSTRUCTURE (source of truth numbers)',
     JSON.stringify(packet, null, 0),
     '',
-    '## SHORT_OB LEG (DeepSeek / TokenMix)',
+    '## SHORT_OB LEG (ASI1 fast tier)',
     JSON.stringify(shortLeg || { error: 'missing' }, null, 0),
     '',
     '## MEDIUM_LONG LEG (ASI1)',

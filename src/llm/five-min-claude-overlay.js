@@ -1,11 +1,11 @@
 /**
- * Five-Minute Grok (xAI) Overlay — producer for the 5-minute binary PTB markets (polycool.app / Polymarket).
+ * Five-Minute ASI1 Overlay — producer for the 5-minute binary PTB markets (polycool.app / Polymarket).
  *
  * These 5min contracts use Chainlink for the price-to-beat settlement oracle and are binary (UP/DOWN vs fixed PTB).
  *
  * Runs in the renderer. For BTC/ETH/SOL/XRP (independently, so 2-4 coins can fire in the
- * same 5-minute window) it watches the live 5-minute price-to-beat markets and asks Grok/xAI
- * for guidance (replaces prior Claude path), gated on:
+ * same 5-minute window) it watches the live 5-minute price-to-beat markets and asks ASI1
+ * for guidance, gated on:
  *   - "trickier" market regimes (chop / mean-reversion / high-vol, near the
  *     price-to-beat, low model confidence, or model-vs-price direction conflict),
  *   - a live TAIL-RISK order-flow burst from window.CexFlow (VPIN spike, whale
@@ -23,8 +23,10 @@
  * persistence only — a window's own price-to-beat isn't set until it opens; the
  * normal tick loop promotes it to a firm call the moment it locks).
  *
- * Inference is routed via LLMSignalAssistant (xAI/rex primary for 5m; fallback asi1→openai→claude→gemini)
- * when a 5m PTB snapshot is provided. Guidance is stored per-coin and read by renderMarkets5M().
+ * Inference is routed via LLMSignalAssistant, which is ASI1-only (asi1.ai) --
+ * asi1-mini/asi1-fast for the 5m tier, with the full official roster
+ * (asi1-ultra/asi1/asi1-mini/asi1-fast) as an automatic in-call fallback.
+ * Guidance is stored per-coin and read by renderMarkets5M().
  *
  * Pure decision helpers are exported for unit testing; the live loop only starts
  * inside an Electron renderer (window.electron present).
