@@ -63,14 +63,16 @@ function tokenmixCreditReason(assistant) {
 }
 
 function shouldSkipTokenmix(assistant) {
-  // Economy / planner desk: do not spend TokenMix even if the key still works.
-  if (_deskMode === 'asi1_only' || _deskMode === 'planner') return true;
+  // Always skip TokenMix in ASI1 modes (asi1_only, planner, dual_fire) or when credentials configured
+  const mode = getMode();
+  if (mode === 'asi1_only' || mode === 'planner' || mode === 'dual_fire') return true;
+  if (process.env.ASI1_ONLY === '1' || process.env.LLM_ONLY_PROVIDER === 'asi1') return true;
   if (assistant?._tokenmixCreditExhausted) return true;
   const remaining = typeof assistant?._providerCooldownRemaining === 'function'
     ? assistant._providerCooldownRemaining('tokenmix')
     : 0;
   if (remaining > 0 && isCreditError({ message: tokenmixCreditReason(assistant) })) return true;
-  return false;
+  return true;
 }
 
 function markTokenmixExhausted(assistant, err) {
@@ -96,9 +98,7 @@ function reshapeCascade(cascade, assistant, skipCached) {
   const next = Array.isArray(cascade) ? cascade.slice() : [];
   const skip = skipCached != null ? !!skipCached : shouldSkipTokenmix(assistant);
   if (!skip) return next;
-  const filtered = next.filter((p) => p !== 'tokenmix');
-  if (!filtered.includes('asi1')) filtered.unshift('asi1');
-  return filtered;
+  return ['asi1'];
 }
 
 async function chat(messages, options = {}) {
@@ -111,7 +111,6 @@ async function chat(messages, options = {}) {
 async function deskInfer(packet, mode) {
   if (mode) setMode(mode);
   const m = getMode();
-  const local = Desk.inferLocal(packet, m);
   const model = Desk.selectModel(packet, m);
   const plannerOn = Desk.plannerAllowed(packet, m);
   const started = Date.now();
@@ -126,26 +125,31 @@ async function deskInfer(packet, mode) {
         candidateModels: rosterFor({ model }),
         plannerMode: plannerOn,
         temperature: 0.12,
-        max_tokens: plannerOn ? 1800 : 900,
+        max_tokens: plannerOn ? 2500 : (model === 'asi1-ultra' ? 2200 : 1200),
         response_format: Desk.RESPONSE_FORMAT,
-        timeoutMs: plannerOn ? 90000 : (Desk.isFastPath(packet) ? 20000 : 45000),
+        timeoutMs: plannerOn ? 90000 : (Desk.isFastPath(packet) ? 25000 : 50000),
       },
     );
-    let parsed = null;
-    try { parsed = JSON.parse(String(result.content || '')); } catch (_) { parsed = null; }
-    const contract = Desk.normalizeContract(parsed || local, m, packet);
+    const { contract, source } = Desk.parseOrSynthesize(
+      result.content,
+      result.thought || result.raw?.choices?.[0]?.message?.reasoning_content,
+      m,
+      packet
+    );
+    const isFallback = source === 'inferLocal';
     contract._meta = {
       model: result.model || model,
       account: result.account || null,
       email: result.email || null,
       latency: Date.now() - started,
-      source: parsed ? 'asi1' : 'inferLocal',
-      thought: result.thought || null,
+      source,
+      thought: result.thought || (typeof result.content === 'string' ? result.content.slice(0, 300) : null),
     };
-    return { ok: true, contract, fallback: !parsed };
+    return { ok: true, contract, fallback: isFallback };
   } catch (err) {
+    const local = Desk.inferLocal(packet, m);
     local._meta = {
-      ...(local._meta || {}),
+      model,
       source: 'inferLocal',
       latency: Date.now() - started,
       error: String(err?.message || err).slice(0, 180),

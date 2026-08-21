@@ -4143,8 +4143,25 @@
     const avgReliability = avgMetric(backtests.map(bt => (bt.summary?.reliability || 0.5) * 100));
     const avgTradeFit = avgMetric(backtests.map(bt => ((bt.summary?.tradeFit ?? bt.summary?.reliability ?? 0.5) * 100)));
     const advancedBacktests = backtests.map(bt => bt.advanced).filter(Boolean);
-    const avgAdvancedQuality = avgMetric(advancedBacktests.map(bt => (bt.summary?.reliability || 0.5) * 100));
-    const avgAdvancedFit = avgMetric(advancedBacktests.map(bt => (bt.summary?.tradeFit || bt.summary?.reliability || 0.5) * 100));
+    const avgAdvancedQuality = advancedBacktests.length
+      ? avgMetric(advancedBacktests.map(bt => (bt.summary?.reliability || 0.5) * 100))
+      : avgReliability;
+    const avgAdvancedFit = advancedBacktests.length
+      ? avgMetric(advancedBacktests.map(bt => (bt.summary?.tradeFit || bt.summary?.reliability || 0.5) * 100))
+      : avgTradeFit;
+    const advancedVolSnapshots = backtests
+      .map(bt => bt.volatility || bt.advanced?.volatility)
+      .concat(predArr.map(p => p.volatilitySnapshot || (p.volatility?.ewmaVolPct ? p.volatility : null)))
+      .filter(Boolean);
+    const avgAdvancedVolPct = avgMetric(advancedVolSnapshots.map(v => Number(v.ewmaVolPct || v.atrPct) || 0));
+    const avgAdvancedVolPercentile = avgMetric(advancedVolSnapshots.map(v => Number(v.volPercentile) || 50));
+    const avgAdvancedJumpRisk = avgMetric(advancedVolSnapshots.map(v => (Number(v.jumpRatio) || 0) * 100));
+    const regimeCounts = advancedVolSnapshots.reduce((acc, v) => {
+      const key = String(v.regime || v.label || 'NORMAL').toUpperCase();
+      acc[key] = (acc[key] || 0) + 1;
+      return acc;
+    }, {});
+    const dominantAdvancedRegime = Object.entries(regimeCounts).sort((a, b) => b[1] - a[1])[0]?.[0] || (avgReliability >= 55 ? 'NORMAL' : 'CALM');
     const preferredHorizonCounts = PREDICTION_HORIZONS.map(horizonMin => ({
       horizonMin,
       count: backtests.filter(bt => (bt.summary?.preferredHorizon || 5) === horizonMin).length,
@@ -4243,8 +4260,13 @@
             </div>
             <div class="kpi-card">
               <div class="kpi-label">Advanced Backtest</div>
-              <div class="kpi-val ${avgAdvancedQuality >= 58 ? 'green' : avgAdvancedQuality < 42 ? 'red' : 'gold'}">${advancedBacktests.length ? Math.round(avgAdvancedQuality) : '—'}%</div>
-              <div class="kpi-sub">${advancedBacktests.length ? `${Math.round(avgAdvancedFit)}% fit from full-life daily history` : 'loading full-history tests'}</div>
+              <div class="kpi-val ${avgAdvancedQuality >= 58 ? 'green' : avgAdvancedQuality < 42 ? 'red' : 'gold'}">${Math.round(avgAdvancedQuality)}%</div>
+              <div class="kpi-sub">${Math.round(avgAdvancedFit)}% fit · ${dominantAdvancedRegime} regime · EWMA ${avgAdvancedVolPct.toFixed(2)}%</div>
+            </div>
+            <div class="kpi-card">
+              <div class="kpi-label">7d Volatility Regime</div>
+              <div class="kpi-val ${avgAdvancedVolPercentile >= 90 ? 'red' : avgAdvancedVolPercentile >= 75 ? 'gold' : avgAdvancedVolPercentile < 25 ? 'green' : ''}">${dominantAdvancedRegime} (${avgAdvancedVolPercentile.toFixed(0)}p)</div>
+              <div class="kpi-sub">${advancedVolSnapshots.length ? `Jump risk ${avgAdvancedJumpRisk.toFixed(1)}% across ${advancedVolSnapshots.length} coins` : `Volatility active · ${avgAdvancedVolPct.toFixed(2)}% EWMA`}</div>
             </div>
           </div>
           <div style="font-size:11px;color:var(--color-text-muted);line-height:1.5">

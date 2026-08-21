@@ -1,0 +1,10 @@
+# ── 02-dns-config.yaml ────────────────────────────────────────────────────
+# MagicDNS resolution for in-cluster pods to resolve *.prairiedog-godzilla.ts.net
+apiVersion: tailscale.com/v1alpha1
+kind: DNSConfig
+metadata:
+  name: default
+  namespace: tailscale
+spec:
+  nameserver:
+    replicas: 1

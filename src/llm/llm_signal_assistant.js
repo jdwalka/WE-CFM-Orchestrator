@@ -807,53 +807,28 @@ Use this recall only as context, and prioritize current market snapshot data if 
     const useXai = !!XAI_API_KEY && (XAI_PRIMARY_ALL || is5mPtb);
     const useLegacyClaude = is5mPtb && !XAI_API_KEY && !!ANTHROPIC_API_KEY;
     // Pre-contract: dual-fire ASI1 + TokenMix/DeepSeek (both get traffic), then cascade.
-    // 5m PTB: xAI first when keyed; DeepSeek is strong cheap fallback.
-    let baseCascade = ['asi1', 'tokenmix', 'xai', 'google', 'openai', 'anthropic', 'openrouter'];
-    if (is5mPtb && XAI_API_KEY) {
-      baseCascade = ['xai', 'asi1', 'tokenmix', 'google', 'openai', 'anthropic', 'openrouter'];
-    } else if (isPreContractRange) {
-      baseCascade = ['asi1', 'tokenmix', 'xai', 'google', 'openai', 'anthropic', 'openrouter'];
-    }
-    // LLM_CASCADE_PRIMARY pins one provider to the front without disturbing the
-    // fallback order behind it.
+    // Route exclusively to ASI1 across all horizons (5m, 15m, 60m, pre-contract, planner)
+    let baseCascade = ['asi1'];
     const primaryOverride = String(process.env.LLM_CASCADE_PRIMARY || '').trim().toLowerCase();
-    let cascade = primaryOverride && baseCascade.includes(primaryOverride)
-      ? [primaryOverride, ...baseCascade.filter((p) => p !== primaryOverride)]
-      : baseCascade;
-    // LLM_ONLY_PROVIDER restricts the whole session to exactly one provider —
-    // e.g. "only asi1 for this trading session" — instead of disabling every
-    // other provider one at a time. Also suppresses the dual-fire/relay path
-    // below, which otherwise always calls TokenMix alongside ASI1 regardless
-    // of cascade order.
-    const onlyProvider = String(process.env.LLM_ONLY_PROVIDER || '').trim().toLowerCase();
+    let cascade = primaryOverride && primaryOverride !== 'asi1' ? [primaryOverride, 'asi1'] : ['asi1'];
+    const onlyProvider = String(process.env.LLM_ONLY_PROVIDER || 'asi1').trim().toLowerCase();
     if (onlyProvider) cascade = [onlyProvider];
     const deskMode = typeof Asi1CreditOrch.getMode === 'function'
       ? Asi1CreditOrch.getMode()
-      : 'dual_fire';
-    const skipTokenmix = Asi1CreditOrch.shouldSkipTokenmix(this);
-    if (skipTokenmix) {
-      cascade = Asi1CreditOrch.reshapeCascade(cascade, this, skipTokenmix);
-      console.warn(
-        deskMode === 'asi1_only' || deskMode === 'planner'
-          ? `[LLM] ASI1 desk mode=${deskMode} — TokenMix skipped (economy path)`
-          : '[LLM] TokenMix credits exhausted — ASI1 roster orchestrator owns the path'
-      );
-    }
+      : 'asi1_only';
+    const skipTokenmix = true;
+    cascade = ['asi1'];
     console.log(
-      `[LLM] is5mPtb=${is5mPtb} preContract=${isPreContractRange} useXai=${useXai} ` +
-      `tokenmixKey=${!!TOKENMIX_API_KEY} asi1Key=${Asi1Client.hasAsi1Credentials()} ` +
-      `deskMode=${deskMode} tokenmixSkip=${skipTokenmix} path=${cascade.join('→')}`
+      `[LLM] is5mPtb=${is5mPtb} preContract=${isPreContractRange} useXai=false ` +
+      `tokenmixKey=false asi1Key=${Asi1Client.hasAsi1Credentials()} ` +
+      `deskMode=${deskMode} path=asi1 (exclusive)`
     );
 
-    // Inference router: pre-contract (15m/60m) always hits both providers when
-    // keyed, TokenMix for the quick short-horizon/order-book read and ASI1 for
-    // the deep regime + pre-contract read, merged into one decisive call.
-    // Set LLM_RELAY_SPECIALIST_SPLIT=0 to revert to the same-prompt dual-fire
-    // vote (_dualFireAsi1AndTokenMix) instead.
+    // Inference router: route directly to ASI1 exclusively
     if (
       isPreContractRange
       && !onlyProvider
-      && process.env.LLM_DUAL_FIRE !== '0'
+      && process.env.LLM_DUAL_FIRE === '1'
       && Asi1Client.hasAsi1Credentials()
       && process.env.LLM_DISABLE_ASI1 !== '1'
       && TOKENMIX_API_KEY

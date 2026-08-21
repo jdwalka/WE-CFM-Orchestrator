@@ -306,6 +306,78 @@
     secondsSinceOpen: 420,
   });
 
+  function extractJson(text) {
+    if (!text || typeof text !== 'string') return null;
+    const trimmed = text.trim();
+    if (!trimmed) return null;
+    try {
+      const p = JSON.parse(trimmed);
+      if (p && typeof p === 'object') return p;
+    } catch (_) {}
+    const fenceMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+    if (fenceMatch && fenceMatch[1]) {
+      try {
+        const p = JSON.parse(fenceMatch[1].trim());
+        if (p && typeof p === 'object') return p;
+      } catch (_) {}
+    }
+    const firstBrace = trimmed.indexOf('{');
+    const lastBrace = trimmed.lastIndexOf('}');
+    if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+      try {
+        const p = JSON.parse(trimmed.slice(firstBrace, lastBrace + 1));
+        if (p && typeof p === 'object') return p;
+      } catch (_) {}
+    }
+    return null;
+  }
+
+  function parseOrSynthesize(content, thought, mode, packet) {
+    const rawText = [content, thought].filter(Boolean).join('\n');
+    const parsed = extractJson(content) || extractJson(thought);
+    if (parsed) {
+      return { contract: normalizeContract(parsed, mode, packet), source: 'asi1' };
+    }
+
+    // When ASI1 Agentverse / Planner mode produces rich markdown prose:
+    if (rawText && rawText.length > 50) {
+      const fallback = inferLocal(packet || {}, mode);
+      const isUp = /\b(?:favoring the "UP"|favoring the UP|probability for UP|bullish sentiment|UP outcome|favors UP|call:\s*UP)\b/i.test(rawText);
+      const isDown = /\b(?:favoring the "DOWN"|favoring the DOWN|probability for DOWN|bearish sentiment|DOWN outcome|favors DOWN|call:\s*DOWN)\b/i.test(rawText);
+      const call = isUp ? 'UP' : (isDown ? 'DOWN' : fallback.call);
+      const action = call === 'UP' ? 'BUY_UP' : (call === 'DOWN' ? 'BUY_DOWN' : 'HOLD_FLAT');
+
+      const probMatch = rawText.match(/(\d{1,2}(?:\.\d+)?)%\s*(?:probability|prob|confidence)/i);
+      let conf = probMatch ? Number(probMatch[1]) / 100 : fallback.confidence;
+      if (conf > 1) conf = conf / 100;
+      conf = Math.round(Math.max(0, Math.min(1, conf)) * 100) / 100;
+
+      const notesClean = rawText
+        .replace(/#+\s*/g, '')
+        .replace(/\*\*/g, '')
+        .replace(/\n+/g, ' ')
+        .slice(0, 320)
+        .trim();
+
+      const contract = {
+        ...baseContract(mode),
+        call,
+        action,
+        confidence: conf,
+        regime: fallback.regime || 'trend_continuation',
+        edge_vs_crowd: fallback.edge_vs_crowd || 'with_crowd',
+        urgency: fallback.urgency || 'now',
+        size_hint: fallback.size_hint || 'half',
+        invalidation: fallback.invalidation || 'reassess if spot breaks PTB',
+        notes: notesClean || fallback.notes,
+        warnings: [],
+      };
+      return { contract, source: 'asi1-planner' };
+    }
+
+    return { contract: inferLocal(packet || {}, mode), source: 'inferLocal' };
+  }
+
   return {
     MODES,
     ACTIONS,
@@ -322,5 +394,7 @@
     userPrompt,
     packetFromOracle,
     holdContract,
+    extractJson,
+    parseOrSynthesize,
   };
 }));

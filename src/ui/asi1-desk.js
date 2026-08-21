@@ -142,7 +142,7 @@
     document.getElementById('adWarn').textContent = warns;
     document.getElementById('adFb').textContent = extra?.fallback
       ? ('offline inferLocal' + (extra.error ? ' — ' + extra.error : ''))
-      : (contract._meta?.thought ? String(contract._meta.thought).slice(0, 240) : '');
+      : (contract._meta?.thought ? String(contract._meta.thought).slice(0, 240) : (contract._meta?.source === 'asi1' ? `ASI1 live (${contract._meta.model || 'model'})` : ''));
   }
 
   function buildPacket() {

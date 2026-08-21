@@ -1,0 +1,15 @@
+# ── 01-connector-sweden-exit.yaml ─────────────────────────────────────────
+# Tailscale Kubernetes Operator Connector: Configured as Cloud Exit Node
+apiVersion: tailscale.com/v1alpha1
+kind: Connector
+metadata:
+  name: wecrypto-sweden-exit
+  namespace: tailscale
+spec:
+  hostname: wecrypto-cloud-exit
+  tags:
+    - tag:core
+    - tag:trading
+    - tag:exit-node
+  exitNode: true
+  replicas: 1

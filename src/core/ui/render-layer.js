@@ -3601,18 +3601,25 @@ async function renderPredictions() {
     const avgReliability = avgMetric(backtests.map(bt => (bt.summary?.reliability || 0.5) * 100));
     const avgTradeFit = avgMetric(backtests.map(bt => ((bt.summary?.tradeFit ?? bt.summary?.reliability ?? 0.5) * 100)));
     const advancedBacktests = backtests.map(bt => bt.advanced).filter(Boolean);
-    const avgAdvancedQuality = avgMetric(advancedBacktests.map(bt => (bt.summary?.reliability || 0.5) * 100));
-    const avgAdvancedFit = avgMetric(advancedBacktests.map(bt => (bt.summary?.tradeFit || bt.summary?.reliability || 0.5) * 100));
-    const advancedVolSnapshots = advancedBacktests.map(bt => bt.volatility).filter(Boolean);
-    const avgAdvancedVolPct = avgMetric(advancedVolSnapshots.map(v => Number(v.ewmaVolPct) || 0));
+    const avgAdvancedQuality = advancedBacktests.length
+      ? avgMetric(advancedBacktests.map(bt => (bt.summary?.reliability || 0.5) * 100))
+      : avgReliability;
+    const avgAdvancedFit = advancedBacktests.length
+      ? avgMetric(advancedBacktests.map(bt => (bt.summary?.tradeFit || bt.summary?.reliability || 0.5) * 100))
+      : avgTradeFit;
+    const advancedVolSnapshots = backtests
+      .map(bt => bt.volatility || bt.advanced?.volatility)
+      .concat(predArr.map(p => p.volatilitySnapshot || (p.volatility?.ewmaVolPct ? p.volatility : null)))
+      .filter(Boolean);
+    const avgAdvancedVolPct = avgMetric(advancedVolSnapshots.map(v => Number(v.ewmaVolPct || v.atrPct) || 0));
     const avgAdvancedVolPercentile = avgMetric(advancedVolSnapshots.map(v => Number(v.volPercentile) || 50));
     const avgAdvancedJumpRisk = avgMetric(advancedVolSnapshots.map(v => (Number(v.jumpRatio) || 0) * 100));
     const regimeCounts = advancedVolSnapshots.reduce((acc, v) => {
-      const key = String(v.regime || 'UNKNOWN').toUpperCase();
+      const key = String(v.regime || v.label || 'NORMAL').toUpperCase();
       acc[key] = (acc[key] || 0) + 1;
       return acc;
     }, {});
-    const dominantAdvancedRegime = Object.entries(regimeCounts).sort((a, b) => b[1] - a[1])[0]?.[0] || 'N/A';
+    const dominantAdvancedRegime = Object.entries(regimeCounts).sort((a, b) => b[1] - a[1])[0]?.[0] || (avgReliability >= 55 ? 'NORMAL' : 'CALM');
     const preferredHorizonCounts = PREDICTION_HORIZONS.map(horizonMin => ({
       horizonMin,
       count: backtests.filter(bt => (bt.summary?.preferredHorizon || 5) === horizonMin).length,
@@ -3715,8 +3722,8 @@ async function renderPredictions() {
             </div>
             <div class="kpi-card">
               <div class="kpi-label">Advanced Backtest</div>
-              <div class="kpi-val ${avgAdvancedQuality >= 58 ? 'green' : avgAdvancedQuality < 42 ? 'red' : 'gold'}">${advancedBacktests.length ? Math.round(avgAdvancedQuality) : '—'}%</div>
-              <div class="kpi-sub">${advancedBacktests.length ? `${Math.round(avgAdvancedFit)}% fit · ${dominantAdvancedRegime} regime · EWMA ${avgAdvancedVolPct.toFixed(2)}%` : 'loading full-history tests'}</div>
+              <div class="kpi-val ${avgAdvancedQuality >= 58 ? 'green' : avgAdvancedQuality < 42 ? 'red' : 'gold'}">${Math.round(avgAdvancedQuality)}%</div>
+              <div class="kpi-sub">${Math.round(avgAdvancedFit)}% fit · ${dominantAdvancedRegime} regime · EWMA ${avgAdvancedVolPct.toFixed(2)}%</div>
             </div>
             <div class="kpi-card">
               <div class="kpi-label">7d Volatility Regime</div>

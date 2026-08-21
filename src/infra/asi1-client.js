@@ -254,6 +254,8 @@ async function chatCompletion(messages, options = {}) {
       temperature: options.temperature ?? 0.2,
       max_tokens: options.max_tokens ?? 1500,
       stream: options.stream ?? false,
+      ...(options.enable_thinking != null ? { enable_thinking: options.enable_thinking } : {}),
+      ...(options.tools ? { tools: options.tools } : {}),
       ...(options.response_format ? { response_format: options.response_format } : {}),
       ...(options.web_search != null ? { web_search: options.web_search } : {}),
     };

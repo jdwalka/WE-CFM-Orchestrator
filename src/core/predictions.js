@@ -870,7 +870,7 @@
           fetchKrakenCandles(coin.sym, '5m', 300).catch(() => []),
           fetchKrakenCandles(coin.sym, '15m', 300).catch(() => []),
           fetchKrakenBook(coin.sym).catch(() => null),
-          hasLongHistory ? Promise.resolve(existing.longHistory) : fetchGeckoMaxHistory(coin.geckoId).catch(() => existing.longHistory || []),
+          hasLongHistory ? Promise.resolve(existing.longHistory) : fetchGeckoMaxHistory(coin.geckoId, coin.sym).catch(() => existing.longHistory || []),
         ]);
         const gecko5m = existing._gecko5m || [];
         const gecko15m = existing._gecko15m || [];
@@ -929,7 +929,7 @@
           fetchKrakenCandles(coin.sym, '15m', 300).catch(() => []),
           fetchKrakenBook(coin.sym).catch(() => null),
           fetchKrakenTrades(coin.sym).catch(() => []),
-          hasLongHistory ? Promise.resolve(existing.longHistory) : fetchGeckoMaxHistory(coin.geckoId).catch(() => existing.longHistory || []),
+          hasLongHistory ? Promise.resolve(existing.longHistory) : fetchGeckoMaxHistory(coin.geckoId, coin.sym).catch(() => existing.longHistory || []),
         ]);
         const ws15m_b = window.CandleWS ? window.CandleWS.getClosedBuckets15m(coin.sym) : [];
         const ws1m = window.CandleWS ? window.CandleWS.getClosedBuckets1m(coin.sym) : [];
@@ -4171,11 +4171,17 @@
   }
 
   function buildAdvancedVolatilitySnapshot(cache) {
-    const series = Array.isArray(cache?.candles) ? cache.candles : [];
-    if (series.length < 80) return null;
+    const series = (Array.isArray(cache?.candles) && cache.candles.length >= 20)
+      ? cache.candles
+      : ((Array.isArray(cache?.candles15m) && cache.candles15m.length >= 20)
+        ? cache.candles15m
+        : ((Array.isArray(cache?.candles1m) && cache.candles1m.length >= 20)
+          ? cache.candles1m
+          : (Array.isArray(cache?.longHistory) ? cache.longHistory : [])));
+    if (!Array.isArray(series) || series.length < 15) return null;
     const recent = series.slice(-Math.min(ADV_VOL_LOOKBACK_BARS, series.length));
     const closes = recent.map(c => Number(c?.c)).filter(v => Number.isFinite(v) && v > 0);
-    if (closes.length < 40) return null;
+    if (closes.length < 10) return null;
     const logReturns = [];
     for (let i = 1; i < closes.length; i++) {
       logReturns.push(Math.log(closes[i] / closes[i - 1]));
@@ -4190,7 +4196,7 @@
         : volPercentile < 90 ? 'ELEVATED'
           : 'CRISIS';
     const jumpRatio = computeJumpRatio(logReturns.slice(-20));
-    const vrData = computeVarianceRatio(logReturns.slice(-80), 5);
+    const vrData = computeVarianceRatio(logReturns.slice(-80), Math.min(5, Math.max(2, Math.floor(logReturns.length / 4))));
     return {
       lookbackDays: Number((recent.length / 288).toFixed(2)),
       sampleBars: recent.length,
@@ -4205,7 +4211,7 @@
 
   function advancedBacktestKey(cache) {
     const candles = cache?.longHistory || [];
-    if (!candles.length || candles.length < 120) return '';
+    if (!candles.length || candles.length < 30) return '';
     const bars5m = cache?.candles || [];
     return [
       ADVANCED_BACKTEST_VERSION,
@@ -4848,7 +4854,7 @@
   function runAdvancedBacktest(coin) {
     const cache = candleCache[coin.sym];
     const candles = cache?.longHistory || [];
-    if (!candles.length || candles.length < 120) return null;
+    if (!candles.length || candles.length < 30) return null;
     const longKey = advancedBacktestKey(cache);
     if (cache._advancedBacktestKey === longKey && cache._advancedBacktest) {
       return cache._advancedBacktest;
@@ -4863,7 +4869,7 @@
 
     horizons.forEach(({ key, horizonMin, filter }) => {
       const horizonBars = Math.max(1, Math.round(horizonMin / (barMinutes || (24 * 60))));
-      const startIndex = Math.max(26, horizonBars + 14);
+      const startIndex = Math.min(Math.max(10, horizonBars + 2), Math.max(1, candles.length - horizonBars - 1));
       const observations = [];
 
       for (let idx = startIndex; idx < candles.length - horizonBars; idx++) {
@@ -5057,7 +5063,8 @@
       candleCount: Math.max(cache.candles?.length || 0, cache.candles1m?.length || 0),
       candleCount15m: cache.candles15m?.length || 0,
       ...results,
-      advanced: getCachedAdvancedBacktest(cache),
+      volatility: buildAdvancedVolatilitySnapshot(cache),
+      advanced: getCachedAdvancedBacktest(cache) || (cache.longHistory?.length >= 30 ? runAdvancedBacktest(coin) : null),
       summary: {
         reliability,
         label: summarizeReliabilityLabel(reliability),

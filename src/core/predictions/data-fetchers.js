@@ -599,21 +599,38 @@
     }
   }
 
-  async function fetchGeckoMaxHistory(geckoId) {
-    try {
-      const days = '365'; // Hardcoded for Demo tier per CoinGecko specs
-      const json = await fetchGeckoJSON(`/coins/${geckoId}/market_chart?vs_currency=usd&days=${days}`);
-      const prices = Array.isArray(json.prices) ? json.prices : [];
-      const volumes = Array.isArray(json.total_volumes) ? json.total_volumes : [];
-      return bucketGeckoSeries(prices, volumes, 24 * 60 * 60 * 1000);
-    } catch (e) {
-      if (/Gecko auth circuit|Gecko rate-limit circuit|401 Unauthorized/i.test(String(e.message || e))) return [];
-      console.warn(`[Gecko] market_chart history failed for ${geckoId}:`, e.message);
-      if (e.message.includes('429')) {
-        console.warn(`[Gecko] Rate limited (429) for ${geckoId}, skipping history fallback`);
+  async function fetchGeckoMaxHistory(geckoId, sym = '') {
+    if (geckoId) {
+      try {
+        const days = '365'; // Hardcoded for Demo tier per CoinGecko specs
+        const json = await fetchGeckoJSON(`/coins/${geckoId}/market_chart?vs_currency=usd&days=${days}`);
+        const prices = Array.isArray(json.prices) ? json.prices : [];
+        const volumes = Array.isArray(json.total_volumes) ? json.total_volumes : [];
+        const series = bucketGeckoSeries(prices, volumes, 24 * 60 * 60 * 1000);
+        if (Array.isArray(series) && series.length >= 30) return series;
+      } catch (e) {
+        if (!/Gecko auth circuit|Gecko rate-limit circuit|401 Unauthorized/i.test(String(e.message || e))) {
+          console.warn(`[Gecko] market_chart history failed for ${geckoId}:`, e.message);
+        }
       }
-      return [];  // Return empty history instead of failing
     }
+    // High-speed direct exchange fallback: Binance / MEXC / Coinbase 1d daily candles
+    const coinSym = String(sym || '').toUpperCase();
+    if (coinSym) {
+      try {
+        const binCandles = await fetchBINCandles(coinSym, '1d', 365);
+        if (Array.isArray(binCandles) && binCandles.length >= 30) return binCandles;
+      } catch (_) {}
+      try {
+        const cbCandles = await fetchCBExchCandles(coinSym, 86400, 300);
+        if (Array.isArray(cbCandles) && cbCandles.length >= 30) return cbCandles;
+      } catch (_) {}
+      try {
+        const mexcCandles = await fetchMEXCCandles(coinSym, '1d', 365);
+        if (Array.isArray(mexcCandles) && mexcCandles.length >= 30) return mexcCandles;
+      } catch (_) {}
+    }
+    return [];
   }
 
   async function fetchBINCandles(sym, interval = '1m', limit = 180) {
