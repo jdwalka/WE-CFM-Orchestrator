@@ -9,6 +9,9 @@
   const COINS = ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'BNB', 'HYPE'];
   const MODE_KEY = 'wecrypto.asi1Desk.mode';
   const MIN_KEY = 'wecrypto.asi1Desk.minimized';
+  const MODEL_KEY = 'wecrypto.asi1Desk.model';
+  const REASONING_KEY = 'wecrypto.asi1Desk.reasoningEffort';
+  const WEBSEARCH_KEY = 'wecrypto.asi1Desk.webSearch';
 
   const dash = document.createElement('div');
   dash.id = 'asi1-desk';
@@ -92,6 +95,10 @@
       <div class="ad-row"><span class="ad-k">Regime</span><span class="ad-v" id="adRegime">—</span></div>
       <div class="ad-row"><span class="ad-k">Edge</span><span class="ad-v" id="adEdge">—</span></div>
       <div class="ad-row"><span class="ad-k">Size</span><span class="ad-v" id="adSize">—</span></div>
+      <div class="ad-row"><span class="ad-k">Spot</span><span class="ad-v" id="adSpot">—</span></div>
+      <div class="ad-row"><span class="ad-k">PTB</span><span class="ad-v" id="adPtb">—</span></div>
+      <div class="ad-row"><span class="ad-k">Closes in</span><span class="ad-v" id="adTtc">—</span></div>
+      <div class="ad-row"><span class="ad-k">Asked</span><span class="ad-v" id="adAskedAt">—</span></div>
       <div class="ad-row"><span class="ad-k">Model</span><span class="ad-v" id="adModel">—</span></div>
       <div class="ad-row"><span class="ad-k">Account</span><span class="ad-v" id="adAcct">—</span></div>
       <div class="ad-row"><span class="ad-k">Latency</span><span class="ad-v" id="adLat">—</span></div>
@@ -104,6 +111,24 @@
 
   let mode = 'asi1_only';
   let minimized = false;
+  let windowDeadlineMs = null;
+  let countdownTimer = null;
+
+  function formatCountdown(ms) {
+    if (ms == null) return '—';
+    if (ms <= 0) return 'closed';
+    const totalSec = Math.ceil(ms / 1000);
+    const m = Math.floor(totalSec / 60);
+    const s = totalSec % 60;
+    return `${m}:${String(s).padStart(2, '0')}`;
+  }
+
+  function tickCountdown() {
+    const el = document.getElementById('adTtc');
+    if (!el) return;
+    if (windowDeadlineMs == null) { el.textContent = '—'; return; }
+    el.textContent = formatCountdown(windowDeadlineMs - Date.now());
+  }
   try { mode = window.localStorage.getItem(MODE_KEY) || 'asi1_only'; } catch (_) { /* */ }
   try { minimized = window.localStorage.getItem(MIN_KEY) === '1'; } catch (_) { /* */ }
 
@@ -231,6 +256,19 @@
     btn.textContent = 'Asking…';
     try {
       const packet = buildPacket();
+
+      const spotEl = document.getElementById('adSpot');
+      if (spotEl) spotEl.textContent = packet?.spot != null ? Number(packet.spot).toLocaleString() : '—';
+      const ptbEl = document.getElementById('adPtb');
+      if (ptbEl) ptbEl.textContent = packet?.priceToBeatNum != null ? Number(packet.priceToBeatNum).toLocaleString() : '—';
+      const askedEl = document.getElementById('adAskedAt');
+      if (askedEl) askedEl.textContent = new Date().toLocaleTimeString();
+
+      if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; }
+      windowDeadlineMs = Number.isFinite(packet?.secondsToClose) ? Date.now() + (packet.secondsToClose * 1000) : null;
+      tickCountdown();
+      if (windowDeadlineMs != null) countdownTimer = setInterval(tickCountdown, 1000);
+
       const modelChoice = document.getElementById('adModelChoice')?.value || 'auto';
       const effortChoice = document.getElementById('adReasoningEffort')?.value || 'auto';
       const webSearch = document.getElementById('adWebSearch')?.checked || false;
