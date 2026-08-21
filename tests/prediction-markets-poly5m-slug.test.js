@@ -95,7 +95,117 @@ test('5m PTB uses 60s Chainlink TWAP, not the old 30s series', () => {
   try {
     assert.strictEqual(hooks.POLY_TWAP_LOOKBACK_SEC, 60);
     assert.strictEqual(hooks.PTB_TWAP_SETTLE_SEC, 62);
-    assert.strictEqual(hooks.POLY5M_PTB_LOCK_VERSION, 11);
+    assert.strictEqual(hooks.POLY5M_PTB_LOCK_VERSION, 12);
+  } finally {
+    restore();
+  }
+});
+
+test('a single PTB reading never locks -- needs a second independent read to agree', () => {
+  const nowMs = 1_700_000_000_000;
+  const { hooks, restore } = loadPredictionMarkets({ nowMs });
+  try {
+    const slug = 'btc-updown-5m-1699999940'; // opened 60s before nowMs, past the 62s settle gate
+    const first = hooks._lockPolymarketPriceToBeat(slug, 105432.12, 'gamma-market');
+    assert.strictEqual(first, null, 'a single reading must not lock immediately');
+    assert.strictEqual(hooks._getPolymarketPriceToBeatLock(slug), null);
+  } finally {
+    restore();
+  }
+});
+
+test('two independent reads that agree, spaced apart, confirm and lock', () => {
+  const nowMs = 1_700_000_000_000;
+  const { hooks, restore } = loadPredictionMarkets({ nowMs });
+  try {
+    const slug = 'btc-updown-5m-1699999940';
+    assert.strictEqual(hooks._lockPolymarketPriceToBeat(slug, 105432.12, 'gamma-market'), null);
+
+    // Too soon -- same tick, does not count as an independent recheck.
+    assert.strictEqual(hooks._lockPolymarketPriceToBeat(slug, 105432.12, 'gamma-market'), null);
+
+    Date.now = () => nowMs + hooks.PTB_CONFIRM_MIN_GAP_MS + 500;
+    const locked = hooks._lockPolymarketPriceToBeat(slug, 105432.12, 'gamma-market');
+    assert.ok(locked, 'two agreeing reads spaced apart should confirm and lock');
+    assert.strictEqual(locked.price, 105432.12);
+    assert.strictEqual(locked.source, 'gamma-market');
+
+    const stored = hooks._getPolymarketPriceToBeatLock(slug);
+    assert.strictEqual(stored.price, 105432.12);
+  } finally {
+    restore();
+  }
+});
+
+test('a chainlink-candles read confirming a Gamma read is labeled chainlink-candles', () => {
+  const nowMs = 1_700_000_000_000;
+  const { hooks, restore } = loadPredictionMarkets({ nowMs });
+  try {
+    const slug = 'eth-updown-5m-1699999940';
+    assert.strictEqual(hooks._lockPolymarketPriceToBeat(slug, 3200.50, 'gamma-market'), null);
+    Date.now = () => nowMs + hooks.PTB_CONFIRM_MIN_GAP_MS + 500;
+    const locked = hooks._lockPolymarketPriceToBeat(slug, 3200.50, 'polymarket-chainlink-candles');
+    assert.ok(locked);
+    assert.strictEqual(locked.source, 'polymarket-chainlink-candles', 'authoritative TWAP source should win the label even if Gamma read first');
+  } finally {
+    restore();
+  }
+});
+
+test('disagreeing reads do not lock; a later read confirms once it agrees with the prior one', () => {
+  const nowMs = 1_700_000_000_000;
+  const { hooks, restore } = loadPredictionMarkets({ nowMs });
+  try {
+    const slug = 'btc-updown-5m-1699999940';
+    assert.strictEqual(hooks._lockPolymarketPriceToBeat(slug, 105400.00, 'gamma-market'), null);
+
+    Date.now = () => nowMs + hooks.PTB_CONFIRM_MIN_GAP_MS + 500;
+    // Still settling -- a materially different reading. Must not lock on
+    // either the old or the new value.
+    const stillPending = hooks._lockPolymarketPriceToBeat(slug, 105432.12, 'polymarket-chainlink-candles');
+    assert.strictEqual(stillPending, null, 'disagreeing reads must not lock');
+    assert.strictEqual(hooks._getPolymarketPriceToBeatLock(slug), null);
+
+    Date.now = () => nowMs + (2 * hooks.PTB_CONFIRM_MIN_GAP_MS) + 1000;
+    const locked = hooks._lockPolymarketPriceToBeat(slug, 105432.12, 'polymarket-chainlink-candles');
+    assert.ok(locked, 'agreeing with the most recent reading should confirm and lock');
+    assert.strictEqual(locked.price, 105432.12);
+  } finally {
+    restore();
+  }
+});
+
+test('locks are immutable once confirmed -- a later disagreeing read is ignored', () => {
+  const nowMs = 1_700_000_000_000;
+  const { hooks, restore } = loadPredictionMarkets({ nowMs });
+  try {
+    const slug = 'btc-updown-5m-1699999940';
+    hooks._lockPolymarketPriceToBeat(slug, 105432.12, 'gamma-market');
+    Date.now = () => nowMs + hooks.PTB_CONFIRM_MIN_GAP_MS + 500;
+    const locked = hooks._lockPolymarketPriceToBeat(slug, 105432.12, 'gamma-market');
+    assert.ok(locked);
+
+    const relocked = hooks._lockPolymarketPriceToBeat(slug, 999999.99, 'polymarket-chainlink-candles');
+    assert.strictEqual(relocked.price, 105432.12, 'an already-confirmed lock must never mutate');
+  } finally {
+    restore();
+  }
+});
+
+test('an unconfirmed reading near the end of the grace window locks rather than staying pending all window', () => {
+  const startSec = 1699999940;
+  const nowMs = 1_700_000_000_000;
+  const { hooks, restore } = loadPredictionMarkets({ nowMs });
+  try {
+    const slug = `btc-updown-5m-${startSec}`;
+    assert.strictEqual(hooks._lockPolymarketPriceToBeat(slug, 105432.12, 'gamma-market'), null);
+
+    // Jump to just inside the grace deadline with no second reading having
+    // ever arrived (e.g. every other source stayed unreachable all window).
+    Date.now = () => (startSec * 1000) + hooks.PTB_LOCK_GRACE_MS - 1000;
+    const locked = hooks._lockPolymarketPriceToBeat(slug, 105432.12, 'gamma-market');
+    assert.ok(locked, 'grace fallback should lock the last reading rather than stay pending forever');
+    assert.strictEqual(locked.price, 105432.12);
   } finally {
     restore();
   }

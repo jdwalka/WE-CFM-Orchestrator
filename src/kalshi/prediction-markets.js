@@ -505,6 +505,22 @@
         }
       }).catch(() => {});
     }
+
+    // Sweep _pendingPtbReads for slugs that stopped receiving readings before
+    // ever confirming or hitting the grace fallback in _lockPolymarketPriceToBeat
+    // (e.g. every source for that one window went permanently unreachable) --
+    // otherwise those single-read entries would sit in memory for the life of
+    // the process. A window is long closed once it's PTB_LOCK_GRACE_MS past its
+    // own boundary, so it can never lock or be read again either way.
+    for (const [slug, reads] of _pendingPtbReads) {
+      if (_poly5mPriceToBeatLocks.has(slug)) { _pendingPtbReads.delete(slug); continue; }
+      const m = slug.match(/-updown-(?:5m|15m)-(\d+)$/);
+      const boundaryMs = m ? Number(m[1]) * 1000 : null;
+      const staleSinceLastRead = !reads.length || (now - reads[reads.length - 1].at > PTB_LOCK_GRACE_MS);
+      if ((Number.isFinite(boundaryMs) && now - boundaryMs > PTB_LOCK_GRACE_MS) || staleSinceLastRead) {
+        _pendingPtbReads.delete(slug);
+      }
+    }
   }
 
   const PYTH_LAZER_PRICE_FEED_IDS = { BTC: 1, ETH: 2, SOL: 6, DOGE: 10, XRP: 14, BNB: 15 };
@@ -1666,7 +1682,24 @@
   // field guesses may display as provisional but never lock and never go to AI as PTB.
   // v11: 5m/15m contracts now settle on Chainlink TWAP-60 (cryptoMarketConfig
   // twapLookbackSeconds=60). Purge v10 locks that used the 30s candle open.
-  const POLY5M_PTB_LOCK_VERSION = 11;
+  // v12: a single scrape from any one trusted source -- including Gamma's own
+  // `priceToBeat` market-list field, which has been observed publishing before
+  // the 60s TWAP window has actually settled -- is no longer enough to lock a
+  // number for the whole contract (observed: BTC locked ~$50 off, ETH ~$1 off,
+  // drifting wider as spot moved away from the wrong anchor for the rest of the
+  // window). Locking now requires two independent reads, spaced
+  // PTB_CONFIRM_MIN_GAP_MS apart, that agree within PTB_CONFIRM_TOLERANCE. See
+  // _lockPolymarketPriceToBeat. Purge v11 locks, which could still lock on one read.
+  const POLY5M_PTB_LOCK_VERSION = 12;
+  // Reads must be at least this far apart to count as an independent recheck
+  // (rejects two calls in the same poll tick trivially "confirming" each other).
+  const PTB_CONFIRM_MIN_GAP_MS = 3_000;
+  // Agreement tolerance in USD -- PTB is a precise published number, so this only
+  // absorbs float/formatting jitter, not genuine price disagreement.
+  const PTB_CONFIRM_TOLERANCE = 0.01;
+  // slug -> [{ value, source, at }], most recent PTB_CONFIRM_MAX_READS kept.
+  const _pendingPtbReads = new Map();
+  const PTB_CONFIRM_MAX_READS = 6;
   const POLY5M_PTB_TRUSTED_SOURCES = new Set([
     'polymarket-event-page',
     'polymarket-chainlink-candles',
@@ -1715,6 +1748,17 @@
     })}`;
   }
 
+  /**
+   * Propose a PTB reading for `slug`. Does NOT lock on the first call -- see
+   * v12 note on POLY5M_PTB_LOCK_VERSION. Records the reading and only
+   * actually locks once two readings spaced PTB_CONFIRM_MIN_GAP_MS apart
+   * agree within PTB_CONFIRM_TOLERANCE (any source combination counts, so a
+   * chainlink-candles read can confirm -- or override -- an earlier
+   * Gamma-sourced one). Falls back to locking the latest unconfirmed reading
+   * once the window's PTB_LOCK_GRACE_MS grace period is nearly spent, so a
+   * contract with only one reachable source doesn't stay "pending" forever.
+   * Returns the lock record once locked, or null while still unconfirmed.
+   */
   function _lockPolymarketPriceToBeat(slug, value, source) {
     const price = toPositiveFiniteNumber(value);
     if (!slug || price == null || !POLY5M_PTB_TRUSTED_SOURCES.has(source)) return null;
@@ -1726,13 +1770,59 @@
       // and any mid-window mutation is exactly the drift this is meant to prevent.
       return existing;
     }
+
+    const now = Date.now();
+    const reads = _pendingPtbReads.get(slug) || [];
+    reads.push({ value: price, source, at: now });
+    if (reads.length > PTB_CONFIRM_MAX_READS) reads.shift();
+    _pendingPtbReads.set(slug, reads);
+
+    let confirmedPrice = null;
+    let confirmedSource = null;
+    for (let i = 0; i < reads.length && confirmedPrice == null; i++) {
+      for (let j = i + 1; j < reads.length; j++) {
+        const a = reads[i], b = reads[j];
+        if (Math.abs(b.at - a.at) < PTB_CONFIRM_MIN_GAP_MS) continue;
+        if (Math.abs(a.value - b.value) > PTB_CONFIRM_TOLERANCE) continue;
+        confirmedPrice = b.value;
+        // Prefer labeling the lock as chainlink-candles (the authoritative TWAP
+        // feed) whenever either confirming read used it, even if the other was
+        // a Gamma/event-page read that simply agreed with it.
+        confirmedSource = (a.source === 'polymarket-chainlink-candles' || b.source === 'polymarket-chainlink-candles')
+          ? 'polymarket-chainlink-candles'
+          : b.source;
+        break;
+      }
+    }
+
+    if (confirmedPrice == null) {
+      // Grace fallback: parse the window boundary out of the slug so a
+      // contract with reads that never converge in time (429s, one source
+      // permanently unreachable, etc) doesn't sit "pending" for its entire
+      // window -- lock the latest reading once there's little grace left.
+      const m = slug.match(/-updown-(?:5m|15m)-(\d+)$/);
+      const boundaryMs = m ? Number(m[1]) * 1000 : null;
+      if (Number.isFinite(boundaryMs) && now - boundaryMs > PTB_LOCK_GRACE_MS - PTB_SCRAPE_RETRY_MS) {
+        const last = reads[reads.length - 1];
+        console.warn(
+          `[Poly5M-PTB] ${slug}: grace window nearly spent with ${reads.length} unconfirmed read(s) -- `
+          + `locking last read (${last.source}=${last.value}) rather than staying pending all window`
+        );
+        confirmedPrice = last.value;
+        confirmedSource = last.source;
+      }
+    }
+
+    if (confirmedPrice == null) return null; // still settling -- caller stays provisional
+
     const locked = Object.freeze({
       version: POLY5M_PTB_LOCK_VERSION,
-      price,
-      source,
-      lockedAt: Date.now(),
+      price: confirmedPrice,
+      source: confirmedSource,
+      lockedAt: now,
     });
     _poly5mPriceToBeatLocks.set(slug, locked);
+    _pendingPtbReads.delete(slug);
     try { localStorage.setItem(`poly5m:ptb:v${POLY5M_PTB_LOCK_VERSION}:${slug}`, JSON.stringify(locked)); } catch (err) {
       console.warn(`[Poly5M-PTB] Could not persist immutable lock for ${slug}:`, err?.message || err);
     }
@@ -2077,14 +2167,18 @@
     return Number.isFinite(n) && n > 0 ? n : POLY_TWAP_LOOKBACK_SEC;
   }
 
-  async function _fetchChainlinkCandlesCached(sym, interval, lookbackSec = POLY_TWAP_LOOKBACK_SEC) {
+  // forceRefresh bypasses the CHAINLINK_CANDLE_TTL_MS cache (but never the
+  // 429 cooldown/global-rate-limit gate below) -- used by the PTB confirm
+  // recheck so a second reading is a genuine independent fetch, not a replay
+  // of the same cached response the first reading already saw.
+  async function _fetchChainlinkCandlesCached(sym, interval, lookbackSec = POLY_TWAP_LOOKBACK_SEC, forceRefresh = false) {
     const lookback = Number(lookbackSec) > 0 ? Number(lookbackSec) : POLY_TWAP_LOOKBACK_SEC;
     const key = `${sym}:${interval}:${lookback}`;
     const now = Date.now();
     const entry = _chainlinkCandleCache[key];
 
     if (entry?.inFlight) return entry.inFlight;
-    if (entry && now - entry.fetchedAt < CHAINLINK_CANDLE_TTL_MS) return entry.candles;
+    if (!forceRefresh && entry && now - entry.fetchedAt < CHAINLINK_CANDLE_TTL_MS) return entry.candles;
     if (_chainlinkRateLimitUntil > now) return entry?.candles || null; // cooling down -- serve stale, never fetch
 
     const wait = Math.max(0, CHAINLINK_MIN_GLOBAL_INTERVAL_MS - (now - _chainlinkLastRequestAt));
@@ -2120,9 +2214,9 @@
     return doFetch;
   }
 
-  async function fetchPolymarketChainlinkCandleOpen(sym, horizonTag, boundarySec, lookbackSec = POLY_TWAP_LOOKBACK_SEC) {
+  async function fetchPolymarketChainlinkCandleOpen(sym, horizonTag, boundarySec, lookbackSec = POLY_TWAP_LOOKBACK_SEC, forceRefresh = false) {
     const interval = horizonTag === '15m' ? '15m' : '5m';
-    const candles = await _fetchChainlinkCandlesCached(sym, interval, lookbackSec);
+    const candles = await _fetchChainlinkCandlesCached(sym, interval, lookbackSec, forceRefresh);
     const candle = Array.isArray(candles) ? candles.find(c => c.time === boundarySec) : null;
     return toPositiveFiniteNumber(candle?.open);
   }
@@ -2140,8 +2234,15 @@
 
   async function fetchPolymarketPriceToBeat(slug) {
     if (!slug) return null;
+    const existingLock = _getPolymarketPriceToBeatLock(slug);
+    if (existingLock) return existingLock.price; // already confirmed -- no need to keep fetching
+
     const cached = _poly5mPriceToBeatCache[slug];
-    if (cached && (cached.value != null || Date.now() - cached.fetchedAt < 500)) return cached.value;
+    // Short TTL only -- an unconfirmed PTB must keep getting re-fetched
+    // (PTB_SCRAPE_RETRY_MS cadence) so the confirm-then-lock check in
+    // _lockPolymarketPriceToBeat gets a genuinely independent second reading,
+    // not the same cached value replayed until it trivially "agrees with itself."
+    if (cached && Date.now() - cached.fetchedAt < PTB_SCRAPE_RETRY_MS) return cached.value;
 
     const slugMatch = slug.match(/^([a-z0-9-]+)-updown-(5m|15m)-(\d+)$/i);
     if (slugMatch) {
@@ -2171,12 +2272,14 @@
         void prevIso;
 
         // PRIMARY: the same chainlink-candles REST endpoint Polymarket's own
-        // "Price To Beat" UI calls.
-        const candleOpen = await fetchPolymarketChainlinkCandleOpen(sym, horizonTag, startSec);
+        // "Price To Beat" UI calls. forceRefresh=true so a retry after the
+        // window has settled is a genuine independent fetch, not a replay of
+        // whatever was cached the first time this ran (see _lockPolymarketPriceToBeat).
+        const candleOpen = await fetchPolymarketChainlinkCandleOpen(sym, horizonTag, startSec, POLY_TWAP_LOOKBACK_SEC, true);
         if (candleOpen != null && candleOpen > 0) {
-          _lockPolymarketPriceToBeat(slug, candleOpen, 'polymarket-chainlink-candles');
-          _poly5mPriceToBeatCache[slug] = { value: candleOpen, fetchedAt: Date.now() };
-          return candleOpen;
+          const locked = _lockPolymarketPriceToBeat(slug, candleOpen, 'polymarket-chainlink-candles');
+          _poly5mPriceToBeatCache[slug] = { value: locked?.price ?? candleOpen, fetchedAt: Date.now() };
+          return locked?.price ?? candleOpen;
         }
 
         // SECONDARY: Polymarket's own openPrice for this exact window, parsed from the
@@ -2194,9 +2297,9 @@
           });
           const pmOpen = toPositiveFiniteNumber(_parsePolymarketPriceToBeat(html, slug));
           if (pmOpen != null && pmOpen > 0) {
-            _lockPolymarketPriceToBeat(slug, pmOpen, 'polymarket-event-page');
-            _poly5mPriceToBeatCache[slug] = { value: pmOpen, fetchedAt: Date.now() };
-            return pmOpen;
+            const locked = _lockPolymarketPriceToBeat(slug, pmOpen, 'polymarket-event-page');
+            _poly5mPriceToBeatCache[slug] = { value: locked?.price ?? pmOpen, fetchedAt: Date.now() };
+            return locked?.price ?? pmOpen;
           }
         } catch (e) {
           console.warn(`[Poly5M-PTB] Polymarket openPrice lookup failed for ${slug}:`, e?.message || e);
@@ -2279,15 +2382,22 @@
         // Trusted Gamma fields only. Title $ scrapes and generic strike/openPrice
         // guesses used to run first and skip the candle/event-page fetch, so the
         // overlay locked a rounded/wrong number for the whole 5m window.
-        if (Number.isFinite(m.priceToBeat) && m.priceToBeat > 0) {
-          priceToBeatNum = m.priceToBeat;
-          priceToBeatSource = 'gamma-market';
-        } else if (m.eventMetadata && Number.isFinite(m.eventMetadata.priceToBeat)) {
-          priceToBeatNum = m.eventMetadata.priceToBeat;
-          priceToBeatSource = 'gamma-event-metadata';
-        } else if (m.price_to_beat && Number.isFinite(m.price_to_beat)) {
-          priceToBeatNum = m.price_to_beat;
-          priceToBeatSource = 'gamma-price-to-beat';
+        // Gated on the same TWAP-settle window as chainlink-candles below --
+        // Gamma's own priceToBeat field has been observed publishing before the
+        // 60s TWAP has actually settled, which raced ahead of and locked out
+        // the authoritative chainlink read (see v12 note on POLY5M_PTB_LOCK_VERSION).
+        const twapSettledForCandidate = (nowSec - ts) >= PTB_TWAP_SETTLE_SEC;
+        if (twapSettledForCandidate) {
+          if (Number.isFinite(m.priceToBeat) && m.priceToBeat > 0) {
+            priceToBeatNum = m.priceToBeat;
+            priceToBeatSource = 'gamma-market';
+          } else if (m.eventMetadata && Number.isFinite(m.eventMetadata.priceToBeat)) {
+            priceToBeatNum = m.eventMetadata.priceToBeat;
+            priceToBeatSource = 'gamma-event-metadata';
+          } else if (m.price_to_beat && Number.isFinite(m.price_to_beat)) {
+            priceToBeatNum = m.price_to_beat;
+            priceToBeatSource = 'gamma-price-to-beat';
+          }
         }
 
         const startMs = startDate ? new Date(startDate).getTime() : ts * 1000;
@@ -2319,13 +2429,22 @@
           }
 
           if (priceToBeatNum != null) {
-            const locked = _lockPolymarketPriceToBeat(slug, priceToBeatNum, priceToBeatSource) || _lockPolymarketPriceToBeat(marketSlug, priceToBeatNum, priceToBeatSource);
+            const candidateValue = priceToBeatNum;
+            const candidateSource = priceToBeatSource;
+            const locked = _lockPolymarketPriceToBeat(slug, candidateValue, candidateSource) || _lockPolymarketPriceToBeat(marketSlug, candidateValue, candidateSource);
             if (locked) {
               priceToBeatNum = locked.price;
               priceToBeatSource = locked.source;
+            } else {
+              // Not yet confirmed -- a single reading is no longer enough to
+              // surface as the contract PTB; it needs a second independent
+              // reading that agrees. Stay pending for this call; the next
+              // poll cycle supplies the second reading (_lockPolymarketPriceToBeat).
+              priceToBeatNum = null;
+              priceToBeatSource = null;
             }
             if (marketSlug && marketSlug !== slug) {
-              _lockPolymarketPriceToBeat(marketSlug, priceToBeatNum, priceToBeatSource);
+              _lockPolymarketPriceToBeat(marketSlug, candidateValue, candidateSource);
             }
           }
         }
@@ -2861,12 +2980,18 @@ function polymarketSentiment(markets, sym) {
         priceToBeatNum = existingLock.price;
         priceToBeatSource = existingLock.source;
       } else {
-        if (Number.isFinite(m.priceToBeat) && m.priceToBeat > 0) {
-          priceToBeatNum = m.priceToBeat;
-          priceToBeatSource = 'gamma-market';
-        } else if (m.eventMetadata && Number.isFinite(m.eventMetadata.priceToBeat)) {
-          priceToBeatNum = m.eventMetadata.priceToBeat;
-          priceToBeatSource = 'gamma-event-metadata';
+        // Gated on the same TWAP-settle window as the 5m pipeline -- Gamma's
+        // own priceToBeat field has been observed publishing before the 60s
+        // TWAP has actually settled (see v12 note on POLY5M_PTB_LOCK_VERSION).
+        const twapSettledForWindow = (nowSec - windowTs) >= PTB_TWAP_SETTLE_SEC;
+        if (twapSettledForWindow) {
+          if (Number.isFinite(m.priceToBeat) && m.priceToBeat > 0) {
+            priceToBeatNum = m.priceToBeat;
+            priceToBeatSource = 'gamma-market';
+          } else if (m.eventMetadata && Number.isFinite(m.eventMetadata.priceToBeat)) {
+            priceToBeatNum = m.eventMetadata.priceToBeat;
+            priceToBeatSource = 'gamma-event-metadata';
+          }
         }
         if (priceToBeatNum == null) {
           try {
@@ -2879,7 +3004,16 @@ function polymarketSentiment(markets, sym) {
         }
         if (priceToBeatNum != null) {
           const locked = _lockPolymarketPriceToBeat(marketSlug, priceToBeatNum, priceToBeatSource);
-          if (locked) { priceToBeatNum = locked.price; priceToBeatSource = locked.source; }
+          if (locked) {
+            priceToBeatNum = locked.price;
+            priceToBeatSource = locked.source;
+          } else {
+            // Not yet confirmed -- needs a second independent reading that
+            // agrees before it can surface as the contract PTB (see
+            // _lockPolymarketPriceToBeat). Stay pending for this call.
+            priceToBeatNum = null;
+            priceToBeatSource = null;
+          }
         }
       }
 
@@ -3219,6 +3353,11 @@ function polymarketSentiment(markets, sym) {
       POLY_TWAP_LOOKBACK_SEC,
       PTB_TWAP_SETTLE_SEC,
       POLY5M_PTB_LOCK_VERSION,
+      _lockPolymarketPriceToBeat,
+      _getPolymarketPriceToBeatLock,
+      PTB_CONFIRM_MIN_GAP_MS,
+      PTB_CONFIRM_TOLERANCE,
+      PTB_LOCK_GRACE_MS,
     };
   }
 
