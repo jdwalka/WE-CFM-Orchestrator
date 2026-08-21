@@ -505,6 +505,22 @@
         }
       }).catch(() => {});
     }
+
+    // Sweep _pendingPtbReads for slugs that stopped receiving readings before
+    // ever confirming or hitting the grace fallback in _lockPolymarketPriceToBeat
+    // (e.g. every source for that one window went permanently unreachable) --
+    // otherwise those single-read entries would sit in memory for the life of
+    // the process. A window is long closed once it's PTB_LOCK_GRACE_MS past its
+    // own boundary, so it can never lock or be read again either way.
+    for (const [slug, reads] of _pendingPtbReads) {
+      if (_poly5mPriceToBeatLocks.has(slug)) { _pendingPtbReads.delete(slug); continue; }
+      const m = slug.match(/-updown-(?:5m|15m)-(\d+)$/);
+      const boundaryMs = m ? Number(m[1]) * 1000 : null;
+      const staleSinceLastRead = !reads.length || (now - reads[reads.length - 1].at > PTB_LOCK_GRACE_MS);
+      if ((Number.isFinite(boundaryMs) && now - boundaryMs > PTB_LOCK_GRACE_MS) || staleSinceLastRead) {
+        _pendingPtbReads.delete(slug);
+      }
+    }
   }
 
   const PYTH_LAZER_PRICE_FEED_IDS = { BTC: 1, ETH: 2, SOL: 6, DOGE: 10, XRP: 14, BNB: 15 };
