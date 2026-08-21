@@ -63,6 +63,28 @@
         <select id="adCoin">${COINS.map((c) => `<option value="${c}">${c}</option>`).join('')}</select>
         <select id="adHorizon"><option value="15m">15m</option><option value="5m">5m</option></select>
       </div>
+      <div class="ad-selects">
+        <select id="adModelChoice">
+          <option value="auto">Model: Auto</option>
+          <option value="asi1-ultra">asi1-ultra (Deep Reasoning)</option>
+          <option value="asi1">asi1 (Standard)</option>
+          <option value="asi1-mini">asi1-mini (Fast / Scalp)</option>
+          <option value="asi1-fast">asi1-fast (Quick)</option>
+        </select>
+        <select id="adReasoningEffort">
+          <option value="auto">Effort: Auto</option>
+          <option value="high">Reasoning: High</option>
+          <option value="medium">Reasoning: Medium</option>
+          <option value="low">Reasoning: Low</option>
+          <option value="off">Thinking: Off</option>
+        </select>
+      </div>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin:4px 0 8px 0">
+        <label style="display:flex;align-items:center;gap:5px;font-size:11px;color:#8b929a;cursor:pointer">
+          <input type="checkbox" id="adWebSearch"> Web Search
+        </label>
+        <span style="font-size:10px;color:#00d4ff">api.asi1.ai</span>
+      </div>
       <button class="ad-ask" id="adAsk" type="button">Ask ASI1</button>
       <div class="ad-row" style="margin-top:10px"><span class="ad-k">Action</span><span class="ad-badge hold-flat" id="adAction">HOLD_FLAT</span></div>
       <div class="ad-row"><span class="ad-k">Call</span><span class="ad-v" id="adCall">—</span></div>
@@ -84,6 +106,31 @@
   let minimized = false;
   try { mode = window.localStorage.getItem(MODE_KEY) || 'asi1_only'; } catch (_) { /* */ }
   try { minimized = window.localStorage.getItem(MIN_KEY) === '1'; } catch (_) { /* */ }
+
+  try {
+    const savedModel = window.localStorage.getItem(MODEL_KEY);
+    if (savedModel && document.getElementById('adModelChoice')) {
+      document.getElementById('adModelChoice').value = savedModel;
+    }
+    const savedEffort = window.localStorage.getItem(REASONING_KEY);
+    if (savedEffort && document.getElementById('adReasoningEffort')) {
+      document.getElementById('adReasoningEffort').value = savedEffort;
+    }
+    const savedWeb = window.localStorage.getItem(WEBSEARCH_KEY);
+    if (savedWeb != null && document.getElementById('adWebSearch')) {
+      document.getElementById('adWebSearch').checked = savedWeb === '1';
+    }
+  } catch (_) {}
+
+  document.getElementById('adModelChoice')?.addEventListener('change', (e) => {
+    try { window.localStorage.setItem(MODEL_KEY, e.target.value); } catch (_) {}
+  });
+  document.getElementById('adReasoningEffort')?.addEventListener('change', (e) => {
+    try { window.localStorage.setItem(REASONING_KEY, e.target.value); } catch (_) {}
+  });
+  document.getElementById('adWebSearch')?.addEventListener('change', (e) => {
+    try { window.localStorage.setItem(WEBSEARCH_KEY, e.target.checked ? '1' : '0'); } catch (_) {}
+  });
 
   function invoke(name, payload) {
     if (window.electron?.asi1?.[name]) return window.electron.asi1[name](payload);
@@ -142,7 +189,7 @@
     document.getElementById('adWarn').textContent = warns;
     document.getElementById('adFb').textContent = extra?.fallback
       ? ('offline inferLocal' + (extra.error ? ' — ' + extra.error : ''))
-      : (contract._meta?.thought ? String(contract._meta.thought).slice(0, 240) : '');
+      : (contract._meta?.thought ? String(contract._meta.thought).slice(0, 240) : (contract._meta?.source === 'asi1' ? `ASI1 live (${contract._meta.model || 'model'})` : ''));
   }
 
   function buildPacket() {
@@ -184,7 +231,18 @@
     btn.textContent = 'Asking…';
     try {
       const packet = buildPacket();
-      const res = await invoke('infer', { packet, mode });
+      const modelChoice = document.getElementById('adModelChoice')?.value || 'auto';
+      const effortChoice = document.getElementById('adReasoningEffort')?.value || 'auto';
+      const webSearch = document.getElementById('adWebSearch')?.checked || false;
+
+      const options = {
+        model: modelChoice !== 'auto' ? modelChoice : undefined,
+        reasoning_effort: (effortChoice === 'high' || effortChoice === 'medium' || effortChoice === 'low') ? effortChoice : undefined,
+        enable_thinking: effortChoice === 'off' ? false : (effortChoice !== 'auto' ? true : undefined),
+        web_search: webSearch ? true : undefined,
+      };
+
+      const res = await invoke('infer', { packet, mode, options });
       paintContract(res?.contract, res);
       window.dispatchEvent(new CustomEvent('asi1:desk', { detail: res }));
     } catch (err) {

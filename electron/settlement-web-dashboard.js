@@ -317,10 +317,18 @@ function startServer(targets) {
     server = http.createServer(app);
   }
 
-  server.listen(PORT, HOST, () => {
-    const protocol = server instanceof https.Server ? 'HTTPS' : 'HTTP';
-    console.log(`[Dashboard] Settlement web dashboard running: ${protocol}://${HOST}:${PORT}`);
+  server.on('error', (err) => {
+    console.warn('[Dashboard] Server error:', err?.message || err);
   });
+
+  try {
+    server.listen(PORT, HOST, () => {
+      const protocol = server instanceof https.Server ? 'HTTPS' : 'HTTP';
+      console.log(`[Dashboard] Settlement web dashboard running: ${protocol}://${HOST}:${PORT}`);
+    });
+  } catch (e) {
+    console.warn('[Dashboard] Could not start listen:', e.message);
+  }
 }
 
 /**

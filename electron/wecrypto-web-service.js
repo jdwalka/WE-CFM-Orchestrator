@@ -615,37 +615,50 @@ function startWebService() {
   });
 
   // Start listening with automatic failover when port is already in use.
-  let listenAttempts = 0;
+  const net = require('net');
   const maxAttempts = Number.isFinite(PORT_RETRY_LIMIT) ? Math.max(1, PORT_RETRY_LIMIT) : 10;
 
-  const tryListen = (port) => {
-    const onError = (err) => {
-      server.off('error', onError);
-      if (err && err.code === 'EADDRINUSE' && listenAttempts < maxAttempts) {
-        listenAttempts += 1;
-        const nextPort = port + 1;
-        runtimePort = nextPort;
-        console.warn(`[WebService] Port ${port} busy (EADDRINUSE). Retrying on ${nextPort} (${listenAttempts}/${maxAttempts})`);
-        setTimeout(() => tryListen(nextPort), 40);
-        return;
-      }
-      runtimeMode = 'stopped';
-      runtimeProtocol = 'http';
-      console.error('[WebService] Failed to bind server:', err?.message || err);
-    };
-
-    server.once('error', onError);
-    server.listen(port, HOST, () => {
-      server.off('error', onError);
-      runtimePort = port;
-      const protocol = runtimeProtocol.toUpperCase();
-      console.log(`[WebService] WECRYPTO web service running: ${protocol}://localhost:${runtimePort}`);
-      console.log(`[WebService] Access via Edge: edge://open?url=${runtimeProtocol}://localhost:${runtimePort}`);
+  function checkPortFree(port, host) {
+    return new Promise((resolve) => {
+      const tester = net.createServer();
+      tester.once('error', () => resolve(false));
+      tester.once('listening', () => {
+        tester.once('close', () => resolve(true)).close();
+      });
+      tester.listen(port, host);
     });
-  };
+  }
+
+  async function startListening(startPort) {
+    let targetPort = startPort;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      const isFree = await checkPortFree(targetPort, HOST);
+      if (isFree) {
+        break;
+      }
+      console.warn(`[WebService] Port ${targetPort} busy (EADDRINUSE). Trying next port ${targetPort + 1}`);
+      targetPort += 1;
+    }
+
+    server.on('error', (err) => {
+      console.warn('[WebService] Caught server error:', err?.message || err);
+      runtimeMode = 'stopped';
+    });
+
+    try {
+      server.listen(targetPort, HOST, () => {
+        runtimePort = targetPort;
+        const protocol = runtimeProtocol.toUpperCase();
+        console.log(`[WebService] WECRYPTO web service running: ${protocol}://localhost:${runtimePort}`);
+        console.log(`[WebService] Access via Edge: edge://open?url=${runtimeProtocol}://localhost:${runtimePort}`);
+      });
+    } catch (err) {
+      console.warn('[WebService] Failed to bind server listen:', err?.message || err);
+    }
+  }
 
   runtimePort = PORT;
-  tryListen(runtimePort);
+  startListening(runtimePort);
 
   return {
     started: true,

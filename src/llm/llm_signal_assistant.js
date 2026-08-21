@@ -419,7 +419,6 @@ Use this recall only as context, and prioritize current market snapshot data if 
       || String(snapshot?.horizon || '') === '60m'
       || String(snapshot?.horizon || '') === '1h'
     );
-
     if (!Asi1Client.hasAsi1Credentials() || process.env.LLM_DISABLE_ASI1 === '1') {
       const coin = String(snapshot?.coin || 'GLOBAL');
       const horizon = is5mPtb ? '5m-ptb' : String(snapshot?.horizon || snapshot?.horizonMinutes || '15m');

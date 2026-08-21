@@ -23,7 +23,7 @@
   .\Apply-TailscaleWarpCoexist.ps1 -Action PushDns
 #>
 param(
-  [ValidateSet('Status', 'Together', 'PushDns')]
+  [ValidateSet('Status', 'Together', 'Overlay', 'PushDns')]
   [string]$Action = 'Status',
   [string]$SwedenExit = 'se-sto-wg-209.mullvad.ts.net',
   [string]$SwedenVnet = 'bc743e42-bbf6-4506-b5b2-db7c12f573cc',
@@ -56,15 +56,18 @@ function Invoke-TailscaleApi {
 }
 
 function Install-WarpPunch {
+  # Official Cloudflare One Client firewall set (docs.developers.cloudflare.com
+  # .../devices/cloudflare-one-client/deployment/firewall/). Must stay on
+  # Ethernet so Tailscale RouteAll cannot black-hole WARP connect.
   $prefixes = @(
-    @{ Dest = '162.159.193.0'; Mask = '255.255.255.0' },
-    @{ Dest = '162.159.197.0'; Mask = '255.255.255.0' },
-    @{ Dest = '162.159.192.0'; Mask = '255.255.255.0' },
+    @{ Dest = '162.159.193.0'; Mask = '255.255.255.0' }, # WireGuard ingress
+    @{ Dest = '162.159.197.0'; Mask = '255.255.255.0' }, # MASQUE + engage/connectivity
+    @{ Dest = '162.159.192.0'; Mask = '255.255.255.0' }, # consumer WARP
     @{ Dest = '162.159.136.0'; Mask = '255.255.255.0' },
-    @{ Dest = '162.159.137.0'; Mask = '255.255.255.0' },
-    @{ Dest = '162.159.138.0'; Mask = '255.255.255.0' },
-    @{ Dest = '162.159.36.0';  Mask = '255.255.255.0' },
-    @{ Dest = '162.159.46.0';  Mask = '255.255.255.0' }
+    @{ Dest = '162.159.137.0'; Mask = '255.255.255.0' }, # orchestration API
+    @{ Dest = '162.159.138.0'; Mask = '255.255.255.0' }, # orchestration API
+    @{ Dest = '162.159.36.0';  Mask = '255.255.255.0' }, # DoH
+    @{ Dest = '162.159.46.0';  Mask = '255.255.255.0' }  # DoH
   )
   foreach ($p in $prefixes) {
     cmd /c "route -p add $($p.Dest) mask $($p.Mask) $EthernetGw metric 5 >nul 2>&1" | Out-Null
@@ -72,8 +75,10 @@ function Install-WarpPunch {
 }
 
 function Start-TailscaleMesh {
+  # Do not pass --accept-dns=false: Gateway NS (172.64.36.1/2) are already
+  # the tailnet resolvers. Flipping CorpDNS off fights WARP DoH again.
   Push-Location $env:TEMP
-  try { cmd /c "tailscale up --accept-dns=false >nul 2>&1" | Out-Null }
+  try { cmd /c "tailscale up >nul 2>&1" | Out-Null }
   finally { Pop-Location }
 }
 
@@ -133,11 +138,44 @@ switch ($Action) {
     Start-TailscaleMesh
     if (Test-Path $warp) {
       & $warp mode doh | Out-Null
+      & $warp connect | Out-Null
     }
     tailscale set --exit-node-allow-lan-access=true | Out-Null
     Show-Status
     Write-Host 'Do not enable WARP exclude-all while Tailscale RouteAll is on.'
     Write-Host 'Sweden source IP: .\Set-WeCryptoLanes.ps1 -Lane Sweden (exit node + SOCKS5).'
+    Write-Host 'CF_DNS_LOOKUP_FAILURE: use -Action Overlay (WARP first, Tailscale accept-dns=false).'
+  }
+  'Overlay' {
+    # DNS-only WARP (mode doh) + Tailscale mesh/Serve. No WARP tunnel.
+    # CF_DNS_LOOKUP_FAILURE: Tailscale must not own system DNS (accept-dns=false).
+    # Connect WARP DoH first; Sweden exit can stay — DoH has no tunnel to fight RouteAll.
+    Write-Host 'Overlay: WARP DNS-only (doh) on Ethernet, Tailscale Serve on localhost:3450.'
+    Install-WarpPunch
+    Push-Location $env:TEMP
+    try { cmd /c "tailscale up --accept-dns=false >nul 2>&1" | Out-Null }
+    finally { Pop-Location }
+    tailscale set --accept-dns=false | Out-Null
+    try {
+      Get-DnsClientNrptRule -ErrorAction SilentlyContinue |
+        Where-Object { $_.Namespace -match 'ts\.net' } |
+        ForEach-Object { Remove-DnsClientNrptRule -Name $_.Name -Force -ErrorAction SilentlyContinue }
+      Add-DnsClientNrptRule -Namespace '.ts.net' -NameServers '100.100.100.100' -ErrorAction SilentlyContinue
+    } catch { }
+    if (Test-Path $warp) {
+      & $warp mode doh | Out-Null
+      & $warp connect | Out-Null
+      $deadline = (Get-Date).AddSeconds(20)
+      do {
+        Start-Sleep -Seconds 2
+        $st = & $warp status 2>&1 | Out-String
+        if ($st -match 'Status update: Connected') { break }
+      } while ((Get-Date) -lt $deadline)
+    }
+    tailscale set --exit-node-allow-lan-access=true | Out-Null
+    Show-Status
+    Write-Host 'WARP should be DnsOverHttps (no tunnel). Local app: https://mauro.prairiedog-godzilla.ts.net/'
+    Write-Host 'svc:wecrypto: https://wecrypto.prairiedog-godzilla.ts.net/ (Approve in admin if NXDOMAIN).'
   }
   default { Show-Status }
 }

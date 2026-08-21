@@ -144,14 +144,22 @@ switch ($Lane) {
     Write-Host 'Expect ~500 Mbps, source 170.62.100.238 / SOCKS5 Stockholm. Include profile must be active on this box.'
   }
   'Together' {
-    Write-Host 'Lane Together: WARP DoH/include + Tailscale mesh + Ethernet punch. No default-route fight.'
+    Write-Host 'Lane Together/Overlay: WARP first (Ethernet punch), Tailscale DNS off, then Sweden exit on top.'
     Install-WarpPunch -Gateway $EthernetGw
-    Start-TailscaleMesh
-    Set-WarpMode -Mode doh
+    Push-Location $env:TEMP
+    try { cmd /c "tailscale up --accept-dns=false >nul 2>&1" | Out-Null }
+    finally { Pop-Location }
+    tailscale set --accept-dns=false | Out-Null
+    if (Test-Path $warp) {
+      & $warp disconnect | Out-Null
+      Start-Sleep -Seconds 2
+      & $warp connect | Out-Null
+    }
     tailscale set --exit-node-allow-lan-access=true | Out-Null
+    Start-Sleep -Seconds 4
     Show-Status
-    Write-Host 'If WARP shows Exclude mode, switch the WeCrypto Windows include profile.'
-    Write-Host 'For Sweden IP after this: -Lane Sweden. For tailnet Gateway DNS: Apply-TailscaleWarpCoexist.ps1 -Action PushDns'
+    Write-Host 'CF_DNS_LOOKUP_FAILURE fix: Tailscale CorpDNS must be false so WARP owns its local DNS proxy.'
+    Write-Host 'Internet = Tailscale SE/CH exit. WARP include = exchanges only.'
   }
   'WarpSweden' {
     Write-Host "Lane WarpSweden: punch, Tailscale $SwedenExit, warp+doh, Sweden vnet, reconnect"

@@ -1,0 +1,10 @@
+{
+  "version": "0.0.1",
+  "services": {
+    "svc:wecrypto": {
+      "endpoints": {
+        "tcp:443": "https+insecure://127.0.0.1:3450"
+      }
+    }
+  }
+}

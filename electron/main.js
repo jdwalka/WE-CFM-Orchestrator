@@ -2437,7 +2437,9 @@ ipcMain.handle('asi1:desk-infer', async (_event, args = {}) => {
   try {
     const orch = require('../src/llm/asi1-credit-orchestrator');
     const packet = args.packet || args;
-    return await orch.deskInfer(packet, args.mode);
+    const mode = args.mode;
+    const options = args.options || args;
+    return await orch.deskInfer(packet, mode, options);
   } catch (err) {
     return { ok: false, error: err?.message || 'asi1-desk-infer' };
   }
