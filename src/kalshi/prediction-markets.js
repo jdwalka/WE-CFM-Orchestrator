@@ -526,13 +526,30 @@
   const PYTH_LAZER_PRICE_FEED_IDS = { BTC: 1, ETH: 2, SOL: 6, DOGE: 10, XRP: 14, BNB: 15 };
   let _pythRealtimeSnapshot = { fetchedAt: 0, prices: null, inFlight: null };
 
+  // Push-driven cache kept live by the 'pyth:tickers' IPC event that electron/main.js sends on
+  // every WS tick, instead of re-pulling via getLatestTickers() on a 1000ms TTL -- same listener
+  // pattern as src/core/pyth-timeout-monitor.js. This is a single persistent listener registered
+  // once at module load (mirrors that file), not a per-call subscribe/unsubscribe like
+  // src/core/feeds/feed-adapters.js uses.
+  let _pythPushCache = { prices: null, updatedAt: 0 };
+  if (typeof window !== 'undefined' && window.pythLazer?.onTickers) {
+    window.pythLazer.onTickers((prices) => {
+      _pythPushCache = { prices, updatedAt: Date.now() };
+    });
+  }
+
   async function loadPythRealtimeSnapshot(maxAgeMs) {
     const now = Date.now();
+    // Push-driven fast path -- no IPC round-trip once at least one tick has arrived.
+    if (_pythPushCache.prices && now - _pythPushCache.updatedAt <= maxAgeMs) {
+      return _pythPushCache.prices;
+    }
     if (_pythRealtimeSnapshot.prices && now - _pythRealtimeSnapshot.fetchedAt <= 1_000) {
       return _pythRealtimeSnapshot.prices;
     }
     if (_pythRealtimeSnapshot.inFlight) return _pythRealtimeSnapshot.inFlight;
 
+    // Pull-based fallback: only reached before the first push arrives (e.g. right after load).
     _pythRealtimeSnapshot.inFlight = (async () => {
       let prices = await window.pythLazer?.getLatestTickers?.();
       const hasFreshCache = Object.values(prices || {}).some(ticker => {
