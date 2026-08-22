@@ -118,7 +118,12 @@
   function baseContract(mode) {
     return {
       mode: normalizeMode(mode),
-      account_order: ['gitgoin', 'mauro'],
+      // icloud (mauro_fanelli@icloud.com, Pro tier as of 2026-08-22) is the
+      // only account with real asi1-ultra token allowance -- gitgoin/mauro
+      // both sit at a hard 0-token "eon" cap. Real key rotation lives in
+      // asi1-client.js's ASI1_ACCOUNTS (icloud listed first); this order is
+      // informational metadata only, kept consistent with that for accuracy.
+      account_order: ['icloud', 'gitgoin', 'mauro'],
       model_for_5m: 'asi1-mini',
       model_for_15m: 'asi1-ultra',
       planner_on_5m: false,
@@ -232,7 +237,7 @@
       warnings: [],
       _meta: {
         model: selectModel(packet, m),
-        account: selectModel(packet, m) === 'asi1-ultra' ? 'gitgoin' : 'mauro',
+        account: selectModel(packet, m) === 'asi1-ultra' ? 'icloud' : 'mauro',
         source: 'inferLocal',
       },
     };
