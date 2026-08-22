@@ -6,21 +6,33 @@
 .DESCRIPTION
   Do not stack WARP full-tunnel exclude-mode with Tailscale RouteAll.
 
-  Fast:       Tailscale mesh, no exit. WARP stays on the Windows include profile
-              (or DoH). Speedtest uses Ethernet. Public IP ~64.25.2.144.
-  Sweden:     Tailscale exit se-sto-wg-209 + Ethernet punch for WARP endpoints.
-              WARP warp+doh on include-mode profile (not 0.0.0.0/0).
-              Trading SOCKS5: 10.64.0.1:1080 (Mullvad in-tunnel, Sweden).
-  WarpSweden: Same as Sweden, then force warp+doh + Sweden vnet + reconnect.
+  Fast:        Tailscale mesh, no exit. WARP stays on the Windows include profile
+               (or DoH). Speedtest uses Ethernet. Public IP ~64.25.2.144.
+  Sweden:      Tailscale exit se-sto-wg-209 (system-wide, ALL traffic incl.
+               ASI1/api.asi1.ai routes through Stockholm) + Ethernet punch for
+               WARP endpoints. WARP warp+doh on include-mode profile.
+               Trading SOCKS5: 10.64.0.1:1080 (Mullvad in-tunnel, Sweden).
+  SwedenSplit: Real split tunnel, no Cloudflare dependency. Same trading
+               SOCKS5 as Sweden (routes exactly the electron/main.js
+               WECRYPTO_SWEDEN_SOCKS needle list -- exchanges/Polymarket/etc,
+               tuned over 2 months, NOT api.asi1.ai) but the Tailscale exit
+               node is explicitly cleared, so everything NOT on that needle
+               list (ASI1 included) goes out native Ethernet at full speed
+               instead of taking a round trip through Stockholm it never
+               needed. Use this instead of Sweden when trading -- Sweden
+               only if you specifically need the whole box's default route
+               (not just the needled domains) to egress from Sweden.
+  WarpSweden:  Same as Sweden, then force warp+doh + Sweden vnet + reconnect.
 
 .EXAMPLE
   .\Set-WeCryptoLanes.ps1 -Lane Status
   .\Set-WeCryptoLanes.ps1 -Lane Fast
   .\Set-WeCryptoLanes.ps1 -Lane Sweden
+  .\Set-WeCryptoLanes.ps1 -Lane SwedenSplit
   .\Set-WeCryptoLanes.ps1 -Lane WarpSweden
 #>
 param(
-  [ValidateSet('Status', 'Fast', 'Sweden', 'WarpSweden', 'Together')]
+  [ValidateSet('Status', 'Fast', 'Sweden', 'SwedenSplit', 'WarpSweden', 'Together')]
   [string]$Lane = 'Status',
   [string]$SwedenExit = 'se-sto-wg-209.mullvad.ts.net',
   [string]$SwedenVnet = 'bc743e42-bbf6-4506-b5b2-db7c12f573cc',
@@ -142,6 +154,26 @@ switch ($Lane) {
     Start-Sleep -Seconds 3
     Show-Status
     Write-Host 'Expect ~500 Mbps, source 170.62.100.238 / SOCKS5 Stockholm. Include profile must be active on this box.'
+  }
+  'SwedenSplit' {
+    Write-Host "Lane SwedenSplit: SOCKS5 $Socks5 for the needled domains only (see electron/main.js WECRYPTO_SWEDEN_SOCKS list), Tailscale exit node explicitly cleared so everything else -- ASI1 included -- goes native Ethernet."
+    Install-WarpPunch -Gateway $EthernetGw
+    Start-TailscaleMesh
+    # Deliberately NOT setting --exit-node here, unlike Sweden/WarpSweden --
+    # that's the whole point: stop forcing the box's default route through
+    # Stockholm for traffic the app-level SOCKS5 patch was never routing
+    # there anyway (api.asi1.ai is not in the needle list in main.js).
+    tailscale set --exit-node=
+    Set-SwedenSocksEnv -Value ("socks5://{0}" -f $Socks5)
+    if (Test-Path $warp) {
+      & $warp mode doh | Out-Null
+    }
+    Start-Sleep -Seconds 3
+    Show-Status
+    Write-Host ''
+    Write-Host 'CHECK THE "== SOCKS5 ==" LINE ABOVE.'
+    Write-Host '  reachable=True  -> split worked: needled domains still hit Stockholm via SOCKS5, ASI1/everything else is native speed. This is the lane to trade on.'
+    Write-Host '  reachable=False -> 10.64.0.1:1080 needs the Tailscale exit node up to exist at all (it may be an address only routable through that peer connection, not independently). If so, SwedenSplit cannot work as-is on this Mullvad/Tailscale setup -- fall back to -Lane Sweden (accepts ASI1 going through Stockholm too) until a non-Tailscale Mullvad tunnel is set up for the SOCKS5 leg.'
   }
   'Together' {
     Write-Host 'Lane Together/Overlay: WARP first (Ethernet punch), Tailscale DNS off, then Sweden exit on top.'
