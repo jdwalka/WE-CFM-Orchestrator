@@ -84,14 +84,14 @@ class ResearchAgentManager {
   async updateOrchestrator(insights) {
     console.log('[ResearchAgentManager] 🔄 Updating orchestrator...');
     
-    // Extract Kalshi-specific insights
-    const kalshiInsights = insights.filter(i => i.category === 'kalshi-contracts');
-    
-    if (kalshiInsights.length > 0 && window._kalshiOrchestrator) {
+    // Extract Polymarket-contract-specific insights
+    const polymarketInsights = insights.filter(i => i.category === 'polymarket-contracts');
+
+    if (polymarketInsights.length > 0 && window.PolymarketOrchestrator) {
       try {
-        window._kalshiOrchestrator.researchInsights = {
+        window.PolymarketOrchestrator.researchInsights = {
           timestamp: Date.now(),
-          insights: kalshiInsights,
+          insights: polymarketInsights,
         };
         console.log('[ResearchAgentManager] ✓ Orchestrator updated');
       } catch (e) {
