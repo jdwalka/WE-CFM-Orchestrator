@@ -1,7 +1,7 @@
 {
   "agent": {
     "name": "blockchain-research-engine",
-    "description": "Continuous cutting-edge research for Kalshi 15m contracts",
+    "description": "Continuous cutting-edge research for Polymarket 15m contracts",
     "version": "1.0.0",
     "mode": "background",
     "updateInterval": 300000
@@ -29,12 +29,12 @@
       "frequency": "daily"
     },
     {
-      "category": "kalshi-contracts",
+      "category": "polymarket-contracts",
       "focus": ["contract patterns", "settlement mechanisms", "market dynamics", "hidden liquidity"],
       "sources": [
-        "https://kalshi.com/blog",
-        "https://docs.kalshi.com/",
-        "https://forum.kalshi.com/"
+        "https://polymarket.com",
+        "https://docs.polymarket.com/",
+        "https://docs.polymarket.com/api-reference/perps/overview"
       ],
       "frequency": "hourly"
     },
