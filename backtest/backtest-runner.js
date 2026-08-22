@@ -564,7 +564,11 @@ function calcCCI(candles, period) {
   const tps = slice.map(c => (c.h + c.l + c.c) / 3);
   const mean = tps.reduce((s, v) => s + v, 0) / period;
   const meanDev = tps.reduce((s, v) => s + Math.abs(v - mean), 0) / period;
-  return meanDev > 0 ? (tps[tps.length - 1] - mean) / (0.015 * meanDev) : 0;
+  // Clamped to +/-500, matching src/core/predictions.js's live calcCCI -- an
+  // unclamped backtest/retuner reading lets a near-zero meanDev spike feed
+  // gradient descent and win-rate stats a magnitude the live model can never
+  // produce, over/under-crediting CCI relative to how it actually behaves live.
+  return meanDev > 0.00001 ? Math.max(-500, Math.min(500, (tps[tps.length - 1] - mean) / (0.015 * meanDev))) : 0;
 }
 
 function calcCMF(candles, period) {
@@ -1060,43 +1064,66 @@ async function fetchCoinbaseCandles(sym, limit = 300) {
   }));
 }
 
-async function fetchBinanceUSCandles(symbol, limit = 1000) {
-  const PAGE = 1000;  // Binance max per request
-  if (limit <= PAGE) {
-    const url = `https://api.binance.us/api/v3/klines?symbol=${symbol}&interval=5m&limit=${limit}`;
-    const { status, body } = await httpGet(url);
-    if (status !== 200) throw new Error(`Binance.US HTTP ${status}`);
-    const rows = JSON.parse(body);
-    if (!Array.isArray(rows)) throw new Error(`Bad response: ${body.slice(0,100)}`);
-    return rows.map(r => ({ t: Number(r[0]), o: parseFloat(r[1]), h: parseFloat(r[2]), l: parseFloat(r[3]), c: parseFloat(r[4]), v: parseFloat(r[5]) }));
+async function fetchBinanceCandles(symbol, limit = 1000) {
+  const PAGE = 1000;
+  const hosts = [
+    'https://data-api.binance.vision/api/v3',
+    'https://api.binance.us/api/v3',
+    'https://api.binance.com/api/v3',
+  ];
+
+  for (const host of hosts) {
+    try {
+      if (limit <= PAGE) {
+        const url = `${host}/klines?symbol=${symbol}&interval=5m&limit=${limit}`;
+        const { status, body } = await httpGet(url);
+        if (status === 200) {
+          const rows = JSON.parse(body);
+          if (Array.isArray(rows) && rows.length > 0) {
+            return rows.map(r => ({ t: Number(r[0]), o: parseFloat(r[1]), h: parseFloat(r[2]), l: parseFloat(r[3]), c: parseFloat(r[4]), v: parseFloat(r[5]) }));
+          }
+        }
+      } else {
+        const pages = [];
+        let endTime = null;
+        let remaining = limit;
+        while (remaining > 0) {
+          const fetchCount = Math.min(PAGE, remaining);
+          const url = endTime
+            ? `${host}/klines?symbol=${symbol}&interval=5m&limit=${fetchCount}&endTime=${endTime}`
+            : `${host}/klines?symbol=${symbol}&interval=5m&limit=${fetchCount}`;
+          const { status, body } = await httpGet(url);
+          if (status !== 200) break;
+          const rows = JSON.parse(body);
+          if (!Array.isArray(rows) || rows.length === 0) break;
+          pages.unshift(rows);
+          endTime = Number(rows[0][0]) - 1;
+          remaining -= rows.length;
+          if (rows.length < fetchCount) break;
+          await new Promise(r => setTimeout(r, 100));
+        }
+        if (pages.length > 0) {
+          return pages.flat().map(r => ({ t: Number(r[0]), o: parseFloat(r[1]), h: parseFloat(r[2]), l: parseFloat(r[3]), c: parseFloat(r[4]), v: parseFloat(r[5]) }));
+        }
+      }
+    } catch (_) {}
   }
-  // Paginate backwards: fetch PAGE candles, then older pages
-  const pages = [];
-  let endTime = null;
-  let remaining = limit;
-  while (remaining > 0) {
-    const fetchCount = Math.min(PAGE, remaining);
-    const url = endTime
-      ? `https://api.binance.us/api/v3/klines?symbol=${symbol}&interval=5m&limit=${fetchCount}&endTime=${endTime}`
-      : `https://api.binance.us/api/v3/klines?symbol=${symbol}&interval=5m&limit=${fetchCount}`;
-    const { status, body } = await httpGet(url);
-    if (status !== 200) throw new Error(`Binance.US HTTP ${status}`);
-    const rows = JSON.parse(body);
-    if (!Array.isArray(rows) || rows.length === 0) break;
-    pages.unshift(rows);  // prepend older data
-    endTime = Number(rows[0][0]) - 1;  // set endTime to just before oldest candle
-    remaining -= rows.length;
-    if (rows.length < fetchCount) break;  // no more data
-    await new Promise(r => setTimeout(r, 150));  // small delay between pages
-  }
-  const all = pages.flat();
-  return all.map(r => ({ t: Number(r[0]), o: parseFloat(r[1]), h: parseFloat(r[2]), l: parseFloat(r[3]), c: parseFloat(r[4]), v: parseFloat(r[5]) }));
+  throw new Error(`Binance endpoints unreachable for ${symbol}`);
+}
+
+async function fetchMexcCandles(symbol, limit = 1000) {
+  const url = `https://api.mexc.com/api/v3/klines?symbol=${symbol}&interval=5m&limit=${Math.min(1000, limit)}`;
+  const { status, body } = await httpGet(url);
+  if (status !== 200) throw new Error(`MEXC HTTP ${status}`);
+  const rows = JSON.parse(body);
+  if (!Array.isArray(rows) || rows.length === 0) throw new Error(`No MEXC data`);
+  return rows.map(r => ({ t: Number(r[0]), o: parseFloat(r[1]), h: parseFloat(r[2]), l: parseFloat(r[3]), c: parseFloat(r[4]), v: parseFloat(r[5]) }));
 }
 
 async function fetchCandles(coin, limit) {
-  // Try Binance.US first, then Kraken, then Coinbase
   const errors = [];
-  try { return await fetchBinanceUSCandles(coin.binSym, limit); } catch(e) { errors.push(`BinanceUS: ${e.message}`); }
+  try { return await fetchBinanceCandles(coin.binSym, limit); } catch(e) { errors.push(`Binance: ${e.message}`); }
+  try { return await fetchMexcCandles(coin.binSym, limit); } catch(e) { errors.push(`MEXC: ${e.message}`); }
   try { return await fetchKrakenCandles(coin.sym, limit); } catch(e) { errors.push(`Kraken: ${e.message}`); }
   try { return await fetchCoinbaseCandles(coin.sym, Math.min(300, limit)); } catch(e) { errors.push(`Coinbase: ${e.message}`); }
   throw new Error(errors.join(' | '));

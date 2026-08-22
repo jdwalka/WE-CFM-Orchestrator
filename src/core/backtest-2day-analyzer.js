@@ -37,8 +37,8 @@ class BacktestAnalyzer {
       const cachedPredictions = await this._getCachedPredictions();
       console.log(`   ✓ Found ${cachedPredictions.length} predictions\n`);
 
-      // Phase 2: Get historical settlements from Kalshi API
-      console.log('📊 Phase 2: Fetching settled contracts from Kalshi...');
+      // Phase 2: Get historical settlements from Polymarket Gamma
+      console.log('📊 Phase 2: Fetching settled contracts from Polymarket...');
       const settlements = await this._getHistoricalSettlements();
       console.log(`   ✓ Found ${settlements.length} settlements\n`);
 

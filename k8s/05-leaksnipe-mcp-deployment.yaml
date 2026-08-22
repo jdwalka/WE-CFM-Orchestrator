@@ -23,6 +23,7 @@ spec:
             - "sh"
             - "-c"
             - |
+              mkdir -p /app
               cat << 'EOF' > /app/server.js
               const http = require('http');
               const https = require('https');

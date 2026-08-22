@@ -706,7 +706,7 @@ class AdaptiveTuner {
 
   /**
    * Per-indicator gradient descent retuner.
-   * Reads window._kalshiLog entries (which now carry signalComponents),
+   * Reads window._marketSettlementLog entries (which now carry signalComponents),
    * computes the actual price direction from each resolved contract,
    * and nudges window.PER_COIN_INDICATOR_BIAS toward indicators that predicted correctly.
    *
@@ -715,7 +715,7 @@ class AdaptiveTuner {
    * Requires ≥3 entries with signalComponents per coin to run.
    */
   retuneFromLog() {
-    const log = (typeof window !== 'undefined' && window._kalshiLog) ? window._kalshiLog : [];
+    const log = (typeof window !== 'undefined' && window._marketSettlementLog) ? window._marketSettlementLog : [];
     const bias = (typeof window !== 'undefined' && window.PER_COIN_INDICATOR_BIAS) ? window.PER_COIN_INDICATOR_BIAS : null;
     if (!bias || log.length === 0) return { skipped: true, reason: 'no data' };
 
@@ -863,7 +863,7 @@ class AdaptiveTuner {
     this.markTuneComplete();
     results.cycleTime = Date.now() - cycleStartTime;
 
-    // Run per-indicator gradient descent from _kalshiLog outcomes (yield first — can be heavy)
+    // Run per-indicator gradient descent from _marketSettlementLog outcomes (yield first — can be heavy)
     await new Promise(resolve => setTimeout(resolve, 0));
     try {
       results.indicatorRetune = this.retuneFromLog();
@@ -985,7 +985,7 @@ class AdaptiveTuner {
 
   // ══════════════════════════════════════════════════════════════
   // OUTCOME FEEDBACK — live 500-trade rolling retuner
-  // Called by the main app once a 15m Kalshi contract resolves.
+  // Called by the main app once a 15m Polymarket contract resolves.
   // ══════════════════════════════════════════════════════════════
 
   /**

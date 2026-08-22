@@ -243,7 +243,7 @@
     }
 
     const pred = window._lastPrediction?.[sym];
-    const intent = window.KalshiOrchestrator?.getIntent?.(sym) || null;
+    const intent = window.PolymarketOrchestrator?.getIntent?.(sym) || null;
     const modelDir = pred?.direction ?? null;
     const entryProb = poly.probability ?? null;
     const conditionId = poly.clobConditionId || poly.conditionId || poly.condition_id || null;
@@ -889,8 +889,6 @@
   //   MarketDebug.snap(sym)        — (unused, kept for API compat)
   //   MarketDebug.contract('ETH')  — full state: pending + resolved
   //   MarketDebug.summary()        — accuracy summary across all coins
-  // window.KalshiDebug is kept as an alias — cosmetic name only, several
-  // renderer files still call it by that name; functionally identical.
   const MarketDebug = {
     audit(sym) {
       const log = window._contractAuditLog || [];
@@ -948,6 +946,5 @@
     },
   };
   window.MarketDebug = MarketDebug;
-  window.KalshiDebug = MarketDebug; // legacy name, several renderer files still reference this
 
 })();

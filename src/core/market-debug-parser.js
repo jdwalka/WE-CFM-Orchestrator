@@ -48,7 +48,7 @@ const parseCSV = (content) => {
   return records;
 };
 
-class KalshiDebugLogParser {
+class MarketDebugLogParser {
   constructor(csvPath = null) {
     this.csvPath = csvPath || path.join(__dirname, '..', '..', 'Kalshi-Recent-Activity-All.csv');
     this.trades = [];
@@ -298,5 +298,5 @@ class KalshiDebugLogParser {
 
 // Browser/Node compatibility
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = KalshiDebugLogParser;
+  module.exports = MarketDebugLogParser;
 }

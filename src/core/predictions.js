@@ -64,11 +64,11 @@
   const STATIC_HORIZONS = [1, 5, 10, 15];
 
   const {
-    KALSHI_VERIFY_ONLY,
-    getKalshiNextBoundaryMinutes,
-    calculateKalshiSentiment,
-    getKalshi15mSettlementContext,
-  } = window.PredictionKalshiLogic;
+    POLYMARKET_VERIFY_ONLY,
+    getPolymarketNextBoundaryMinutes,
+    calculatePolymarketSentiment,
+    getPolymarket15mSettlementContext,
+  } = window.PredictionPolymarketLogic;
   const SHORT_HORIZON_WEIGHTS = { 1: 0.25, 5: 0.45, 10: 0.75, 15: 2.40 };
   // HIGH COVERAGE MODE (user: always take a trade) — low floors, lean not block.
   const SHORT_HORIZON_FILTERS = {
@@ -292,7 +292,7 @@
        persistence: 0.981,
        stochrsi: 1.11,
        williamsR: 1.3,
-       keltner: 1.291,
+       keltner: 0.05,
        volume: 0.92,
        fearGreed: 1,
        book: 0.9,
@@ -300,7 +300,7 @@
      },
      SOL: {
        williamsR: 1.152,
-       cci: 1.12,
+       cci: 0.05,
        sma: 1.061,
        mfi: 1.13,
        rsi: 1.02,
@@ -358,10 +358,11 @@
        williamsR: 6.5,
        fisher: 5,
        cci: 4.5,
-       bands: 3,
+       bands: 3.2,
        keltner: 2,
        rsi: 1.5,
        stochrsi: 1.2,
+       volume: 1.5,
        structure: 0.8,
        obv: 0.5,
        persistence: 0.4,
@@ -376,7 +377,6 @@
        momentum: 0.05,
        hma: 0.05,
        macd: 0.1,
-       volume: 0.3,
        mfi: 0.3,
        fearGreed: 1.8,
      },
@@ -455,13 +455,13 @@
     evaluateSignalGate,
   } = window.PredictionSignalGates;
 
-  // ── Kalshi routing helpers (execution guard, rationale builder, stats utils)
+  // ── Polymarket routing helpers (execution guard, rationale builder, stats utils)
   const {
-    getSecsToKalshiClose,
+    getSecsToPolymarketClose,
     normalCDF,
     buildRationale,
     buildExecutionGuard,
-  } = window.PREDICTIONS_KALSHI_ROUTING;
+  } = window.PREDICTIONS_POLYMARKET_ROUTING;
 
   // ── Exchange data fetchers — provided by data-fetchers.js scaffold ─────────
   const {
@@ -2071,7 +2071,7 @@
   // PREDICTION COMPUTATION
   // ================================================================
 
-  // Normal CDF: imported from window.PREDICTIONS_KALSHI_ROUTING
+  // Normal CDF: imported from window.PREDICTIONS_POLYMARKET_ROUTING
 
   // ── SMC: Smart Money Concepts Helpers ─────────────────────────────────────
   function detectLiquidityPools(candles) {
@@ -3075,10 +3075,10 @@
     }
 
     // --- Prediction Market Sentiment (Kalshi + Polymarket) ---
-    const kalshiSentiment = calculateKalshiSentiment(options.sym);
-    const mktData = kalshiSentiment.marketData;
-    const mktSig = kalshiSentiment.signal;
-    const mktModelSig = kalshiSentiment.modelSignal;
+    const polymarketSentiment = calculatePolymarketSentiment(options.sym);
+    const mktData = polymarketSentiment.marketData;
+    const mktSig = polymarketSentiment.signal;
+    const mktModelSig = polymarketSentiment.modelSignal;
 
     // Supertrend
     const stR = calcSupertrend(candles, 10, 3.0);
@@ -3320,20 +3320,20 @@
       const absorbBias = wallAbs.dir * sup * 0.65;
       signalVector.persistence = clamp(signalVector.persistence * 0.4 + absorbBias, -1, 1);
     }
-    // ── SMC: Evaluate Liquidity Sweeps + FVGs + Kalshi Edge ───────────
+    // ── SMC: Evaluate Liquidity Sweeps + FVGs + Polymarket Edge ───────────
     const smcPools = detectLiquidityPools(candles);
     const smcSweeps = detectLiquiditySweeps(candles, smcPools);
     const smcFVGs = detectFVGs(candles);
     let smcFlags = [];
 
-    const kalshiProb = mktData?.combinedProb ?? 0.5;
+    const polymarketProb = mktData?.combinedProb ?? 0.5;
 
     for (const sweep of smcSweeps) {
       const fvg = smcFVGs.find(f => f.dir === sweep.dir && f.index > sweep.index);
       if (fvg) {
         let aggressive = false;
-        if (sweep.dir === 1 && kalshiProb < 0.35) aggressive = true;
-        if (sweep.dir === -1 && kalshiProb > 0.65) aggressive = true;
+        if (sweep.dir === 1 && polymarketProb < 0.35) aggressive = true;
+        if (sweep.dir === -1 && polymarketProb > 0.65) aggressive = true;
 
         const lastC = candles[candles.length - 1];
         const retraced = sweep.dir === 1 ? lastC.l <= fvg.ce : lastC.h >= fvg.ce;
@@ -3363,7 +3363,7 @@
     const biasedVector = applyBiasFilter(signalVector, mdt);
     Object.assign(signalVector, biasedVector);
     const activeKeys = Object.keys(signalVector).filter(key => includeMicrostructure || !MICRO_SIGNAL_KEYS.includes(key));
-    const modelActiveKeys = KALSHI_VERIFY_ONLY
+    const modelActiveKeys = POLYMARKET_VERIFY_ONLY
       ? activeKeys.filter(key => key !== 'mktSentiment')
       : activeKeys;
     // Regime detection BEFORE composite — adaptiveWeights must affect actual score computation
@@ -3524,7 +3524,7 @@
         poly: mktData?.poly ?? null,
         combined: mktData?.combinedProb ?? null,
         signal: mktSig,
-        label: kalshiSentiment.label,
+        label: polymarketSentiment.label,
       },
       tapeVelocity: {
         state: tapeVelocity.state,
@@ -3622,7 +3622,7 @@
     if (typeof spoofSig !== 'undefined') _sigVec.push({ name: 'spoof', value: spoofSig, weight: adaptiveWeights.spoof ?? COMPOSITE_WEIGHTS.spoof ?? 0.07 });
     if (typeof icebergSig !== 'undefined') _sigVec.push({ name: 'iceberg', value: icebergSig, weight: adaptiveWeights.iceberg ?? COMPOSITE_WEIGHTS.iceberg ?? 0.08 });
     if (typeof volSig !== 'undefined') _sigVec.push({ name: 'volume', value: volSig, weight: adaptiveWeights.volume ?? COMPOSITE_WEIGHTS.volume ?? 0.10 });
-    if (!KALSHI_VERIFY_ONLY && typeof mktSig !== 'undefined') _sigVec.push({ name: 'mktSentiment', value: mktSig, weight: adaptiveWeights.mktSentiment ?? COMPOSITE_WEIGHTS.mktSentiment ?? 0.18 });
+    if (!POLYMARKET_VERIFY_ONLY && typeof mktSig !== 'undefined') _sigVec.push({ name: 'mktSentiment', value: mktSig, weight: adaptiveWeights.mktSentiment ?? COMPOSITE_WEIGHTS.mktSentiment ?? 0.18 });
     // ★ NEW: Microstructure signals (higher priority due to real-time market data)
     if (typeof fundingRateSig !== 'undefined' && Math.abs(fundingRateSig) > 0.01) _sigVec.push({ name: 'fundingRate', value: fundingRateSig, weight: adaptiveWeights.fundingRate ?? 0.15 });
     if (typeof orderBookImbalanceSig !== 'undefined' && Math.abs(orderBookImbalanceSig) > 0.01) _sigVec.push({ name: 'orderBookImbalance', value: orderBookImbalanceSig, weight: adaptiveWeights.orderBookImbalance ?? 0.16 });
@@ -3630,10 +3630,10 @@
     if (typeof liquidityDepthSig !== 'undefined' && Math.abs(liquidityDepthSig) > 0.01) _sigVec.push({ name: 'liquidityDepth', value: liquidityDepthSig, weight: adaptiveWeights.liquidityDepth ?? 0.08 });
     if (typeof liquidityVacuumSig !== 'undefined' && Math.abs(liquidityVacuumSig) > 0.01) _sigVec.push({ name: 'liquidityVacuum', value: liquidityVacuumSig, weight: adaptiveWeights.liquidityVacuum ?? 0.12 });
 
-    // Resolve kalshi probability for alignment check
-    const _kalshiProb = mktData?.combinedProb ?? null;
+    // Resolve polymarket probability for alignment check
+    const _polymarketProb = mktData?.combinedProb ?? null;
 
-    const rationale = buildRationale(_sigVec, liveRegime, _kalshiProb, options.sym || '');
+    const rationale = buildRationale(_sigVec, liveRegime, _polymarketProb, options.sym || '');
     const projectionTargetDriftMult = tapeVelocity.targetDriftMult || 1;
     const projectionRangeExpansionMult = tapeVelocity.rangeExpansionMult || 1;
 
@@ -3731,30 +3731,30 @@
             lateEntry: ns.lateEntry,
           };
 
-          // ── Kalshi 15M Contract Alignment ──────────────────────────────────
+          // ── Polymarket 15M Contract Alignment ──────────────────────────────────
           // YES resolves if closePrice ≥ targetPriceNum (meet or exceed).
           // Compute model-implied P(closePrice ≥ ref) using normal CDF over
           // our projected price distribution (mean = target, sigma = ATR-range).
           const {
-            k15m,
-            kalshiRef,
-            kalshiYes,
-            kalshiStDir,
-            isBelowK,
+            poly15mCtx,
+            polymarketRef,
+            polymarketYes,
+            polymarketStrikeDir,
+            isBelowPoly,
             rtiData,
             rtiPrice,
             settlementPrice,
-          } = getKalshi15mSettlementContext(options.sym, lastPrice);
+          } = getPolymarket15mSettlementContext(options.sym, lastPrice);
 
-          if (kalshiRef !== null && kalshiRef > 0) {
-            const closeTimeMs = k15m?.closeTime ? new Date(k15m.closeTime).getTime() : null;
+          if (polymarketRef !== null && polymarketRef > 0) {
+            const closeTimeMs = poly15mCtx?.closeTime ? new Date(poly15mCtx.closeTime).getTime() : null;
             const remainingMs = Number.isFinite(closeTimeMs) ? Math.max(0, closeTimeMs - Date.now()) : 15 * 60_000;
             const atrDollar = (Number.isFinite(atr) && atr > 0) ? atr : lastPrice * 0.0017;
             const live = resolveLiveSettlementPx(options.sym, settlementPrice || lastPrice);
             const livePx = live.px || settlementPrice || lastPrice;
             const momDir = window.Microstructure?.getSnapshot?.(options.sym)?.momentum?.dir || null;
             const cdf = computeBinaryPtbCdf({
-              ptb: kalshiRef,
+              ptb: polymarketRef,
               livePx,
               windowMin: 15,
               remainingMs,
@@ -3764,10 +3764,10 @@
               momDir,
             });
             // P(YES) for above-strike = P(settle ≥ PTB). Below-strike flips.
-            const modelYesPct = isBelowK ? (100 - cdf.modelYesPct) : cdf.modelYesPct;
-            const kalshiYesPct = kalshiYes !== null ? Math.round(kalshiYes * 100) : null;
-            const divergence = kalshiYesPct !== null ? Math.abs(modelYesPct - kalshiYesPct) : null;
-            const gapPct = ((kalshiRef - livePx) / livePx) * 100;
+            const modelYesPct = isBelowPoly ? (100 - cdf.modelYesPct) : cdf.modelYesPct;
+            const polymarketYesPct = polymarketYes !== null ? Math.round(polymarketYes * 100) : null;
+            const divergence = polymarketYesPct !== null ? Math.abs(modelYesPct - polymarketYesPct) : null;
+            const gapPct = ((polymarketRef - livePx) / livePx) * 100;
             target = cdf.meanFinal;
             acc[entry].target = cdf.meanFinal;
 
@@ -3776,35 +3776,34 @@
             // For 'above': YES=UP — so modelYesPct ≥ 50 should agree with dir='UP'
             // For 'below': YES=DOWN — so modelYesPct ≥ 50 should agree with dir='DOWN'
             const modelYesSide = modelYesPct >= 50 ? 'YES' : 'NO';
-            const yesDir = isBelowK ? 'DOWN' : 'UP';
-            const noDir = isBelowK ? 'UP' : 'DOWN';
+            const yesDir = isBelowPoly ? 'DOWN' : 'UP';
+            const noDir = isBelowPoly ? 'UP' : 'DOWN';
             const cdfImpliedDir = modelYesPct >= 50 ? yesDir : noDir;
             const dirConflict = dir !== 'FLAT' && cdfImpliedDir !== dir;
             if (dirConflict) {
               predictionDebugLog(
-                `kalshi-align:${options.sym}`,
+                `poly-align:${options.sym}`,
                 'warn',
-                () => `[KalshiAlign] DIR CONFLICT ${options.sym}: momentum=${dir} but CDF implies ${cdfImpliedDir} (modelYesPct=${modelYesPct}% strike=${kalshiStDir} ref=${kalshiRef} price=${lastPrice.toFixed(2)})`,
+                () => `[PolyAlign] DIR CONFLICT ${options.sym}: momentum=${dir} but CDF implies ${cdfImpliedDir} (modelYesPct=${modelYesPct}% strike=${polymarketStrikeDir} ref=${polymarketRef} price=${lastPrice.toFixed(2)})`,
                 15000
               );
             }
 
             const align15 = {
-              ref: kalshiRef,
+              ref: polymarketRef,
               gapPct,
               modelYesPct,
-              kalshiYesPct,
-              polyYesPct: kalshiYesPct,
+              polymarketYesPct,
               divergence,
-              yesAsk: k15m?.yesAsk ?? null,
-              yesBid: k15m?.yesBid ?? null,
-              noAsk: k15m?.noAsk ?? null,
-              noBid: k15m?.noBid ?? null,
-              strikeDir: kalshiStDir,
-              floorPrice: k15m?.floorPrice ?? kalshiRef,
-              capPrice: k15m?.capPrice ?? null,
-              strikeType: k15m?.strikeType ?? null,
-              ticker: k15m?.ticker ?? null,
+              yesAsk: poly15mCtx?.yesAsk ?? null,
+              yesBid: poly15mCtx?.yesBid ?? null,
+              noAsk: poly15mCtx?.noAsk ?? null,
+              noBid: poly15mCtx?.noBid ?? null,
+              strikeDir: polymarketStrikeDir,
+              floorPrice: poly15mCtx?.floorPrice ?? polymarketRef,
+              capPrice: poly15mCtx?.capPrice ?? null,
+              strikeType: poly15mCtx?.strikeType ?? null,
+              ticker: poly15mCtx?.ticker ?? null,
               closeTimeMs,
               remainingMs,
               remainingFrac: cdf.remainingFrac,
@@ -3825,7 +3824,6 @@
                   : divergence <= 25 ? 'soft-split'
                     : 'divergent',
             };
-            acc[entry].kalshiAlign = align15;
             acc[entry].polyAlign = align15;
           }
         }
@@ -4256,7 +4254,7 @@
       : Number.isFinite(mktSentiment.kalshi)
         ? mktSentiment.kalshi
         : 0.5;
-    const kalshiProb = clamp(combinedProbRaw, 0, 1);
+    const polymarketProb = clamp(combinedProbRaw, 0, 1);
     const rawImbalance = toFiniteNumber(book.imbalance, 0);
     const normalizedImbalance = rawImbalance >= -1 && rawImbalance <= 1
       ? (rawImbalance + 1) / 2
@@ -4307,7 +4305,7 @@
         PlusDI: toFiniteNumber(indicators.adx?.pdi, 20),
         MinusDI: toFiniteNumber(indicators.adx?.mdi, 20),
         ATR: toFiniteNumber(pred?.volatility?.atr, 0),
-        KalshiPercent: kalshiProb,
+        PolymarketPercent: polymarketProb,
       },
       weights: pred?.adaptiveWeights || COMPOSITE_WEIGHTS,
       recentAccuracy: {
@@ -5645,6 +5643,15 @@
       if (opt && opt.available && Number.isFinite(opt.riskReversal25) && Math.abs(opt.riskReversal25) >= 1.5) {
         const rr = opt.riskReversal25;
         const pinTxt = (opt.pinDistPct != null) ? `, pin ${opt.pinDistPct >= 0 ? '+' : ''}${opt.pinDistPct.toFixed(2)}%` : '';
+        // Deribit polls every OptionsGammaFeed.POLL_MS (~90s) and silently keeps the
+        // last-good snapshot on fetch failure (options-gamma-feed.js fetchAll()), so a
+        // fixed freshness would let an hours-stale skew keep driving predictions forever.
+        // Decay it from opt.ts like the rest of this packet set uses sourceFreshness,
+        // over a window a few polls wide so a couple of transient misses don't zero it.
+        const optPollMs = window.OptionsGammaFeed.POLL_MS || 90000;
+        const optFreshness = Number.isFinite(opt.ts)
+          ? clamp(1 - ((Date.now() - opt.ts) / (3 * optPollMs)), 0, 1)
+          : 0;
         packets.push(applyRouterProfile({
           family: 'options-skew',
           category: 'derivatives',
@@ -5653,7 +5660,7 @@
           detail: `${opt.skewLabel} (25Δ RR ${rr >= 0 ? '+' : ''}${rr.toFixed(1)}v${pinTxt})`,
           direction: rr > 0 ? 1 : -1,
           strength: clamp(Math.abs(rr) / 8, 0, 1),
-          freshness: 0.7,
+          freshness: optFreshness,
           trust: 0.6,
           relevance: 0.5,
         }, routerProfile));
@@ -6457,10 +6464,10 @@
       }
     }
 
-    // RL stack overlay — mispricing hunt + contrarian plays (after kalshiAlign available)
+    // RL stack overlay — mispricing hunt + contrarian plays (after polyAlign available)
     if (window.TradingRLAgent?.applyToScore) {
       try {
-        const kalshiAlign = result.projections?.p15?.kalshiAlign ?? null;
+        const polyAlign = result.projections?.p15?.polyAlign ?? null;
         const probVel = window.PredictionMarkets?.getProbVelocity?.(coin.sym);
         const rlCtx = {
           signalVector: result.diagnostics?.components || timed.components || {},
@@ -6470,7 +6477,7 @@
           tapeVelocity: result.diagnostics?.tapeVelocity || timed.diagnostics?.tapeVelocity,
           probVelocity: probVel?.trend ?? probVel?.velocity ?? probVel ?? 0,
           atrPct: result.volatility?.atrPct ?? 0,
-          kalshiAlign,
+          polyAlign,
           imbalanceVelocity: result.diagnostics?.liveBook?.imbalanceVelocity ?? 0,
           liveBook: result.diagnostics?.liveBook ?? null,
           spreadPct: effectiveBook?.spreadPct ?? timed.indicators?.book?.spreadPct ?? 0,
@@ -6529,8 +6536,8 @@
               };
 
               let alertText = '';
-              const tteMinutes = kalshiAlign?.closeTimeMs
-                ? ((kalshiAlign.closeTimeMs - now) / 60000).toFixed(1)
+              const tteMinutes = polyAlign?.closeTimeMs
+                ? ((polyAlign.closeTimeMs - now) / 60000).toFixed(1)
                 : '15.0';
 
               if (alertType === 'STRIKE') {
@@ -6540,7 +6547,7 @@
                   `Action: 🟢 <b>EXECUTE STRIKE</b>\n` +
                   `Direction: <b>${rlOut.decision.action}</b>\n` +
                   `Market Price: <code>${(sniperDec.p_market || 0.5).toFixed(2)}</code>\n` +
-                  `Model probability: <code>${Math.round(kalshiAlign?.modelYesPct || 50)}%</code>\n` +
+                  `Model probability: <code>${Math.round(polyAlign?.modelYesPct || 50)}%</code>\n` +
                   `Expected Value: <code>+${evPct}%</code> (Hurdle: <code>+${hurdlePct}%</code>)\n` +
                   `Time to Expiry: <code>${tteMinutes}m</code> remaining\n` +
                   `Spot Volatility: <code>${(rlCtx.spotVolatility || 0.05).toFixed(2)}</code>`;
@@ -6846,7 +6853,7 @@
       // -------------------------------------------------------------
       // KALSHI 15M DYNAMIC TIMING (Sync with :00, :15, :30, :45 clock boundaries)
       // -------------------------------------------------------------
-      const dynBoundary = getKalshiNextBoundaryMinutes();
+      const dynBoundary = getPolymarketNextBoundaryMinutes();
       DEFAULT_SHORT_HORIZON_MIN = dynBoundary;
       SHORT_HORIZON_MINUTES = Array.from(new Set([1, 5, 10, 15, dynBoundary])).sort((a, b) => a - b);
 

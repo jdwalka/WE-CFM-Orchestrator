@@ -4,7 +4,7 @@
 
   const POLYMARKET_VERIFY_ONLY = true;
 
-  function getKalshiNextBoundaryMinutes() {
+  function getPolymarketNextBoundaryMinutes() {
     const now = new Date();
     const minutes = now.getMinutes();
     const seconds = now.getSeconds();
@@ -15,7 +15,7 @@
     return Math.max(1, Math.min(5, remaining));
   }
 
-  function getSecsToKalshiClose(sym) {
+  function getSecsToPolymarketClose(sym) {
     const coin = window.PredictionMarkets?.getCoin?.(sym);
     const close = coin?.poly5m?.closeTime || coin?.poly15m?.closeTime;
     if (!close) return null;
@@ -83,7 +83,7 @@
   }
 
   function buildExecutionGuard(model, cache) {
-    const closeTimeMs = model?.projections?.p15?.polyAlign?.closeTimeMs || model?.projections?.p15?.kalshiAlign?.closeTimeMs;
+    const closeTimeMs = model?.projections?.p15?.polyAlign?.closeTimeMs;
     if (!Number.isFinite(closeTimeMs)) return null;
     const now = Date.now();
     const msToClose = closeTimeMs - now;
@@ -106,16 +106,13 @@
   }
 
   const routingObj = {
-    KALSHI_VERIFY_ONLY: POLYMARKET_VERIFY_ONLY,
     POLYMARKET_VERIFY_ONLY,
-    getKalshiNextBoundaryMinutes,
-    getSecsToKalshiClose,
-    getSecsToPolyClose: getSecsToKalshiClose,
+    getPolymarketNextBoundaryMinutes,
+    getSecsToPolymarketClose,
     normalCDF,
     buildRationale,
     buildExecutionGuard
   };
 
-  window.PREDICTIONS_KALSHI_ROUTING = routingObj;
   window.PREDICTIONS_POLYMARKET_ROUTING = routingObj;
 })();

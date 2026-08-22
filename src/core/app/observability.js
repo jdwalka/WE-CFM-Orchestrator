@@ -129,7 +129,7 @@ if (typeof document !== 'undefined') {
 
 function _obsBuildMetrics() {
     const resLog = window._15mResolutionLog || [];
-    const kalshiLog = window._kalshiLog || [];
+    const marketLog = window._marketSettlementLog || [];
     const orchLog = window._orchLog || [];
     const kalshiErrors = window._kalshiErrors || [];
     const journal = _getTradeJournal();
@@ -141,8 +141,8 @@ function _obsBuildMetrics() {
     const sig = [
       resLog.length,
       resLog.length ? (resLog[resLog.length - 1].settledTs || resLog[resLog.length - 1].ts || 0) : 0,
-      kalshiLog.length,
-      kalshiLog.length ? (kalshiLog[kalshiLog.length - 1].settledTs || kalshiLog[kalshiLog.length - 1].ts || 0) : 0,
+      marketLog.length,
+      marketLog.length ? (marketLog[marketLog.length - 1].settledTs || marketLog[marketLog.length - 1].ts || 0) : 0,
       orchLog.length,
       orchLog.length ? (orchLog[orchLog.length - 1].ts || 0) : 0,
       journalTrades.length,
@@ -190,7 +190,7 @@ function _obsBuildMetrics() {
       }
     });
 
-    kalshiLog.forEach(e => {
+    marketLog.forEach(e => {
       if (typeof e.modelCorrect === 'boolean') {
         const modelDir = String(e.modelDir || '').toUpperCase();
         const mYesPct = _obsNum(e.mYesPct, null);
@@ -198,7 +198,7 @@ function _obsBuildMetrics() {
           ? (modelDir === 'UP' ? mYesPct / 100 : (100 - mYesPct) / 100)
           : (Number.isFinite(_obsNum(e.modelConf, null)) ? Math.max(0, Math.min(1, _obsNum(e.modelConf, 0))) : null);
         events.push({
-          source: 'kalshi',
+          source: 'market',
           sym: e.sym || 'UNK',
           ts: _obsNum(e.settledTs || e.ts, Date.now()),
           correct: e.modelCorrect,
@@ -321,10 +321,10 @@ function _obsBuildMetrics() {
       quoteToSettle: _obsLatencyBuckets(quoteToSettle),
     };
 
-    const recentKalshi = kalshiLog.slice(-80);
-    const dirConflictCount = recentKalshi.filter(e => e._dirConflict || e.dirConflict).length;
-    const proxyMismatchCount = recentKalshi.filter(e => e._proxyMismatch).length;
-    const wickCount = recentKalshi.filter(e => e._wickStraddle || e._nearRef).length;
+    const recentMarket = marketLog.slice(-80);
+    const dirConflictCount = recentMarket.filter(e => e._dirConflict || e.dirConflict).length;
+    const proxyMismatchCount = recentMarket.filter(e => e._proxyMismatch).length;
+    const wickCount = recentMarket.filter(e => e._wickStraddle || e._nearRef).length;
     const recentErrors = kalshiErrors.slice(-80);
     const errByType = {};
     recentErrors.forEach(e => {
@@ -332,9 +332,9 @@ function _obsBuildMetrics() {
       errByType[type] = (errByType[type] || 0) + 1;
     });
 
-    const conflictRate = recentKalshi.length ? dirConflictCount / recentKalshi.length : 0;
-    const mismatchRate = recentKalshi.length ? proxyMismatchCount / recentKalshi.length : 0;
-    const wickRate = recentKalshi.length ? wickCount / recentKalshi.length : 0;
+    const conflictRate = recentMarket.length ? dirConflictCount / recentMarket.length : 0;
+    const mismatchRate = recentMarket.length ? proxyMismatchCount / recentMarket.length : 0;
+    const wickRate = recentMarket.length ? wickCount / recentMarket.length : 0;
     let driftStatus = 'STABLE';
     if ((quantDrift?.overall_status === 'MAJOR_DRIFT') || mismatchRate > 0.15 || conflictRate > 0.20) driftStatus = 'ELEVATED';
     else if ((quantDrift?.overall_status === 'DRIFT') || mismatchRate > 0.08 || conflictRate > 0.12 || wickRate > 0.20) driftStatus = 'WATCH';

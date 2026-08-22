@@ -5,7 +5,7 @@
  * blockchain-explorer and .onion requests through a local Tor SOCKS5 proxy.
  * Extracted out of the old kalshi-ipc-bridge.js, which it had nothing to do
  * with -- consumed by src/feeds/blockchain-scan.js, src/infra/tor-routing-layer.js,
- * src/infra/endpoint-transport.js, src/kalshi/prediction-markets.js.
+ * src/infra/endpoint-transport.js, src/prediction-markets/prediction-markets.js.
  */
 
 const { ipcMain } = require('electron');

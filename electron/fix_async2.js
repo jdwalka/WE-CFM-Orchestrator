@@ -22,7 +22,7 @@ const correctCode = `ipcMain.handle('multi-drive:get-all-logs', async (event, ar
       if (!(await existsAsync(scanPath))) return [];
 
       const dirents = await fsp.readdir(scanPath);
-      const validFiles = dirents.filter(f => f.startsWith('kalshi-settlements-') && f.endsWith('.log'));
+      const validFiles = dirents.filter(f => f.startsWith('polymarket-settlements-') && f.endsWith('.log'));
       
       const files = [];
       for (const f of validFiles) {

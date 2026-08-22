@@ -546,7 +546,8 @@ function calcCCI(candles, period) {
   const tps = slice.map(c => (c.h + c.l + c.c) / 3);
   const mean = tps.reduce((s, v) => s + v, 0) / period;
   const meanDev = tps.reduce((s, v) => s + Math.abs(v - mean), 0) / period;
-  return meanDev > 0 ? (tps[tps.length - 1] - mean) / (0.015 * meanDev) : 0;
+  // Clamped to +/-500, matching src/core/predictions.js's live calcCCI.
+  return meanDev > 0.00001 ? Math.max(-500, Math.min(500, (tps[tps.length - 1] - mean) / (0.015 * meanDev))) : 0;
 }
 
 function calcCMF(candles, period) {

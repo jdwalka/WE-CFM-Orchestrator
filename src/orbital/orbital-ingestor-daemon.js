@@ -9,7 +9,7 @@
  *   Coinbase    WS  → s-orbital (price_usd_coinbase_val)
  *                  → p-orbital (vwap_20, price_momentum, volume)  ← NEW
  *   Hyperliquid WS  → d-orbital (open_interest_usd, funding_rate)
- *   Kalshi    poll  → f-orbital (kalshi_yes_pct, volume, OI)      ← NEW
+ *   Polymarket poll → f-orbital (polymarket_yes_pct, volume, OI)   ← NEW
  *
  * Auto-reconnects on all WebSocket connections (5 s backoff).
  */
@@ -174,7 +174,7 @@ for (const asset of ASSETS) {
 class OrbitalIngestor {
     constructor() {
         this.connections = new Map();
-        this._kalshiPollTimer = null;
+        this._polymarketPollTimer = null;
         this._stopped = false;
 
         // Initialize Validation & Oracle Feedback Loops
@@ -203,7 +203,7 @@ class OrbitalIngestor {
         this.startCoinGeckoRESTPolling();
         this.connectCoinbase();
         this.connectHyperliquid();
-        this.startKalshiPoll();
+        this.startPolymarketPoll();
         this.connectPythLazer();
     }
 
@@ -211,9 +211,9 @@ class OrbitalIngestor {
         console.log('[OrbitalIngestor] Stopping...');
         this._stopped = true;
         this.validationLoop.stop();
-        if (this._kalshiPollTimer) {
-            clearInterval(this._kalshiPollTimer);
-            this._kalshiPollTimer = null;
+        if (this._polymarketPollTimer) {
+            clearInterval(this._polymarketPollTimer);
+            this._polymarketPollTimer = null;
         }
         if (this._coingeckoPollTimer) {
             clearInterval(this._coingeckoPollTimer);
@@ -411,12 +411,7 @@ class OrbitalIngestor {
     startPolymarketPoll() {
         console.log(`[OrbitalIngestor] Polymarket f-orbital poll started (every 15s).`);
         this._pollPolymarket();
-        this._kalshiPollTimer = setInterval(() => this._pollPolymarket(), 15_000);
-    }
-
-    // Legacy alias
-    startKalshiPoll() {
-        this.startPolymarketPoll();
+        this._polymarketPollTimer = setInterval(() => this._pollPolymarket(), 15_000);
     }
 
     async _pollPolymarket() {

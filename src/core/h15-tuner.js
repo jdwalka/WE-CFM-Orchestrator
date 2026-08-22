@@ -2,7 +2,7 @@
  * H15 Tuner — Applies h15-specific indicator weights to maximize 15-minute prediction accuracy
  * 
  * ★ STRATEGY (2026-05-06): Moderate calibration vs aggressive boosting
- * - Focus: Kalshi 15-min contract settlement (primary mission)
+ * - Focus: Polymarket 15-min contract settlement (primary mission)
  * - h1/h5/h10: Scalp territory, use only as noise-detectors or h15 filters
  * - Target: All coins h15 WR > 50%
  * 

@@ -349,7 +349,7 @@ class ScorecardDataAggregator {
     if (acc.total > 20 && acc.accuracy < 40) {
       diagnosis.issues.push(`LOW_ACCURACY: Only ${acc.accuracy}% (${acc.correct}/${acc.total})`);
       diagnosis.recommendations.push('Review signal inversion issues');
-      diagnosis.recommendations.push('Run: window.KalshiAccuracyDebug.findInversions()');
+      diagnosis.recommendations.push('Run: window.PolymarketAccuracyDebug.findInversions()');
     }
 
     // Generate summary

@@ -457,17 +457,17 @@
 
     return MispricingHunter.analyze({
 
-      kalshiAlign: ctx.kalshiAlign,
+      polyAlign: ctx.polyAlign,
 
-      strikeDir: ctx.kalshiAlign?.strikeDir,
+      strikeDir: ctx.polyAlign?.strikeDir,
 
-      modelYesPct: ctx.kalshiAlign?.modelYesPct,
+      modelYesPct: ctx.polyAlign?.modelYesPct,
 
-      kalshiYesPct: ctx.kalshiAlign?.kalshiYesPct,
+      polymarketYesPct: ctx.polyAlign?.polymarketYesPct,
 
-      msToClose: ctx.kalshiAlign?.closeTimeMs
+      msToClose: ctx.polyAlign?.closeTimeMs
 
-        ? Math.max(0, ctx.kalshiAlign.closeTimeMs - Date.now())
+        ? Math.max(0, ctx.polyAlign.closeTimeMs - Date.now())
 
         : ctx.msToClose ?? 0,
 
@@ -503,9 +503,9 @@
 
   function encodeExtras(ctx = {}, mispricing = null) {
 
-    const msToClose = ctx.kalshiAlign?.closeTimeMs
+    const msToClose = ctx.polyAlign?.closeTimeMs
 
-      ? Math.max(0, ctx.kalshiAlign.closeTimeMs - Date.now())
+      ? Math.max(0, ctx.polyAlign.closeTimeMs - Date.now())
 
       : Number(ctx.msToClose ?? 900000);
 
@@ -717,14 +717,14 @@
 
     let sniperDecision = null;
     if (sniper && (fusedAction === enc.ACTION.UP || fusedAction === enc.ACTION.DOWN)) {
-      const p_model = ctx.kalshiAlign?.modelYesPct != null
-        ? ctx.kalshiAlign.modelYesPct / 100
+      const p_model = ctx.polyAlign?.modelYesPct != null
+        ? ctx.polyAlign.modelYesPct / 100
         : (fusedAction === enc.ACTION.UP ? 0.75 : 0.25);
 
       const asks = ctx.liveBook?.asks || ctx.asks || [];
       const positionSize = ctx.positionSize || config.positionSize || 100;
-      const msToClose = ctx.kalshiAlign?.closeTimeMs
-        ? Math.max(0, ctx.kalshiAlign.closeTimeMs - Date.now())
+      const msToClose = ctx.polyAlign?.closeTimeMs
+        ? Math.max(0, ctx.polyAlign.closeTimeMs - Date.now())
         : Number(ctx.msToClose ?? 900000);
       const tteSeconds = msToClose / 1000;
       const spotVolatility = ctx.spotVolatility ?? 0.05;
@@ -959,14 +959,14 @@
 
     const actionId = ctx.rlActionId ?? enc.directionToAction(ctx.predDirection) ?? enc.ACTION.WAIT;
 
-    const p_model = ctx.kalshiAlign?.modelYesPct != null
-      ? ctx.kalshiAlign.modelYesPct / 100
+    const p_model = ctx.polyAlign?.modelYesPct != null
+      ? ctx.polyAlign.modelYesPct / 100
       : (actionId === enc.ACTION.UP ? 0.75 : 0.25);
 
     const asks = ctx.liveBook?.asks || ctx.asks || [];
     const positionSize = ctx.positionSize || config.positionSize || 100;
-    const msToClose = ctx.kalshiAlign?.closeTimeMs
-      ? Math.max(0, ctx.kalshiAlign.closeTimeMs - Date.now())
+    const msToClose = ctx.polyAlign?.closeTimeMs
+      ? Math.max(0, ctx.polyAlign.closeTimeMs - Date.now())
       : Number(ctx.msToClose ?? 900000);
     const tteSeconds = msToClose / 1000;
     const spotVolatility = ctx.spotVolatility ?? 0.05;

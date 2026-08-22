@@ -22,9 +22,14 @@
   const EXCHANGE_FETCH_TIMEOUT_MS = 30_000;
   const MAX_LEVELS = 200;
 
-  const BUFFER_SECS   = 180;      // keep enough history for open/close windows
   const STALE_MS      = 30_000;   // mark stale if no update in 30s
   const SETTLE_WINDOW = 60_000;   // last 60s before open/close = settlement window
+  const WINDOW_MS     = 15 * 60 * 1000; // Kalshi/Polymarket contract window length
+  // Must retain buffer history from a window's open-settlement snapshot all the way
+  // through to its close-settlement snapshot (WINDOW_MS + SETTLE_WINDOW apart), or
+  // openAvg silently goes null for the rest of the window once those entries age out
+  // of the buffer -- which is exactly when delta/deltaDir are read (close + grace).
+  const BUFFER_SECS   = Math.ceil((WINDOW_MS + SETTLE_WINDOW) / 1000) + 60; // ~1020s
 
   // CME CF RTI constituent symbols per exchange.
   const EXCHANGE_CONFIG = {

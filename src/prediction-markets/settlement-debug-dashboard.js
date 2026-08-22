@@ -55,7 +55,7 @@
 
   // ── Extract prediction data from app state ──
   function getSettlementData() {
-    const log = window._kalshiLog || window._polyLog || [];
+    const log = window._marketSettlementLog || window._polyLog || [];
     const resLog = window._15mResolutionLog || [];
     
     // Merge and sort by timestamp
@@ -63,7 +63,7 @@
       ...log.filter(e => e._settled).map(e => ({
         sym: e.sym,
         modelDir: e.modelDir,
-        outcome: e._polyResult || e._kalshiResult,
+        outcome: e._polyResult || e._marketResult,
         ts: e.ts || e.settledTs,
         source: 'poly-log',
         correct: e.modelCorrect,
@@ -206,7 +206,6 @@
   };
 
   window.PolymarketSettlementDebug = PolyDebugAPI;
-  window.KalshiSettlementDebug = PolyDebugAPI;
 
   // ── Auto-create dashboard when app loads ──
   if (document.readyState === 'loading') {

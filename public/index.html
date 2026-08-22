@@ -56,16 +56,16 @@
   <script src="../src/infra/network-log.js"></script>
 
   <!-- WECRYPTO Startup & Calibration (IMPORTANT: load before app.js) -->
-  <script src="../src/kalshi/adaptive-weight-restorer.js"></script>
+  <script src="../src/prediction-markets/adaptive-weight-restorer.js"></script>
   <script src="../src/core/h15-tuner.js"></script>
-  <script src="../src/kalshi/contract-win-rate-calculator.js"></script>
-  <script src="../src/kalshi/accuracy-debug.js" defer></script>
-  <script src="../src/kalshi/settlement-debug-dashboard.js" defer></script>
-  <script src="../src/kalshi/settlement-multi-drive-logger.js" defer></script>
+  <script src="../src/prediction-markets/contract-win-rate-calculator.js"></script>
+  <script src="../src/prediction-markets/accuracy-debug.js" defer></script>
+  <script src="../src/prediction-markets/settlement-debug-dashboard.js" defer></script>
+  <script src="../src/prediction-markets/settlement-multi-drive-logger.js" defer></script>
   <script src="../src/core/quarter-hour-validator.js"></script>
   <script src="../src/feeds/network-congestion-engine.js"></script>
   <!-- WECRYPTO Startup Loader (fast initialization) -->
-  <script src="../src/kalshi/wecrypto-startup-loader.js"></script>
+  <script src="../src/prediction-markets/wecrypto-startup-loader.js"></script>
 
 
   <!-- API Resilience Utilities (must load before app.js) -->
@@ -317,9 +317,9 @@
   <script src="../src/orbital/orbital-engine-driver.js"></script>
   <script src="../src/core/anomaly-detector.js" defer></script>
   <script src="../src/core/cfm-engine.js" defer></script>
-  <script src="../src/kalshi/prediction-markets.js"></script>
-  <script src="../src/kalshi/poly5m-resolution-tracker.js" defer></script>
-  <script src="../src/kalshi/market-resolver.js" defer></script>
+  <script src="../src/prediction-markets/prediction-markets.js"></script>
+  <script src="../src/prediction-markets/poly5m-resolution-tracker.js" defer></script>
+  <script src="../src/prediction-markets/market-resolver.js" defer></script>
   <script src="../settlement-retune.js" defer></script>
   <script src="../src/core/tensor-engine.js" defer></script>
   <script src="../src/ui/floating-orchestrator.js" defer></script>
@@ -342,8 +342,8 @@
   <script src="../src/feeds/options-gamma-feed.js" defer></script>
   <!-- Adaptive Walk-Forward Tuning Modules (Phase 6) -->
   <script src="../src/core/adaptive-tuner.js" defer></script>
-  <script src="../src/kalshi/historical-settlement-fetcher.js" defer></script>
-  <script src="../src/kalshi/scorecard-data-aggregator.js" defer></script>
+  <script src="../src/prediction-markets/historical-settlement-fetcher.js" defer></script>
+  <script src="../src/prediction-markets/scorecard-data-aggregator.js" defer></script>
   <script src="../src/adaptive-learning-engine.js" defer></script>
   <script src="../src/core/contract-cache-manager.js" defer></script>
   <script src="../src/core/multi-drive-cache.js" defer></script>
@@ -382,11 +382,11 @@
   <script src="../src/core/predictions/edge-committee-core.js" defer></script>
   <script src="../src/core/predictions/edge-committee-config.js" defer></script>
   <script src="../src/core/predictions/regime-weights.js" defer></script>
-  <script src="../src/core/predictions/kalshi-logic.js" defer></script>
+  <script src="../src/core/predictions/polymarket-logic.js" defer></script>
   <script src="../src/core/predictions/microstructure.js" defer></script>
   <script src="../src/core/predictions/signal-gates.js" defer></script>
   <script src="../src/core/predictions/signal-aggregation.js" defer></script>
-  <script src="../src/core/predictions/kalshi-routing.js" defer></script>
+  <script src="../src/core/predictions/polymarket-routing.js" defer></script>
   <script src="../src/core/predictions.js" defer></script>
   <script src="../src/core/validator-15m.js" defer></script>
   <script src="../src/feeds/orderbook.js" defer></script>

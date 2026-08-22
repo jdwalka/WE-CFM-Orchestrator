@@ -526,6 +526,31 @@
   const PYTH_LAZER_PRICE_FEED_IDS = { BTC: 1, ETH: 2, SOL: 6, DOGE: 10, XRP: 14, BNB: 15 };
   let _pythRealtimeSnapshot = { fetchedAt: 0, prices: null, inFlight: null };
 
+  const ResonanceFilter = (typeof require !== 'undefined')
+    ? require('../infra/resonance-filter')
+    : (typeof window !== 'undefined' ? window.ResonanceFilter : null);
+  // Low-pass cutoff for Pyth spot-price smoothing. Additive only -- this
+  // never touches PTB (Polymarket's own published contract value must stay
+  // exact, see POLY5M_PTB_LOCK_VERSION notes below) or the raw `price` field
+  // callers already read; it only adds a `filteredPrice` alongside it. 2Hz
+  // removes noise above the level a human/LLM would react to while staying
+  // responsive against the multi-second PTB-confirm and LLM-call latencies
+  // that already dominate this pipeline's end-to-end timing.
+  const PYTH_PRICE_FILTER_HZ = Number(
+    (typeof process !== 'undefined' && process.env && process.env.PYTH_PRICE_FILTER_HZ) || 2
+  );
+  const _pythPriceFilters = new Map(); // sym -> low-pass filter instance
+
+  function _filteredPythPrice(sym, price, timestamp) {
+    if (!ResonanceFilter || !Number.isFinite(price)) return null;
+    let f = _pythPriceFilters.get(sym);
+    if (!f) {
+      f = ResonanceFilter.createLowPassFilter(PYTH_PRICE_FILTER_HZ);
+      _pythPriceFilters.set(sym, f);
+    }
+    return f.update(price, Number.isFinite(timestamp) ? timestamp : Date.now());
+  }
+
   // Push-driven cache kept live by the 'pyth:tickers' IPC event that electron/main.js sends on
   // every WS tick, instead of re-pulling via getLatestTickers() on a 1000ms TTL -- same listener
   // pattern as src/core/pyth-timeout-monitor.js. This is a single persistent listener registered
@@ -605,7 +630,8 @@
       if (typeof window !== 'undefined' && window._pythPrices?.[sym]) {
         const val = typeof window._pythPrices[sym] === 'number' ? window._pythPrices[sym] : window._pythPrices[sym]?.price;
         if (val != null && Number.isFinite(val) && val > 0) {
-          return { price: val, timestamp: Date.now(), ageMs: 0, source: 'pyth-hermes-v2' };
+          const ts = Date.now();
+          return { price: val, timestamp: ts, ageMs: 0, source: 'pyth-hermes-v2', filteredPrice: _filteredPythPrice(sym, val, ts) };
         }
       }
       return null;
@@ -615,12 +641,13 @@
       if (typeof window !== 'undefined' && window._pythPrices?.[sym]) {
         const val = typeof window._pythPrices[sym] === 'number' ? window._pythPrices[sym] : window._pythPrices[sym]?.price;
         if (val != null && Number.isFinite(val) && val > 0) {
-          return { price: val, timestamp: Date.now(), ageMs: 0, source: 'pyth-hermes-v2-fallback' };
+          const ts = Date.now();
+          return { price: val, timestamp: ts, ageMs: 0, source: 'pyth-hermes-v2-fallback', filteredPrice: _filteredPythPrice(sym, val, ts) };
         }
       }
       return null;
     }
-    return { price, timestamp, ageMs, source };
+    return { price, timestamp, ageMs, source, filteredPrice: _filteredPythPrice(sym, price, timestamp) };
   }
 
 
@@ -3405,6 +3432,10 @@ function polymarketSentiment(markets, sym) {
       PTB_TWAP_SETTLE_SEC,
       POLY5M_PTB_LOCK_VERSION,
       _lockPolymarketPriceToBeat,
+      getFreshPythLazerPrice,
+      _filteredPythPrice,
+      _pythPriceFilters,
+      PYTH_PRICE_FILTER_HZ,
       _getPolymarketPriceToBeatLock,
       PTB_CONFIRM_MIN_GAP_MS,
       PTB_CONFIRM_TOLERANCE,

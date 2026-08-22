@@ -314,18 +314,18 @@ function fmtSignedPct(n, dp = 2) {
 
 function predictionDirection(pred, fallback = 0) {
     if (!pred) return fallback;
-    const kalshiAlign = pred.projections?.p15?.polyAlign || pred.projections?.p15?.kalshiAlign;
-    const mYesPct = Number.isFinite(kalshiAlign?.modelYesPct) ? kalshiAlign.modelYesPct : null;
-    const msLeft = Number.isFinite(kalshiAlign?.closeTimeMs)
-      ? kalshiAlign.closeTimeMs - Date.now()
-      : (Number.isFinite(kalshiAlign?.remainingMs) ? kalshiAlign.remainingMs : null);
-    const strikeDir = kalshiAlign?.strikeDir === 'below' ? 'below' : 'above';
+    const polyAlign = pred.projections?.p15?.polyAlign;
+    const mYesPct = Number.isFinite(polyAlign?.modelYesPct) ? polyAlign.modelYesPct : null;
+    const msLeft = Number.isFinite(polyAlign?.closeTimeMs)
+      ? polyAlign.closeTimeMs - Date.now()
+      : (Number.isFinite(polyAlign?.remainingMs) ? polyAlign.remainingMs : null);
+    const strikeDir = polyAlign?.strikeDir === 'below' ? 'below' : 'above';
     const yesDir = strikeDir === 'below' ? -1 : 1;
     const noDir = -yesDir;
     // Last 90s: live gap vs PTB wins over lagging composite score.
-    if (msLeft != null && msLeft < 90_000 && Number.isFinite(kalshiAlign?.gapPct)) {
-      if (kalshiAlign.gapPct > 0.02) return noDir;
-      if (kalshiAlign.gapPct < -0.02) return yesDir;
+    if (msLeft != null && msLeft < 90_000 && Number.isFinite(polyAlign?.gapPct)) {
+      if (polyAlign.gapPct > 0.02) return noDir;
+      if (polyAlign.gapPct < -0.02) return yesDir;
     }
     if (mYesPct != null) {
       if (mYesPct >= 55) return yesDir;
@@ -599,7 +599,7 @@ function renderMarkets5M() {
       const ptbLabel = p5?.targetPrice || (Number.isFinite(ptbNum) && ptbNum > 0 ? `$${ptbNum.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 6 })}` : null);
 
       // Record this window's call for later grading against the real
-      // settlement outcome (src/kalshi/poly5m-resolution-tracker.js).
+      // settlement outcome (src/prediction-markets/poly5m-resolution-tracker.js).
       // Idempotent per slug -- safe to call on every render, not just once.
       if (modelOdds != null && p5?.slug) {
         const slugMatch = String(p5.slug).match(/-updown-(5m|15m)-(\d+)$/);
@@ -716,7 +716,7 @@ function renderMarkets5M() {
     function _modelOdds(sym) {
       const p = pred[sym];
       if (!p) return null;
-      const cdfYesPct = p.projections?.p15?.kalshiAlign?.modelYesPct ?? p.diagnostics?.ptbAnchor?.modelYesPct;
+      const cdfYesPct = p.projections?.p15?.polyAlign?.modelYesPct ?? p.diagnostics?.ptbAnchor?.modelYesPct;
       if (Number.isFinite(cdfYesPct)) {
         return _clamp(cdfYesPct / 100, 0.02, 0.98);
       }
@@ -806,11 +806,11 @@ function renderMarkets5M() {
       return Number.isFinite(ptb) && ptb > 0;
     }
 
-    function _modelDivergence(sym, kalshiProb) {
-      if (kalshiProb == null) return null;
+    function _modelDivergence(sym, polymarketProb) {
+      if (polymarketProb == null) return null;
       const modelOdds = _modelOdds5m(sym);
       if (modelOdds == null) return null;
-      const diff = Math.abs(modelOdds - kalshiProb);
+      const diff = Math.abs(modelOdds - polymarketProb);
       if (diff > 0.15) return 'DIVERGENCE';
       if (diff > 0.10) return 'MISMATCH';
       return null;
@@ -1076,7 +1076,7 @@ function renderMarkets5M() {
           : '';
         const mem = g.memory ? ` · mem ${g.memory.sampleCount || 0} samples / ${g.memory.sessionMinutes || 0}m` : '';
         // The panel header says "Grok", but fire() falls back to a mechanical
-        // Kalshi-tied call whenever the LLM errors or returns nothing (it stamps
+        // market-tied call whenever the LLM errors or returns nothing (it stamps
         // provider:'mechanical'). Without this badge those calls are indistinguishable
         // from model output — the card claims Grok said something Grok never said.
         const provider = String(g.provider || '').toLowerCase();
@@ -1439,7 +1439,7 @@ function renderDebugLog() {
     const DEBUG_CAP = {
       resolver: 800,
       resolution: 800,
-      kalshi: 800,
+      market: 800,
       historical: 1200,
       missedOps: 300,
       zones: 120,
@@ -1449,9 +1449,9 @@ function renderDebugLog() {
 
     const resolverLog = _cap(window.MarketResolver?.getLog?.(), DEBUG_CAP.resolver);
     const resolutionLog = _cap(window._15mResolutionLog, DEBUG_CAP.resolution);
-    const settledKalshiLog = _cap((window._kalshiLog || []).filter(
+    const settledMarketLog = _cap((window._marketSettlementLog || []).filter(
       e => e?._settled || e?.modelCorrect !== null || e?.actualOutcome || e?.outcome
-    ), DEBUG_CAP.kalshi);
+    ), DEBUG_CAP.market);
     const missedOps = _cap(window.MarketResolver?.getMissedOpps?.(), DEBUG_CAP.missedOps);
     const zones = _cap(window.MarketResolver?.getBufferZones?.(), DEBUG_CAP.zones);
     const vels = window.PredictionMarkets?.getAllVelocities?.() || {};
@@ -1466,7 +1466,7 @@ function renderDebugLog() {
     const mergedLog = [
       ...resolverLog,
       ...resolutionLog,
-      ...settledKalshiLog,
+      ...settledMarketLog,
       ...historical.map(h => ({
         sym: h.symbol,
         ticker: h.ticker || `KX${h.symbol}15M`,
@@ -1579,7 +1579,7 @@ function renderDebugLog() {
       </tr>`;
     }).join('');
 
-    // ── Velocity table (live Kalshi probability drift) ──────────────
+    // ── Velocity table (live Polymarket probability drift) ──────────────
     const velRows = COINS.map(sym => {
       const v = vels[sym] || { trend: 'flat', velCentsPerMin: 0, acceleration: 0, samples: 0, latestProb: null };
       const col = v.trend === 'rising' ? 'var(--color-green)' : v.trend === 'falling' ? 'var(--color-red)' : 'var(--color-text-faint)';
@@ -1599,14 +1599,17 @@ function renderDebugLog() {
     // ── Recent settlements ──────────────────────────────────────────
     const recent = allData.slice(0, 40);
     const settlementRows = recent.length ? recent.map(e => {
-      const ts = new Date(e.settledTs || e.closeTimeMs).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+      const ts = escapeHtml(new Date(e.settledTs || e.closeTimeMs).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }));
+      const sym = escapeHtml(e.sym);
+      const outcome = escapeHtml(e.actualOutcome);
+      const modelDir = escapeHtml(e.modelDir ?? '—');
       const badge = e.modelCorrect === true ? '<span style="color:var(--color-green);font-weight:800">✅ CORRECT</span>'
         : e.modelCorrect === false ? '<span style="color:var(--color-red);font-weight:800">❌ WRONG</span>'
           : '<span style="color:var(--color-text-faint)">? N/A</span>';
       const edgeStr = e.edgeCents != null ? (e.edgeCents > 0 ? `+${e.edgeCents}¢` : `${e.edgeCents}¢`) : '—';
       const edgeCol = e.edgeCents >= 10 ? 'var(--color-green)' : e.edgeCents >= 5 ? 'var(--color-orange)' : e.edgeCents > 0 ? 'var(--color-text-muted)' : 'var(--color-red)';
       const actionBadge = e.orchestratorAction
-        ? `<span style="background:var(--color-surface-3);border-radius:3px;padding:1px 5px;font-size:10px">${e.orchestratorAction}</span>`
+        ? `<span style="background:var(--color-surface-3);border-radius:3px;padding:1px 5px;font-size:10px">${escapeHtml(e.orchestratorAction)}</span>`
         : '';
       const missedTag = e.missedOpportunity
         ? '<span style="color:#ff9800;font-size:10px;margin-left:4px">⚠ missed</span>'
@@ -1614,26 +1617,29 @@ function renderDebugLog() {
       const dirCol = e.actualOutcome === 'UP' ? 'var(--color-green)' : 'var(--color-red)';
       return `<tr>
         <td>${ts}</td>
-        <td style="font-weight:700">${e.sym}</td>
-        <td style="color:${dirCol}">${e.actualOutcome}</td>
+        <td style="font-weight:700">${sym}</td>
+        <td style="color:${dirCol}">${outcome}</td>
         <td>${badge}${missedTag}</td>
-        <td style="color:var(--color-text-muted)">${e.modelDir ?? '—'}</td>
+        <td style="color:var(--color-text-muted)">${modelDir}</td>
         <td style="color:${edgeCol}">${edgeStr}</td>
         <td>${actionBadge}</td>
         <td style="color:var(--color-text-muted)">${e.entryProb != null ? Math.round(e.entryProb * 100) + '%' : '—'}</td>
       </tr>`;
-    }).join('') : `<tr><td colspan="8" style="color:var(--color-text-faint);text-align:center;padding:20px">No settlements recorded yet — data accumulates as Kalshi 15M contracts expire.</td></tr>`;
+    }).join('') : `<tr><td colspan="8" style="color:var(--color-text-faint);text-align:center;padding:20px">No settlements recorded yet — data accumulates as Polymarket 15M contracts expire.</td></tr>`;
 
     // ── Missed opportunities list ───────────────────────────────────
     const missedRows = missedOps.length ? [...missedOps].reverse().slice(0, 20).map(e => {
-      const ts = new Date(e.settledTs || e.closeTimeMs).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+      const ts = escapeHtml(new Date(e.settledTs || e.closeTimeMs).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }));
+      const sym = escapeHtml(e.sym);
+      const outcome = escapeHtml(e.actualOutcome);
+      const action = escapeHtml(e.missedOpportunity?.action ?? '—');
       const eStr = e.missedOpportunity?.edgeCents != null ? `${e.missedOpportunity.edgeCents}¢` : '—';
-      const align = e.missedOpportunity?.alignment ?? '—';
+      const align = escapeHtml(e.missedOpportunity?.alignment ?? '—');
       return `<tr>
         <td>${ts}</td>
-        <td style="font-weight:700">${e.sym}</td>
-        <td style="color:var(--color-green)">${e.actualOutcome}</td>
-        <td>${e.missedOpportunity?.action ?? '—'}</td>
+        <td style="font-weight:700">${sym}</td>
+        <td style="color:var(--color-green)">${outcome}</td>
+        <td>${action}</td>
         <td>${eStr}</td>
         <td style="color:var(--color-text-faint)">${align}</td>
       </tr>`;
@@ -1641,17 +1647,19 @@ function renderDebugLog() {
 
     // ── Pending snapshots ───────────────────────────────────────────
     const pendingRows = pending.length ? pending.map(e => {
-      const close = new Date(e.closeTimeMs).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+      const sym = escapeHtml(e.sym);
+      const close = escapeHtml(new Date(e.closeTimeMs).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }));
+      const modelDir = escapeHtml(e.modelDir ?? '—');
       const ms = Math.max(0, e.closeTimeMs - Date.now());
       const m = Math.floor(ms / 60000);
       const s = Math.floor((ms % 60000) / 1000);
       const edgeS = e.edgeCents != null ? `${e.edgeCents > 0 ? '+' : ''}${e.edgeCents}¢` : '—';
-      const actB = e.orchestratorAction ? `<span style="background:var(--color-surface-3);border-radius:3px;padding:1px 5px;font-size:10px">${e.orchestratorAction}</span>` : '—';
+      const actB = e.orchestratorAction ? `<span style="background:var(--color-surface-3);border-radius:3px;padding:1px 5px;font-size:10px">${escapeHtml(e.orchestratorAction)}</span>` : '—';
       return `<tr>
-        <td style="font-weight:700">${e.sym}</td>
+        <td style="font-weight:700">${sym}</td>
         <td>${close}</td>
         <td style="color:var(--color-orange)">${m}m${String(s).padStart(2, '0')}s</td>
-        <td style="color:var(--color-text-muted)">${e.modelDir ?? '—'}</td>
+        <td style="color:var(--color-text-muted)">${modelDir}</td>
         <td>${edgeS}</td>
         <td>${actB}</td>
       </tr>`;
@@ -1709,7 +1717,7 @@ function renderDebugLog() {
     ))}
 
         ${card(`📋 Settlement History (last 40 of ${allData.length})`, tbl(
-      ['Time', 'Coin', 'Actual', 'Model', 'Pred Dir', 'Edge', 'Action', 'Kalshi%'],
+      ['Time', 'Coin', 'Actual', 'Model', 'Pred Dir', 'Edge', 'Action', 'Poly%'],
       settlementRows
     ))}
       </div>`;
@@ -3654,13 +3662,13 @@ async function renderPredictions() {
     const contrarian = allSetups.filter(s => s.type.startsWith('contrarian_'));
 
     // Save collapsible state before wiping DOM
-    const _debugOpen = document.getElementById('kalshi-debug-panel')?.open ?? false;
+    const _debugOpen = document.getElementById('market-debug-panel')?.open ?? false;
 
     content.innerHTML = `
       ${!predsLoaded ? `<div style="display:flex;align-items:center;gap:10px;padding:8px 16px;background:rgba(255,193,7,0.1);border:1px solid rgba(255,193,7,0.3);border-radius:6px;margin-bottom:12px;font-size:13px;color:#ffc107"><div style="width:16px;height:16px;border:2px solid rgba(255,193,7,0.3);border-top-color:#ffc107;border-radius:50%;animation:spin 0.8s linear infinite;flex-shrink:0"></div><span>Scoring UP/DOWN markets\u2026</span></div>` : ''}
       ${buildQuickDecisionPanel(predArr)}
       <div id="pred-accuracy-badge" style="text-align:center;padding:4px 0 6px;font-size:12px;letter-spacing:.5px"></div>
-      ${buildKalshiDebugPanel()}
+      ${buildMarketDebugPanel()}
       <div class="pred-disclaimer">
         \u26a0 <strong>Not financial advice.</strong> These UP/DOWN calls are 15-minute-window signals derived from RSI, VWAP deviation, EMA crosses, OBV, weighted 10/20-level book imbalance, imbalance velocity, liquidity depth, and trade flow. They represent statistical probabilities, not certainties. Always manage risk.
       </div>
@@ -3759,11 +3767,11 @@ async function renderPredictions() {
                     ${s.strength === 'warning' ? '<span style="font-size:8px;padding:2px 5px;background:var(--color-orange-dim);color:var(--color-orange);border-radius:9999px;font-weight:700;text-transform:uppercase">Warning</span>' : ''}
                     <span style="margin-left:auto;font-size:18px;color:${dirColor}">${dirIcon}</span>
                   </div>
-                  <div style="font-size:12px;font-weight:600;margin-bottom:2px">${s.label}</div>
+                  <div style="font-size:12px;font-weight:600;margin-bottom:2px">${escapeHtml(s.label)}</div>
                   <div style="font-size:11px;color:var(--color-text-muted);line-height:1.4">
                     ${(() => {
                       const aiDesc = s.llm?.ai_wording?.scalp_setups?.find(x => x.label === s.label)?.ai_description;
-                      return aiDesc ? `<span style="color:#8fa8ff"><span style="font-weight:700">✨ AI:</span> ${escapeHtml(aiDesc)}</span>` : s.desc;
+                      return aiDesc ? `<span style="color:#8fa8ff"><span style="font-weight:700">✨ AI:</span> ${escapeHtml(aiDesc)}</span>` : escapeHtml(s.desc);
                     })()}
                   </div>
                 </div>
@@ -3793,8 +3801,8 @@ async function renderPredictions() {
       catch (cardErr) {
         console.error('[predictionCard] crash:', p?.sym, cardErr);
         return `<div class="pred-card" style="padding:20px 16px;border-left:4px solid var(--color-red,#ff4444)">
-              <div style="font-weight:700;color:var(--color-red,#ff4444);font-size:13px">⚠ ${p?.sym || '?'} — Render Error</div>
-              <div style="font-size:11px;color:var(--color-text-muted,#aaa);margin-top:6px;font-family:monospace;white-space:pre-wrap">${cardErr.message}</div>
+              <div style="font-weight:700;color:var(--color-red,#ff4444);font-size:13px">⚠ ${escapeHtml(p?.sym || '?')} — Render Error</div>
+              <div style="font-size:11px;color:var(--color-text-muted,#aaa);margin-top:6px;font-family:monospace;white-space:pre-wrap">${escapeHtml(cardErr?.message || cardErr)}</div>
             </div>`;
       }
     }).join('')}
@@ -3805,9 +3813,9 @@ async function renderPredictions() {
     // Populate accuracy badge immediately after render
     updateAccuracyBadge();
 
-    // Restore Kalshi debug panel open state (lost on innerHTML replace)
+    // Restore market debug panel open state (lost on innerHTML replace)
     if (_debugOpen) {
-      const _dp = document.getElementById('kalshi-debug-panel');
+      const _dp = document.getElementById('market-debug-panel');
       if (_dp) _dp.open = true;
     }
 
@@ -4206,7 +4214,7 @@ function renderContractLog() {
       const settledTs = e.settledTs || e.resolved_at || e.resolvedAt || e.timestamp || e.ts || 0;
       const modelDirRaw = e.modelDir || e.direction || e.prediction || e.predictedDirection || e.side || e.betDirection || null;
       const modelDir = modelDirRaw != null ? String(modelDirRaw).toUpperCase() : null;
-      const outcomeRaw = e.actualOutcome || e.outcome || e.result || e.kalshiResult || e.settlement || e.authOutcome || null;
+      const outcomeRaw = e.actualOutcome || e.outcome || e.result || e.marketResult || e.settlement || e.authOutcome || null;
       const outcome = outcomeRaw != null ? String(outcomeRaw).toUpperCase() : null;
       const orchestratorAction = e.orchestratorAction || e.action || e.orchAction || e.tradeAction || null;
       const modelCorrect = typeof e.modelCorrect === 'boolean'
@@ -4228,8 +4236,8 @@ function renderContractLog() {
           ? e.modelProbUp
           : e.modelYesPct != null
             ? Number(e.modelYesPct) / 100
-            : e.kalshiProb != null
-              ? e.kalshiProb
+            : e.polymarketProb != null
+              ? e.polymarketProb
               : null;
       const modelProbUp = e.modelProbUp != null
         ? e.modelProbUp
@@ -4238,8 +4246,8 @@ function renderContractLog() {
           : e.modelScore != null
             ? Math.max(0, Math.min(1, 0.5 + Number(e.modelScore) / 2))
             : null;
-      const kalshiProb = e.kalshiProb != null
-        ? e.kalshiProb
+      const polymarketProb = e.polymarketProb != null
+        ? e.polymarketProb
         : e.entryProb != null
           ? e.entryProb
           : e.kYesPct != null
@@ -4261,19 +4269,19 @@ function renderContractLog() {
         wickedOut,
         entryProb,
         modelProbUp,
-        kalshiProb,
+        polymarketProb,
         _source: source,
       };
     };
 
-    // Pull from ALL sources: runtime log, Kalshi log, multi-drive cache
+    // Pull from ALL sources: runtime log, market log, multi-drive cache
     const runtimeLog = (window._15mResolutionLog || []).map(e => normalizeContractEntry(e, 'runtime')).slice().reverse();
-    const kalshiLog = (window._kalshiLog || [])
+    const marketLog = (window._marketSettlementLog || [])
       .filter(e => e._settled)
       .map(e => normalizeContractEntry({
         ...e,
         actualOutcome: e.actualOutcome || _actualFromYNWithStrike(_normOutcomeYN(e.outcome), _normStrikeDir(e._strikeDir ?? e.strikeDir ?? e.apiStrikeDir ?? e.strikeType)),
-      }, 'kalshi'))
+      }, 'market'))
       .slice().reverse();
     const cacheSettlements = (window.MultiDriveCache?.data?.settlements || [])
       .map(e => normalizeContractEntry({
@@ -4306,13 +4314,13 @@ function renderContractLog() {
       }
     });
 
-    // Add Kalshi log (Kalshi API data)
-    kalshiLog.forEach(e => {
+    // Add market log (Polymarket-sourced settlement data)
+    marketLog.forEach(e => {
       const id = contractId(e);
       if (!seenIds.has(id)) {
         allContracts.push({
-          ...normalizeContractEntry(e, 'kalshi'),
-          kalshiResult: e._kalshiResult || e.kalshiResult || null,
+          ...normalizeContractEntry(e, 'market'),
+          marketResult: e._marketResult || e.marketResult || null,
         });
         seenIds.add(id);
       }
@@ -4359,7 +4367,7 @@ function renderContractLog() {
     const fadeTrades = log.filter(e => e.crowdFade);
     const fadeWr = fadeTrades.length ? Math.round(fadeTrades.filter(e => e.modelCorrect === true).length / fadeTrades.length * 100) : null;
     const missed = log.filter(e => e.missedOpportunity).length;
-    const kalshiOnly = log.filter(e => e._source === 'kalshi' && e.modelCorrect != null).length;
+    const marketOnly = log.filter(e => e._source === 'market' && e.modelCorrect != null).length;
     const cacheOnly = log.filter(e => e._source === 'cache' && e.modelCorrect != null).length;
     const lsOnly = log.filter(e => e._source === 'localStorage' && e.modelCorrect != null).length;
     const runtimeOnly = log.filter(e => e._source === 'runtime' && e.modelCorrect != null).length;
@@ -4376,7 +4384,7 @@ function renderContractLog() {
         ['Missed Opps', missed, missed > 0 ? '#ff9800' : 'var(--color-text-muted)'],
         ['Trades', traded.length, 'var(--color-text)'],
         ['Resolved', resolved.length, 'var(--color-text-muted)'],
-        ['By Source', `R${runtimeOnly} K${kalshiOnly} C${cacheOnly} L${lsOnly}`, 'var(--color-text-muted)'],
+        ['By Source', `R${runtimeOnly} M${marketOnly} C${cacheOnly} L${lsOnly}`, 'var(--color-text-muted)'],
       ].map(([lbl, val, col]) => `
           <div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.07);border-radius:6px;padding:8px 14px;min-width:90px">
             <div style="font-size:10px;color:var(--color-text-muted);font-weight:600;letter-spacing:.5px;text-transform:uppercase">${lbl}</div>
@@ -4399,11 +4407,11 @@ function renderContractLog() {
       const sweet = e.sweetSpot ? '⭐' : '';
       const fade = e.crowdFade ? '🔄' : '';
       const align = e.orchestratorAlign ?? e.alignment ?? '—';
-      const kalshiPct = e.entryProb != null ? Math.round(e.entryProb * 100) + '%' : '—';
+      const polymarketPct = e.entryProb != null ? Math.round(e.entryProb * 100) + '%' : '—';
       const modelPct = e.modelProbUp != null ? Math.round(e.modelProbUp * 100) + '%' : (e.modelScore != null ? Math.round(50 + e.modelScore * 50) + '%' : '—');
       const tradedStr = e.orchestratorAction === 'trade' ? '<span style="color:var(--color-green)">TRADE</span>' : `<span style="color:var(--color-text-muted)">${e.orchestratorAction ?? 'skip'}</span>`;
       const snap60 = (e.closeSnapshots || []).find(s => s.secsLeft >= 30 && s.secsLeft <= 90);
-      const snapStr = snap60 ? `K@T-${snap60.secsLeft}s: ${Math.round(snap60.kalshiProb * 100)}%` : '';
+      const snapStr = snap60 ? `K@T-${snap60.secsLeft}s: ${Math.round(snap60.polymarketProb * 100)}%` : '';
       const sourceTag = `<span style="font-size:9px;color:var(--color-text-faint);background:rgba(255,255,255,0.05);padding:2px 6px;border-radius:3px">${e._source || '?'}</span>`;
       return `<tr style="border-bottom:1px solid rgba(255,255,255,0.04)">
         <td style="padding:7px 8px;font-weight:700;color:var(--color-text)">${e.sym}</td>
@@ -4412,7 +4420,7 @@ function renderContractLog() {
         <td style="padding:7px 8px;color:${outcomeColor};font-weight:700">${outcome}</td>
         <td style="padding:7px 8px;text-align:center;font-size:14px">${correct}</td>
         <td style="padding:7px 8px;font-family:var(--font-mono);font-size:11px">${modelPct}</td>
-        <td style="padding:7px 8px;font-family:var(--font-mono);font-size:11px">${kalshiPct}</td>
+        <td style="padding:7px 8px;font-family:var(--font-mono);font-size:11px">${polymarketPct}</td>
         <td style="padding:7px 8px;font-size:11px;color:var(--color-text-muted)">${align}</td>
         <td style="padding:7px 8px">${tradedStr}</td>
         <td style="padding:7px 8px;font-size:11px;color:var(--color-text-muted)">${sweet}${fade}</td>
@@ -4427,19 +4435,19 @@ function renderContractLog() {
         <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px">
           <span style="font-size:18px;font-weight:800">📋 Contract Log (All Sources)</span>
           <span style="font-size:11px;color:var(--color-text-muted)">
-            Runtime: ${runtimeLog.length} | Kalshi: ${kalshiLog.length} | Cache: ${cacheSettlements.length} | localStorage: ${lsLog.length}
+            Runtime: ${runtimeLog.length} | Market: ${marketLog.length} | Cache: ${cacheSettlements.length} | localStorage: ${lsLog.length}
           </span>
         </div>
         <div style="background:rgba(100,200,100,0.08);border:1px solid rgba(100,200,100,0.2);border-radius:6px;padding:10px 14px;margin-bottom:14px;font-size:11px;color:var(--color-text-muted)">
           <strong>📂 Storage Locations:</strong> Z:\\ (network) | D:\\ (local) | F:\\ (backup) | C:\\Users\\user\\AppData\\Local\\WE-CRYPTO-CACHE (local cache) | OneDrive (cloud) | localStorage (browser)
-          <br><strong>Data Sources:</strong> runtime (in-memory), kalshi (Kalshi API), cache (multi-drive), localStorage (browser storage)
+          <br><strong>Data Sources:</strong> runtime (in-memory), market (Polymarket-settled log), cache (multi-drive), localStorage (browser storage)
         </div>
         ${statBar}
         <div style="overflow-x:auto">
           <table style="width:100%;border-collapse:collapse;font-size:12px">
             <thead>
               <tr style="border-bottom:2px solid rgba(255,255,255,0.1)">
-                ${['Sym','Time','Model Dir','Outcome','✓','Model%','Kalshi%','Align','Action','Flags','Wick','Snap','Source'].map(h =>
+                ${['Sym','Time','Model Dir','Outcome','✓','Model%','Poly%','Align','Action','Flags','Wick','Snap','Source'].map(h =>
                   `<th style="padding:6px 8px;text-align:left;font-size:10px;font-weight:700;color:var(--color-text-muted);text-transform:uppercase;letter-spacing:.5px">${h}</th>`
                 ).join('')}
               </tr>

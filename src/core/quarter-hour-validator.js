@@ -1,7 +1,7 @@
 /**
  * Quarter-Hour Alignment Validator
  * 
- * Ensures all 15-minute predictions and Kalshi settlements are strictly aligned
+ * Ensures all 15-minute predictions and Polymarket settlements are strictly aligned
  * to quarter-hour boundaries (:00, :15, :30, :45 of each hour).
  * 
  * This prevents prediction/settlement timing mismatches that cause false signals.
@@ -159,7 +159,6 @@
     snapToQuarter: snapToQuarterHour,
     validateCandle: validateCandleAlignment,
     validateSettlement,
-    validateKalshiSettlement: validateSettlement,
     validateTiming: validatePredictionTiming,
     logCheck: logAlignmentCheck
   };

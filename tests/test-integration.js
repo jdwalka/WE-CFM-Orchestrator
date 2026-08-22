@@ -31,13 +31,13 @@ try {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// Test 2: Load KalshiDebugLogParser
+// Test 2: Load MarketDebugLogParser
 // ─────────────────────────────────────────────────────────────────────────
-console.log('\n[TEST 2] Loading KalshiDebugLogParser...');
+console.log('\n[TEST 2] Loading MarketDebugLogParser...');
 try {
-  const KalshiDebugLogParser = require('./src/core/kalshi-debug-parser');
-  const parser = new KalshiDebugLogParser();
-  console.log('  ✓ KalshiDebugLogParser loaded');
+  const MarketDebugLogParser = require('./src/core/market-debug-parser');
+  const parser = new MarketDebugLogParser();
+  console.log('  ✓ MarketDebugLogParser loaded');
   
   // Try to parse actual Kalshi CSV if it exists
   const csvPath = path.join(__dirname, 'Kalshi-Recent-Activity-All.csv');
@@ -58,7 +58,7 @@ try {
     console.log(`  ⚠ Kalshi CSV not found at ${csvPath} (expected for test)`);
   }
 } catch (err) {
-  console.error('  ✗ Failed to load KalshiDebugLogParser:', err.message);
+  console.error('  ✗ Failed to load MarketDebugLogParser:', err.message);
   process.exit(1);
 }
 
@@ -296,7 +296,7 @@ console.log('╚═════════════════════�
 
 console.log('Integration Status:');
 console.log('  ✓ AdaptiveLearningEngine loads and initializes');
-console.log('  ✓ KalshiDebugLogParser functional');
+console.log('  ✓ MarketDebugLogParser functional');
 console.log('  ✓ Walk-forward tuning script ready');
 console.log('  ✓ predictions.js updated for dynamic gates');
 console.log('  ✓ app.js initialized 15m tuning cycle');

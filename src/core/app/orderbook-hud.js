@@ -491,7 +491,7 @@ function initOBHud() {
       });
     }, 3000);
 
-    // Live countdown for all Kalshi contract close times — ticks every 1s
+    // Live countdown for all Polymarket contract close times — ticks every 1s
     setInterval(() => {
       document.querySelectorAll('[data-close-ms]').forEach(el => {
         const closeMs = parseInt(el.dataset.closeMs, 10);

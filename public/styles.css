@@ -1421,8 +1421,8 @@ input, select { font: inherit; color: inherit; }
 }
 .pred-source-badge.model        { background: var(--color-surface-3); color: var(--color-text); opacity: 0.9; border: 1px solid var(--color-border); }
 .pred-source-badge.kalshi       { background: rgba(79,158,255,0.12); color: var(--color-primary); border: 1px solid rgba(79,158,255,0.28); }
-.pred-source-badge.kalshi-align { background: rgba(38,212,126,0.12); color: var(--color-green);  border: 1px solid rgba(38,212,126,0.30); }
-.pred-source-badge.kalshi-fade  { background: rgba(255,75,110,0.12); color: var(--color-red);    border: 1px solid rgba(255,75,110,0.30); }
+.pred-source-badge.polymarket-align { background: rgba(38,212,126,0.12); color: var(--color-green);  border: 1px solid rgba(38,212,126,0.30); }
+.pred-source-badge.polymarket-fade  { background: rgba(255,75,110,0.12); color: var(--color-red);    border: 1px solid rgba(255,75,110,0.30); }
 .pred-source-badge.fade-badge   { background: rgba(255,152,0,0.14);  color: #ff9800;             border: 1px solid rgba(255,152,0,0.40); font-weight: 900; }
 .pred-verdict.up   .pred-source-badge.kalshi { background: rgba(38,212,126,0.14); color: var(--color-green); border-color: rgba(38,212,126,0.3); }
 .pred-verdict.down .pred-source-badge.kalshi { background: rgba(255,75,110,0.14); color: var(--color-red);   border-color: rgba(255,75,110,0.3); }

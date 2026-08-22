@@ -58,8 +58,8 @@ const CHECKS = [
     name: 'Crowd-fade is momentum-led divergence',
     file: 'src/ui/floating-orchestrator.js',
     mustMatch: [
-      /function\s+crowdFadeDir\s*\(\s*kalshiYesPrice,\s*secsLeft,\s*dirs,\s*modelDir\s*\)/,
-      /if\s*\(!kalshiDir\s*\|\|\s*kalshiDir\s*===\s*modelDir\)\s*return null;/,
+      /function\s+crowdFadeDir\s*\(\s*polymarketYesPrice,\s*secsLeft,\s*dirs,\s*modelDir\s*\)/,
+      /if\s*\(!polymarketDir\s*\|\|\s*polymarketDir\s*===\s*modelDir\)\s*return null;/,
       /return\s+modelDir;/,
     ],
     description: 'Fade direction should follow model momentum when crowd disagrees.',
@@ -67,7 +67,7 @@ const CHECKS = [
 ];
 
 console.log('\n╔════════════════════════════════════════════════════════╗');
-console.log('║   WE|||CRYPTO Kalshi 15m Validation                   ║');
+console.log('║   WE|||CRYPTO Polymarket 15m Validation               ║');
 console.log('║   Dynamic Consistency + Deployment Checks             ║');
 console.log('╚════════════════════════════════════════════════════════╝\n');
 

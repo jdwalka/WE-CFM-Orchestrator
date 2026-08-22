@@ -30,13 +30,16 @@ try { fs.mkdirSync(LOG_DIR, { recursive: true }); } catch (_) {}
 
 // ── Coins ─────────────────────────────────────────────────────────
 const PREDICTION_COINS = [
-  { sym: 'BTC', binSym: 'BTCUSDT' },
-  { sym: 'ETH', binSym: 'ETHUSDT' },
-  { sym: 'SOL', binSym: 'SOLUSDT' },
-  { sym: 'XRP', binSym: 'XRPUSDT' },
+  { sym: 'BTC', binSym: 'BTCUSDT', mexcSym: 'BTCUSDT' },
+  { sym: 'ETH', binSym: 'ETHUSDT', mexcSym: 'ETHUSDT' },
+  { sym: 'SOL', binSym: 'SOLUSDT', mexcSym: 'SOLUSDT' },
+  { sym: 'XRP', binSym: 'XRPUSDT', mexcSym: 'XRPUSDT' },
+  { sym: 'DOGE', binSym: 'DOGEUSDT', mexcSym: 'DOGEUSDT' },
+  { sym: 'BNB', binSym: 'BNBUSDT', mexcSym: 'BNBUSDT' },
+  { sym: 'HYPE', binSym: 'HYPEUSDT', mexcSym: 'HYPEUSDT' },
 ];
 
-// ── Weights (updated 2026-05-01) ──────────────────────────────────
+// ── Weights (updated 2026-08) ──────────────────────────────────────
 const COMPOSITE_WEIGHTS = {
   supertrend:0.10, hma:0.07, vwma:0.06, ema:0.05, sma:0.03, macd:0.07, persistence:0.07,
   bands:0.08, keltner:0.05, williamsR:0.07, rsi:0.06, cci:0.05, stochrsi:0.04,
@@ -46,25 +49,62 @@ const COMPOSITE_WEIGHTS = {
 const OUTER_ORBITAL_WEIGHTS = { momentum: 0.05, vwap: 0.05 };
 
 const PER_COIN_INDICATOR_BIAS = {
-  BTC: { stochrsi:1.8, vwma:1.2, volume:1.4, bands:2.5, williamsR:2.0, structure:1.4, fisher:1.3,
-         keltner:1.6, cci:1.2, cmf:1.0, rsi:0.8, macd:0.6, persistence:0.8, ema:0.5,
-         ichimoku:0.3, adx:0.3, vwap:0.2, sma:0.2, momentum:0.25, obv:0.1, hma:0.1, mfi:0.5, supertrend:0.4 },
-  ETH: { rsi:0.5, stochrsi:1.0, williamsR:1.4, bands:2.5, structure:1.4, keltner:1.2, cci:0.9,
-         fisher:0.8, cmf:0.6, volume:0.9, persistence:0.8, obv:0.5, macd:0.4, ema:0.35, sma:0.1,
-         adx:0.25, ichimoku:0.2, vwap:0.15, vwma:0.5, supertrend:0.3, mfi:0.05, momentum:0.20, hma:0.05 },
-  SOL: { bands:2.0, fisher:1.5, williamsR:4.0, hma:0.1, structure:1.2, cci:3.5, keltner:0.8,
-         obv:0.8, macd:0.3, ichimoku:0.2, adx:0.2, vwma:0.1, volume:0.2, sma:0.0, vwap:0.05,
-         rsi:0.05, persistence:0.05, ema:0.05, cmf:0.05, supertrend:0.05, momentum:0.50, mfi:0.05, stochrsi:0.05 },
-  XRP: { structure:1.0, volume:1.5, vwap:4.0, fisher:2.5, rsi:3.5, obv:1.5, williamsR:1.2,
-         bands:0.8, supertrend:0.5, cci:0.5, cmf:0.6, keltner:0.4, macd:0.3, stochrsi:0.8,
-         persistence:0.2, ema:0.2, adx:0.2, ichimoku:0.2, sma:0.0, mfi:0.1, momentum:0.01, vwma:0.05, hma:0.05 },
+  BTC: {
+    bands: 1.09, williamsR: 1.08, obv: 0.956, vwap: 1.05, hma: 0.9, momentum: 0.55,
+    stochrsi: 1.05, sma: 0.95, adx: 1.01, mfi: 1.13, supertrend: 0.942, ichimoku: 0.885,
+    keltner: 1.131, volume: 0.94, ema: 0.891, vwma: 0.86, macd: 0.91, structure: 1.158,
+    fisher: 1.08, persistence: 0.963, rsi: 0.637, cci: 1.07, cmf: 1.01, fearGreed: 1,
+    book: 0.85, flow: 0.8,
+  },
+  ETH: {
+    bands: 1.33, mfi: 1.1, sma: 0.957, adx: 1.11, supertrend: 1.069, ichimoku: 0.964,
+    hma: 0.85, vwap: 0.82, ema: 0.908, cmf: 1.1, momentum: 0.55, obv: 0.918,
+    fisher: 1.24, vwma: 0.94, macd: 0.851, cci: 1.22, rsi: 0.81, structure: 1.2,
+    persistence: 0.981, stochrsi: 1.11, williamsR: 1.3, keltner: 1.291, volume: 0.92,
+    fearGreed: 1, book: 0.9, flow: 0.85,
+  },
+  SOL: {
+    williamsR: 1.152, cci: 1.12, sma: 1.061, mfi: 1.13, rsi: 1.02, supertrend: 0.963,
+    ema: 0.876, bands: 1.18, stochrsi: 0.86, volume: 0.95, cmf: 0.8, ichimoku: 0.88,
+    persistence: 0.709, adx: 0.9, hma: 0.76, vwap: 0.7, vwma: 0.712, macd: 0.9,
+    keltner: 1.351, fisher: 1.13, momentum: 0.55, obv: 0.863, structure: 1.285,
+    fearGreed: 0.9, book: 0.75, flow: 0.7,
+  },
+  XRP: {
+    vwap: 0.98, rsi: 0.91, fisher: 0.83, hma: 1.009, mfi: 1.02, momentum: 0.55,
+    sma: 0.765, macd: 1.063, vwma: 0.803, persistence: 0.865, ichimoku: 0.859, obv: 0.809,
+    volume: 0.84, adx: 0.83, ema: 0.733, keltner: 0.947, cci: 0.936, williamsR: 0.875,
+    supertrend: 0.728, cmf: 0.84, stochrsi: 0.988, bands: 0.992, structure: 1.127,
+    fearGreed: 0.7, book: 0.606, flow: 0.556,
+  },
+  DOGE: {
+    obv: 4.5, volume: 3.5, cmf: 3, bands: 2.5, mfi: 2, structure: 1.8, fisher: 1.8,
+    keltner: 1.212, cci: 1.012, williamsR: 0.824, rsi: 0.5, persistence: 0.252, ema: 0.277,
+    macd: 0.181, ichimoku: 0.177, adx: 0.105, hma: 0.296, sma: 0, supertrend: 0.197,
+    vwap: 0.102, stochrsi: 0.068, momentum: 0.052, vwma: 0.029, fearGreed: 2,
+  },
+  BNB: {
+    sma: 5, mfi: 4.5, ema: 4, vwap: 3.5, hma: 3, vwma: 2.5, volume: 3.5, momentum: 2,
+    persistence: 2, macd: 1.5, ichimoku: 2, supertrend: 2, cmf: 1.5, obv: 0.5,
+    fisher: 0.831, cci: 0.34, adx: 0.505, structure: 0.065, keltner: 0.093,
+    williamsR: 0.089, bands: 0.093, rsi: 0.071, stochrsi: 0.089, fearGreed: 0.8,
+  },
+  HYPE: {
+    williamsR: 6.5, fisher: 5, cci: 4.5, bands: 3, keltner: 2, rsi: 1.5, stochrsi: 1.2,
+    structure: 0.8, obv: 0.5, persistence: 0.4, vwap: 0.3, ema: 0.3, cmf: 0.3,
+    adx: 0.3, ichimoku: 0.2, sma: 0, vwma: 0.2, supertrend: 0.1, momentum: 0.05,
+    hma: 0.05, macd: 0.1, volume: 0.3, mfi: 0.3, fearGreed: 1.8,
+  },
 };
 
 const BACKTEST_FILTER_OVERRIDES = {
-  BTC:  { h1:{entryThreshold:0.30,minAgreement:0.58}, h5:{entryThreshold:0.30,minAgreement:0.58}, h10:{entryThreshold:0.30,minAgreement:0.58}, h15:{entryThreshold:0.28,minAgreement:0.58} },
-  ETH:  { h1:{entryThreshold:0.30,minAgreement:0.58}, h5:{entryThreshold:0.30,minAgreement:0.58}, h10:{entryThreshold:0.30,minAgreement:0.58}, h15:{entryThreshold:0.28,minAgreement:0.58} },
-  XRP:  { h1:{entryThreshold:0.30,minAgreement:0.58}, h5:{entryThreshold:0.30,minAgreement:0.58}, h10:{entryThreshold:0.28,minAgreement:0.58}, h15:{entryThreshold:0.25,minAgreement:0.58} },
-  SOL:  { h1:{entryThreshold:0.30,minAgreement:0.58}, h5:{entryThreshold:0.30,minAgreement:0.58}, h10:{entryThreshold:0.30,minAgreement:0.58}, h15:{entryThreshold:0.25,minAgreement:0.58} },
+  BTC:  { h1:{entryThreshold:0.06,minAgreement:0.50}, h5:{entryThreshold:0.08,minAgreement:0.50}, h10:{entryThreshold:0.08,minAgreement:0.50}, h15:{entryThreshold:0.06,minAgreement:0.50} },
+  ETH:  { h1:{entryThreshold:0.06,minAgreement:0.50}, h5:{entryThreshold:0.08,minAgreement:0.50}, h10:{entryThreshold:0.08,minAgreement:0.50}, h15:{entryThreshold:0.06,minAgreement:0.50} },
+  SOL:  { h1:{entryThreshold:0.06,minAgreement:0.50}, h5:{entryThreshold:0.08,minAgreement:0.50}, h10:{entryThreshold:0.08,minAgreement:0.50}, h15:{entryThreshold:0.06,minAgreement:0.50} },
+  XRP:  { h1:{entryThreshold:0.06,minAgreement:0.50}, h5:{entryThreshold:0.08,minAgreement:0.50}, h10:{entryThreshold:0.08,minAgreement:0.50}, h15:{entryThreshold:0.06,minAgreement:0.50} },
+  DOGE: { h1:{entryThreshold:0.06,minAgreement:0.50}, h5:{entryThreshold:0.08,minAgreement:0.50}, h10:{entryThreshold:0.08,minAgreement:0.50}, h15:{entryThreshold:0.06,minAgreement:0.50} },
+  BNB:  { h1:{entryThreshold:0.06,minAgreement:0.50}, h5:{entryThreshold:0.08,minAgreement:0.50}, h10:{entryThreshold:0.08,minAgreement:0.50}, h15:{entryThreshold:0.06,minAgreement:0.50} },
+  HYPE: { h1:{entryThreshold:0.06,minAgreement:0.50}, h5:{entryThreshold:0.08,minAgreement:0.50}, h10:{entryThreshold:0.08,minAgreement:0.50}, h15:{entryThreshold:0.06,minAgreement:0.50} },
 };
 
 const SCORE_AMPLIFIER        = 1.6;
@@ -285,7 +325,8 @@ function calcCCI(candles, period) {
   if (candles.length < period) return 0;
   const slice = candles.slice(-period), tps = slice.map(c => (c.h + c.l + c.c) / 3);
   const mean = tps.reduce((s, v) => s + v, 0) / period, meanDev = tps.reduce((s, v) => s + Math.abs(v - mean), 0) / period;
-  return meanDev > 0 ? (tps[tps.length - 1] - mean) / (0.015 * meanDev) : 0;
+  // Clamped to +/-500, matching src/core/predictions.js's live calcCCI.
+  return meanDev > 0.00001 ? Math.max(-500, Math.min(500, (tps[tps.length - 1] - mean) / (0.015 * meanDev))) : 0;
 }
 
 function calcCMF(candles, period) {
@@ -505,30 +546,57 @@ function httpGet(url) {
   });
 }
 
-const KRAKEN_PAIR = { BTC: 'XXBTZUSD', ETH: 'XETHZUSD', SOL: 'SOLUSD', XRP: 'XXRPZUSD' };
-const CB_PRODUCT  = { BTC: 'BTC-USD',  ETH: 'ETH-USD',  SOL: 'SOL-USD', XRP: 'XRP-USD'  };
+const KRAKEN_PAIR = { BTC: 'XXBTZUSD', ETH: 'XETHZUSD', SOL: 'SOLUSD', XRP: 'XXRPZUSD', DOGE: 'XDGUSD' };
+const CB_PRODUCT  = { BTC: 'BTC-USD',  ETH: 'ETH-USD',  SOL: 'SOL-USD', XRP: 'XRP-USD', DOGE: 'DOGE-USD', BNB: 'BNB-USD', HYPE: 'HYPE-USD' };
 
-async function fetchBinanceUSCandles(symbol, limit = 1000, interval = '5m') {
+async function fetchBinanceCandles(symbol, limit = 1000, interval = '5m') {
   const PAGE = 1000;
-  if (limit <= PAGE) {
-    const url = `https://api.binance.us/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
-    const { status, body } = await httpGet(url);
-    if (status !== 200) throw new Error(`Binance.US HTTP ${status}`);
-    return JSON.parse(body).map(r => ({ t: Number(r[0]), o: parseFloat(r[1]), h: parseFloat(r[2]), l: parseFloat(r[3]), c: parseFloat(r[4]), v: parseFloat(r[5]) }));
+  const hosts = [
+    'https://data-api.binance.vision/api/v3',
+    'https://api.binance.us/api/v3',
+    'https://api.binance.com/api/v3',
+  ];
+
+  for (const host of hosts) {
+    try {
+      if (limit <= PAGE) {
+        const url = `${host}/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
+        const { status, body } = await httpGet(url);
+        if (status === 200) {
+          const rows = JSON.parse(body);
+          if (Array.isArray(rows) && rows.length > 0) {
+            return rows.map(r => ({ t: Number(r[0]), o: parseFloat(r[1]), h: parseFloat(r[2]), l: parseFloat(r[3]), c: parseFloat(r[4]), v: parseFloat(r[5]) }));
+          }
+        }
+      } else {
+        const pages = []; let endTime = null, remaining = limit;
+        while (remaining > 0) {
+          const fetchCount = Math.min(PAGE, remaining);
+          const url = endTime ? `${host}/klines?symbol=${symbol}&interval=${interval}&limit=${fetchCount}&endTime=${endTime}` : `${host}/klines?symbol=${symbol}&interval=${interval}&limit=${fetchCount}`;
+          const { status, body } = await httpGet(url);
+          if (status !== 200) break;
+          const rows = JSON.parse(body);
+          if (!Array.isArray(rows) || rows.length === 0) break;
+          pages.unshift(rows); endTime = Number(rows[0][0]) - 1; remaining -= rows.length;
+          if (rows.length < fetchCount) break;
+          await new Promise(r => setTimeout(r, 100));
+        }
+        if (pages.length > 0) {
+          return pages.flat().map(r => ({ t: Number(r[0]), o: parseFloat(r[1]), h: parseFloat(r[2]), l: parseFloat(r[3]), c: parseFloat(r[4]), v: parseFloat(r[5]) }));
+        }
+      }
+    } catch (_) {}
   }
-  const pages = []; let endTime = null, remaining = limit;
-  while (remaining > 0) {
-    const fetchCount = Math.min(PAGE, remaining);
-    const url = endTime ? `https://api.binance.us/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${fetchCount}&endTime=${endTime}` : `https://api.binance.us/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${fetchCount}`;
-    const { status, body } = await httpGet(url);
-    if (status !== 200) throw new Error(`Binance.US HTTP ${status}`);
-    const rows = JSON.parse(body);
-    if (!Array.isArray(rows) || rows.length === 0) break;
-    pages.unshift(rows); endTime = Number(rows[0][0]) - 1; remaining -= rows.length;
-    if (rows.length < fetchCount) break;
-    await new Promise(r => setTimeout(r, 150));
-  }
-  return pages.flat().map(r => ({ t: Number(r[0]), o: parseFloat(r[1]), h: parseFloat(r[2]), l: parseFloat(r[3]), c: parseFloat(r[4]), v: parseFloat(r[5]) }));
+  throw new Error(`Binance endpoints unreachable for ${symbol}`);
+}
+
+async function fetchMexcCandles(symbol, limit = 1000, interval = '5m') {
+  const url = `https://api.mexc.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${Math.min(1000, limit)}`;
+  const { status, body } = await httpGet(url);
+  if (status !== 200) throw new Error(`MEXC HTTP ${status}`);
+  const rows = JSON.parse(body);
+  if (!Array.isArray(rows) || rows.length === 0) throw new Error(`No MEXC data`);
+  return rows.map(r => ({ t: Number(r[0]), o: parseFloat(r[1]), h: parseFloat(r[2]), l: parseFloat(r[3]), c: parseFloat(r[4]), v: parseFloat(r[5]) }));
 }
 
 async function fetchKrakenCandles(sym, limit = 1000) {
@@ -557,7 +625,8 @@ async function fetchCoinbaseCandles(sym, limit = 300) {
 
 async function fetchCandles(coin, limit) {
   const errors = [];
-  try { return await fetchBinanceUSCandles(coin.binSym, limit); } catch(e) { errors.push(`BinanceUS: ${e.message}`); }
+  try { return await fetchBinanceCandles(coin.binSym, limit); } catch(e) { errors.push(`Binance: ${e.message}`); }
+  try { return await fetchMexcCandles(coin.mexcSym || coin.binSym, limit); } catch(e) { errors.push(`MEXC: ${e.message}`); }
   try { return await fetchKrakenCandles(coin.sym, limit); }      catch(e) { errors.push(`Kraken: ${e.message}`); }
   try { return await fetchCoinbaseCandles(coin.sym, Math.min(300, limit)); } catch(e) { errors.push(`Coinbase: ${e.message}`); }
   throw new Error(errors.join(' | '));
@@ -565,12 +634,20 @@ async function fetchCandles(coin, limit) {
 
 // Fetch 1m candles for h1/h5 analysis
 async function fetch1mCandles(coin) {
-  const url = `https://api.binance.us/api/v3/klines?symbol=${coin.binSym}&interval=1m&limit=1000`;
-  try {
-    const { status, body } = await httpGet(url);
-    if (status !== 200) return null;
-    return JSON.parse(body).map(r => ({ t: Number(r[0]), o: parseFloat(r[1]), h: parseFloat(r[2]), l: parseFloat(r[3]), c: parseFloat(r[4]), v: parseFloat(r[5]) }));
-  } catch(_) { return null; }
+  const hosts = ['https://data-api.binance.vision/api/v3', 'https://api.binance.us/api/v3', 'https://api.binance.com/api/v3'];
+  for (const host of hosts) {
+    const url = `${host}/klines?symbol=${coin.binSym}&interval=1m&limit=1000`;
+    try {
+      const { status, body } = await httpGet(url);
+      if (status === 200) {
+        const rows = JSON.parse(body);
+        if (Array.isArray(rows) && rows.length > 0) {
+          return rows.map(r => ({ t: Number(r[0]), o: parseFloat(r[1]), h: parseFloat(r[2]), l: parseFloat(r[3]), c: parseFloat(r[4]), v: parseFloat(r[5]) }));
+        }
+      }
+    } catch(_) {}
+  }
+  return null;
 }
 
 // ── Core backtest runner (per-coin, per-horizon) ──────────────────

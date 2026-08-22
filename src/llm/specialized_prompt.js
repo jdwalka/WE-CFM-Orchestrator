@@ -191,24 +191,24 @@ Sustained 0.6-0.75 or 0.25-0.4 = trend confirmation
     },
   },
 
-  KalshiPercent: {
-    name: "Kalshi Market Probability",
+  PolymarketPercent: {
+    name: "Polymarket Market Probability",
     range: [0, 1],
     interpretation: `
-Kalshi % is the CROWD's aggregate probability
-Kalshi % > 0.65: Crowd strongly bullish (YES votes concentrated)
-Kalshi % 0.55-0.65: Crowd moderately bullish
-Kalshi % 0.45-0.55: Crowd indecisive (near 50/50)
-Kalshi % 0.35-0.45: Crowd moderately bearish
-Kalshi % < 0.35: Crowd strongly bearish (NO votes concentrated)
+Polymarket % is the CROWD's aggregate probability
+Polymarket % > 0.65: Crowd strongly bullish (YES votes concentrated)
+Polymarket % 0.55-0.65: Crowd moderately bullish
+Polymarket % 0.45-0.55: Crowd indecisive (near 50/50)
+Polymarket % 0.35-0.45: Crowd moderately bearish
+Polymarket % < 0.35: Crowd strongly bearish (NO votes concentrated)
 
-DIVERGENCE: If model says UP but Kalshi <45% = major conflict
-If model says DOWN but Kalshi >55% = major conflict
+DIVERGENCE: If model says UP but Polymarket <45% = major conflict
+If model says DOWN but Polymarket >55% = major conflict
 These conflicts often signal reversal or model error
 
 USE: Cross-check model predictions
-High Kalshi alignment = high confidence trade
-Low Kalshi alignment = hedge or reduce size
+High Polymarket alignment = high confidence trade
+Low Polymarket alignment = hedge or reduce size
     `.trim(),
     historicalWinRate: {
       trend_continuation: 0.58,
@@ -222,8 +222,8 @@ Low Kalshi alignment = hedge or reduce size
     name: "Crowd Fade (Contrarian)",
     interpretation: `
 Crowd Fade = opposite of crowd bias
-High Fade signal when Kalshi extreme but price stalled
-Example: Kalshi 85% YES, but price near open → potential SHORT
+High Fade signal when Polymarket extreme but price stalled
+Example: Polymarket 85% YES, but price near open → potential SHORT
 
 THEORY: Crowds cluster at extremes, then markets reverse
 Strongest in mean reversion regimes
@@ -267,7 +267,7 @@ Boost weights: Fisher (+15%), CCI (+12%), CrowdFade (+10%), RSI (+8%)
 Reduce weights: MACD (-15%), ADX (-20%)
 Confidence gates: LOOSE (60%)
 Watch for RSI/CCI divergences (price new high/low, indicator doesn't)
-Fade extreme Kalshi readings (>85% or <15%)
+Fade extreme Polymarket readings (>85% or <15%)
     `.trim(),
   },
 
@@ -307,7 +307,7 @@ Watch for false breakouts (RSI >90 often reverses)
 function generateSystemPrompt(horizonMinutes = 15) {
   const horizon = Number(horizonMinutes) > 0 ? Number(horizonMinutes) : 15;
   return `You are an elite crypto trading regime analyst for the WE CFM Orchestrator.
-Analyze the market snapshot in the context of a ${horizon}-minute Kalshi contract window, not a multi-hour swing trade.
+Analyze the market snapshot in the context of a ${horizon}-minute Polymarket contract window, not a multi-hour swing trade.
 
 Return ONLY valid JSON with this exact structure:
 {
@@ -345,7 +345,7 @@ Rules:
 - Keep suggestions conservative (small per-cycle nudges only).
 - This layer is advisory only: do not override, rename, or replace the model's final direction.
 - In suggestions.notes, explicitly mention:
-  1. whether the house / Kalshi price looks mispriced, fairly priced, or has no edge,
+  1. whether the house / Polymarket price looks mispriced, fairly priced, or has no edge,
   2. whether the play is contrarian to the crowd, aligned with crowd momentum, or too crowded to chase,
   3. whether the entry is fresh, mature, or late for this ${horizon}-minute window,
   4. the best play right now: buy YES, buy NO, wait, crowd-fade, scalp, or buy then sell early into repricing,
@@ -528,7 +528,7 @@ Return strict JSON only in the required schema.`;
 
 /**
  * 5-MINUTE BINARY PTB (polycool.app / Polymarket) PRICE-TO-BEAT PROMPTS (powered by Grok/xAI)
- * Distinct from the 15-minute Kalshi prompts: these frame the task as a 5-minute
+ * Distinct from the 15-minute Polymarket prompts: these frame the task as a 5-minute
  * binary UP/DOWN settlement against an immutable Chainlink-backed price-to-beat.
  * Same JSON schema so normalizeResponse() consumes both identically.
  */
@@ -1196,10 +1196,10 @@ function checkCCIDivergence(cci, rsi) {
   return "None detected";
 }
 
-function calculateCrowdFade(kalshiPercent) {
-  if (!kalshiPercent) return "Unknown";
-  if (kalshiPercent > 0.75 || kalshiPercent < 0.25) return "STRONG (fade this)";
-  if (kalshiPercent > 0.65 || kalshiPercent < 0.35) return "MODERATE";
+function calculateCrowdFade(polymarketPercent) {
+  if (!polymarketPercent) return "Unknown";
+  if (polymarketPercent > 0.75 || polymarketPercent < 0.25) return "STRONG (fade this)";
+  if (polymarketPercent > 0.65 || polymarketPercent < 0.35) return "MODERATE";
   return "WEAK (near 50/50, ignore)";
 }
 

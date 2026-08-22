@@ -228,7 +228,7 @@ class AdaptiveWeightRestorer {
       vwapThreshold: 0.6,
       emaWeight: 1.0,
       obvMomentum: 0.7,
-      kalshiBias: 0.5,
+      polymarketBias: 0.5,
     };
 
     const weights = {};
@@ -249,7 +249,7 @@ class AdaptiveWeightRestorer {
         vwapThreshold: DEFAULT_WEIGHTS.vwapThreshold * (0.8 + trend * 0.4),
         emaWeight: DEFAULT_WEIGHTS.emaWeight * (0.8 + trend * 0.4),
         obvMomentum: DEFAULT_WEIGHTS.obvMomentum * (0.8 + trend * 0.4),
-        kalshiBias: DEFAULT_WEIGHTS.kalshiBias * (0.5 + winRate * 1.0),
+        polymarketBias: DEFAULT_WEIGHTS.polymarketBias * (0.5 + winRate * 1.0),
       };
     }
 

@@ -1,21 +1,21 @@
 /**
  * ================================================================
  * Adaptive Learning Integration Layer
- * Orchestrates: Walk-forward tuning + Kalshi DEBUG LOG + Snapshot tuning
+ * Orchestrates: Walk-forward tuning + Market DEBUG LOG + Snapshot tuning
  * Runs every 15m candle close + 1h for snapshots for dynamic weight adjustments
  * ================================================================
  */
 
 // SafeGuard: These are Node.js modules, only load in Node.js environment
 const AdaptiveTuner = (typeof require !== 'undefined') ? require('./adaptive-tuner') : null;
-const KalshiDebugLogParser = (typeof require !== 'undefined') ? require('./kalshi-debug-parser') : null;
+const MarketDebugLogParser = (typeof require !== 'undefined') ? require('./market-debug-parser') : null;
 const SnapshotTuner = (typeof require !== 'undefined') ? require('./snapshot-tuner') : null;
 const RealTimeTuner = (typeof require !== 'undefined') ? require('./realtime-tuner') : null;
 
 class AdaptiveLearningEngine {
   constructor() {
     this.tuner = new AdaptiveTuner();
-    this.kalshiParser = new KalshiDebugLogParser();
+    this.marketParser = new MarketDebugLogParser();
     this.snapshotTuner = new SnapshotTuner();
     this.realtimeTuner = new RealTimeTuner();
     this.tuningHistory = [];
@@ -198,14 +198,14 @@ class AdaptiveLearningEngine {
       stages: {},
     };
 
-    // ── Stage 1: Parse Kalshi DEBUG LOG ──
-    console.log('[AdaptiveLearning] Stage 1: Parsing Kalshi DEBUG LOG...');
+    // ── Stage 1: Parse Market DEBUG LOG ──
+    console.log('[AdaptiveLearning] Stage 1: Parsing Market DEBUG LOG...');
     try {
-      this.kalshiParser.parseCSV();
-      const analysis = this.kalshiParser.analyzeRecentFailures(120);
-      const retuningNeeds = this.kalshiParser.detectRetuningNeeds();
+      this.marketParser.parseCSV();
+      const analysis = this.marketParser.analyzeRecentFailures(120);
+      const retuningNeeds = this.marketParser.detectRetuningNeeds();
 
-      results.stages.kalshiAnalysis = {
+      results.stages.marketAnalysis = {
         totalTrades: analysis.totalTrades,
         failuresDetected: retuningNeeds.length,
         coins: analysis.byCoins,
@@ -219,23 +219,23 @@ class AdaptiveLearningEngine {
         });
       }
     } catch (err) {
-      console.warn('[AdaptiveLearning] Kalshi parsing failed:', err.message);
-      results.stages.kalshiAnalysis = { error: err.message };
+      console.warn('[AdaptiveLearning] Market parsing failed:', err.message);
+      results.stages.marketAnalysis = { error: err.message };
     }
 
-    // ── Stage 2: Run adaptive tuning with Kalshi data ──
+    // ── Stage 2: Run adaptive tuning with market data ──
     console.log('[AdaptiveLearning] Stage 2: Running adaptive tuning recommendations...');
     try {
       const tuningResults = await this.tuner.runTuningCycle({
         validatePyth: true,
         dryRun: false,  // Apply changes immediately
-        kalshiParser: this.kalshiParser,
+        marketParser: this.marketParser,
       });
 
       results.stages.tuningCycle = {
         adjustmentsApplied: tuningResults.totalAdjustments,
         coins: tuningResults.coins,
-        kalshiTriggeredCount: tuningResults.coins.filter(c => c.kalshiTriggered).length,
+        marketTriggeredCount: tuningResults.coins.filter(c => c.marketTriggered).length,
       };
 
       if (tuningResults.totalAdjustments > 0) {
@@ -244,7 +244,7 @@ class AdaptiveLearningEngine {
           if (c.applied) {
             console.log(
               `  ${c.coin}: ${c.recommendation.action} to ${c.recommendation.newThreshold} ` +
-              `(${c.kalshiTriggered ? 'Kalshi-triggered' : 'internal'})`
+              `(${c.marketTriggered ? 'Market-triggered' : 'internal'})`
             );
           }
         });
@@ -267,17 +267,17 @@ class AdaptiveLearningEngine {
   }
 
   /**
-   * Get real-time Kalshi trade status for UI
+   * Get real-time market trade status for UI
    * Shows recent wins/losses and coins flagged for retuning
    */
-  getKalshiStatus() {
+  getMarketStatus() {
     try {
-      const recentTrades = this.kalshiParser.getTradeLog(10);
-      const retuningNeeds = this.kalshiParser.detectRetuningNeeds();
-      const recommendations = this.kalshiParser.generateTuningRecommendations();
+      const recentTrades = this.marketParser.getTradeLog(10);
+      const retuningNeeds = this.marketParser.detectRetuningNeeds();
+      const recommendations = this.marketParser.generateTuningRecommendations();
 
       return {
-        lastUpdate: new Date(this.kalshiParser.lastParsedTime).toISOString(),
+        lastUpdate: new Date(this.marketParser.lastParsedTime).toISOString(),
         recentTrades,
         retuningNeeds,
         recommendations: recommendations.recommendedActions,
@@ -607,9 +607,9 @@ class AdaptiveLearningEngine {
         baselineGates: this.tuner.baselineGates,
         tuningLog: this.tuner.tuningLog,
       },
-      kalshi: {
-        recentTrades: this.kalshiParser.trades.slice(-50),
-        retuningNeeds: this.kalshiParser.detectRetuningNeeds(),
+      market: {
+        recentTrades: this.marketParser.trades.slice(-50),
+        retuningNeeds: this.marketParser.detectRetuningNeeds(),
       },
       tuningHistory: this.tuningHistory.slice(-20),
     };
@@ -655,7 +655,7 @@ setInterval(async () => {
 // 3. Get status for UI
 app.get('/api/adaptive-status', (req, res) => {
   res.json({
-    kalshi: adaptiveEngine.getKalshiStatus(),
+    market: adaptiveEngine.getMarketStatus(),
     tuning: adaptiveEngine.getTuningStatus(),
   });
 });

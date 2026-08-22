@@ -20,7 +20,7 @@
 
   const {
     predictionCard, normalizePredictionCardData, getPredictionCoinMeta, 
-    buildKalshiDebugPanel, buildQuickDecisionPanel, getDecisionRationale,
+    buildMarketDebugPanel, buildQuickDecisionPanel, getDecisionRationale,
     computeQuickMACD, formatSuborbital, evaluateSignal, buildCoinPeriodicTable,
     computeEntryQuality, detectMarketRegime, computeGroundState, buildOpportunitiesPanel,
     buildFifteenMinuteMovePlan, countConfirmingSignals, calcEdge, buildNarrativeCallouts,
@@ -33,7 +33,7 @@ async function restoreLogsFromBackupIfNeeded() {
     try {
       const hasLocalLogs =
         (Array.isArray(window._predLog) && window._predLog.length > 0) ||
-        (Array.isArray(window._kalshiLog) && window._kalshiLog.length > 0) ||
+        (Array.isArray(window._marketSettlementLog) && window._marketSettlementLog.length > 0) ||
         (Array.isArray(window._kalshiErrors) && window._kalshiErrors.length > 0) ||
         (Array.isArray(window._orchLog) && window._orchLog.length > 0);
 
@@ -47,18 +47,18 @@ async function restoreLogsFromBackupIfNeeded() {
 
         const parsed = JSON.parse(res.content);
         window._predLog = capArray(parsed.predLog);
-        window._kalshiLog = capArray(parsed.kalshiLog);
+        window._marketSettlementLog = capArray(parsed.marketLog);
         window._kalshiErrors = capArray(parsed.kalshiErrors);
         window._orchLog = capArray(parsed.orchLog);
-        window._kalshiPredictionTrail = capTrailMap(parsed.kalshiTrail);
+        window._marketPredictionTrail = capTrailMap(parsed.marketTrail);
         capRuntimeLogs();
 
         try {
           localStorage.setItem(PRED_LOG_STORE, JSON.stringify(window._predLog));
-          localStorage.setItem(KALSHI_LOG_STORE, JSON.stringify(window._kalshiLog));
+          localStorage.setItem(MARKET_LOG_STORE, JSON.stringify(window._marketSettlementLog));
           localStorage.setItem(KALSHI_ERR_STORE, JSON.stringify(window._kalshiErrors));
           localStorage.setItem(ORCH_LOG_STORE, JSON.stringify(window._orchLog));
-          localStorage.setItem(KALSHI_TRAIL_STORE, JSON.stringify(window._kalshiPredictionTrail));
+          localStorage.setItem(MARKET_TRAIL_STORE, JSON.stringify(window._marketPredictionTrail));
         } catch (err) { console.error('[Error caught]', err);  }
 
         console.log(`[LogBackup] Restored logs from ${fp}`);

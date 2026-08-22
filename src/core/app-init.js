@@ -25,11 +25,11 @@ window._lastPrediction = window._lastPrediction || {};
 
 window._predLog = window._predLog || [];
 
-window._kalshiLog = window._kalshiLog || [];
+window._marketSettlementLog = window._marketSettlementLog || [];
 
-window._lastKalshiSnapshot = window._lastKalshiSnapshot || {};
+window._lastMarketSnapshot = window._lastMarketSnapshot || {};
 
-window._kalshiPredictionTrail = window._kalshiPredictionTrail || {};
+window._marketPredictionTrail = window._marketPredictionTrail || {};
 
 window._kalshiErrors = window._kalshiErrors || [];
 
@@ -45,12 +45,12 @@ window._orchLog = window._orchLog || [];
     };
 
     try { const r = localStorage.getItem(PRED_LOG_STORE); if (r && !shouldClearOldLogs(r)) window._predLog = JSON.parse(r); else localStorage.removeItem(PRED_LOG_STORE); } catch (e) { }
-    try { localStorage.removeItem(KALSHI_LOG_STORE); } catch (e) { }
+    try { localStorage.removeItem(MARKET_LOG_STORE); } catch (e) { }
     try { const r = localStorage.getItem(LAST_PRED_STORE); if (r) window._lastPrediction = JSON.parse(r); } catch (e) { }
-    try { localStorage.removeItem(LAST_KALSHI_STORE); window._lastKalshiSnapshot = {}; } catch (e) { }
+    try { localStorage.removeItem(LAST_MARKET_STORE); window._lastMarketSnapshot = {}; } catch (e) { }
     try { localStorage.removeItem(KALSHI_ERR_STORE); window._kalshiErrors = []; } catch (e) { }
     try { const r = localStorage.getItem(ORCH_LOG_STORE); if (r) window._orchLog = JSON.parse(r); } catch (e) { }
-    try { localStorage.removeItem(KALSHI_TRAIL_STORE); window._kalshiPredictionTrail = {}; } catch (e) { }
+    try { localStorage.removeItem(MARKET_TRAIL_STORE); window._marketPredictionTrail = {}; } catch (e) { }
     try {
       const r = localStorage.getItem(TRADE_BELL_STORE);
       if (r == null) {
@@ -161,7 +161,7 @@ window._journalPending = window._journalPending || {};
 
 bindTradeBellUnlock();
 
-window.KalshiForensics = {
+window.MarketForensics = {
     parseCsv: parseForensicsCsv,
     identifySuspects: identifySuspectContracts,
     replay: replayCollapsedContractsIncident,
@@ -295,7 +295,7 @@ window.addEventListener('candleWS:bucketClosed', (e) => {
     savePredLog();
 
     // Kalshi settlement tracker retired (Polymarket-only).
-    if (window._lastKalshiSnapshot?.[sym]) delete window._lastKalshiSnapshot[sym];
+    if (window._lastMarketSnapshot?.[sym]) delete window._lastMarketSnapshot[sym];
     if (false) {
     const kSnap = window._lastKalshiSnapshot[sym];
     if (kSnap?.ref != null && kSnap.ts <= bucketClose) {
@@ -569,17 +569,17 @@ window.addEventListener('poly5m:resolved', (e) => {
 
 window.addEventListener('market15m:resolved', (e) => {
     const {
-      sym, outcome, kalshiResult, modelCorrect, marketCorrect, ticker,
+      sym, outcome, marketResult, modelCorrect, marketCorrect, ticker,
       refPrice, floorPrice, strikeDir, cbSettlePrice,
       settlementAuthority, canonical, schemaVersion,
     } = e.detail || {};
     if (!sym || !outcome) return;
 
-    // outcome arrives as 'UP'|'DOWN' — translate to 'YES'|'NO' for _kalshiLog
+    // outcome arrives as 'UP'|'DOWN' — translate to 'YES'|'NO' for _marketSettlementLog
     const authOutcomeYN = outcome === 'UP' ? 'YES' : 'NO';
 
     console.log(
-      `[KalshiTracker] 🏁 market15m:resolved ${sym}: result=${kalshiResult} → ${outcome}(${authOutcomeYN}) ` +
+      `[MarketTracker] 🏁 market15m:resolved ${sym}: result=${marketResult} → ${outcome}(${authOutcomeYN}) ` +
       `floor_price=${floorPrice ?? refPrice} strike=${strikeDir ?? 'above'} ` +
       `cbSettle=${cbSettlePrice} ` +
       `model=${modelCorrect ? '✓' : modelCorrect === false ? '✗' : '?'} ` +
@@ -587,8 +587,8 @@ window.addEventListener('market15m:resolved', (e) => {
     );
 
     // Walk backwards — most recent unsettled entry for this sym/ticker
-    for (let i = window._kalshiLog.length - 1; i >= 0; i--) {
-      const entry = window._kalshiLog[i];
+    for (let i = window._marketSettlementLog.length - 1; i >= 0; i--) {
+      const entry = window._marketSettlementLog[i];
       if (entry.sym !== sym) continue;
       if (entry._settled) continue;
       if (ticker && entry.ticker && ticker !== entry.ticker) continue;
@@ -598,8 +598,8 @@ window.addEventListener('market15m:resolved', (e) => {
       if (proxyMismatch) {
         const isFalseWick = entry._wickStraddle || entry._nearRef;
         console.warn(
-          `[KalshiTracker] ⚠️ PROXY MISMATCH ${sym}: ` +
-          `proxy='${entry.outcome}' → auth='${authOutcomeYN}' (Kalshi ${kalshiResult}) ` +
+          `[MarketTracker] ⚠️ PROXY MISMATCH ${sym}: ` +
+          `proxy='${entry.outcome}' → auth='${authOutcomeYN}' (Market ${marketResult}) ` +
           `close=${entry.closePrice} floor_price=${floorPrice ?? refPrice ?? entry.ref} ` +
           `strike=${strikeDir ?? 'above'} gap=${entry.refDiffPct}% ` +
           `cbSettle=${cbSettlePrice} ${isFalseWick ? '← WICK/NEAR-REF CAUSED THIS' : ''} ` +
@@ -607,7 +607,7 @@ window.addEventListener('market15m:resolved', (e) => {
         );
         logContractError('proxy_mismatch', sym, {
           ticker, proxy: entry.outcome, authoritative: authOutcomeYN,
-          kalshiResult,
+          marketResult,
           refPrice: floorPrice ?? refPrice ?? entry.ref,  // floor_price preferred
           floorPrice: floorPrice ?? null,
           strikeDir: strikeDir ?? 'above',
@@ -635,8 +635,8 @@ window.addEventListener('market15m:resolved', (e) => {
       entry._floorPrice = floorPrice ?? null;
       entry._strikeDir = strikeDir ?? 'above';
       entry._cbSettlePrice = cbSettlePrice ?? null;
-      entry._kalshiResult = kalshiResult ?? null;  // raw 'yes'/'no'
-      entry._settlementAuthority = settlementAuthority || 'kalshi_api';
+      entry._marketResult = marketResult ?? null;  // raw 'yes'/'no'
+      entry._settlementAuthority = settlementAuthority || 'polymarket_api';
       entry._canonical = canonical === true;
       entry._resolverSchemaVersion = schemaVersion || 'resolver.v1';
       entry.settledTs = entry.settledTs || Date.now();
@@ -698,7 +698,7 @@ window.addEventListener('market15m:resolved', (e) => {
         }
       }
 
-      saveKalshiLog();
+      saveMarketLog();
       if (currentView === 'predictions' && predsLoaded) updateAccuracyBadge();
       break;
     }
@@ -759,7 +759,7 @@ window.addEventListener('predictionmarketsready', () => {
     if (_pmReadyDebounceTimer) return; // Prevent clearing the timer so it actually fires
 
     // Throttle UI redraws to at most once every 5 seconds to prevent "frozen/unclickable" UI
-    // caused by Kalshi WebSocket ticks constantly wiping the DOM.
+    // caused by Polymarket WebSocket ticks constantly wiping the DOM.
     const now = Date.now();
     const timeSinceLast = now - (_lastPmReadyRefresh || 0);
     const waitTime = timeSinceLast >= 5000 ? 0 : 5000 - timeSinceLast;
@@ -769,7 +769,7 @@ window.addEventListener('predictionmarketsready', () => {
       _lastPmReadyRefresh = Date.now();
 
       if (currentView === 'markets5m') renderMarkets5M();
-      // Re-render prediction cards when Kalshi data arrives - ensures new contracts
+      // Re-render prediction cards when Polymarket data arrives - ensures new contracts
       // appear immediately when the burst-retry fetches them instead of waiting
       // for the next PredictionEngine.runAll() cycle (up to 15s later).
       if (['predictions', 'cfm', 'universe'].includes(currentView) && predsLoaded && !predictionRunInFlight) {
@@ -977,24 +977,24 @@ initOBHud();
 
 })();
 
-window.KalshiDebug = {
-    audit: sym => (window._kalshiLog || []).filter(e => !sym || e.sym === sym),
+window.MarketDebug = {
+    audit: sym => (window._marketSettlementLog || []).filter(e => !sym || e.sym === sym),
     errors: () => (window._kalshiErrors || []),
     pending: () => window.MarketResolver?.getPending?.() ?? [],
-    last: sym => (window._lastKalshiSnapshot || {})[sym] ?? null,
-    contract: sym => (window._kalshiLog || []).filter(e => e.sym === sym).slice(-1)[0] ?? null,
-    trail: sym => Object.values(window._kalshiPredictionTrail || {}).filter(t => !sym || t.sym === sym),
+    last: sym => (window._lastMarketSnapshot || {})[sym] ?? null,
+    contract: sym => (window._marketSettlementLog || []).filter(e => e.sym === sym).slice(-1)[0] ?? null,
+    trail: sym => Object.values(window._marketPredictionTrail || {}).filter(t => !sym || t.sym === sym),
     orch: sym => sym ? (window._orchLog || []).filter(e => e.sym === sym).slice(-5)
       : (window._orchLog || []).slice(-20),
-    liveOrch: sym => window.KalshiOrchestrator?.getIntent?.(sym) ?? null,
+    liveOrch: sym => window.PolymarketOrchestrator?.getIntent?.(sym) ?? null,
     scorecard: () => {
       const out = {};
       (typeof PREDICTION_COINS !== 'undefined' ? PREDICTION_COINS : []).forEach(c => {
-        // Check BOTH _kalshiLog AND multi-drive cache
-        const kalshiSettlements = (window._kalshiLog || []).filter(x => x.sym === c.sym && x._settled);
+        // Check BOTH _marketSettlementLog AND multi-drive cache
+        const marketSettlements = (window._marketSettlementLog || []).filter(x => x.sym === c.sym && x._settled);
         const cacheSettlements = window.MultiDriveCache?.data?.settlements?.filter(s => s.coin === c.sym) || [];
 
-        const allSettlements = [...kalshiSettlements, ...cacheSettlements];
+        const allSettlements = [...marketSettlements, ...cacheSettlements];
 
         if (!allSettlements.length) {
           out[c.sym] = { n: 0, source: 'none' };
@@ -1003,21 +1003,21 @@ window.KalshiDebug = {
 
         // Count correct predictions from both sources
         const mOk = allSettlements.filter(x => {
-          // Check modelCorrect from Kalshi log or cache settlement
+          // Check modelCorrect from market log or cache settlement
           return x.modelCorrect === true || (x.modelCorrect !== false && x.modelCorrect !== null);
         }).length;
 
-        const fE = kalshiSettlements.filter(x => x.fadeActive && x.fadeCorrect !== null);
+        const fE = marketSettlements.filter(x => x.fadeActive && x.fadeCorrect !== null);
         const fOk = fE.filter(x => x.fadeCorrect === true).length;
 
         out[c.sym] = {
           n: allSettlements.length,
-          kalshiN: kalshiSettlements.length,
+          marketN: marketSettlements.length,
           cacheN: cacheSettlements.length,
           modelPct: Math.round(mOk / allSettlements.length * 100),
           fadePct: fE.length ? Math.round(fOk / fE.length * 100) : null,
           fadeN: fE.length,
-          source: 'kalshi+cache'
+          source: 'market+cache'
         };
       });
       return out;
@@ -1029,20 +1029,20 @@ window.KalshiDebug = {
       return { status, accuracy };
     },
     missedOpps: () => window.MarketResolver?.getMissedOpps?.() ?? [],
-    suspects: (opts = {}) => window.KalshiForensics?.identifySuspects?.(opts)
-      ?? { error: 'KalshiForensics unavailable' },
-    replayIncident: (opts = {}) => window.KalshiForensics?.replay?.(opts)
-      ?? { error: 'KalshiForensics unavailable' },
-    replayTrade: (suspect, opts = {}) => window.KalshiForensics?.replayTrade?.(suspect, opts)
-      ?? { error: 'KalshiForensics unavailable' },
-    classifyTrade: suspect => window.KalshiForensics?.classify?.(suspect)
-      ?? { error: 'KalshiForensics unavailable' },
-    clearOrch: () => { window._orchLog = []; saveOrchLog(); console.log('[KalshiDebug] _orchLog cleared'); },
-    clearTrail: () => { window._kalshiPredictionTrail = {}; saveKalshiTrail(); console.log('[KalshiDebug] 2m prediction trail cleared'); },
+    suspects: (opts = {}) => window.MarketForensics?.identifySuspects?.(opts)
+      ?? { error: 'MarketForensics unavailable' },
+    replayIncident: (opts = {}) => window.MarketForensics?.replay?.(opts)
+      ?? { error: 'MarketForensics unavailable' },
+    replayTrade: (suspect, opts = {}) => window.MarketForensics?.replayTrade?.(suspect, opts)
+      ?? { error: 'MarketForensics unavailable' },
+    classifyTrade: suspect => window.MarketForensics?.classify?.(suspect)
+      ?? { error: 'MarketForensics unavailable' },
+    clearOrch: () => { window._orchLog = []; saveOrchLog(); console.log('[MarketDebug] _orchLog cleared'); },
+    clearTrail: () => { window._marketPredictionTrail = {}; saveMarketTrail(); console.log('[MarketDebug] 2m prediction trail cleared'); },
     dump: sym => ({
-      snapshot: (window._lastKalshiSnapshot || {})[sym],
-      log: (window._kalshiLog || []).filter(e => e.sym === sym).slice(-5),
-      trail: Object.values(window._kalshiPredictionTrail || {}).filter(t => t.sym === sym).slice(-5),
+      snapshot: (window._lastMarketSnapshot || {})[sym],
+      log: (window._marketSettlementLog || []).filter(e => e.sym === sym).slice(-5),
+      trail: Object.values(window._marketPredictionTrail || {}).filter(t => t.sym === sym).slice(-5),
       orch: (window._orchLog || []).filter(e => e.sym === sym).slice(-5),
       resolved: (window._15mResolutionLog || []).filter(e => e.sym === sym).slice(-3),
       cache: {
@@ -1053,7 +1053,7 @@ window.KalshiDebug = {
     }),
   };
 
-console.log('[KalshiDebug] API ready — KalshiDebug.audit(sym) .trail(sym) .orch(sym) .scorecard() .suspects(opts) .replayIncident(opts) .dump(sym)');
+console.log('[MarketDebug] API ready — MarketDebug.audit(sym) .trail(sym) .orch(sym) .scorecard() .suspects(opts) .replayIncident(opts) .dump(sym)');
 
 window.ContractCacheDebug = {
     status: () => window._contractCache?.getStatus?.() ?? { error: 'Cache not initialized' },

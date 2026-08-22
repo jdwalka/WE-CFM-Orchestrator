@@ -10,7 +10,7 @@
  *   GET  /api/signals            → Live signals (color-coded)
  *   GET  /api/settlements        → All settlement records
  *   GET  /api/stats              → Win rates by coin
- *   GET  /api/kalshi-markets     → Current Kalshi contract prices
+ *   GET  /api/polymarket-markets → Current Polymarket contract prices
  *   GET  /api/network-status     → Real-time network congestion metrics
  *   WS   /ws                     → WebSocket for live updates
  */
@@ -112,7 +112,7 @@ function getStateMeta() {
     counts: {
       predictions: Object.keys(state.predictions || {}).length,
       signals: Object.keys(state.signals || {}).length,
-      kalshi_markets: Object.keys(state.kalshiMarkets || {}).length,
+      polymarket_markets: Object.keys(state.polymarketMarkets || {}).length,
     },
   };
 }
@@ -126,7 +126,7 @@ function buildLiveDebugScript(symbols) {
       activeCoins: (window.PREDICTION_COINS || []).map(c => c?.sym).filter(Boolean),
       hasPredictions: !!window._predictions,
       hasPredictionMarkets: !!window.PredictionMarkets,
-      hasOrchestrator: !!window.KalshiOrchestrator,
+      hasOrchestrator: !!window.PolymarketOrchestrator,
       startupLogTail: window.__WECRYPTO_STARTUP?.getLog?.()?.slice(-12) || [],
       coins: {},
     };
@@ -134,7 +134,7 @@ function buildLiveDebugScript(symbols) {
     syms.forEach(sym => {
       const pred = window._predictions?.[sym] || null;
       const market = window.PredictionMarkets?.getCoin?.(sym) || null;
-      const intent = window.KalshiOrchestrator?.getIntent?.(sym) || null;
+      const intent = window.PolymarketOrchestrator?.getIntent?.(sym) || null;
       const cfmAll = window._cfmAll || window.CFMEngine?.getAll?.() || window._cfm || {};
       const cfm = cfmAll?.[sym] || null;
 
@@ -146,7 +146,7 @@ function buildLiveDebugScript(symbols) {
           confidence: pred.confidence ?? null,
           price: pred.price ?? null,
           tapeVelocity: pred.diagnostics?.tapeVelocity || null,
-          kalshiAlign: pred.projections?.p15?.kalshiAlign || null,
+          polyAlign: pred.projections?.p15?.polyAlign || null,
           diagnostics: {
             agreement: pred.diagnostics?.agreement ?? null,
             conflict: pred.diagnostics?.conflict ?? null,
@@ -296,11 +296,11 @@ function startWebService() {
   });
 
   /**
-   * GET /api/kalshi-markets
-   * Current Kalshi contract prices and odds
+   * GET /api/polymarket-markets
+   * Current Polymarket contract prices and odds
    */
-  app.get('/api/kalshi-markets', (req, res) => {
-    const markets = global.WECRYPTO_STATE?.kalshiMarkets || {};
+  app.get('/api/polymarket-markets', (req, res) => {
+    const markets = global.WECRYPTO_STATE?.polymarketMarkets || {};
 
     res.json({
       success: true,
@@ -881,7 +881,7 @@ function getWebUIHTML() {
   <div class="container">
     <header>
       <h1>🚀 WECRYPTO Orchestrator</h1>
-      <p class="subtitle">Real-time Kalshi 15-minute prediction engine</p>
+      <p class="subtitle">Real-time Polymarket 15-minute prediction engine</p>
     </header>
 
     <div class="grid">
@@ -904,9 +904,9 @@ function getWebUIHTML() {
         <div class="stat-value" id="avg-confidence">—</div>
       </div>
 
-      <!-- Kalshi Markets -->
+      <!-- Polymarket Markets -->
       <div class="card">
-        <h3>💰 Kalshi Markets (15m)</h3>
+        <h3>💰 Polymarket Markets (15m)</h3>
         <div class="markets-grid" id="markets-container">
           <div style="color: #888;">Loading...</div>
         </div>
@@ -1026,8 +1026,8 @@ function getWebUIHTML() {
       }
 
       // Update markets
-      if (state.kalshiMarkets) {
-        const html = Object.entries(state.kalshiMarkets).map(([market, data]) => {
+      if (state.polymarketMarkets) {
+        const html = Object.entries(state.polymarketMarkets).map(([market, data]) => {
           return \`
             <div class="market">
               <div class="market-name">\${market}</div>
@@ -1071,7 +1071,7 @@ function getWebUIHTML() {
         const [signalsRes, statsRes, marketsRes, networkRes, statusRes] = await Promise.all([
           fetch('/api/signals'),
           fetch('/api/stats'),
-          fetch('/api/kalshi-markets'),
+          fetch('/api/polymarket-markets'),
           fetch('/api/network-status'),
           fetch('/api/status')
         ]);
@@ -1085,7 +1085,7 @@ function getWebUIHTML() {
         const combined = {
           signals: signals.signals || {},
           stats: stats.stats || {},
-          kalshiMarkets: markets.markets || {},
+          polymarketMarkets: markets.markets || {},
           networkStatus: network.status || {},
           system: status.system || {},
           running: status.wecrypto?.running

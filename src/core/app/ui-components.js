@@ -14,10 +14,10 @@ function predictionCard(p) {
     }
     // ── Verdict ──────────────────────────────────────────────────────────────
     // Priority order:
-    //   1. Kalshi certainty (≥90% / ≤10%) — trust near-certain market consensus, never fade
+    //   1. Polymarket certainty (≥90% / ≤10%) — trust near-certain market consensus, never fade
     //   2. CDF modelYesPct — P(close ≥ strike): correct metric for binary contracts (not raw score direction)
-    //   3. Raw score direction — fallback when no Kalshi ref is set yet
-    //   4. Kalshi tiebreak — when model is neutral and Kalshi has clear edge
+    //   3. Raw score direction — fallback when no Polymarket ref is set yet
+    //   4. Polymarket tiebreak — when model is neutral and Polymarket has clear edge
     // Raw model score (UP/DOWN) = "will price move?" — WRONG basis for binary "close above strike" contracts.
     // modelYesPct = P(projected target ≥ strike) via normal CDF — this is the RIGHT metric.
     const _k15mCV = window.PredictionMarkets?.getCoin(p.sym);
@@ -26,10 +26,10 @@ function predictionCard(p) {
     // always null now. Prefer the Polymarket 15m Up/Down market directly
     // (fresher/more precise than the blended combinedProb fallback).
     const _poly15mV = _k15mCV?.poly15m ?? null;
-    const kalshiProb = _poly15mV?.probability ?? _k15mV?.probability ?? _k15mCV?.combinedProb ?? null;
-    const kalshiPct = kalshiProb !== null ? Math.round(kalshiProb * 100) : null;
-    const kalshiEdge = kalshiProb !== null ? Math.abs(kalshiProb - 0.5) : null;
-    let _kAlignEarly = p.projections?.p15?.polyAlign ?? p.projections?.p15?.kalshiAlign ?? null;
+    const polymarketProb = _poly15mV?.probability ?? _k15mV?.probability ?? _k15mCV?.combinedProb ?? null;
+    const polymarketPct = polymarketProb !== null ? Math.round(polymarketProb * 100) : null;
+    const polymarketEdge = polymarketProb !== null ? Math.abs(polymarketProb - 0.5) : null;
+    let _kAlignEarly = p.projections?.p15?.polyAlign ?? null;
     if (_kAlignEarly && _k15mV && _kAlignEarly.ticker && _k15mV.ticker && _kAlignEarly.ticker !== _k15mV.ticker) {
       _kAlignEarly = null;
     }
@@ -54,7 +54,7 @@ function predictionCard(p) {
     }
 
     const modelDir = p.score > 0.02 ? 'up' : p.score < -0.02 ? 'down' : 'wait';
-    const kalshiDir = kalshiProb !== null ? (kalshiProb >= 0.5 ? _yesDirEarly : _noDirEarly) : null;
+    const polymarketDir = polymarketProb !== null ? (polymarketProb >= 0.5 ? _yesDirEarly : _noDirEarly) : null;
 
     const livePathApi = (typeof window !== 'undefined' && window.LivePath15m) || null;
     const livePath = livePathApi
@@ -86,9 +86,9 @@ function predictionCard(p) {
     } else if (grokBinaryCall) {
       verdictDir = grokBinaryCall;
       verdictSource = 'grok-inference-lean';
-    } else if (kalshiDir !== null) {
-      verdictDir = kalshiDir;
-      verdictSource = 'kalshi-market-lean';
+    } else if (polymarketDir !== null) {
+      verdictDir = polymarketDir;
+      verdictSource = 'polymarket-market-lean';
     } else {
       verdictDir = 'up';
       verdictSource = 'default-lean';
@@ -129,7 +129,7 @@ function predictionCard(p) {
     const confNorm = _normalizeConfidence(p.confidence) ?? 0;
     const isSemiConfidence = confNorm >= 0.40 && confNorm < 0.70;
     const isCrowdConflict =
-      kalshiDir !== null && modelDir !== 'wait' && modelDir !== kalshiDir;
+      polymarketDir !== null && modelDir !== 'wait' && modelDir !== polymarketDir;
     const isUltraLateWindow =
       Number.isFinite(msToClose) && msToClose >= 0 && msToClose <= 45_000;
 
@@ -138,12 +138,12 @@ function predictionCard(p) {
       safetyGuardReason = 'Semi-confidence crowd conflict in last 45s';
     }
 
-    // Fade flag: raw price direction conflicts with Kalshi crowd
-    const _fadeActive = kalshiDir !== null && modelDir !== 'wait' && modelDir !== kalshiDir;
+    // Fade flag: raw price direction conflicts with Polymarket crowd
+    const _fadeActive = polymarketDir !== null && modelDir !== 'wait' && modelDir !== polymarketDir;
     const _fadeSolid = _fadeActive && Math.abs(p.score) >= 0.20;
     const _fadeSoft = _fadeActive && !_fadeSolid;
     const _betAction = verdictDir === _yesDirEarly ? 'YES' : verdictDir === _noDirEarly ? 'NO' : null;
-    const compositeEdge = 0.75 * Math.abs(p.score) + 0.25 * (kalshiEdge ?? 0);
+    const compositeEdge = 0.75 * Math.abs(p.score) + 0.25 * (polymarketEdge ?? 0);
 
     const isYesVerdict = verdictDir === _yesDirEarly;
     const binaryOutcomeText = isYesVerdict ? 'BUY YES' : 'BUY NO';
@@ -163,7 +163,7 @@ function predictionCard(p) {
       : modelVerdictDir === 'down' ? `${_modelDownPct}% DOWN` : 'NEUTRAL';
     const _modelProbColor = modelVerdictDir === 'up' ? 'var(--color-green)'
       : modelVerdictDir === 'down' ? 'var(--color-red)' : 'var(--color-text-muted)';
-    const _liveKProbCard = window.PredictionMarkets?.getCoin?.(p.sym)?.kalshi15m?.probability ?? kalshiProb;
+    const _liveKProbCard = window.PredictionMarkets?.getCoin?.(p.sym)?.kalshi15m?.probability ?? polymarketProb;
     const _liveKPctCard = _liveKProbCard != null ? Math.round(_liveKProbCard * 100) : null;
     const _edgePpCard = _liveKPctCard != null ? Math.abs(_modelYesPctCard - _liveKPctCard) : null;
     const _liveKDirCard = _liveKProbCard == null ? null : (_liveKProbCard >= 0.5 ? _yesDirEarly : _noDirEarly);
@@ -197,7 +197,7 @@ function predictionCard(p) {
       confNorm >= hcConfThreshold &&
       compositeEdge >= hcEdgeThreshold;
     const hcBadge = isHighConfidenceOverlayOn()
-      ? `<span class="pred-source-badge ${hcPass ? 'kalshi-align' : 'kalshi-fade'}" title="Advisory overlay only; does not alter model verdict routing">${hcPass ? '✅ HC PASS' : '⏸ HC HOLD'}</span>`
+      ? `<span class="pred-source-badge ${hcPass ? 'polymarket-align' : 'polymarket-fade'}" title="Advisory overlay only; does not alter model verdict routing">${hcPass ? '✅ HC PASS' : '⏸ HC HOLD'}</span>`
       : '';
     const hcRationale = (() => {
       if (!isHighConfidenceOverlayOn()) return '';
@@ -362,18 +362,18 @@ function predictionCard(p) {
     const _k15m = _k15mCoin?.kalshi15m ?? null;
     const _poly15m = _k15mCoin?.poly15m ?? null;
     const _kProb = ind.mktSentiment?.kalshi ?? _poly15m?.probability ?? _k15m?.probability ?? _k15mCoin?.combinedProb ?? null;
-    let _kAlign = p.projections?.p15?.kalshiAlign ?? null;
+    let _kAlign = p.projections?.p15?.polyAlign ?? null;
     if (_kAlign && _k15m && _kAlign.ticker && _k15m.ticker && _kAlign.ticker !== _k15m.ticker) {
       _kAlign = null;
     }
 
     // Debug: log data availability on first few renders
-    const _debugKalshi = window._debugKalshiCount = (window._debugKalshiCount || 0) + 1;
-    if (_debugKalshi <= 3) {
-      console.log(`[kalshi15mRow] ${p.sym}: _k15mCoin=${!!_k15mCoin}, _k15m=${!!_k15m}, _kProb=${_kProb}, combinedProb=${_k15mCoin?.combinedProb}, mktSentiment.kalshi=${ind.mktSentiment?.kalshi}`);
+    const _debugPolymarket = window._debugPolymarketCount = (window._debugPolymarketCount || 0) + 1;
+    if (_debugPolymarket <= 3) {
+      console.log(`[polymarket15mRow] ${p.sym}: _k15mCoin=${!!_k15mCoin}, _k15m=${!!_k15m}, _kProb=${_kProb}, combinedProb=${_k15mCoin?.combinedProb}, mktSentiment.kalshi=${ind.mktSentiment?.kalshi}`);
     }
 
-    const kalshi15mRow = (() => {
+    const polymarket15mRow = (() => {
       if (_kProb === null) return '';
 
       // YES and NO are complementary — always sum to 100%
@@ -594,7 +594,7 @@ function predictionCard(p) {
             <span class="pred-source-badge model">MODEL</span>
             ${llmBadge}
             ${_liveKPctCard !== null
-        ? `<span class="pred-source-badge ${_fadeActive ? 'kalshi-fade' : 'kalshi-align'}">${_fadeActive ? '⚡ ' : ''}POLYMARKET ${_liveKPctCard}% YES</span>`
+        ? `<span class="pred-source-badge ${_fadeActive ? 'polymarket-fade' : 'polymarket-align'}">${_fadeActive ? '⚡ ' : ''}POLYMARKET ${_liveKPctCard}% YES</span>`
         : ''}
             <span style="color:${_modelProbColor};font-weight:700">${_modelProbStr}</span>
             <span>·</span>
@@ -647,7 +647,7 @@ function predictionCard(p) {
           ` : ''}
           ${lazerRow}
           ${model5mRow}
-          ${kalshi15mRow}
+          ${polymarket15mRow}
           ${_k15mCoin ? renderFifteenMinuteMovePlan(_k15mCoin, true) : ''}
           ${(() => {
         // ── Market Divergence row ─────────────────────────────────────
@@ -677,16 +677,16 @@ function predictionCard(p) {
           ? Math.floor(secElapsed / 60) + 'm ' + (secElapsed % 60) + 's'
           : secElapsed + 's';
 
-        // Read live Kalshi probability directly — don't rely on stale snapshot value
-        const liveKalshiPct = window.PredictionMarkets?.getCoin?.(p.sym)?.kalshi15m?.probability != null
+        // Read live Polymarket probability directly — don't rely on stale snapshot value
+        const livePolymarketPct = window.PredictionMarkets?.getCoin?.(p.sym)?.kalshi15m?.probability != null
           ? window.PredictionMarkets.getCoin(p.sym).kalshi15m.probability * 100
-          : (_md.currentKalshiPct ?? null);
+          : (_md.currentPolymarketPct ?? null);
 
         // Recompute catchupDelta from live odds
-        const liveCatchupDelta = (liveKalshiPct != null && _md.entryKalshiPct != null)
+        const liveCatchupDelta = (livePolymarketPct != null && _md.entryPolymarketPct != null)
           ? (_md.entryModelDir === 'up' || _md.entryModelDir === 'UP'
-            ? liveKalshiPct - _md.entryKalshiPct
-            : _md.entryKalshiPct - liveKalshiPct)
+            ? livePolymarketPct - _md.entryPolymarketPct
+            : _md.entryPolymarketPct - livePolymarketPct)
           : (_md.catchupDelta ?? 0);
 
         const deltaStr = Math.abs(liveCatchupDelta) >= 0.5
@@ -713,7 +713,7 @@ function predictionCard(p) {
                   <span style="font-weight:700;color:var(--color-text)" data-mdiv-ts="${_md.firstDivTs ?? ''}">${minSec}</span>
                   ${deltaStr ? `<span style="margin-left:auto;color:var(--color-text-muted)">${deltaStr}</span>` : ''}
                 </div>
-                <div style="margin-top:3px;color:var(--color-text-muted);font-size:10px;font-family:var(--font-sans)">${entryHint}${_md.entryKalshiPct != null ? ` · Entry K: ${_md.entryKalshiPct.toFixed(0)}% → now ${liveKalshiPct != null ? liveKalshiPct.toFixed(0) : '?'}%` : ''}</div>
+                <div style="margin-top:3px;color:var(--color-text-muted);font-size:10px;font-family:var(--font-sans)">${entryHint}${_md.entryPolymarketPct != null ? ` · Entry K: ${_md.entryPolymarketPct.toFixed(0)}% → now ${livePolymarketPct != null ? livePolymarketPct.toFixed(0) : '?'}%` : ''}</div>
               </div>`;
       })()}
           <!-- Kalshi order-routing box removed -- no Polymarket equivalent, user no longer trades Kalshi -->
@@ -895,10 +895,10 @@ function getPredictionCoinMeta(sym) {
       || null;
   }
 
-function buildKalshiDebugPanel() {
+function buildMarketDebugPanel() {
     try {
-      const snaps = window._lastKalshiSnapshot || {};
-      const log = (window._kalshiLog || []).slice(-20).reverse();
+      const snaps = window._lastMarketSnapshot || {};
+      const log = (window._marketSettlementLog || []).slice(-20).reverse();
       const errors = (window._kalshiErrors || []).slice(-8).reverse();
       const resLog = (window._15mResolutionLog || []).slice(-10).reverse();
       const orchLog = (window._orchLog || []).slice(-15).reverse();
@@ -921,7 +921,7 @@ function buildKalshiDebugPanel() {
               : a === 'earlyExit' ? 'color:#e040fb' : 'color:#888';
       const alignColor = al => ({
         ALIGNED: '#4caf50', DIVERGENT: '#ff9800', MODEL_LEADS: '#4f9eff',
-        CROWD_FADE: '#e040fb', MODEL_ONLY: '#80cbc4', KALSHI_ONLY: '#ffc107',
+        CROWD_FADE: '#e040fb', MODEL_ONLY: '#80cbc4', POLYMARKET_ONLY: '#ffc107',
         SHELL_EVAL: '#ff5722', EARLY_EXIT: '#888',
       }[al] || '#aaa');
 
@@ -939,7 +939,7 @@ function buildKalshiDebugPanel() {
       const actionCounts = { trade: 0, watch: 0, hold: 0, skip: 0, earlyExit: 0, other: 0 };
       const liveOrchRows = PREDICTION_COINS.map(coin => {
         try {
-          const ki = window.KalshiOrchestrator?.getIntent?.(coin.sym);
+          const ki = window.PolymarketOrchestrator?.getIntent?.(coin.sym);
           if (!ki) return `<tr><td style="${tdBase};color:#fff;font-weight:700">${coin.sym}</td>
             <td colspan="9" style="${tdBase};color:#555;font-size:10px">no data — waiting for first prediction cycle</td></tr>`;
           const actionKey = actionCounts[ki.action] != null ? ki.action : 'other';
@@ -1003,7 +1003,7 @@ function buildKalshiDebugPanel() {
       const scorecardRows = PREDICTION_COINS.map((coin, idx) => {
         try {
           // Count all contracts with outcome (resolved), not just those marked _settled
-          const entries = (window._kalshiLog || []).filter(e => e.sym === coin.sym && e.outcome);
+          const entries = (window._marketSettlementLog || []).filter(e => e.sym === coin.sym && e.outcome);
           const resE = (window._15mResolutionLog || []).filter(e => e.sym === coin.sym && e.modelCorrect !== null);
 
           // ADD HISTORICAL DATA FROM CALCULATOR
@@ -1043,7 +1043,7 @@ function buildKalshiDebugPanel() {
                   ${ups.map(u => {
             const correct = u.modelCorrect === true ? '✓' : u.modelCorrect === false ? '✗' : '?';
             const dir = u.modelDir || u.direction || '?';
-            const actual = u.actualOutcome || u._kalshiResult || u.kalshiResult || u.outcome || '?';
+            const actual = u.actualOutcome || u._marketResult || u.marketResult || u.outcome || '?';
             const ts = new Date(u.ts || u.settledTs || 0).toISOString().slice(11, 19);
             return `<div style="font-size:9px;color:#aaa;margin:2px 0;padding:2px 4px;background:rgba(76,175,80,0.1);border-radius:2px">${correct} pred=${dir} result=${actual} <span style="color:#666">${ts}</span></div>`;
           }).join('')}
@@ -1054,7 +1054,7 @@ function buildKalshiDebugPanel() {
                   ${downs.map(d => {
             const correct = d.modelCorrect === true ? '✓' : d.modelCorrect === false ? '✗' : '?';
             const dir = d.modelDir || d.direction || '?';
-            const actual = d.actualOutcome || d._kalshiResult || d.kalshiResult || d.outcome || '?';
+            const actual = d.actualOutcome || d._marketResult || d.marketResult || d.outcome || '?';
             const ts = new Date(d.ts || d.settledTs || 0).toISOString().slice(11, 19);
             return `<div style="font-size:9px;color:#aaa;margin:2px 0;padding:2px 4px;background:rgba(244,67,54,0.1);border-radius:2px">${correct} pred=${dir} result=${actual} <span style="color:#666">${ts}</span></div>`;
           }).join('')}
@@ -1110,7 +1110,7 @@ function buildKalshiDebugPanel() {
       const logRows = log.slice(0, 10).map(e => {
         if (!e) return '';
         const settled = e._settled
-          ? `<span style="color:#4caf50">✓${e._kalshiResult || ''}</span>`
+          ? `<span style="color:#4caf50">✓${e._marketResult || ''}</span>`
           : (e._pendingAuth ? '<span style="color:#ffc107">⏳</span>' : '–');
         const match = e._settled
           ? (e._proxyMismatch ? '<span style="color:#f44336">MM</span>' : '<span style="color:#4caf50">✓</span>') : '';
@@ -1147,7 +1147,7 @@ function buildKalshiDebugPanel() {
         return `<tr>
           <td style="${tdBase};color:#fff;font-weight:700">${r.sym}</td>
           <td style="${tdBase};color:${r.actualOutcome === 'UP' ? '#4caf50' : '#f44336'};font-weight:700">${r.actualOutcome || '–'}</td>
-          <td style="${tdBase};color:#888;font-size:10px">${r.kalshiResult || '–'}</td>
+          <td style="${tdBase};color:#888;font-size:10px">${r.marketResult || '–'}</td>
           <td style="${tdBase}">${r.modelDir || '–'} ${ok(r.modelCorrect)}</td>
           <td style="${tdBase};${colAct(r.orchestratorAction)};font-size:10px">${r.orchestratorAction || '–'} ${orchTag}${missedTag}</td>
           <td style="${tdBase};color:${(r.edgeCents ?? 0) >= 8 ? '#4caf50' : '#888'}">${fmtEdge(r.edgeCents)}</td>
@@ -1185,7 +1185,7 @@ function buildKalshiDebugPanel() {
         </tr>`;
       }).join('') || `<tr><td colspan="5" style="${tdBase};color:#4caf50;text-align:center">No errors 🎉</td></tr>`;
 
-      const trailRows = Object.values(window._kalshiPredictionTrail || {})
+      const trailRows = Object.values(window._marketPredictionTrail || {})
         .sort((a, b) => (b.closeTimeMs || 0) - (a.closeTimeMs || 0))
         .slice(0, 10)
         .map(t => {
@@ -1214,11 +1214,11 @@ function buildKalshiDebugPanel() {
       const pendingN = window.MarketResolver?.getPending?.()?.length ?? 0;
 
       return `
-      <details id="kalshi-debug-panel" class="poly-debug-panel" style="margin:8px 0 14px;background:#111;border:1px solid #2a2a2a;border-radius:8px">
+      <details id="market-debug-panel" class="poly-debug-panel" style="margin:8px 0 14px;background:#111;border:1px solid #2a2a2a;border-radius:8px">
         <summary style="cursor:pointer;padding:8px 14px;font-size:12px;font-weight:700;color:#00e5ff;letter-spacing:.5px;display:flex;align-items:center;gap:8px;user-select:none">
           🔬 POLYMARKET CONTRACT DEBUG
           <span style="font-size:10px;color:#666;font-weight:400;margin-left:auto">
-            snap:${Object.keys(snaps).length} log:${(window._kalshiLog || []).length} trail:${Object.keys(window._kalshiPredictionTrail || {}).length} err:${errors.length} res:${resLog.length} pending:${pendingN} orch:${(window._orchLog || []).length}
+            snap:${Object.keys(snaps).length} log:${(window._marketSettlementLog || []).length} trail:${Object.keys(window._marketPredictionTrail || {}).length} err:${errors.length} res:${resLog.length} pending:${pendingN} orch:${(window._orchLog || []).length}
           </span>
         </summary>
         <div style="padding:10px 14px;border-radius:0 0 8px 8px">
@@ -1302,14 +1302,14 @@ function buildKalshiDebugPanel() {
           </table></div>
 
           <div style="margin-top:8px;font-size:10px;color:#555;font-family:monospace">
-            DevTools: KalshiDebug.audit('ETH') · .errors() · .pending() · .suspects({topN:5}) · .replayIncident({topN:2}) · .contract('ETH') · .trail('ETH') · .orch('BTC') · .scorecard()
+            DevTools: MarketDebug.audit('ETH') · .errors() · .pending() · .suspects({topN:5}) · .replayIncident({topN:2}) · .contract('ETH') · .trail('ETH') · .orch('BTC') · .scorecard()
           </div>
         </div>
       </details>`;
     } catch (panelErr) {
-      console.error('[KalshiDebug] panel render error:', panelErr);
+      console.error('[MarketDebug] panel render error:', panelErr);
       return `<details style="margin:8px 0 14px;background:#111;border:1px solid #f44336;border-radius:8px">
-        <summary style="padding:8px 14px;color:#f44336;font-size:12px">🔬 KALSHI DEBUG — render error</summary>
+        <summary style="padding:8px 14px;color:#f44336;font-size:12px">🔬 MARKET DEBUG — render error</summary>
         <div style="padding:10px 14px;color:#f44336;font-size:11px">${panelErr.message}<br><small style="color:#888">${panelErr.stack || ''}</small></div>
       </details>`;
     }
@@ -1993,11 +1993,11 @@ function buildOpportunitiesPanel(cfmAll, predAll) {
     const allSignals = [];
     const coinEdges = {};
 
-    const kalshiIntents = window.KalshiOrchestrator?.update(predAll, cfmAll) ?? {};
+    const polymarketIntents = window.PolymarketOrchestrator?.update(predAll, cfmAll) ?? {};
 
     try {
       PREDICTION_COINS.forEach(coin => {
-        const ki = kalshiIntents[coin.sym];
+        const ki = polymarketIntents[coin.sym];
         if (!ki) return;
         maybePlayContractArrivalBell(coin.sym, ki);
         if (ki.action === 'skip') return;
@@ -2059,7 +2059,7 @@ function buildOpportunitiesPanel(cfmAll, predAll) {
           rsi: ind.rsi?.value ?? null,
           vwapDev: cfm.vwapDev ?? null,
         });
-        const ki = kalshiIntents[coin.sym];
+        const ki = polymarketIntents[coin.sym];
         if (ki) window.DataLogger.logDecision(coin.sym, ki);
       });
       window._cfmAll = cfmAll;
@@ -2121,7 +2121,7 @@ function buildOpportunitiesPanel(cfmAll, predAll) {
     const dangerCount = allSignals.filter(s => s.signal === 'danger').length;
 
     const callouts = buildNarrativeCallouts(verdicts, allSignals, cfmAll, predAll);
-    const liveCalibrationTelemetry = window.KalshiOrchestrator?.getCalibrationTelemetry?.() || null;
+    const liveCalibrationTelemetry = window.PolymarketOrchestrator?.getCalibrationTelemetry?.() || null;
 
     return `
       ${callouts}
@@ -2382,22 +2382,22 @@ function calcEdge(coin, cfm, pred) {
     const signalCount = countConfirmingSignals(coin, cfm, pred);
 
     const pm = window.PredictionMarkets?.getCoin?.(coin?.sym);
-    const kalshiYesPrice = pm?.kalshi15m?.probability ?? null;
-    const entryIsTailRisk = kalshiYesPrice !== null && kalshiYesPrice >= 0.85;
-    const entryIsLeveraged = kalshiYesPrice !== null && kalshiYesPrice <= 0.15;
+    const polymarketYesPrice = pm?.kalshi15m?.probability ?? null;
+    const entryIsTailRisk = polymarketYesPrice !== null && polymarketYesPrice >= 0.85;
+    const entryIsLeveraged = polymarketYesPrice !== null && polymarketYesPrice <= 0.15;
     const lossErasesWins = entryIsTailRisk
-      ? Math.round(kalshiYesPrice / (1 - kalshiYesPrice))
+      ? Math.round(polymarketYesPrice / (1 - polymarketYesPrice))
       : null;
 
     let tier, tierColor, tierDesc;
 
     if (entryIsTailRisk) {
       tier = 'TAIL RISK'; tierColor = 'var(--color-red)';
-      tierDesc = `YES at ${Math.round(kalshiYesPrice * 100)}¢ — 1 loss erases ${lossErasesWins} wins. Need overwhelming edge to justify.`;
+      tierDesc = `YES at ${Math.round(polymarketYesPrice * 100)}¢ — 1 loss erases ${lossErasesWins} wins. Need overwhelming edge to justify.`;
     } else if (entryIsLeveraged) {
       tier = edge15 > 0.25 && signalCount >= 3 ? 'HIGH CONVICTION' : 'LEVERAGED';
       tierColor = edge15 > 0.25 && signalCount >= 3 ? 'var(--color-green)' : 'var(--color-orange)';
-      tierDesc = `YES at ${Math.round(kalshiYesPrice * 100)}¢ — ${Math.round(1 / kalshiYesPrice)}x payout but high variance. ${signalCount} signals, need wider gap.`;
+      tierDesc = `YES at ${Math.round(polymarketYesPrice * 100)}¢ — ${Math.round(1 / polymarketYesPrice)}x payout but high variance. ${signalCount} signals, need wider gap.`;
     } else if (edge15 > 0.25 && signalCount >= 3) {
       tier = 'HIGH CONVICTION'; tierColor = 'var(--color-green)';
       tierDesc = `${signalCount} indicators aligned — strong directional move expected, ${edge15.toFixed(2)}% edge`;
@@ -2670,7 +2670,7 @@ function marketRow(c, i) {
   }
 window.APP_UI_COMPONENTS = {
   predictionCard, normalizePredictionCardData, getPredictionCoinMeta, 
-  buildKalshiDebugPanel, buildQuickDecisionPanel, getDecisionRationale,
+  buildMarketDebugPanel, buildQuickDecisionPanel, getDecisionRationale,
   computeQuickMACD, formatSuborbital, evaluateSignal, buildCoinPeriodicTable,
   computeEntryQuality, detectMarketRegime, computeGroundState, buildOpportunitiesPanel,
   buildFifteenMinuteMovePlan, countConfirmingSignals, calcEdge, buildNarrativeCallouts,

@@ -2,7 +2,7 @@
  * PYTH Browser-Compatible Price Feed
  * 
  * Hermes REST API for price verification (no WebSocket required)
- * Fetches every 5 seconds for Kalshi settlement divergence detection
+ * Fetches every 5 seconds for Polymarket settlement divergence detection
  * 
  * Stored in: window._pythPrices = { BTC: price, ETH: price, ... }
  */

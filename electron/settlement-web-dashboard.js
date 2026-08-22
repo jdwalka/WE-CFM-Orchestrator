@@ -1,5 +1,5 @@
 /**
- * Kalshi Settlement Web Dashboard Server
+ * Polymarket Settlement Web Dashboard Server
  * 
  * HTTPS web service for viewing settlement data across all drives
  * Accessible via Edge browser + Copilot integration
@@ -51,7 +51,7 @@ function getAllSettlementLogs(targets) {
       if (!fs.existsSync(dir)) continue;
       
       const files = fs.readdirSync(dir)
-        .filter(f => f.startsWith('kalshi-settlements-') && f.endsWith('.log'))
+        .filter(f => f.startsWith('polymarket-settlements-') && f.endsWith('.log'))
         .map(f => {
           const fullPath = path.join(dir, f);
           return {
@@ -88,10 +88,10 @@ function parseSettlementLog(filepath) {
           timestamp: parts[0],
           coin: parts[1],
           model_direction: parts[2],
-          kalshi_outcome: parts[3],
+          polymarket_outcome: parts[3],
           result: parts[4],
           confidence: parseFloat(parts[5]) || 0,
-          kalshi_probability: parseFloat(parts[6]) || 0
+          polymarket_probability: parseFloat(parts[6]) || 0
         });
       }
     }
@@ -461,7 +461,7 @@ function getDashboardHTML() {
   <div class="container">
     <header>
       <h1>🧪 WECRYPTO Settlement Dashboard</h1>
-      <p class="subtitle">Real-time model accuracy tracking across Kalshi 15m contracts</p>
+      <p class="subtitle">Real-time model accuracy tracking across Polymarket 15m contracts</p>
     </header>
 
     <div id="stats-container" class="stats-grid">
@@ -546,7 +546,7 @@ function getDashboardHTML() {
                 <div class="settlement-time">\${time}</div>
                 <div class="settlement-coin">\${r.coin}</div>
                 <div class="settlement-pred">Model: \${r.model_direction}</div>
-                <div class="settlement-actual">Actual: \${r.kalshi_outcome}</div>
+                <div class="settlement-actual">Actual: \${r.polymarket_outcome}</div>
                 <div class="settlement-result \${resultClass}">\${r.result}</div>
                 <div style="margin-left: auto; color: #888;">\${r.confidence}%</div>
               </div>

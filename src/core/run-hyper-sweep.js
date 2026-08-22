@@ -7,7 +7,7 @@
  * Uses local WECRYPTO/data JSONL logs only:
  *   - predictions.jsonl: model score + RSI at decision time
  *   - cfm_snapshots.jsonl: localized Pyth/CFM price history proxies
- *   - resolver_outcomes.jsonl: resolved Kalshi/Pyth settlement direction
+ *   - resolver_outcomes.jsonl: resolved Polymarket/Pyth settlement direction
  *
  * Example:
  *   node src/core/run-hyper-sweep.js --coins=BTC,ETH,SOL,XRP --min-oos=50

@@ -223,7 +223,7 @@
             const diag = {
                 timestamp: new Date().toISOString(),
                 recentErrors: [],
-                kalshiLog: [],
+                marketLog: [],
                 failedContracts: [],
                 latencyGuards: null,
                 tradeJournal: null,
@@ -236,8 +236,8 @@
             }
 
             // Find failed/suspect contracts
-            if (window._kalshiLog) {
-                const recent = window._kalshiLog.slice(-100);
+            if (window._marketSettlementLog) {
+                const recent = window._marketSettlementLog.slice(-100);
                 const suspect = recent.filter(e => {
                     const probCollapse = e.entryProb > 0.6 && e.actualOutcome === 'NO';
                     const probInversion = e.dirConflict || e._dirConflict;
@@ -259,8 +259,8 @@
             }
 
             // Latency guard visibility for 15m binaries
-            if (window._kalshiLog) {
-                const recentSet = window._kalshiLog.slice(-100);
+            if (window._marketSettlementLog) {
+                const recentSet = window._marketSettlementLog.slice(-100);
                 const guarded = recentSet.filter(e => e.executionGuard?.blocked);
                 const hardLate = recentSet.filter(e => e.executionGuard?.hardLate);
                 diag.latencyGuards = {
@@ -276,9 +276,9 @@
                 diag.tradeJournal = journal.summary();
             }
 
-            if (window.KalshiDebug?.replayIncident) {
+            if (window.MarketDebug?.replayIncident) {
                 try {
-                    diag.forensic = window.KalshiDebug.replayIncident({ topN: 2 });
+                    diag.forensic = window.MarketDebug.replayIncident({ topN: 2 });
                 } catch (e) {
                     diag.forensic = { error: e.message };
                 }
@@ -291,9 +291,9 @@
          * Find the 2 contracts that caused recent losses
          */
         findRecentFailures(lookbackHours = 1) {
-            if (window.KalshiDebug?.suspects) {
+            if (window.MarketDebug?.suspects) {
                 try {
-                    const replay = window.KalshiDebug.replayIncident({
+                    const replay = window.MarketDebug.replayIncident({
                         topN: 10,
                         lookbackMs: Math.max(1, lookbackHours) * 3600 * 1000,
                     });
@@ -318,9 +318,9 @@
 
             const candidates = [];
 
-            // Search _kalshiLog
-            if (window._kalshiLog) {
-                window._kalshiLog.forEach(e => {
+            // Search _marketSettlementLog
+            if (window._marketSettlementLog) {
+                window._marketSettlementLog.forEach(e => {
                     const ts = e.settledTs || e.resolved_at || e.ts || 0;
                     if (ts < cutoff) return;
 
@@ -330,7 +330,7 @@
 
                     if (probCollapse || modelWrong || flagged) {
                         candidates.push({
-                            source: 'kalshi',
+                            source: 'market',
                             ...e,
                             failureReasons: [
                                 probCollapse ? 'high-prob-collapse' : '',
@@ -477,10 +477,10 @@
                     : 'None found';
                 document.getElementById('recent-failures').textContent = failureText;
 
-                let replayText = 'Kalshi forensics unavailable';
+                let replayText = 'Market forensics unavailable';
                 try {
-                    const replay = window.KalshiDebug?.replayIncident?.({ topN: 2 })
-                        || window.KalshiForensics?.replay?.({ topN: 2 });
+                    const replay = window.MarketDebug?.replayIncident?.({ topN: 2 })
+                        || window.MarketForensics?.replay?.({ topN: 2 });
                     if (replay?.suspects?.length) {
                         replayText = replay.suspects.map((s, i) => {
                             const entryTs = s.entry?.ts ? new Date(s.entry.ts).toISOString() : 'n/a';

@@ -235,6 +235,34 @@
    * stay Pyth-only / Polymarket-only. Returns null when the pipeline isn't
    * running or has nothing recent, which is a normal state, not an error.
    */
+  // Supplementary only, same as orbitalMomentum/temporalForecast below --
+  // window.DerivativesFeed (src/feeds/derivatives-feed.js) has been running
+  // since app boot (started in app-init.js) collecting cross-venue funding,
+  // OI delta/velocity, and live liquidation-cascade data, but nothing in
+  // src/llm/ ever read it before this -- the LLM packet never saw crowded
+  // leveraged positioning at all, even though the feed computing it was
+  // already live. pressure/label are that feed's own precomputed directional
+  // read (liquidation cascade > funding crowding > OI build/unwind, in that
+  // priority); never spot/PTB and must never be treated as authoritative.
+  function getDerivativesPositioning(sym) {
+    try {
+      if (typeof window === 'undefined' || !window.DerivativesFeed?.get) return null;
+      const s = window.DerivativesFeed.get(sym);
+      if (!s || !s.available) return null;
+      return {
+        fundingRate: s.funding ?? null,
+        fundingVelocity: s.fundingVelocity ?? null,
+        openInterestUsd: s.oiUsd ?? null,
+        oiDeltaPct: s.oiDeltaPct ?? null,
+        oiTrend: s.oiTrend || null,
+        liqImbalance: s.liquidations?.imbalance ?? null,
+        pressure: Number.isFinite(s.pressure) ? s.pressure : null,
+        label: s.label || null,
+        ageMs: Number.isFinite(s.ts) ? Date.now() - s.ts : null,
+      };
+    } catch (_) { return null; }
+  }
+
   function getOrbitalMomentum(sym) {
     try {
       if (typeof window === 'undefined' || !window.OrbitalSignal?.get) return null;
@@ -352,6 +380,7 @@
       // Supplementary only — never treated as spot/PTB/authoritative.
       orbitalMomentum: getOrbitalMomentum(key),
       temporalForecast: getTemporalForecast(key),
+      derivativesPositioning: getDerivativesPositioning(key),
       warnings: [
         ...(spot == null ? ['no_pyth_spot'] : []),
         ...(primary && primary.priceToBeatNum == null ? ['no_polymarket_ptb'] : []),

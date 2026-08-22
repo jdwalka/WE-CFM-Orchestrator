@@ -240,13 +240,13 @@ function _logEntryToForensicsEntry(e) {
     if (!sym)
         return null;
     const modelDir = _normDir(e.modelDir ?? e.direction ?? e.predDir);
-    const outcomeYN = _normOutcomeYN(e.outcome ?? e.kalshiResult ?? e._kalshiResult);
+    const outcomeYN = _normOutcomeYN(e.outcome ?? e.marketResult ?? e._marketResult);
     const strikeDir = _normStrikeDir(e._strikeDir ?? e.strikeDir ?? e.apiStrikeDir ?? e.strikeType);
     const actualOutcome = _normDir(e.actualOutcome) || _actualFromYNWithStrike(outcomeYN, strikeDir);
     const entryProb = _normalizeConfidence(e.entryProb ?? e.confidence ?? e.modelConf);
     const entryConf = _normalizeConfidence(e.modelConf ?? e.confidence ?? e.entryProb);
     return {
-        source: 'kalshi-log',
+        source: 'market-log',
         sym,
         ticker: e.ticker ?? null,
         ts: _toMs(e.ts),
@@ -285,7 +285,7 @@ function _resolutionEntryToForensicsEntry(e) {
         return null;
     const modelDir = _normDir(e.modelDir ?? e.direction ?? e.predDir);
     const actualOutcome = _normDir(e.actualOutcome);
-    const outcomeYN = _normOutcomeYN(e.kalshiResult ?? e.outcome ?? e.actualOutcome);
+    const outcomeYN = _normOutcomeYN(e.marketResult ?? e.outcome ?? e.actualOutcome);
     const strikeDir = _normStrikeDir(e._strikeDir ?? e.strikeDir ?? e.apiStrikeDir ?? e.strikeType);
     return {
         source: '15m-resolution',
@@ -444,7 +444,7 @@ function _collectNearCloseTimeline(entry) {
             secsToClose,
             modelDir: _normDir(p.modelDir),
             modelYesPct: _toNum(p.modelYesPct),
-            kalshiYesPct: _toNum(p.kalshiYesPct),
+            polymarketYesPct: _toNum(p.polymarketYesPct),
             modelScore: _toNum(p.modelScore),
             dirConflict: !!p.dirConflict,
         });
@@ -458,7 +458,7 @@ function _collectNearCloseTimeline(entry) {
             ts,
             type: 'close-snapshot',
             secsToClose,
-            kalshiProb: _toNum(s.kalshiProb ?? s.kYesPct),
+            polymarketProb: _toNum(s.polymarketProb ?? s.kYesPct),
             modelProb: _toNum(s.modelProb ?? s.modelYesPct),
         });
     });
@@ -476,7 +476,7 @@ function _collectNearCloseTimeline(entry) {
 }
 function _getForensicsDataset(options = {}) {
     const out = [];
-    (window._kalshiLog || []).forEach(e => {
+    (window._marketSettlementLog || []).forEach(e => {
         const n = _logEntryToForensicsEntry(e);
         if (n)
             out.push(n);
@@ -563,7 +563,7 @@ function replaySuspectTimeline(suspect, options = {}) {
     };
     const classification = classifyForensicTrade(base);
     const timeline = _collectNearCloseTimeline(base);
-    const settlementSource = base.source === 'kalshi-log'
+    const settlementSource = base.source === 'market-log'
         ? (base.pendingAuth ? 'proxy_then_authoritative' : 'authoritative_or_proxy')
         : base.source === '15m-resolution'
             ? 'resolution_event'
@@ -687,11 +687,11 @@ function startHistoricalPolling() {
             const { settled, errors } = await settledFetcher.fetchSettledContracts();
             if (settled && settled.length > 0) {
                 console.log(`[Historical] Fetched ${settled.length} settled contracts`);
-                // Add historical settlements to _kalshiLog for scorecard display
+                // Add historical settlements to _marketSettlementLog for scorecard display
                 settled.forEach(contract => {
                     const resolvedAt = contract.resolvedAt ?? contract.closeTime ?? contract.raw?.settleTime ?? contract.raw?.close_time ?? null;
                     // Check if already in log (avoid duplicates)
-                    const isDuplicate = window._kalshiLog.some(e => e.sym === contract.symbol &&
+                    const isDuplicate = window._marketSettlementLog.some(e => e.sym === contract.symbol &&
                         e.resolved_at === resolvedAt);
                     if (!isDuplicate) {
                         const _resultIsYes = String(contract.result).toUpperCase() === 'YES';
@@ -706,7 +706,7 @@ function startHistoricalPolling() {
                             : contract.modelCorrect === false
                                 ? _oppositeDir(_actualOutcome)
                                 : (window._lastPrediction?.[contract.symbol]?.direction || null);
-                        window._kalshiLog.push({
+                        window._marketSettlementLog.push({
                             sym: contract.symbol,
                             outcome: contract.result, // 'YES' or 'NO'
                             actualOutcome: _actualOutcome,
@@ -726,11 +726,11 @@ function startHistoricalPolling() {
                         });
                     }
                 });
-                // Keep _kalshiLog limited to LOG_CAP entries
-                if (window._kalshiLog.length > LOG_CAP) {
-                    window._kalshiLog = window._kalshiLog.slice(-LOG_CAP);
+                // Keep _marketSettlementLog limited to LOG_CAP entries
+                if (window._marketSettlementLog.length > LOG_CAP) {
+                    window._marketSettlementLog = window._marketSettlementLog.slice(-LOG_CAP);
                 }
-                saveKalshiLog();
+                saveMarketLog();
                 if (currentView === 'log' || currentView === 'debuglog')
                     render();
                 // Record outcomes for learning engine without monopolizing the UI thread.
@@ -1013,7 +1013,7 @@ function snapshotPredictions() {
                         weight: Number(driver?.weight || 0),
                     }))
                     : [];
-                const kaCtx = p.projections?.p15?.kalshiAlign || null;
+                const kaCtx = p.projections?.p15?.polyAlign || null;
                 window._contractCache.recordMarketContext(coin.sym, {
                     price: Number(p.price || 0),
                     signal: p.signal || 'neutral',
@@ -1024,7 +1024,7 @@ function snapshotPredictions() {
                     agreement: Number(p.diagnostics?.agreement || 0),
                     conflict: Number(p.diagnostics?.conflict || 0),
                     routedAction: p.diagnostics?.routedAction || null,
-                    kalshiYesPct: kaCtx?.kalshiYesPct ?? null,
+                    polymarketYesPct: kaCtx?.polymarketYesPct ?? null,
                     modelYesPct: kaCtx?.modelYesPct ?? null,
                     llmRegime: p.llm?.regime || p.diagnostics?.llmRegime || null,
                     llmConfidence: Number(p.llm?.confidence || p.diagnostics?.llmConfidence || 0),
@@ -1035,9 +1035,9 @@ function snapshotPredictions() {
                 console.warn('[ContractCache] Market context record error:', e.message);
             }
         }
-        // Snapshot Kalshi alignment state so we can evaluate outcome on bucket close
-        const ka = p.projections?.p15?.kalshiAlign ?? null;
-        if (ka?.ref != null && ka.kalshiYesPct != null) {
+        // Snapshot Polymarket alignment state so we can evaluate outcome on bucket close
+        const ka = p.projections?.p15?.polyAlign ?? null;
+        if (ka?.ref != null && ka.polymarketYesPct != null) {
             // ── Compute fade state ───────────────────────────────────────────────
             const _strikeDir = ka.strikeDir === 'below' ? 'below' : 'above';
             const _yesDir = _strikeDir === 'below' ? 'down' : 'up';
@@ -1048,22 +1048,22 @@ function snapshotPredictions() {
             const _modelDir = (ka.modelYesPct ?? 50) >= 58 ? _yesDir
                 : (ka.modelYesPct ?? 50) <= 42 ? _noDir
                     : _modelDirRaw;
-            const _kalshiDir = ka.kalshiYesPct >= 50 ? _yesDir : _noDir;
-            const _fadeActive = _modelDir !== 'wait' && _modelDir !== _kalshiDir;
+            const _polyDir = ka.polymarketYesPct >= 50 ? _yesDir : _noDir;
+            const _fadeActive = _modelDir !== 'wait' && _modelDir !== _polyDir;
             const _fadeSolid = _fadeActive && Math.abs(_modelScore) >= 0.20;
-            // betAction: same priority as prediction card — Kalshi certainty → CDF yesPct → raw score
-            const _snapDir = ka.kalshiYesPct >= 90 ? _yesDir
-                : ka.kalshiYesPct <= 10 ? _noDir
+            // betAction: same priority as prediction card — Polymarket certainty → CDF yesPct → raw score
+            const _snapDir = ka.polymarketYesPct >= 90 ? _yesDir
+                : ka.polymarketYesPct <= 10 ? _noDir
                     : (ka.modelYesPct ?? 50) >= 58 ? _yesDir
                         : (ka.modelYesPct ?? 50) <= 42 ? _noDir
                             : _modelDirRaw;
             const _betAction = _snapDir === _yesDir ? 'YES' : _snapDir === _noDir ? 'NO' : null;
             // ── Update Market Divergence tracker for this coin ──────────────────
-            const _mdiv = updateMarketDivergence(coin.sym, _modelDir, _kalshiDir, ka.kalshiYesPct, _modelScore);
+            const _mdiv = updateMarketDivergence(coin.sym, _modelDir, _polyDir, ka.polymarketYesPct, _modelScore);
             if (false)
-                window._lastKalshiSnapshot[coin.sym] = {
+                window._lastMarketSnapshot[coin.sym] = {
                     ref: ka.ref,
-                    kYesPct: ka.kalshiYesPct,
+                    kYesPct: ka.polymarketYesPct,
                     mYesPct: ka.modelYesPct,
                     yesAsk: ka.yesAsk,
                     yesBid: ka.yesBid,
@@ -1097,13 +1097,13 @@ function snapshotPredictions() {
                     // Signal components for per-indicator gradient descent retuner
                     signalComponents: p.diagnostics?.components ?? null,
                 };
-            if (window._lastKalshiSnapshot[coin.sym]) {
-                capturePredictionTrail2m(coin.sym, window._lastKalshiSnapshot[coin.sym]);
+            if (window._lastMarketSnapshot[coin.sym]) {
+                capturePredictionTrail2m(coin.sym, window._lastMarketSnapshot[coin.sym]);
             }
             if (ka.dirConflict) {
                 // console.warn(
                 //   `[Snapshot] ⚠️ ${coin.sym} momentum=${dir} conflicts with CDF direction=${ka.cdfImpliedDir} ` +
-                //   `(mYesPct=${ka.modelYesPct}% kYesPct=${ka.kalshiYesPct}% strike=${ka.strikeDir} ref=${ka.ref})`
+                //   `(mYesPct=${ka.modelYesPct}% kYesPct=${ka.polymarketYesPct}% strike=${ka.strikeDir} ref=${ka.ref})`
                 // );
             }
         }
@@ -1132,7 +1132,7 @@ function snapshotPredictions() {
         });
     }
     saveLastPred();
-    saveLastKalshi();
+    saveLastMarket();
     scheduleWebStatePublish('prediction-snapshot');
 }
 function _webStateConfiguredCoins() {
@@ -1197,7 +1197,7 @@ function buildWebStateSnapshot() {
     const congestionAll = window.NetworkCongestion?.getAll?.() || {};
     const predictions = {};
     const signals = {};
-    const kalshiMarkets = {};
+    const polymarketMarkets = {};
     const stats = {};
     configuredCoins.forEach((coin) => {
         const sym = coin?.sym;
@@ -1208,8 +1208,8 @@ function buildWebStateSnapshot() {
         const rawModelDirection = _deriveWebDirection(pred, null);
         const pm = window.PredictionMarkets?.getCoin?.(sym) || null;
         const kalshi15m = pm?.kalshi15m || null;
-        const intent = window.KalshiOrchestrator?.getIntent?.(sym) || null;
-        const align = pred?.projections?.p15?.kalshiAlign || null;
+        const intent = window.PolymarketOrchestrator?.getIntent?.(sym) || null;
+        const align = pred?.projections?.p15?.polyAlign || null;
         const operatorSummary = intent?.humanReason ?? intent?.reason ?? null;
         const decisionStatus = _deriveDecisionStatus(intent, operatorSummary);
         const biasDirection = _webDirectionOrWait(intent?.direction || rawModelDirection);
@@ -1335,7 +1335,7 @@ function buildWebStateSnapshot() {
             };
         }
         if (pm || intent || align) {
-            kalshiMarkets[sym] = {
+            polymarketMarkets[sym] = {
                 ticker: kalshi15m?.ticker ?? align?.ticker ?? null,
                 probability: _webNum(kalshi15m?.probability ?? pm?.kalshi, 4),
                 combinedProb: _webNum(pm?.combinedProb, 4),
@@ -1367,14 +1367,14 @@ function buildWebStateSnapshot() {
     if (validatorStats && typeof validatorStats === 'object') {
         stats.validator = validatorStats;
     }
-    const calibrationTelemetry = window.KalshiOrchestrator?.getCalibrationTelemetry?.() || null;
+    const calibrationTelemetry = window.PolymarketOrchestrator?.getCalibrationTelemetry?.() || null;
     if (calibrationTelemetry && calibrationTelemetry.samples) {
         stats.orchestratorCalibration = calibrationTelemetry;
     }
     stats.export = {
         predictionCount: Object.keys(predictions).length,
         signalCount: Object.keys(signals).length,
-        marketCount: Object.keys(kalshiMarkets).length,
+        marketCount: Object.keys(polymarketMarkets).length,
         activeCoinCount: activeCoins.length,
     };
     return {
@@ -1386,7 +1386,7 @@ function buildWebStateSnapshot() {
         tickerTimestamp: window._lastTickerFetchTs || null,
         predictions,
         signals,
-        kalshiMarkets,
+        polymarketMarkets,
         networkStatus,
         stats,
     };
@@ -1431,28 +1431,28 @@ function startWebStateHeartbeat() {
         publishWebState('heartbeat', true);
     }, 20000);
 }
-function updateMarketDivergence(sym, modelDir, kalshiDir, kalshiPct, score) {
+function updateMarketDivergence(sym, modelDir, polyDir, polymarketPct, score) {
     const now = Date.now();
     const buf = window._marketDivergence[sym] || {};
-    const isDiverging = modelDir !== 'wait' && kalshiDir !== null && modelDir !== kalshiDir;
+    const isDiverging = modelDir !== 'wait' && polyDir !== null && modelDir !== polyDir;
     if (isDiverging) {
         if (!buf.active || !buf.firstDivTs) {
             buf.active = true;
             buf.firstDivTs = now;
-            buf.entryKalshiPct = kalshiPct ?? 50;
+            buf.entryPolymarketPct = polymarketPct ?? 50;
             buf.entryScore = score;
             buf.entryModelDir = modelDir;
             buf.peakScore = Math.abs(score);
         }
         buf.durationMs = now - buf.firstDivTs;
-        buf.currentKalshiPct = kalshiPct ?? 50;
+        buf.currentPolymarketPct = polymarketPct ?? 50;
         buf.currentScore = score;
         buf.peakScore = Math.max(buf.peakScore ?? 0, Math.abs(score));
-        // catchupDelta > 0 means Kalshi is moving TOWARD the model's direction
+        // catchupDelta > 0 means Polymarket is moving TOWARD the model's direction
         // (market catching up). Negative means diverging further.
         const catchupDelta = modelDir === 'up'
-            ? buf.currentKalshiPct - buf.entryKalshiPct // UP call → want YES% to rise
-            : buf.entryKalshiPct - buf.currentKalshiPct; // DOWN call → want YES% to fall
+            ? buf.currentPolymarketPct - buf.entryPolymarketPct // UP call → want YES% to rise
+            : buf.entryPolymarketPct - buf.currentPolymarketPct; // DOWN call → want YES% to fall
         buf.catchupDelta = catchupDelta;
         const sec = buf.durationMs / 1000;
         if (catchupDelta >= 5)

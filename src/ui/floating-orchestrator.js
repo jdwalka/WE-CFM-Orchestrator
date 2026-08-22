@@ -1,5 +1,5 @@
 // floating-orchestrator.js v2.0 — EV Engine
-// Model-primary. Kalshi = house odds. Edge = modelProbUp vs kalshiYesPrice.
+// Model-primary. Polymarket = house odds. Edge = modelProbUp vs polymarketYesPrice.
 // Divergence = OPPORTUNITY. Entry price = context + risk flags, never a gate.
 // Near-close trades: minimum gate is 5 seconds.
 //
@@ -224,15 +224,15 @@
   }, 50);
   // --------------------------------------------------------------------------
 
-  function crowdFadeDir(kalshiYesPrice, secsLeft, dirs, modelDir) {
-    if (!Number.isFinite(kalshiYesPrice)) return null;
+  function crowdFadeDir(polymarketYesPrice, secsLeft, dirs, modelDir) {
+    if (!Number.isFinite(polymarketYesPrice)) return null;
     if (!dirs || !modelDir) return null;
 
     // Crowd-fade is blockchain-led: follow model direction only when crowd pricing disagrees.
-    var kalshiDir = null;
-    if (kalshiYesPrice >= (0.5 + CROWD_FADE_NEUTRAL_BAND)) kalshiDir = dirs.yesDir;
-    else if (kalshiYesPrice <= (0.5 - CROWD_FADE_NEUTRAL_BAND)) kalshiDir = dirs.noDir;
-    if (!kalshiDir || kalshiDir === modelDir) return null;
+    var polymarketDir = null;
+    if (polymarketYesPrice >= (0.5 + CROWD_FADE_NEUTRAL_BAND)) polymarketDir = dirs.yesDir;
+    else if (polymarketYesPrice <= (0.5 - CROWD_FADE_NEUTRAL_BAND)) polymarketDir = dirs.noDir;
+    if (!polymarketDir || polymarketDir === modelDir) return null;
     return modelDir;
   }
 
@@ -704,7 +704,7 @@
     var direction = params.direction;
     var modelActive = !!params.modelActive;
     var modelYesProb = params.modelYesProb;
-    var kalshiYesPrice = params.kalshiYesPrice;
+    var polymarketYesPrice = params.polymarketYesPrice;
     var liquidity = params.liquidity;
     var finalConfidenceWeak = !!params.finalConfidenceWeak;
     var logTunedDowngradeReason = params.logTunedDowngradeReason || null;
@@ -725,8 +725,8 @@
     var payout = entry && Number.isFinite(entry.payoutMult) ? entry.payoutMult : 0;
     var entryPrice = entry && Number.isFinite(entry.entryPrice) ? entry.entryPrice : null;
     var modelConfidence = Number.isFinite(modelYesProb) ? Math.abs(modelYesProb - 0.5) : 0;
-    var mispricing = Number.isFinite(modelYesProb) && Number.isFinite(kalshiYesPrice)
-      ? Math.abs(modelYesProb - kalshiYesPrice)
+    var mispricing = Number.isFinite(modelYesProb) && Number.isFinite(polymarketYesPrice)
+      ? Math.abs(modelYesProb - polymarketYesPrice)
       : 0;
     var adaptiveTiming = null;
     try {
@@ -744,7 +744,7 @@
           direction: direction,
           edgeCents: edgeCents,
           modelYesProb: modelYesProb,
-          kalshiYesPrice: kalshiYesPrice,
+          polymarketYesPrice: polymarketYesPrice,
           bookImbalance: pred?.indicators?.book?.imbalance,
           buyRatio: pred?.indicators?.flow?.buyRatio,
         });
@@ -931,15 +931,15 @@
     return { yesDir: yesDir, noDir: yesDir === 'UP' ? 'DOWN' : 'UP' };
   }
 
-  function computeEV(side, modelProbUp, kalshiYesPrice) {
-    return side === 'YES' ? modelProbUp - kalshiYesPrice
-      : kalshiYesPrice - modelProbUp;
+  function computeEV(side, modelProbUp, polymarketYesPrice) {
+    return side === 'YES' ? modelProbUp - polymarketYesPrice
+      : polymarketYesPrice - modelProbUp;
   }
 
-  function analyseEntry(side, modelProbUp, kalshiYesPrice) {
-    var entryPrice = side === 'YES' ? kalshiYesPrice : (1 - kalshiYesPrice);
+  function analyseEntry(side, modelProbUp, polymarketYesPrice) {
+    var entryPrice = side === 'YES' ? polymarketYesPrice : (1 - polymarketYesPrice);
     var winProb = side === 'YES' ? modelProbUp : (1 - modelProbUp);
-    var evRaw = computeEV(side, modelProbUp, kalshiYesPrice);
+    var evRaw = computeEV(side, modelProbUp, polymarketYesPrice);
     var edgeCents = Math.round(evRaw * 100);
     var payoutMult = entryPrice > 0 ? parseFloat((1 / entryPrice).toFixed(2)) : null;
     var breakEven = parseFloat(entryPrice.toFixed(4));
@@ -963,7 +963,7 @@
   function evaluateCrowdFade(params) {
     var sym = params.sym;
     var closeTimeMs = params.closeTimeMs;
-    var kalshiYesPrice = params.kalshiYesPrice;
+    var polymarketYesPrice = params.polymarketYesPrice;
     var secsLeft = params.secsLeft;
     var dirs = params.dirs;
     var modelDir = params.modelDir;
@@ -978,7 +978,7 @@
     var key = sym + '_' + (closeTimeMs || 'none');
     function clearCandidate() { delete _fadeCandidates[key]; }
 
-    var fadeDir = crowdFadeDir(kalshiYesPrice, secsLeft, dirs, modelDir);
+    var fadeDir = crowdFadeDir(polymarketYesPrice, secsLeft, dirs, modelDir);
     if (!fadeDir || !modelActive || !Number.isFinite(modelYesProb)) {
       clearCandidate();
       return null;
@@ -995,7 +995,7 @@
     var prev = _fadeCandidates[key];
     var sameCandidate = !!(prev && prev.direction === fadeDir && prev.side === fadeSide);
 
-    var mispricing = Math.abs(modelYesProb - kalshiYesPrice);
+    var mispricing = Math.abs(modelYesProb - polymarketYesPrice);
     var modelConfidence = Math.abs(modelYesProb - 0.5);
     var profile = buildCrowdFadeTimingProfile({
       secsLeft: secsLeft,
@@ -1096,7 +1096,7 @@
     var pm = window.PredictionMarkets && window.PredictionMarkets.getCoin && window.PredictionMarkets.getCoin(sym);
     var polyMarket = (pm && (pm.poly15m || pm.poly5m || pm.poly)) || null;
     var kAlign = pred && pred.projections && pred.projections.p15
-      ? (pred.projections.p15.polyAlign || pred.projections.p15.kalshiAlign)
+      ? pred.projections.p15.polyAlign
       : null;
     var strikeDirRaw = (kAlign && kAlign.strikeDir) || (polyMarket && polyMarket.strikeDir) || 'above';
     var strikeDir = strikeDirRaw === 'below' ? 'below' : 'above';
@@ -1170,7 +1170,7 @@
     var venueBearish = venueDirHint === 'DOWN';
     var venueNeutral = venueDirHint === null;
     var nowMs = Date.now();
-    var closeTimeMs = k15 && k15.closeTime ? new Date(k15.closeTime).getTime() : null;
+    var closeTimeMs = pmMarket && pmMarket.closeTime ? new Date(pmMarket.closeTime).getTime() : null;
     var msLeft = closeTimeMs != null ? Math.max(0, closeTimeMs - nowMs) : null;
     var secsLeft = msLeft != null ? msLeft / 1000 : null;
     var minsLeft = msLeft != null ? msLeft / 60000 : null;
@@ -1190,7 +1190,7 @@
       var transport = window.NetworkHealth && window.NetworkHealth.getTransport
         ? window.NetworkHealth.getTransport()
         : null;
-      transportMode = (k15 && k15._liveTransport) || transport?.preferred?.kalshi || null;
+      transportMode = (pmMarket && pmMarket._liveTransport) || transport?.preferred?.kalshi || null;
     } catch (_) {}
     var schedulerCooldownRemainingMs = 0;
     var schedulerCircuitRemainingMs = 0;
@@ -1204,7 +1204,7 @@
         schedulerCircuitRemainingMs = Math.max(0, (Number(kalshiScheduler.circuitUntil) || 0) - nowMs);
       }
     } catch (_) {}
-    var is15mTicker = !k15 || !k15.ticker || /15M/i.test(String(k15.ticker));
+    var is15mTicker = !pmMarket || !pmMarket.ticker || /15M/i.test(String(pmMarket.ticker));
     var hasValid15mWindow = Number.isFinite(secsLeft) && secsLeft > 0 && secsLeft <= MAX_SECONDS_LEFT;
     pruneContractState(nowMs);
     var tooLate = msLeft != null && msLeft < MIN_SECONDS_LEFT * 1000;
@@ -1266,8 +1266,8 @@
         : [])
       .concat(hasBinaryCdf && !cdfActive ? ['15m binary CDF neutral (' + Math.round(modelYesProb * 100) + '% YES)'] : [])
       .concat(stalePrediction ? ['prediction stale ' + Math.round(predictionAgeMs / 1000) + 's'] : []));
-    addStage('market_window', !tooLate && (!kalshiActive || hasValid15mWindow), {
-      kalshiActive: kalshiActive,
+    addStage('market_window', !tooLate && (!polymarketActive || hasValid15mWindow), {
+      polymarketActive: polymarketActive,
       hasValid15mWindow: hasValid15mWindow,
       is15mTicker: is15mTicker,
       tooLate: tooLate,
@@ -1280,8 +1280,8 @@
       schedulerCooldownRemainingMs: schedulerCooldownRemainingMs,
       schedulerCircuitRemainingMs: schedulerCircuitRemainingMs,
     }, [
-      (kalshiActive && (!is15mTicker || !hasValid15mWindow))
-        ? ('window mismatch: ticker=' + (k15 && k15.ticker ? k15.ticker : 'n/a')
+      (polymarketActive && (!is15mTicker || !hasValid15mWindow))
+        ? ('window mismatch: ticker=' + (pmMarket && pmMarket.ticker ? pmMarket.ticker : 'n/a')
           + ', secsLeft=' + (secsLeft != null ? Math.round(secsLeft) : 'n/a'))
         : null,
       tooLate ? ('settlement < ' + MIN_SECONDS_LEFT + 's') : null,
@@ -1297,48 +1297,48 @@
       return withStageDiagnostics({
         sym: sym, action: 'hold', side: null, direction: null, alignment: 'SHELL_EVAL',
         confidence: 0, msLeft: msLeft ? Math.round(msLeft) : null, secsLeft: secsLeft ? parseFloat(secsLeft.toFixed(1)) : null,
-        minsLeft: minsLeft, lastCall: lastCall, closeTimeMs: closeTimeMs, closeTime: k15 ? k15.closeTime : null,
-        contractTicker: k15 ? k15.ticker : null,
+        minsLeft: minsLeft, lastCall: lastCall, closeTimeMs: closeTimeMs, closeTime: pmMarket ? pmMarket.closeTime : null,
+        contractTicker: pmMarket ? pmMarket.ticker : null,
         reason: 'Shell wall evaluating (' + (vetoSt.evalTick || '?') + '/3) — data collection'
       });
     }
     if (vetoSt && vetoSt.phase === 'confirmed')
-      return withStageDiagnostics(_earlyExit(sym, k15, msLeft, secsLeft, minsLeft, lastCall, 'Shell wall confirmed — stand aside'));
+      return withStageDiagnostics(_earlyExit(sym, pmMarket, msLeft, secsLeft, minsLeft, lastCall, 'Shell wall confirmed — stand aside'));
     var earlyExit = pred && pred.diagnostics && pred.diagnostics.earlyExit;
-    if (modelHardVeto && (!kalshiActive || kalshiDirHint === null)) {
+    if (modelHardVeto && (!polymarketActive || polymarketDirHint === null)) {
       addStage('decision_route', false, {
         earlyExit: false,
-        kalshiIndependentEdge: !!(kalshiActive && kalshiDirHint !== null),
+        polymarketIndependentEdge: !!(polymarketActive && polymarketDirHint !== null),
       }, ['model veto with no independent market edge']);
       return withStageDiagnostics(_skip(sym, 'Model vetoed' + (modelVetoReason ? ' — ' + modelVetoReason : '') + '; no independent market edge'));
     }
-    if (!kalshiActive && !modelActive)
-      return withStageDiagnostics(_skip(sym, 'No signal — score ' + modelScore.toFixed(3) + ', no Kalshi data'));
-    if (kalshiActive && (!is15mTicker || !hasValid15mWindow))
+    if (!polymarketActive && !modelActive)
+      return withStageDiagnostics(_skip(sym, 'No signal — score ' + modelScore.toFixed(3) + ', no Polymarket data'));
+    if (polymarketActive && (!is15mTicker || !hasValid15mWindow))
       return withStageDiagnostics(_skip(sym, 'Invalid contract window for 15m execution'));
     if (tooLate)
       return withStageDiagnostics(_skip(sym, 'Settlement < ' + MIN_SECONDS_LEFT + 's — too late to fill'));
     if (earlyExit)
-      return withStageDiagnostics(_earlyExit(sym, k15, msLeft, secsLeft, minsLeft, lastCall));
+      return withStageDiagnostics(_earlyExit(sym, pmMarket, msLeft, secsLeft, minsLeft, lastCall));
     var direction, alignment;
-    if (kalshiActive && modelActive) {
-      var sameDir = (modelBullish && kalshiBullish) || (!modelBullish && kalshiBearish);
+    if (polymarketActive && modelActive) {
+      var sameDir = (modelBullish && polymarketBullish) || (!modelBullish && polymarketBearish);
       if (sameDir) { direction = modelDir; alignment = 'ALIGNED'; }
-      else if (kalshiNeutral) { direction = modelDir; alignment = 'MODEL_LEADS'; }
+      else if (polymarketNeutral) { direction = modelDir; alignment = 'MODEL_LEADS'; }
       else { direction = modelDir; alignment = 'DIVERGENT'; }
     } else if (modelActive) {
       direction = modelDir; alignment = 'MODEL_ONLY';
     } else {
-      if (kalshiNeutral)
+      if (polymarketNeutral)
         return _skip(sym, (modelVetoed
           ? 'Model vetoed' + (modelVetoReason ? ' — ' + modelVetoReason : '')
-          : 'Kalshi ~50/50, model below threshold (' + modelScore.toFixed(3) + ')'));
-      direction = kalshiYesPrice >= 0.5 ? dirs.yesDir : dirs.noDir;
-      alignment = 'KALSHI_ONLY';
+          : 'Polymarket ~50/50, model below threshold (' + modelScore.toFixed(3) + ')'));
+      direction = polymarketYesPrice >= 0.5 ? dirs.yesDir : dirs.noDir;
+      alignment = 'POLYMARKET_ONLY';
     }
     var regimeTag = extractRegimeTag(pred, cfm);
-    var currentMispricing = Number.isFinite(modelYesProb) && Number.isFinite(kalshiYesPrice)
-      ? Math.abs(modelYesProb - kalshiYesPrice)
+    var currentMispricing = Number.isFinite(modelYesProb) && Number.isFinite(polymarketYesPrice)
+      ? Math.abs(modelYesProb - polymarketYesPrice)
       : 0;
     var mctsState = buildMctsState(sym, pred, cfm, {
       modelProbUp: modelProbUp,
@@ -1346,7 +1346,7 @@
       calibratedConfidence: calibratedConfidence,
       mispricing: currentMispricing,
       secsLeft: secsLeft,
-      liquidity: k15 ? k15.liquidity : null,
+      liquidity: pmMarket ? pmMarket.liquidity : null,
       regimeTag: regimeTag,
       currentDirection: direction,
     });
@@ -1366,15 +1366,15 @@
       && mctsResult.voteStrength >= MCTS_DIRECTION_OVERRIDE_MIN_GAP
       && !modelHardVeto
       && false  // DISABLED: MCTS must not override raw model direction
-      && (alignment !== 'KALSHI_ONLY' || mctsResult.voteStrength >= (MCTS_DIRECTION_OVERRIDE_MIN_GAP * 1.5))
+      && (alignment !== 'POLYMARKET_ONLY' || mctsResult.voteStrength >= (MCTS_DIRECTION_OVERRIDE_MIN_GAP * 1.5))
       && alignment !== 'EARLY_EXIT'
     ) {
       direction = mctsVoteDirection;
       alignment = 'MCTS_OVERRIDE';
       mctsDirectionOverrode = true;
     }
-    var entryYes = kalshiYesPrice !== null ? analyseEntry('YES', modelYesProb, kalshiYesPrice) : null;
-    var entryNo = kalshiYesPrice !== null ? analyseEntry('NO', modelYesProb, kalshiYesPrice) : null;
+    var entryYes = polymarketYesPrice !== null ? analyseEntry('YES', modelYesProb, polymarketYesPrice) : null;
+    var entryNo = polymarketYesPrice !== null ? analyseEntry('NO', modelYesProb, polymarketYesPrice) : null;
     var side = direction === dirs.yesDir ? 'YES' : 'NO';
     var entry = side === 'YES' ? entryYes : side === 'NO' ? entryNo : null;
     var mStr = clamp(Math.abs(modelScore), 0, 1);
@@ -1422,10 +1422,10 @@
     var chainConfMod = Math.round(clamp((chainSizeMult - 1) * 20, -12, 10));
     var confidence = Math.round(clamp(baseConfidence + mctsConfidenceModifier + grokMod + chainConfMod, 0, 99));
     var alwaysTrade = !!(typeof window !== 'undefined' && window.ALWAYS_TRADE_MODE);
-    // ALWAYS_TRADE: if no model dir, still pick Kalshi lean or score sign
+    // ALWAYS_TRADE: if no model dir, still pick Polymarket lean or score sign
     if (!direction || direction === 'FLAT') {
-      if (kalshiYesPrice != null) {
-        direction = kalshiYesPrice >= 0.5 ? dirs.yesDir : dirs.noDir;
+      if (polymarketYesPrice != null) {
+        direction = polymarketYesPrice >= 0.5 ? dirs.yesDir : dirs.noDir;
         alignment = alignment || 'KALSHI_FORCE';
       } else if (Number.isFinite(modelScore) && modelScore !== 0) {
         direction = modelScore >= 0 ? 'UP' : 'DOWN';
@@ -1440,7 +1440,7 @@
     var action;
     if (alwaysTrade && direction) {
       action = 'trade';
-    } else if (alignment === 'KALSHI_ONLY') action = 'watch';
+    } else if (alignment === 'POLYMARKET_ONLY') action = 'watch';
     else if (!entry || entry.edgeCents < EDGE_MIN_CENTS) action = (entry && entry.edgeCents < 0) ? 'skip' : 'watch';
     else action = modelActive ? 'trade' : 'watch';
     var payoutNotPrime = !!(entry && (
@@ -1507,9 +1507,9 @@
       action === 'trade'
       && symNorm !== 'BTC'
       && alignment === 'DIVERGENT'
-      && Number.isFinite(kalshiYesPrice)
-      && kalshiYesPrice >= LOG_TUNED_DIVERGENT_YES_RISK_MIN
-      && kalshiYesPrice < LOG_TUNED_DIVERGENT_YES_RISK_MAX
+      && Number.isFinite(polymarketYesPrice)
+      && polymarketYesPrice >= LOG_TUNED_DIVERGENT_YES_RISK_MIN
+      && polymarketYesPrice < LOG_TUNED_DIVERGENT_YES_RISK_MAX
       && currentMispricing < 0.12
       && (!Number.isFinite(calibratedConfidence) || calibratedConfidence < 18)
     ) {
@@ -1537,8 +1537,8 @@
       direction: direction,
       modelActive: modelActive,
       modelYesProb: modelYesProb,
-      kalshiYesPrice: kalshiYesPrice,
-      liquidity: k15 ? k15.liquidity : null,
+      polymarketYesPrice: polymarketYesPrice,
+      liquidity: pmMarket ? pmMarket.liquidity : null,
       finalConfidenceWeak: finalConfidenceWeak,
       logTunedDowngradeReason: timingDowngradeReason,
     });
@@ -1574,8 +1574,8 @@
       action = 'watch';
     }
     var exceptionalRecoveryCleared = [];
-    var mispricing = Number.isFinite(modelYesProb) && Number.isFinite(kalshiYesPrice)
-      ? Math.abs(modelYesProb - kalshiYesPrice)
+    var mispricing = Number.isFinite(modelYesProb) && Number.isFinite(polymarketYesPrice)
+      ? Math.abs(modelYesProb - polymarketYesPrice)
       : 0;
     var canRecoverWithTiming = action !== 'trade'
       && modelActive
@@ -1642,7 +1642,7 @@
     var sweetSpot = secsLeft != null && secsLeft >= SWEET_MIN_SECS && secsLeft <= SWEET_MAX_SECS
       && payout != null && payout >= SWEET_PAYOUT_MIN
       && action === 'trade';
-    var kPct = kalshiYesPrice != null ? 'Kalshi ' + Math.round(kalshiYesPrice * 100) + '% YES' : '';
+    var kPct = polymarketYesPrice != null ? 'Polymarket ' + Math.round(polymarketYesPrice * 100) + '% YES' : '';
     var mPct = 'model ' + Math.round(modelYesProb * 100) + '% YES';
     var edgeStr = entry ? ((entry.edgeCents >= 0 ? '+' : '') + entry.edgeCents + 'c/contract') : '';
     var confidenceTail = finalConfidenceWeak
@@ -1662,19 +1662,19 @@
     var reasonMap = {
       ALIGNED: sym + ' ' + direction + ': ' + kPct + ' + ' + mPct + ' -> ' + edgeStr,
       DIVERGENT: sym + ': ' + mPct + ' vs ' + kPct + ' -> INVERSION — buy ' + side + ' cheap, house is wrong — ' + edgeStr,
-      MODEL_LEADS: sym + ' ' + direction + ': ' + mPct + ' (Kalshi ~50/50, model ahead) -> ' + edgeStr,
-      MODEL_ONLY: sym + ' ' + direction + ': ' + mPct + ' (no Kalshi data)',
+      MODEL_LEADS: sym + ' ' + direction + ': ' + mPct + ' (Polymarket ~50/50, model ahead) -> ' + edgeStr,
+      MODEL_ONLY: sym + ' ' + direction + ': ' + mPct + ' (no Polymarket data)',
       MCTS_OVERRIDE: sym + ' ' + direction + ': MCTS override (' + (mctsResult && mctsResult.ran ? mctsResult.voteAction : '?')
         + ', score ' + (mctsResult && mctsResult.ran ? mctsResult.voteStrength.toFixed(3) : 'n/a') + ') -> ' + edgeStr,
-      KALSHI_ONLY: sym + ' ' + direction + ': ' + kPct + ' (' + (modelVetoed
+      POLYMARKET_ONLY: sym + ' ' + direction + ': ' + kPct + ' (' + (modelVetoed
         ? 'model vetoed' + (modelVetoReason ? ' — ' + modelVetoReason : '')
         : 'model score ' + modelScore.toFixed(3) + ' below threshold') + ')',
     };
     Object.keys(reasonMap).forEach(function (key) {
-      if (key !== 'KALSHI_ONLY' && confidenceTail) reasonMap[key] += confidenceTail;
-      if (key !== 'KALSHI_ONLY' && logTunedTail) reasonMap[key] += logTunedTail;
-      if (key !== 'KALSHI_ONLY' && softVetoTail) reasonMap[key] += softVetoTail;
-      if (key !== 'KALSHI_ONLY' && timingTail) reasonMap[key] += timingTail;
+      if (key !== 'POLYMARKET_ONLY' && confidenceTail) reasonMap[key] += confidenceTail;
+      if (key !== 'POLYMARKET_ONLY' && logTunedTail) reasonMap[key] += logTunedTail;
+      if (key !== 'POLYMARKET_ONLY' && softVetoTail) reasonMap[key] += softVetoTail;
+      if (key !== 'POLYMARKET_ONLY' && timingTail) reasonMap[key] += timingTail;
     });
     var blockedBy = [];
     if (modelHardVeto) blockedBy.push('hard veto' + (modelVetoReason ? ': ' + modelVetoReason : ''));
@@ -1756,12 +1756,12 @@
       blockedBy: blockedBy.slice(0, 4),
     }, action === 'trade' ? [] : blockedBy.slice(0, 4));
     var strikeStr = null;
-    if (k15 && k15.ticker) {
-      var tm = k15.ticker.match(/T(\d+(?:\.\d+)?)$/);
+    if (pmMarket && pmMarket.ticker) {
+      var tm = pmMarket.ticker.match(/T(\d+(?:\.\d+)?)$/);
       if (tm) strikeStr = 'T' + Number(tm[1]).toLocaleString();
     }
     var result = {
-      sym: sym, contractTicker: k15 ? k15.ticker : null, strikeStr: strikeStr,
+      sym: sym, contractTicker: pmMarket ? pmMarket.ticker : null, strikeStr: strikeStr,
       side: side, direction: direction, alignment: alignment, action: action, confidence: confidence,
       baseConfidence: baseConfidence,
       finalModelConfidence: calibratedConfidence,
@@ -1775,7 +1775,7 @@
       binaryCdfThresholds: { yes: BINARY_CDF_YES_THRESHOLD, no: BINARY_CDF_NO_THRESHOLD },
       modelScore: modelScore, modelProbUp: parseFloat(modelProbUp.toFixed(4)),
       modelProbYes: parseFloat(modelYesProb.toFixed(4)),
-      kalshiYesPrice: kalshiYesPrice, kalshiActive: kalshiActive,
+      polymarketYesPrice: polymarketYesPrice, polymarketActive: polymarketActive,
       predictionTs: predictionTs,
       predictionAgeMs: predictionAgeMs,
       marketAgeMs: marketAgeMs,
@@ -1789,8 +1789,8 @@
       minutesLeft: minsLeft,
       preferredHorizonMin: Number.isFinite(pred?.diagnostics?.preferredHorizon) ? pred.diagnostics.preferredHorizon : 15,
       lastCall: lastCall, tooEarly: tooEarly,
-      targetPrice: k15 ? k15.targetPrice : null, targetPriceNum: k15 ? k15.targetPriceNum : null,
-      liquidity: k15 ? k15.liquidity : 0, closeTime: k15 ? k15.closeTime : null,
+      targetPrice: pmMarket ? pmMarket.targetPrice : null, targetPriceNum: pmMarket ? pmMarket.targetPriceNum : null,
+      liquidity: pmMarket ? pmMarket.liquidity : 0, closeTime: pmMarket ? pmMarket.closeTime : null,
       humanReason: reasonMap[alignment] || (sym + ' ' + direction),
       aiInferenceReason: pred?.llm?.notes || pred?.diagnostics?.llmNotes || null,
       aiInferenceProvider: pred?.llm?.provider || null,
@@ -1890,7 +1890,7 @@
               ticker: result.contractTicker,
               pDelta: orbital.pDelta,
               count: Number.isFinite(result.contractQty) ? result.contractQty : 1,
-              price: Number.isFinite(result.kalshiYesPrice) ? result.kalshiYesPrice : 0.5,
+              price: Number.isFinite(result.polymarketYesPrice) ? result.polymarketYesPrice : 0.5,
             });
             if (payload) {
               result.orbitalOrderPayload = payload;
@@ -1926,7 +1926,7 @@
     var fadeEval = evaluateCrowdFade({
       sym: sym,
       closeTimeMs: closeTimeMs,
-      kalshiYesPrice: kalshiYesPrice,
+      polymarketYesPrice: polymarketYesPrice,
       secsLeft: secsLeft,
       dirs: dirs,
       modelDir: modelDir,
@@ -1934,7 +1934,7 @@
       modelActive: modelActive,
       entryYes: entryYes,
       entryNo: entryNo,
-      liquidity: k15 ? k15.liquidity : null,
+      liquidity: pmMarket ? pmMarket.liquidity : null,
       pred: pred,
       cfm: cfm,
     });
@@ -2027,14 +2027,14 @@
     }
     return res;
   }
-  function _earlyExit(sym, k15, msLeft, secsLeft, minsLeft, lastCall, reason) {
+  function _earlyExit(sym, pmMarket, msLeft, secsLeft, minsLeft, lastCall, reason) {
     return {
       sym: sym, action: 'earlyExit', side: null, direction: null,
       alignment: 'EARLY_EXIT', confidence: 0,
       reason: reason || 'CFM Router early-exit signal',
-      contractTicker: k15 ? k15.ticker : null,
-      closeTimeMs: k15 && k15.closeTime ? new Date(k15.closeTime).getTime() : null,
-      closeTime: k15 ? k15.closeTime : null,
+      contractTicker: pmMarket ? pmMarket.ticker : null,
+      closeTimeMs: pmMarket && pmMarket.closeTime ? new Date(pmMarket.closeTime).getTime() : null,
+      closeTime: pmMarket ? pmMarket.closeTime : null,
       msLeft: msLeft != null ? Math.round(msLeft) : null,
       secsLeft: secsLeft != null ? parseFloat(secsLeft.toFixed(1)) : null,
       minsLeft: minsLeft, lastCall: lastCall
@@ -2173,7 +2173,7 @@
       updatedAt: recent.length ? recent[recent.length - 1].ts : null,
     };
   }
-  window.KalshiOrchestrator = {
+  window.PolymarketOrchestrator = {
     translate: translate,
     resolveAll: resolveAll,
     scoreToProbUp: scoreToProbUp,
@@ -2186,6 +2186,6 @@
       return _cache;
     },
   };
-  console.log('[KalshiOrchestrator] v2.0 loaded — EV engine | gate=5s | ms-precision clock');
+  console.log('[PolymarketOrchestrator] v2.0 loaded — EV engine | gate=5s | ms-precision clock');
 })();
 

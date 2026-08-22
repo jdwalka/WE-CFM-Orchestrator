@@ -1,6 +1,6 @@
 /**
  * ================================================================
- * Kalshi Accuracy Scorecard Debug Helper
+ * Polymarket Accuracy Scorecard Debug Helper
  * 
  * Adds console commands to inspect accuracy scorecard data and
  * signal inversion issues
@@ -10,7 +10,7 @@
 (function () {
   'use strict';
 
-  window.KalshiAccuracyDebug = {
+  window.PolymarketAccuracyDebug = {
     /**
      * Show accuracy scorecard data for a specific coin
      */
@@ -24,7 +24,7 @@
         return;
       }
 
-      const entries = (window._kalshiLog || []).filter(e => e.sym === sym && e._settled);
+      const entries = (window._marketSettlementLog || []).filter(e => e.sym === sym && e._settled);
       const resE = (window._15mResolutionLog || []).filter(e => e.sym === sym && e.modelCorrect !== null);
       const total = entries.length + resE.length;
 
@@ -39,7 +39,7 @@
       const mktPct = Math.round((mktOk / total) * 100);
 
       console.log(`\n${sym}: ${modelPct}% model (${modelOk}/${total}), ${mktPct}% market`);
-      console.log(`  Kalshi trades: ${entries.length}`);
+      console.log(`  Market trades: ${entries.length}`);
       console.log(`  Resolution log: ${resE.length}`);
 
       // Show last 5 contracts
@@ -48,7 +48,7 @@
       recent.forEach(e => {
         const correct = e.modelCorrect === true ? '✓' : e.modelCorrect === false ? '✗' : '?';
         const dir = e.modelDir || e.direction || '?';
-        const outcome = e._kalshiResult || e.kalshiResult || e.actualOutcome || '?';
+        const outcome = e._marketResult || e.marketResult || e.actualOutcome || '?';
         console.log(`    ${correct} model=${dir} actual=${outcome} (${new Date(e.ts || e.settledTs).toISOString().slice(11, 19)})`);
       });
     },
@@ -58,13 +58,13 @@
      */
     findInversions() {
       const all = [
-        ...(window._kalshiLog || []).filter(e => e._settled),
+        ...(window._marketSettlementLog || []).filter(e => e._settled),
         ...(window._15mResolutionLog || []).filter(e => e.modelCorrect !== null),
       ];
 
       const inversions = all.filter(e => {
         const modelDir = e.modelDir || e.direction;
-        const outcome = e._kalshiResult || e.kalshiResult || e.actualOutcome;
+        const outcome = e._marketResult || e.marketResult || e.actualOutcome;
         return modelDir && outcome && modelDir !== outcome;
       });
 
@@ -76,7 +76,7 @@
       console.log(`\n🚨 Found ${inversions.length} inversions:`);
       inversions.slice(-10).forEach(e => {
         const modelDir = e.modelDir || e.direction;
-        const outcome = e._kalshiResult || e.kalshiResult || e.actualOutcome;
+        const outcome = e._marketResult || e.marketResult || e.actualOutcome;
         console.log(`  ${e.sym}: predicted ${modelDir} but got ${outcome}`);
       });
 
@@ -145,7 +145,7 @@
      */
     exportCSV() {
       const all = [
-        ...(window._kalshiLog || []).filter(e => e._settled),
+        ...(window._marketSettlementLog || []).filter(e => e._settled),
         ...(window._15mResolutionLog || []).filter(e => e.modelCorrect !== null),
       ];
 
@@ -153,7 +153,7 @@
       all.forEach(e => {
         const ts = new Date(e.ts || e.settledTs).toISOString();
         const modelDir = e.modelDir || e.direction || '';
-        const outcome = e._kalshiResult || e.kalshiResult || e.actualOutcome || '';
+        const outcome = e._marketResult || e.marketResult || e.actualOutcome || '';
         const modelCorrect = e.modelCorrect === true ? 'YES' : e.modelCorrect === false ? 'NO' : '';
         const mktCorrect = e.marketCorrect === true ? 'YES' : e.marketCorrect === false ? 'NO' : '';
         const conf = e.confidence || '';
@@ -175,25 +175,25 @@
       console.log('\n🔍 SCORECARD HEALTH CHECK');
       console.log('═══════════════════════════════════════════');
 
-      const kalshiLog = window._kalshiLog || [];
+      const marketLog = window._marketSettlementLog || [];
       const resLog = window._15mResolutionLog || [];
 
-      console.log(`📍 _kalshiLog entries: ${kalshiLog.length}`);
+      console.log(`📍 _marketSettlementLog entries: ${marketLog.length}`);
       console.log(`📍 _15mResolutionLog entries: ${resLog.length}`);
 
-      const settled = kalshiLog.filter(e => e._settled).length;
-      console.log(`📍 _kalshiLog (settled): ${settled}`);
+      const settled = marketLog.filter(e => e._settled).length;
+      console.log(`📍 _marketSettlementLog (settled): ${settled}`);
 
       const modelCorrect = resLog.filter(e => e.modelCorrect !== null).length;
       console.log(`📍 _15mResolutionLog (with modelCorrect): ${modelCorrect}`);
 
-      if (kalshiLog.length === 0 && resLog.length === 0) {
+      if (marketLog.length === 0 && resLog.length === 0) {
         console.warn('⚠️  NO DATA: Scorecard will be empty until first contract settles');
         return false;
       }
 
       if (settled === 0 && modelCorrect === 0) {
-        console.warn('⚠️  DATA CAPTURED but NOT SETTLED: Waiting for Kalshi API resolutions');
+        console.warn('⚠️  DATA CAPTURED but NOT SETTLED: Waiting for Polymarket API resolutions');
         return false;
       }
 
@@ -206,7 +206,7 @@
      * This bridges the multi-drive cache with the in-memory resolution log for the debug panel
      */
     async syncDriveCacheToMemory() {
-      console.log('[KalshiAccuracyDebug] Syncing drive cache to memory...');
+      console.log('[PolymarketAccuracyDebug] Syncing drive cache to memory...');
 
       // If running in Electron, call IPC to read contract cache files
       if (typeof window !== 'undefined' && window.electron && window.electron.invoke) {
@@ -218,7 +218,7 @@
 
           if (Array.isArray(settlements) && settlements.length > 0) {
             console.log(
-              `[KalshiAccuracyDebug] Loaded ${settlements.length} contracts from drive cache ` +
+              `[PolymarketAccuracyDebug] Loaded ${settlements.length} contracts from drive cache ` +
               `(source: ${contractData?.source || 'unknown'})`
             );
 
@@ -227,7 +227,7 @@
               .map((c) => {
                 const sym = String(c.sym || c.symbol || c.coin || '').toUpperCase();
                 const settledTs = c.settledTs ?? c.timestamp ?? c.ts ?? null;
-                const actualOutcomeRaw = c.actualOutcome ?? c.outcome ?? c.kalshiResult ?? null;
+                const actualOutcomeRaw = c.actualOutcome ?? c.outcome ?? c.marketResult ?? null;
                 const actualOutcome = actualOutcomeRaw === 'YES'
                   ? 'UP'
                   : actualOutcomeRaw === 'NO'
@@ -259,25 +259,25 @@
 
             if (newContracts.length > 0) {
               window._15mResolutionLog = [...(window._15mResolutionLog || []), ...newContracts].slice(-300);
-              console.log(`[KalshiAccuracyDebug] Added ${newContracts.length} new contracts to resolution log`);
+              console.log(`[PolymarketAccuracyDebug] Added ${newContracts.length} new contracts to resolution log`);
 
               try {
                 localStorage.setItem('beta1_15m_resolution_log', JSON.stringify(window._15mResolutionLog.slice(-300)));
               } catch (_) { }
             } else {
-              console.log('[KalshiAccuracyDebug] No new contracts to sync');
+              console.log('[PolymarketAccuracyDebug] No new contracts to sync');
             }
           } else {
-            console.log('[KalshiAccuracyDebug] No contracts found in drive cache response');
+            console.log('[PolymarketAccuracyDebug] No contracts found in drive cache response');
           }
         } catch (err) {
-          console.warn('[KalshiAccuracyDebug] Drive sync failed:', err.message);
+          console.warn('[PolymarketAccuracyDebug] Drive sync failed:', err.message);
         }
       } else {
-        console.log('[KalshiAccuracyDebug] Not running in Electron, skipping drive sync');
+        console.log('[PolymarketAccuracyDebug] Not running in Electron, skipping drive sync');
       }
     },
   };
 
-  console.log('[KalshiAccuracyDebug] Ready — use KalshiAccuracyDebug.scorecard(sym) .findInversions() .recent() .exportCSV() .healthCheck() .syncDriveCacheToMemory()');
+  console.log('[PolymarketAccuracyDebug] Ready — use PolymarketAccuracyDebug.scorecard(sym) .findInversions() .recent() .exportCSV() .healthCheck() .syncDriveCacheToMemory()');
 })();

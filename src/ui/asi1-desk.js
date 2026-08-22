@@ -63,7 +63,7 @@
     <div class="ad-body" id="adBody">
       <div class="ad-pills" id="adAccounts"></div>
       <div class="ad-selects">
-        <select id="adCoin">${COINS.map((c) => `<option value="${c}">${c}</option>`).join('')}</select>
+        <select id="adCoin"></select>
         <select id="adHorizon"><option value="15m">15m</option><option value="5m">5m</option></select>
       </div>
       <div class="ad-selects">
@@ -109,6 +109,20 @@
   `;
   document.body.appendChild(dash);
 
+  // Built via DOM APIs rather than string interpolation into the innerHTML
+  // template above, so that template stays a fully static literal (COINS is
+  // hardcoded today, but this also avoids the innerHTML-with-interpolation
+  // pattern entirely rather than relying on that staying true).
+  const coinSelect = document.getElementById('adCoin');
+  if (coinSelect) {
+    for (const c of COINS) {
+      const opt = document.createElement('option');
+      opt.value = c;
+      opt.textContent = c;
+      coinSelect.appendChild(opt);
+    }
+  }
+
   let mode = 'asi1_only';
   let minimized = false;
   let windowDeadlineMs = null;
@@ -125,9 +139,13 @@
 
   function tickCountdown() {
     const el = document.getElementById('adTtc');
-    if (!el) return;
-    if (windowDeadlineMs == null) { el.textContent = '—'; return; }
-    el.textContent = formatCountdown(windowDeadlineMs - Date.now());
+    if (windowDeadlineMs == null) { if (el) el.textContent = '—'; return; }
+    const remainingMs = windowDeadlineMs - Date.now();
+    if (el) el.textContent = formatCountdown(remainingMs);
+    if (remainingMs <= 0 && countdownTimer) {
+      clearInterval(countdownTimer);
+      countdownTimer = null;
+    }
   }
   try { mode = window.localStorage.getItem(MODE_KEY) || 'asi1_only'; } catch (_) { /* */ }
   try { minimized = window.localStorage.getItem(MIN_KEY) === '1'; } catch (_) { /* */ }

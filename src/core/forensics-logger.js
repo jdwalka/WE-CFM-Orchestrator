@@ -13,10 +13,10 @@ function capTrailMap(mapObj, limit = window.LOG_CAP || 1000) {
 
 function capRuntimeLogs() {
     window._predLog = capArray(window._predLog);
-    window._kalshiLog = capArray(window._kalshiLog);
+    window._marketSettlementLog = capArray(window._marketSettlementLog);
     window._kalshiErrors = capArray(window._kalshiErrors);
     window._orchLog = capArray(window._orchLog);
-    window._kalshiPredictionTrail = capTrailMap(window._kalshiPredictionTrail);
+    window._marketPredictionTrail = capTrailMap(window._marketPredictionTrail);
   }
 
 function scheduleLogBackup(force = false) {
@@ -34,10 +34,10 @@ function scheduleLogBackup(force = false) {
         const snapshot = {
           timestamp: new Date().toISOString(),
           predLog: capArray(window._predLog),
-          kalshiLog: capArray(window._kalshiLog),
+          marketLog: capArray(window._marketSettlementLog),
           kalshiErrors: capArray(window._kalshiErrors),
           orchLog: capArray(window._orchLog),
-          kalshiTrail: capTrailMap(window._kalshiPredictionTrail),
+          marketTrail: capTrailMap(window._marketPredictionTrail),
         };
         const payload = JSON.stringify(snapshot, null, 2);
 
@@ -97,7 +97,7 @@ function _estimateKalshiFillQuality(sym, pred, predictionDir) {
     try {
       const executionGuard = pred?.diagnostics?.executionGuard || {};
       const quoteProb = _normProb(
-        pred?.projections?.p15?.kalshiAlign?.yesProb ??
+        pred?.projections?.p15?.polyAlign?.yesProb ??
         pred?.diagnostics?.kalshi?.yesProb ??
         pred?.diagnostics?.kalshiYesProb ??
         0.5
@@ -206,14 +206,14 @@ function _journalPrediction(sym, pred, predictionDir, bucketTs) {
         metadata: {
           source: 'snapshotPredictions',
           bucketTs,
-          ticker: pred?.projections?.p15?.kalshiAlign?.ticker || null,
+          ticker: pred?.projections?.p15?.polyAlign?.ticker || null,
           cfmCalibration: pred?.diagnostics?.cfmCalibration || null,
         },
       });
       window._journalPending[sym] = {
         tradeId,
         bucketTs,
-        ticker: pred?.projections?.p15?.kalshiAlign?.ticker || null,
+        ticker: pred?.projections?.p15?.polyAlign?.ticker || null,
         expectedFill: expectedFillQuality,
       };
     } catch (err) { console.error('[Error caught]', err);  }
@@ -307,7 +307,7 @@ function capturePredictionTrail2m(sym, snap) {
       const stepIndex = Math.floor((now - openTimeMs) / stepMs);
       if (stepIndex < 0 || stepIndex > 7) return;
 
-      let trail = window._kalshiPredictionTrail[ticker];
+      let trail = window._marketPredictionTrail[ticker];
       if (!trail) {
         trail = {
           sym,
@@ -317,7 +317,7 @@ function capturePredictionTrail2m(sym, snap) {
           closeTimeMs,
           points: [],
         };
-        window._kalshiPredictionTrail[ticker] = trail;
+        window._marketPredictionTrail[ticker] = trail;
       }
       if (!Array.isArray(trail.points)) trail.points = [];
       trail.strikeDir = snap.strikeDir ?? trail.strikeDir ?? 'above';
@@ -334,7 +334,7 @@ function capturePredictionTrail2m(sym, snap) {
         secsToClose: Math.max(0, Math.round((closeTimeMs - now) / 1000)),
         modelDir: directionFromYesPct(trail.strikeDir, modelYesPct),
         modelYesPct,
-        kalshiYesPct: Number.isFinite(snap.kYesPct) ? Math.round(snap.kYesPct) : null,
+        polymarketYesPct: Number.isFinite(snap.kYesPct) ? Math.round(snap.kYesPct) : null,
         modelScore: Number.isFinite(snap.modelScore) ? +Number(snap.modelScore).toFixed(4) : null,
         modelConf: Number.isFinite(snap.modelConf) ? +Number(snap.modelConf).toFixed(3) : null,
         betAction: snap.betAction ?? null,
@@ -367,17 +367,17 @@ function capturePredictionTrail2m(sym, snap) {
         });
       }
 
-      const keys = Object.keys(window._kalshiPredictionTrail);
+      const keys = Object.keys(window._marketPredictionTrail);
       if (keys.length > 300) {
         keys
-          .sort((a, b) => (window._kalshiPredictionTrail[a]?.closeTimeMs || 0) - (window._kalshiPredictionTrail[b]?.closeTimeMs || 0))
+          .sort((a, b) => (window._marketPredictionTrail[a]?.closeTimeMs || 0) - (window._marketPredictionTrail[b]?.closeTimeMs || 0))
           .slice(0, keys.length - 300)
-          .forEach(k => delete window._kalshiPredictionTrail[k]);
+          .forEach(k => delete window._marketPredictionTrail[k]);
       }
 
-      saveKalshiTrail();
+      saveMarketTrail();
     } catch (e) {
-      console.warn('[KalshiTrail] capture error:', e.message);
+      console.warn('[MarketTrail] capture error:', e.message);
     }
   }
 

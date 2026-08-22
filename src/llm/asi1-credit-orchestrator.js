@@ -125,18 +125,36 @@ async function chat(messages, options = {}) {
   });
 }
 
+// Single source of truth for the fast-path option-override policy. 5m (and
+// any sub-90s) packets are latency-critical -- a 300s window can't afford a
+// leftover HUD selection (model=asi1-ultra, reasoning effort, web search,
+// planner mode) surviving from a prior 15m call via localStorage. Those
+// knobs are caller-controlled options, not desk-selected defaults, so on the
+// fast path they're force-disabled regardless of what the caller passed.
+// Route every deskInfer() option through here rather than reading
+// options.* directly elsewhere, so a caller can never accidentally assume
+// its options are honored on a fast-path packet.
+function resolveDeskOptions(packet, options, mode) {
+  const fastPath = Desk.isFastPath(packet);
+  const explicitModel = options.model && options.model !== 'auto' ? options.model : null;
+  const model = fastPath ? Desk.selectModel(packet, mode) : (explicitModel || Desk.selectModel(packet, mode));
+  const plannerOn = fastPath ? false : (options.plannerMode != null ? !!options.plannerMode : Desk.plannerAllowed(packet, mode));
+  return {
+    fastPath,
+    model,
+    plannerOn,
+    reasoning_effort: fastPath ? undefined : (options.reasoning_effort || options.effort || undefined),
+    enable_thinking: fastPath ? false : (options.enable_thinking != null ? options.enable_thinking : (options.thinking === false ? false : undefined)),
+    web_search: fastPath ? false : (options.web_search != null ? !!options.web_search : undefined),
+  };
+}
+
 async function deskInfer(packet, mode, options = {}) {
   if (mode) setMode(mode);
   const m = getMode();
-  // 5m (and any sub-90s) fast path is latency-critical -- a 300s window can't
-  // afford a leftover HUD selection (model=asi1-ultra, reasoning effort, web
-  // search, planner mode) surviving from a prior 15m call via localStorage.
-  // Those knobs are caller-controlled options, not desk-selected defaults, so
-  // they must be force-disabled here regardless of what the caller passed.
-  const fastPath = Desk.isFastPath(packet);
-  const explicitModel = options.model && options.model !== 'auto' ? options.model : null;
-  const model = fastPath ? Desk.selectModel(packet, m) : (explicitModel || Desk.selectModel(packet, m));
-  const plannerOn = fastPath ? false : (options.plannerMode != null ? !!options.plannerMode : Desk.plannerAllowed(packet, m));
+  const {
+    fastPath, model, plannerOn, reasoning_effort, enable_thinking, web_search,
+  } = resolveDeskOptions(packet, options, m);
   const started = Date.now();
   try {
     const result = await Asi1Client.chatCompletion(
@@ -149,13 +167,13 @@ async function deskInfer(packet, mode, options = {}) {
         candidateModels: rosterFor({ model }),
         plannerMode: plannerOn,
         agents: plannerOn ? AGENTVERSE_PINNED_AGENTS.slice() : undefined,
-        reasoning_effort: fastPath ? undefined : (options.reasoning_effort || options.effort || undefined),
-        enable_thinking: fastPath ? false : (options.enable_thinking != null ? options.enable_thinking : (options.thinking === false ? false : undefined)),
-        web_search: fastPath ? false : (options.web_search != null ? !!options.web_search : undefined),
+        reasoning_effort,
+        enable_thinking,
+        web_search,
         temperature: options.temperature ?? 0.12,
         max_tokens: options.max_tokens ?? (plannerOn ? 2500 : (model === 'asi1-ultra' ? 2200 : 1200)),
         response_format: Desk.RESPONSE_FORMAT,
-        timeoutMs: plannerOn ? 90000 : (Desk.isFastPath(packet) ? 25000 : 50000),
+        timeoutMs: plannerOn ? 90000 : (fastPath ? 25000 : 50000),
       },
     );
     const { contract, source } = Desk.parseOrSynthesize(
@@ -199,6 +217,7 @@ module.exports = {
   getMode,
   setMode,
   plannerEnabled,
+  resolveDeskOptions,
   deskInfer,
   shouldSkipTokenmix,
   markTokenmixExhausted,

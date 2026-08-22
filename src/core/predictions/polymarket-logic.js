@@ -7,9 +7,9 @@
   'use strict';
 
   // Model-first policy: prediction markets are verification context, not a directional driver.
-  const KALSHI_VERIFY_ONLY = true;
+  const POLYMARKET_VERIFY_ONLY = true;
 
-  function getKalshiNextBoundaryMinutes() {
+  function getPolymarketNextBoundaryMinutes() {
     const now = new Date();
     const minutes = now.getMinutes();
     const seconds = now.getSeconds();
@@ -20,7 +20,7 @@
     return Math.max(1, Math.min(15, remaining));
   }
 
-  function resolveKalshiMarketData(symOrMarketData) {
+  function resolvePolymarketMarketData(symOrMarketData) {
     if (symOrMarketData && typeof symOrMarketData === 'object') return symOrMarketData;
     const sym = String(symOrMarketData || '').toUpperCase();
     return sym ? (window.PredictionMarkets?.getCoin(sym) ?? null) : null;
@@ -30,8 +30,8 @@
    * Converts Kalshi/Polymarket consensus into a bounded [-1, 1] signal.
    * The verify-only switch zeroes model impact while preserving diagnostics.
    */
-  function calculateKalshiSentiment(symOrMarketData) {
-    const marketData = resolveKalshiMarketData(symOrMarketData);
+  function calculatePolymarketSentiment(symOrMarketData) {
+    const marketData = resolvePolymarketMarketData(symOrMarketData);
     let signal = 0;
     if (marketData && marketData.combinedProb !== null) {
       const p = Number(marketData.combinedProb);
@@ -41,20 +41,20 @@
     return {
       marketData,
       signal,
-      modelSignal: KALSHI_VERIFY_ONLY ? 0 : signal,
+      modelSignal: POLYMARKET_VERIFY_ONLY ? 0 : signal,
       label: signal > 0.3 ? 'Markets say UP' : signal < -0.3 ? 'Markets say DOWN' : 'Markets neutral',
     };
   }
 
-  function getKalshi15mSettlementContext(sym, fallbackPrice) {
+  function getPolymarket15mSettlementContext(sym, fallbackPrice) {
     const key = String(sym || '').toUpperCase();
     const coin = window.PredictionMarkets?.getCoin(key) ?? null;
     // Polymarket primary (poly15m → poly5m). kalshi15m kept as last-resort alias only.
     const mkt = coin?.poly15m || coin?.poly5m || coin?.kalshi15m || null;
-    const kalshiRef = mkt?.priceToBeatNum ?? mkt?.targetPriceNum ?? null;
-    const kalshiYes = mkt?.probability ?? mkt?.upProbability ?? null;
+    const polymarketRef = mkt?.priceToBeatNum ?? mkt?.targetPriceNum ?? null;
+    const polymarketYes = mkt?.probability ?? mkt?.upProbability ?? null;
     // Polymarket Up/Down: Up wins if price settles above PTB → treat as "above"
-    const kalshiStDir = mkt?.strikeDir ?? 'above';
+    const polymarketStrikeDir = mkt?.strikeDir ?? 'above';
     const rtiData = window._rtiPrices?.[key] ?? null;
     const rtiPrice = rtiData?.price ?? null;
     const venue = mkt ? (coin?.poly15m || coin?.poly5m ? 'polymarket' : 'legacy') : null;
@@ -68,13 +68,13 @@
       : (rtiPrice ?? ((Number.isFinite(twapPx) && twapPx > 0) ? twapPx : fallbackPrice));
 
     return {
-      k15m: mkt,
+      poly15mCtx: mkt,
       poly15m: coin?.poly15m || null,
       poly5m: coin?.poly5m || null,
-      kalshiRef,
-      kalshiYes,
-      kalshiStDir,
-      isBelowK: kalshiStDir === 'below',
+      polymarketRef,
+      polymarketYes,
+      polymarketStrikeDir,
+      isBelowPoly: polymarketStrikeDir === 'below',
       rtiData,
       rtiPrice,
       settlementPrice,
@@ -82,10 +82,10 @@
     };
   }
 
-  window.PredictionKalshiLogic = {
-    KALSHI_VERIFY_ONLY,
-    getKalshiNextBoundaryMinutes,
-    calculateKalshiSentiment,
-    getKalshi15mSettlementContext,
+  window.PredictionPolymarketLogic = {
+    POLYMARKET_VERIFY_ONLY,
+    getPolymarketNextBoundaryMinutes,
+    calculatePolymarketSentiment,
+    getPolymarket15mSettlementContext,
   };
 })();

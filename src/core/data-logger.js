@@ -725,7 +725,7 @@
     const modelCorrect= isFullObj ? res.modelCorrect : arguments[2];
     const prob        = isFullObj ? (res.entryProb ?? arguments[3]) : arguments[3];
 
-    const intent = window.KalshiOrchestrator?.getIntent?.(sym);
+    const intent = window.PolymarketOrchestrator?.getIntent?.(sym);
     push('resolver_outcomes', {
       sym,
       outcome,
@@ -772,7 +772,7 @@
         outcome,
         correct:    modelCorrect,
         score:      isFullObj ? (res.modelScore ?? null) : null,
-        kalshiPct:  Math.round((prob || 0.5) * 100),
+        polymarketPct: Math.round((prob || 0.5) * 100),
         sweetSpot:  isFullObj ? (res.sweetSpot ?? false) : false,
         wickedOut:  isFullObj ? (res.wickedOut ?? false) : false,
         alignment:  isFullObj ? (res.orchestratorAlign ?? null) : null,

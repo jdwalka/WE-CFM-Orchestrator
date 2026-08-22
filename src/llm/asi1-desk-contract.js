@@ -36,6 +36,12 @@
       'urgency=now when TTC>=90 and the edge (deltaVsPtb vs yesProb, depthImbalance) is live and consistent; ' +
       'urgency=wait_pullback otherwise. spotAgeSec is how many seconds old the spot price is -- ' +
       'if spotAgeSec is large relative to TTC, treat spot as stale and prefer HOLD_FLAT over a timing call.',
+    'derivPressure (-1..1) and derivLabel (e.g. CROWDED LONGS, SHORT LIQ CASCADE, OI BUILDING) are ' +
+      'supplementary context from cross-venue perp positioning, never a hole card: positive pressure/' +
+      'CROWDED LONGS or LONG LIQ CASCADE means a pullback risks forced long liquidations amplifying the ' +
+      'down move; negative pressure/CROWDED SHORTS or SHORT LIQ CASCADE means a bounce risks a short-squeeze ' +
+      'amplifying the up move. Only let it nudge confidence or urgency when it agrees with the spot-vs-PTB ' +
+      'path; never let it override spot/PTB or invent a call alone.',
     'Return ONLY JSON matching the desk contract schema.',
   ].join(' ');
 
@@ -289,6 +295,16 @@
       nearTouchNotional: num(w.nearTouchNotional ?? extras.nearTouchNotional),
       secondsToClose: num(o.secondsToClose ?? w.secondsToClose),
       secondsSinceOpen: num(extras.secondsSinceOpen),
+      // Supplementary context only -- never spot/PTB, never overrides them.
+      // Crowded leveraged positioning is a real amplifier of short-horizon
+      // moves: a crowded-long book liquidating INTO a pullback, or a
+      // crowded-short book squeezing on a bounce. derivPressure/derivLabel
+      // are DerivativesFeed's own precomputed read (liquidation cascade >
+      // funding crowding > OI build/unwind, in that priority).
+      fundingRate: num(o.derivativesPositioning?.fundingRate),
+      openInterestUsd: num(o.derivativesPositioning?.openInterestUsd),
+      derivPressure: num(o.derivativesPositioning?.pressure),
+      derivLabel: o.derivativesPositioning?.label || null,
     };
   }
 

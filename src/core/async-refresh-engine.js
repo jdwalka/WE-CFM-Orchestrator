@@ -13,7 +13,7 @@
  * 
  * Benefits:
  * ✓ Predictions run every 30s in background (non-blocking)
- * ✓ Kalshi balance updates every 5s
+ * ✓ Polymarket balance updates every 5s
  * ✓ Market data updates on settlement boundaries
  * ✓ UI never waits for data — updates push in
  * ✓ Graceful degradation if any source fails
@@ -582,7 +582,7 @@
                         ]), { force: true });
                     }
 
-                    // Update Kalshi contracts
+                    // Update Polymarket contracts
                     if (window.PredictionMarkets?.fetchAll) {
                         await this.runLockedFetch(
                             'prediction-markets-fetchAll',

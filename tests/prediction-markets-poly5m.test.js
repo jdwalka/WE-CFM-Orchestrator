@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 
-const sourcePath = path.join(__dirname, '..', 'src', 'kalshi', 'prediction-markets.js');
+const sourcePath = path.join(__dirname, '..', 'src', 'prediction-markets', 'prediction-markets.js');
 const source = fs.readFileSync(sourcePath, 'utf8');
 const FIXED_MS = Date.UTC(2026, 5, 18, 10, 2, 30);
 const WINDOW_TS = Math.floor(FIXED_MS / 1000 / 300) * 300;

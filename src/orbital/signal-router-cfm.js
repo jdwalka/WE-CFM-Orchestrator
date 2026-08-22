@@ -62,7 +62,7 @@
   // ── 1. OUTCOME CALIBRATION ──────────────────────────────────────
   // Blends two sources for per-coin calibration:
   //   _predLog (candle direction accuracy)         weight: 1.0
-  //   _15mResolutionLog (Kalshi settled outcomes)  weight: 1.5
+  //   _15mResolutionLog (Polymarket settled outcomes)  weight: 1.5
   // Market-settled data is weighted higher: clean external binary
   // oracle, not intra-bar candle noise.
   //
@@ -76,16 +76,15 @@
     const candleLog = (window._predLog || [])
       .filter(e => e.sym === sym && e.predDir !== 'FLAT');
 
-    // ---- Source B: Kalshi market-settled _15mResolutionLog -------
-    // MarketResolver writes this when Kalshi 15M markets settle. Dead in
-    // practice since Kalshi trading was disabled -- kept for when/if it's
-    // ever re-enabled; always empty today, so this blend term is inert now.
+    // ---- Source B: Polymarket-settled _15mResolutionLog -------
+    // MarketResolver writes this when Polymarket 15m markets settle
+    // (5m and 15m share this log; the "_15m" name is historical).
     // Each entry has { sym, modelCorrect (bool|null), ... }
     const resolvedLog = (window._15mResolutionLog || [])
       .filter(e => e.sym === sym && e.modelCorrect !== null);
 
     // ---- Source C: Polymarket-settled _5mResolutionLog -----------
-    // src/kalshi/poly5m-resolution-tracker.js -- graded against the actual
+    // src/prediction-markets/poly5m-resolution-tracker.js -- graded against the actual
     // Chainlink TWAP-30s settlement of the actual 5-minute contracts traded,
     // not an internal proxy. Weighted highest of the three: it's genuine
     // ground truth for the venue/horizon actually in play.
@@ -128,7 +127,7 @@
     }
 
     // ---- Best available log for trend/streak, poly5m preferred ---
-    // (real settlement > dead-Kalshi resolved > internal candle proxy)
+    // (real settlement > resolved-log > internal candle proxy)
     const bestLog = (hasPoly5m && poly5mLog.length >= 6) ? { log: poly5mLog, ok: e => e.correct }
       : (hasResolved && resolvedLog.length >= 6) ? { log: resolvedLog, ok: e => e.modelCorrect }
         : { log: candleLog, ok: e => e.correct };

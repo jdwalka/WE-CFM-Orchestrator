@@ -118,17 +118,17 @@ let _asyncUiRefreshCoalesce = false;
 
 const PRED_LOG_STORE = 'beta1_pred_log';
 
-const KALSHI_LOG_STORE = 'beta1_kalshi_log';
+const MARKET_LOG_STORE = 'beta1_kalshi_log';
 
 const LAST_PRED_STORE = 'beta1_last_pred';
 
-const LAST_KALSHI_STORE = 'beta1_last_kalshi';
+const LAST_MARKET_STORE = 'beta1_last_kalshi';
 
 const KALSHI_ERR_STORE = 'beta1_kalshi_errors';
 
 const ORCH_LOG_STORE = 'beta1_orch_log';
 
-const KALSHI_TRAIL_STORE = 'beta1_kalshi_2m_trail';
+const MARKET_TRAIL_STORE = 'beta1_kalshi_2m_trail';
 
 const LOG_CAP = 250;
 
@@ -161,17 +161,17 @@ function savePredLog() {
     } catch (e) { }
   }
 
-function saveKalshiLog() {
+function saveMarketLog() {
     try {
-      window._kalshiLog = capArray(window._kalshiLog);
-      localStorage.setItem(KALSHI_LOG_STORE, JSON.stringify(window._kalshiLog));
+      window._marketSettlementLog = capArray(window._marketSettlementLog);
+      localStorage.setItem(MARKET_LOG_STORE, JSON.stringify(window._marketSettlementLog));
       scheduleLogBackup();
     } catch (e) { }
   }
 
 function saveLastPred() { try { localStorage.setItem(LAST_PRED_STORE, JSON.stringify(window._lastPrediction)); } catch (e) { } }
 
-function saveLastKalshi() { try { localStorage.setItem(LAST_KALSHI_STORE, JSON.stringify(window._lastKalshiSnapshot)); } catch (e) { } }
+function saveLastMarket() { try { localStorage.setItem(LAST_MARKET_STORE, JSON.stringify(window._lastMarketSnapshot)); } catch (e) { } }
 
 function saveKalshiErrors() {
     try {
@@ -189,10 +189,10 @@ function saveOrchLog() {
     } catch (e) { }
   }
 
-function saveKalshiTrail() {
+function saveMarketTrail() {
     try {
-      window._kalshiPredictionTrail = capTrailMap(window._kalshiPredictionTrail);
-      localStorage.setItem(KALSHI_TRAIL_STORE, JSON.stringify(window._kalshiPredictionTrail));
+      window._marketPredictionTrail = capTrailMap(window._marketPredictionTrail);
+      localStorage.setItem(MARKET_TRAIL_STORE, JSON.stringify(window._marketPredictionTrail));
       scheduleLogBackup();
     } catch (e) { }
   }
@@ -315,12 +315,12 @@ Object.defineProperty(window, '_observabilityCache', { get: () => _observability
 Object.defineProperty(window, '_asyncUiRefreshTimer', { get: () => _asyncUiRefreshTimer, set: (v) => { _asyncUiRefreshTimer = v; }, configurable: true });
 Object.defineProperty(window, '_asyncUiRefreshCoalesce', { get: () => _asyncUiRefreshCoalesce, set: (v) => { _asyncUiRefreshCoalesce = v; }, configurable: true });
 Object.defineProperty(window, 'PRED_LOG_STORE', { get: () => PRED_LOG_STORE, set: (v) => { PRED_LOG_STORE = v; }, configurable: true });
-Object.defineProperty(window, 'KALSHI_LOG_STORE', { get: () => KALSHI_LOG_STORE, set: (v) => { KALSHI_LOG_STORE = v; }, configurable: true });
+Object.defineProperty(window, 'MARKET_LOG_STORE', { get: () => MARKET_LOG_STORE, set: (v) => { MARKET_LOG_STORE = v; }, configurable: true });
 Object.defineProperty(window, 'LAST_PRED_STORE', { get: () => LAST_PRED_STORE, set: (v) => { LAST_PRED_STORE = v; }, configurable: true });
-Object.defineProperty(window, 'LAST_KALSHI_STORE', { get: () => LAST_KALSHI_STORE, set: (v) => { LAST_KALSHI_STORE = v; }, configurable: true });
+Object.defineProperty(window, 'LAST_MARKET_STORE', { get: () => LAST_MARKET_STORE, set: (v) => { LAST_MARKET_STORE = v; }, configurable: true });
 Object.defineProperty(window, 'KALSHI_ERR_STORE', { get: () => KALSHI_ERR_STORE, set: (v) => { KALSHI_ERR_STORE = v; }, configurable: true });
 Object.defineProperty(window, 'ORCH_LOG_STORE', { get: () => ORCH_LOG_STORE, set: (v) => { ORCH_LOG_STORE = v; }, configurable: true });
-Object.defineProperty(window, 'KALSHI_TRAIL_STORE', { get: () => KALSHI_TRAIL_STORE, set: (v) => { KALSHI_TRAIL_STORE = v; }, configurable: true });
+Object.defineProperty(window, 'MARKET_TRAIL_STORE', { get: () => MARKET_TRAIL_STORE, set: (v) => { MARKET_TRAIL_STORE = v; }, configurable: true });
 Object.defineProperty(window, 'LOG_CAP', { get: () => LOG_CAP, set: (v) => { LOG_CAP = v; }, configurable: true });
 Object.defineProperty(window, 'LOG_BACKUP_COOLDOWN_MS', { get: () => LOG_BACKUP_COOLDOWN_MS, set: (v) => { LOG_BACKUP_COOLDOWN_MS = v; }, configurable: true });
 Object.defineProperty(window, 'LOG_BACKUP_TARGETS', { get: () => LOG_BACKUP_TARGETS, set: (v) => { LOG_BACKUP_TARGETS = v; }, configurable: true });
@@ -332,12 +332,12 @@ Object.defineProperty(window, 'PRED_SCROLL_IDLE_MS', { get: () => PRED_SCROLL_ID
 Object.defineProperty(window, '_lastLogBackupTs', { get: () => _lastLogBackupTs, set: (v) => { _lastLogBackupTs = v; }, configurable: true });
 Object.defineProperty(window, '_logBackupInFlight', { get: () => _logBackupInFlight, set: (v) => { _logBackupInFlight = v; }, configurable: true });
 window.savePredLog = savePredLog;
-window.saveKalshiLog = saveKalshiLog;
+window.saveMarketLog = saveMarketLog;
 window.saveLastPred = saveLastPred;
-window.saveLastKalshi = saveLastKalshi;
+window.saveLastMarket = saveLastMarket;
 window.saveKalshiErrors = saveKalshiErrors;
 window.saveOrchLog = saveOrchLog;
-window.saveKalshiTrail = saveKalshiTrail;
+window.saveMarketTrail = saveMarketTrail;
 window.saveTradeBellPref = saveTradeBellPref;
 window.saveHighConfidenceOverlayPref = saveHighConfidenceOverlayPref;
 Object.defineProperty(window, 'PREDICTION_HORIZONS', { get: () => PREDICTION_HORIZONS, set: (v) => { PREDICTION_HORIZONS = v; }, configurable: true });

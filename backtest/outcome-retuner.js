@@ -306,7 +306,11 @@ function calcCCI(candles, period) {
   const tps = slice.map(c => (c.h + c.l + c.c) / 3);
   const mean = tps.reduce((s, v) => s + v, 0) / period;
   const meanDev = tps.reduce((s, v) => s + Math.abs(v - mean), 0) / period;
-  return meanDev > 0 ? (tps[tps.length - 1] - mean) / (0.015 * meanDev) : 0;
+  // Clamped to +/-500, matching src/core/predictions.js's live calcCCI -- an
+  // unclamped reading here lets a near-zero meanDev spike distort the
+  // gradient-descent weight grading with a magnitude the live model can
+  // never actually produce.
+  return meanDev > 0.00001 ? clamp((tps[tps.length - 1] - mean) / (0.015 * meanDev), -500, 500) : 0;
 }
 
 function calcCMF(candles, period) {

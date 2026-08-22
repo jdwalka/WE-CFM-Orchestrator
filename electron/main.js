@@ -1,4 +1,5 @@
 const { startOrbitalSystem, restartOrbitalSystem, shutdownOrbitalSystem, getOrbitalStatus } = require('../src/infra/orbital-startup-orchestrator');
+const { createHzTracker } = require('../src/infra/resonance-filter');
 const { app, BrowserWindow, Menu, shell, ipcMain } = require('electron');
 const path = require('path');
 const fs = require('fs');
@@ -760,7 +761,12 @@ try {
 // ── Pyth Lazer real-time WebSocket service ────────────────────────────────────
 let mainWin = null;
 let pythLazerClient = null;
-let pythLazerStatus = { initialized: false, connected: false, lastDataTs: 0, dataCount: 0, timeoutCount: 0 };
+let pythLazerStatus = { initialized: false, connected: false, lastDataTs: 0, dataCount: 0, timeoutCount: 0, smoothedHz: null };
+// EMA-smoothed tick-arrival rate -- absorbs single-tick network jitter (one
+// unusually fast/slow gap) so a transient burst doesn't read as "the feed
+// just changed speed" when the subscribed cadence hasn't actually changed.
+// Diagnostic only; never gates any trading decision.
+const pythWsHzTracker = createHzTracker(0.5);
 let latestPythLazerTickers = {};
 let pythRestPoller = null;
 let proxyHealthy = false;
@@ -1417,6 +1423,8 @@ async function startPythLazerService(win) {
         if (Object.keys(prices).length && !win.isDestroyed()) {
           latestPythLazerTickers = prices;
           lastPythWsTickTs = now; // real WS tick -- gates REST fallback writers, see isPythWsHealthy()
+          const smoothedHz = pythWsHzTracker.tick(now);
+          if (smoothedHz != null) pythLazerStatus.smoothedHz = smoothedHz;
           // ★ UPDATE STATUS: Track Pyth Lazer health
           pythLazerStatus.connected = true;
           pythLazerStatus.lastDataTs = now;
@@ -1453,6 +1461,11 @@ async function startPythLazerService(win) {
                 try { await pythLazerClient.shutdown(); } catch (_) { }
                 pythLazerClient = null;
               }
+              // A reconnect is a genuine cadence restart, not jitter within one
+              // connection -- reset so the post-reconnect burst of buffered/
+              // replayed ticks doesn't get smoothed together with the old
+              // connection's rate into a misleading transient reading.
+              pythWsHzTracker.reset();
 
               if (channelIndex < channelCandidates.length - 1) {
                 channelIndex++;

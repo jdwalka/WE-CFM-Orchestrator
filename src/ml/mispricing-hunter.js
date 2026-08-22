@@ -1,5 +1,5 @@
 /**
- * Mispricing hunter — contrarian edge vs Kalshi crowd + projected drift to execution.
+ * Mispricing hunter — contrarian edge vs Polymarket crowd + projected drift to execution.
  */
 (function (root, factory) {
   const api = factory();
@@ -23,7 +23,7 @@
     return 'WAIT';
   }
 
-  function kalshiYesPct(coin) {
+  function polymarketYesPctFromCoin(coin) {
     const k = coin?.kalshi15m;
     if (!k) return null;
     if (k.probability != null) return Number(k.probability) * 100;
@@ -32,23 +32,23 @@
   }
 
   /**
-   * Project Kalshi implied YES% at execution time using prob velocity (¢/min).
+   * Project Polymarket implied YES% at execution time using prob velocity (¢/min).
    */
-  function projectKalshiAtExecution(kalshiYesPct, probVelocity, msToClose, execLagMs = 3500) {
-    if (kalshiYesPct == null) return null;
+  function projectPolymarketAtExecution(polymarketYesPct, probVelocity, msToClose, execLagMs = 3500) {
+    if (polymarketYesPct == null) return null;
     const minsToExec = Math.max(0, (msToClose - execLagMs) / 60000);
     const vel = Number(probVelocity) || 0;
-    return clamp(kalshiYesPct + vel * minsToExec, 1, 99);
+    return clamp(polymarketYesPct + vel * minsToExec, 1, 99);
   }
 
   /**
    * Core mispricing + contrarian analysis.
    */
   function analyze(ctx = {}) {
-    const align = ctx.kalshiAlign || {};
+    const align = ctx.polyAlign || {};
     const strikeDir = align.strikeDir || ctx.strikeDir || 'above';
     const modelYes = align.modelYesPct ?? ctx.modelYesPct ?? null;
-    const marketYes = align.kalshiYesPct ?? ctx.kalshiYesPct ?? null;
+    const marketYes = align.polymarketYesPct ?? ctx.polymarketYesPct ?? null;
     const msToClose = align.closeTimeMs
       ? Math.max(0, align.closeTimeMs - Date.now())
       : Number(ctx.msToClose ?? 0);
@@ -59,11 +59,11 @@
     const out = {
       strikeDir,
       modelYesPct: modelYes,
-      kalshiYesPct: marketYes,
+      polymarketYesPct: marketYes,
       msToClose,
       mispricingPp: null,
       projectedMispricingPp: null,
-      projectedKalshiYesPct: null,
+      projectedPolymarketYesPct: null,
       contrarian: false,
       contrarianSide: null,
       crowdExtreme: false,
@@ -81,12 +81,12 @@
     }
 
     const currentEdgePp = modelYes - marketYes;
-    const projectedMarket = projectKalshiAtExecution(marketYes, probVel, msToClose, execLagMs);
+    const projectedMarket = projectPolymarketAtExecution(marketYes, probVel, msToClose, execLagMs);
     const projectedEdgePp = projectedMarket != null ? modelYes - projectedMarket : currentEdgePp;
 
     out.mispricingPp = currentEdgePp;
     out.projectedMispricingPp = projectedEdgePp;
-    out.projectedKalshiYesPct = projectedMarket;
+    out.projectedPolymarketYesPct = projectedMarket;
     out.executionEdgePp = projectedEdgePp;
 
     const absProj = Math.abs(projectedEdgePp);
@@ -146,10 +146,10 @@
     const coin = window.PredictionMarkets?.getCoin?.(sym);
     const vel = window.PredictionMarkets?.getVelocity?.(sym);
     return analyze({
-      kalshiAlign: modelExtras.kalshiAlign,
+      polyAlign: modelExtras.polyAlign,
       strikeDir: coin?.kalshi15m?.strikeDir,
-      modelYesPct: modelExtras.modelYesPct ?? modelExtras.kalshiAlign?.modelYesPct,
-      kalshiYesPct: modelExtras.kalshiYesPct ?? kalshiYesPct(coin),
+      modelYesPct: modelExtras.modelYesPct ?? modelExtras.polyAlign?.modelYesPct,
+      polymarketYesPct: modelExtras.polymarketYesPct ?? polymarketYesPctFromCoin(coin),
       msToClose: coin?.kalshi15m?.closeTime
         ? new Date(coin.kalshi15m.closeTime).getTime() - Date.now()
         : 0,
@@ -170,7 +170,7 @@
   return {
     analyze,
     analyzeFromSymbol,
-    projectKalshiAtExecution,
+    projectPolymarketAtExecution,
     yesProbToDirection,
     mispricingToActionId,
   };

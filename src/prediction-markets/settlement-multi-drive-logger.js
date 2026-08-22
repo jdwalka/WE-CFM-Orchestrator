@@ -73,7 +73,7 @@
   };
 
   const SESSION_START = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-  const LOG_FILENAME = `kalshi-settlements-${SESSION_START}.log`;
+  const LOG_FILENAME = `polymarket-settlements-${SESSION_START}.log`;
 
   let settlementBuffer = [];
   let syncStatus = {
@@ -141,18 +141,18 @@
       const outcome = r.outcome || 'PENDING';
       const correct = r.correct === true ? 'WIN' : r.correct === false ? 'LOSS' : 'PENDING';
       const confidence = r.confidence || 0;
-      const kalshiProb = r.kalshiProb || 0;
-      const kYesAsk = r.kYesAsk || 0;
-      const kYesBid = r.kYesBid || 0;
-      const kNoAsk = r.kNoAsk || 0;
-      const kNoBid = r.kNoBid || 0;
+      const polymarketProb = r.polymarketProb || 0;
+      const polyYesAsk = r.polyYesAsk || 0;
+      const polyYesBid = r.polyYesBid || 0;
+      const polyNoAsk = r.polyNoAsk || 0;
+      const polyNoBid = r.polyNoBid || 0;
 
-      return `${timestamp},${r.sym},${modelDir},${outcome},${correct},${confidence},${kalshiProb},${kYesAsk},${kYesBid},${kNoAsk},${kNoBid}`;
+      return `${timestamp},${r.sym},${modelDir},${outcome},${correct},${confidence},${polymarketProb},${polyYesAsk},${polyYesBid},${polyNoAsk},${polyNoBid}`;
     });
 
     const isNewFile = !window._settlementLogHeaderWritten;
     const content = isNewFile
-      ? `timestamp,coin,model_direction,kalshi_outcome,result,confidence,kalshi_probability,kalshi_yes_ask,kalshi_yes_bid,kalshi_no_ask,kalshi_no_bid\n${lines.join('\n')}\n`
+      ? `timestamp,coin,model_direction,polymarket_outcome,result,confidence,polymarket_probability,polymarket_yes_ask,polymarket_yes_bid,polymarket_no_ask,polymarket_no_bid\n${lines.join('\n')}\n`
       : `${lines.join('\n')}\n`;
 
     // Send to main process for multi-target write
@@ -180,9 +180,9 @@
    */
   function setupHooks() {
     setInterval(() => {
-      if (!window.KalshiSettlementDebug) return;
+      if (!window.PolymarketSettlementDebug) return;
 
-      const allData = window.KalshiSettlementDebug.getAllData?.();
+      const allData = window.PolymarketSettlementDebug.getAllData?.();
       if (!allData || !Array.isArray(allData)) return;
 
       if (!window._loggedSettlementIds) {

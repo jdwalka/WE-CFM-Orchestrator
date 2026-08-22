@@ -9,7 +9,7 @@ if (!global.fetch) {
   global.fetch = require('node-fetch');
 }
 
-const HistoricalSettlementFetcher = require('../src/kalshi/historical-settlement-fetcher.js');
+const HistoricalSettlementFetcher = require('../src/prediction-markets/historical-settlement-fetcher.js');
 const {
   fetchLookback,
   computeSignalVector,

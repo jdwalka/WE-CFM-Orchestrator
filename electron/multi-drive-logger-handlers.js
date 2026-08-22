@@ -209,7 +209,7 @@ async function getAllLogsCore(targets) {
       if (!(await existsAsync(scanPath))) return [];
 
       const dirents = await withTimeout(fsp.readdir(scanPath), MULTI_DRIVE_FS_TIMEOUT_MS, `readdir ${scanPath}`);
-      const validFiles = dirents.filter(f => f.startsWith('kalshi-settlements-') && f.endsWith('.log'));
+      const validFiles = dirents.filter(f => f.startsWith('polymarket-settlements-') && f.endsWith('.log'));
 
       const files = [];
       for (const f of validFiles) {
@@ -253,10 +253,10 @@ ipcMain.handle('multi-drive:read-log', async (event, args = {}) => {
           timestamp: parts[0],
           coin: parts[1],
           model_direction: parts[2],
-          kalshi_outcome: parts[3],
+          polymarket_outcome: parts[3],
           result: parts[4],
           confidence: parseFloat(parts[5]),
-          kalshi_probability: parseFloat(parts[6])
+          polymarket_probability: parseFloat(parts[6])
         });
       }
     }
@@ -306,7 +306,7 @@ ipcMain.handle('multi-drive:sync-all-logs', async (event, args = {}) => {
     return { line, ts: new Date(tsStr).getTime() };
   }).sort((a, b) => b.ts - a.ts).map(obj => obj.line);
 
-  const header = 'timestamp,coin,model_direction,kalshi_outcome,result,confidence,kalshi_probability\n';
+  const header = 'timestamp,coin,model_direction,polymarket_outcome,result,confidence,polymarket_probability\n';
   const mergedContent = header + sortedLines.join('\n');
 
   let writtenCount = 0;
@@ -320,7 +320,7 @@ ipcMain.handle('multi-drive:sync-all-logs', async (event, args = {}) => {
         }
         if (!(await existsAsync(targetPath))) continue;
 
-        targetPath = path.join(targetPath, 'kalshi-settlements-merged.log');
+        targetPath = path.join(targetPath, 'polymarket-settlements-merged.log');
         await withTimeout(fsp.writeFile(targetPath, mergedContent, 'utf8'), MULTI_DRIVE_FS_TIMEOUT_MS, `write ${targetPath}`);
         writtenCount++;
       } catch (e) {

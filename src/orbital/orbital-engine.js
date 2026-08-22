@@ -580,23 +580,23 @@
     return clamp(latestVol / avgVol, F_ANOMALY_FLOOR, F_ANOMALY_CEIL);
   }
 
-  function signedKalshiEdge(kAlign) {
+  function signedPolymarketEdge(kAlign) {
     if (!kAlign) return null;
     var modelYesPct = Number(kAlign.modelYesPct);
-    var kalshiYesPct = Number(kAlign.kalshiYesPct);
-    if (!Number.isFinite(modelYesPct) || !Number.isFinite(kalshiYesPct)) return null;
+    var polymarketYesPct = Number(kAlign.polymarketYesPct);
+    if (!Number.isFinite(modelYesPct) || !Number.isFinite(polymarketYesPct)) return null;
     var yesDir = kAlign.strikeDir === 'below' ? -1 : 1;
-    var yesEdge = (modelYesPct - kalshiYesPct) / 100;
+    var yesEdge = (modelYesPct - polymarketYesPct) / 100;
     var noEdge = -yesEdge;
     var useYes = yesEdge >= noEdge;
-    var entryPrice = useYes ? (kalshiYesPct / 100) : (1 - kalshiYesPct / 100);
+    var entryPrice = useYes ? (polymarketYesPct / 100) : (1 - polymarketYesPct / 100);
     return {
       signed: (useYes ? yesDir : -yesDir) * Math.abs(useYes ? yesEdge : noEdge),
       abs: Math.abs(useYes ? yesEdge : noEdge),
       side: useYes ? 'YES' : 'NO',
       entryPrice: clamp(entryPrice, 0.01, 0.99),
       modelYesPct: modelYesPct,
-      kalshiYesPct: kalshiYesPct,
+      polymarketYesPct: polymarketYesPct,
     };
   }
 
@@ -629,7 +629,7 @@
     var indicators = pred.indicators || {};
     var diagnostics = pred.diagnostics || {};
     var micro = indicators.microstructure || {};
-    var kAlign = ctx.kalshiAlign || (pred.projections && pred.projections.p15 && pred.projections.p15.kalshiAlign) || null;
+    var kAlign = ctx.polyAlign || (pred.projections && pred.projections.p15 && pred.projections.p15.polyAlign) || null;
     var signalGate = ctx.signalGate || pred.gate || diagnostics.signalGate || null;
     var executionGuard = ctx.executionGuard || diagnostics.executionGuard || null;
     var liveBook = diagnostics.liveBook || {};
@@ -696,7 +696,7 @@
       1
     );
 
-    var edge = signedKalshiEdge(kAlign);
+    var edge = signedPolymarketEdge(kAlign);
     var marketEdge = 0;
     var payoutQuality = 0;
     if (edge) {
