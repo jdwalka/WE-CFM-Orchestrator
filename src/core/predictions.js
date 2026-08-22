@@ -90,7 +90,7 @@
   let lastTideRunTs = 0;
   let tideStatusCache = null;
   let tideStatusCacheTs = 0;
-  const INFERENCE_MIN_INTERVAL_MS = 150000; // Trigger ~6 times per 15 min window
+  const INFERENCE_MIN_INTERVAL_MS = 240000; // Trigger ~3.75x per 15 min window (was 150000/6x -- throttled back 2026-08-22, ASI1 daily quota was exhausting early)
   const INFERENCE_REQUEST_TIMEOUT_MS = 7000;
   const INFERENCE_QUOTA_COOLDOWN_MS = 5 * 60 * 1000;
   const TIDE_MIN_INTERVAL_MS = 15000;

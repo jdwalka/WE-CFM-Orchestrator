@@ -12,7 +12,10 @@
   'use strict';
   if (typeof window === 'undefined') return;
 
-  const COINS = ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'BNB', 'HYPE'];
+  // Trimmed to the 4 majors 2026-08-22, same as PREDICTION_COINS (data.js) --
+  // DOGE/BNB/HYPE cut from 5m/15m pre-contract LLM firing too, to protect the
+  // ASI1 daily request quota.
+  const COINS = ['BTC', 'ETH', 'SOL', 'XRP'];
   const REFRESH_MS = Number(window.__ASI1_PRECONTRACT_MS || 75_000);
   const MIN_TTC_FIRE = 20;
   const MAX_TTC_5M = 8 * 60;
