@@ -23,6 +23,124 @@ const {
 const Asi1Client = require("../infra/asi1-client");
 const Asi1CreditOrch = require("./asi1-credit-orchestrator");
 
+// ── Robust secret dir candidates (Electron-aware, multi-drive) ──────────────
+// Mirrors the logic in electron/main.js so keys placed in secrets/ are found
+// whether running from source, packaged asar, different drive letters, etc.
+function getLlmSecretDirCandidates() {
+  const exeDir = path.dirname(process.execPath || __filename || '');
+  let userDataDir = '';
+  try {
+    const { app } = require('electron');
+    if (app && typeof app.getPath === 'function') userDataDir = app.getPath('userData');
+  } catch (_) {}
+
+  const candidates = [
+    userDataDir && path.join(userDataDir, 'secrets'),
+    path.join(exeDir, 'secrets'),
+    process.resourcesPath && path.join(process.resourcesPath, '..', 'secrets'),
+    path.join(__dirname, '..', 'secrets'),
+    path.join(__dirname, '..', '..', 'secrets'),
+    path.resolve(process.cwd(), 'secrets'),
+    'G:\\WECRYPTO\\secrets',
+    'F:\\WECRYPTO\\secrets',
+    'E:\\WECRYPTO\\secrets',
+    'G:\\WECRYP\\secrets',
+    'G:\\wecryp\\secrets',
+    path.join(process.cwd(), '..', 'secrets'),
+  ].filter(Boolean);
+
+  const seen = new Set();
+  const existing = [];
+  for (const c of candidates) {
+    try {
+      const resolved = path.resolve(c);
+      const key = resolved.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      if (fs.existsSync(resolved)) existing.push(resolved);
+    } catch (_) {}
+  }
+  return existing;
+}
+
+function extractKeyFromRaw(raw, patterns) {
+  if (!raw) return '';
+  const text = String(raw);
+  for (const p of patterns) {
+    const flags = p.flags.includes('g') ? p.flags : `${p.flags}g`;
+    let re;
+    try { re = new RegExp(p.source, flags); } catch (_) { re = p; }
+    const matches = [];
+    if (re.global) {
+      for (const m of text.matchAll(re)) { if (m && m[0]) matches.push(m[0]); }
+    } else {
+      const m = text.match(re);
+      if (m && m[0]) matches.push(m[0]);
+    }
+    if (matches.length) return matches[matches.length - 1];
+  }
+  const lines = text.split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !l.startsWith('#'));
+  const line = lines.length ? lines[lines.length - 1] : '';
+  if (line) return line.replace(/^[A-Za-z0-9_.-]+\s*=\s*/, '').trim();
+  return '';
+}
+
+// TokenMix (tokenmix.ai) -- OpenAI-compatible relay used as the PRIMARY
+// inference provider while the ASI1/Fetch.ai wallet is unfunded (2026-08-22).
+// ASI1 remains wired as automatic fallback on TokenMix failure/exhaustion --
+// see callAPI() below. Re-flip priority by setting LLM_PRIMARY_PROVIDER=asi1.
+function readTokenMixKeyFromSecrets() {
+  const fileNames = ["tokenmix_api_key.txt", "TOKENMIX_API_KEY.txt", "TokenMix.txt"];
+  const patterns = [/sk-tm-[A-Za-z0-9_-]+/i];
+  for (const dir of getLlmSecretDirCandidates()) {
+    for (const name of fileNames) {
+      try {
+        const file = path.join(dir, name);
+        if (!fs.existsSync(file)) continue;
+        const raw = fs.readFileSync(file, "utf8");
+        const val = extractKeyFromRaw(raw, patterns);
+        if (val) return val;
+      } catch (_) { }
+    }
+  }
+  return "";
+}
+
+function resolveTokenMixApiKey() {
+  return process.env.TOKENMIX_API_KEY || readTokenMixKeyFromSecrets() || '';
+}
+
+const TOKENMIX_API_KEY = resolveTokenMixApiKey();
+const TOKENMIX_BASE_URL = process.env.TOKENMIX_BASE_URL || "https://api.tokenmix.ai/v1/chat/completions";
+// deepseek/deepseek-v4-flash is the verified-working cost/detail pick (confirmed
+// live against api.tokenmix.ai on 2026-08-22: 200 OK, ~2s, clean JSON content).
+const TOKENMIX_MODEL = process.env.TOKENMIX_MODEL || "deepseek/deepseek-v4-flash";
+// DeepSeek V4 Flash is a *reasoning* model: with thinking on, completion tokens
+// go to hidden reasoning first, and if max_tokens is too low, content comes
+// back empty (finish_reason=length). Default thinking OFF for reliable JSON.
+const TOKENMIX_ENABLE_THINKING = (() => {
+  const v = String(process.env.TOKENMIX_ENABLE_THINKING || '0').toLowerCase();
+  return v === '1' || v === 'true' || v === 'yes';
+})();
+const TOKENMIX_MAX_TOKENS = Number(
+  process.env.TOKENMIX_MAX_TOKENS || (TOKENMIX_ENABLE_THINKING ? 4500 : 1600)
+);
+const TOKENMIX_TIMEOUT_MS = Number(process.env.TOKENMIX_TIMEOUT_MS || 45000);
+const TOKENMIX_FORCE_JSON = process.env.TOKENMIX_FORCE_JSON !== '0';
+// TokenMix credit exhaustion (402 / "out of credits") cooldown before retrying.
+const TOKENMIX_CREDIT_COOLDOWN_MS = Number(process.env.TOKENMIX_CREDIT_COOLDOWN_MS || 30 * 60 * 1000);
+// Confirmed live 2026-08-22: TokenMix returns HTTP 403 (not 402) with
+// "Account credits are temporarily unavailable while recent card payments
+// are under review" when the account's payment method is flagged -- an
+// account-level block, not a per-request one, so it needs the same cooldown
+// as an explicit 402.
+const TOKENMIX_CREDIT_RE = /\bhttp\s*40[23]\b|\bstatus(?:code)?[:\s]*40[23]\b|\bpayment required\b|\btokenmix(?:['’]s)?\s+(?:is\s+)?(?:out of|insufficient)\s+credits?\b|\binsufficient credits?\b|\bout of credits?\b|\bcredits?\s+exhausted\b|\bcredits?\s+(?:are\s+)?temporarily unavailable\b|\bcard payments?\s+are\s+under review\b/i;
+// Primary/fallback ordering. 'tokenmix' tries TokenMix first, falls back to
+// ASI1 on failure/cooldown. 'asi1' (default as of 2026-08-22) restores the
+// pre-2026-08-22 order -- TokenMix's account is card-payment-blocked and
+// couldn't be funded, so ASI1 is primary again until that clears.
+const LLM_PRIMARY_PROVIDER = (process.env.LLM_PRIMARY_PROVIDER || 'asi1').toLowerCase();
+
 function loadLLMEnv() {
   const loadedPaths = [];
 
@@ -52,13 +170,17 @@ function loadLLMEnv() {
 
 const LLM_ENV_SOURCES = loadLLMEnv();
 
-// ── ASI1-only inference layer ────────────────────────────────────────────
-// This app routes every LLM call through ASI1 (asi1.ai) exclusively --
-// TokenMix/DeepSeek, xAI/Grok, OpenAI, Anthropic/Claude, Google/Gemini and
-// OpenRouter have all been removed as inference providers. Key resolution,
-// the full model roster (asi1-ultra / asi1 / asi1-mini / asi1-fast) and
-// reasoning / planner-mode routing live in ../infra/asi1-client.js and
-// ./asi1-credit-orchestrator.js.
+// ── Inference layer: TokenMix primary, ASI1 fallback ────────────────────
+// PR #86 (2026-08-19) made ASI1 the sole inference provider, removing
+// TokenMix/xAI/OpenAI/Anthropic/Google/OpenRouter entirely. TokenMix was
+// restored 2026-08-22 as the PRIMARY provider (ASI1/Fetch.ai wallet
+// unfunded at the time) -- callAPI() below tries TokenMix first and falls
+// back to ASI1 on failure/credit-exhaustion. xAI/OpenAI/Anthropic/Google/
+// OpenRouter remain removed; only TokenMix came back. Set
+// LLM_PRIMARY_PROVIDER=asi1 to flip the order back once ASI1 credits are
+// funded again. ASI1's key resolution, full model roster (asi1-ultra /
+// asi1 / asi1-mini / asi1-fast) and reasoning/planner-mode routing still
+// live in ../infra/asi1-client.js and ./asi1-credit-orchestrator.js.
 
 const CONTEXT_CACHE_TTL_MS = Number(process.env.LLM_CONTEXT_CACHE_TTL_MS || 15000);
 const MARKET_MEMORY_LIMIT = Number(process.env.LLM_MARKET_MEMORY_LIMIT || 12);
@@ -102,8 +224,9 @@ function isFiveMinPtbMarket(snapshot) {
 
 class LLMSignalAssistant {
   constructor() {
-    this.provider = "asi1";
-    this.enabled = Asi1Client.hasAsi1Credentials();
+    this.provider = LLM_PRIMARY_PROVIDER === 'tokenmix' && TOKENMIX_API_KEY ? "tokenmix" : "asi1";
+    this.tokenmixEnabled = !!TOKENMIX_API_KEY;
+    this.enabled = this.tokenmixEnabled || Asi1Client.hasAsi1Credentials();
 
     // Restore query history / market memory / cooldowns from disk (cold-start avoidance)
     try { this._hydratePersistedState(); } catch (_) { /* */ }
@@ -114,14 +237,18 @@ class LLMSignalAssistant {
     this.queryStatsByProvider = {};     // per-provider stats (calls, latency, errors)
     this.queryStatsByModel = {};        // per-model stats (calls, latency, errors)
     // Circuit breaker: provider -> { until, reason }. ASI1 handles its own
-    // multi-key/multi-model rotation internally (see asi1-client.js), so this
-    // stays empty in practice, but the machinery is kept generic.
+    // multi-key/multi-model rotation internally (see asi1-client.js). TokenMix
+    // uses this directly for 402/credit-exhaustion cooldowns (see
+    // _isTokenmixInCooldown / _markTokenmixCooldown below).
     this._providerCooldowns = {};
+    this._tokenmixCreditExhausted = false;
     this.envDiagnostics = {
       dotenvLoaded: LLM_ENV_SOURCES.length > 0,
       dotenvSources: LLM_ENV_SOURCES,
       hasAsi1Key: Asi1Client.hasAsi1Credentials(),
       asi1KeysConfigured: Asi1Client.getDiagnostics().keysConfigured,
+      hasTokenMixKey: this.tokenmixEnabled,
+      primaryProvider: this.provider,
       providerOverride: null,
     };
 
@@ -144,7 +271,8 @@ class LLMSignalAssistant {
 
     console.log(
       `[LLMSignalAssistant] Initialized ${this.enabled ? "\u2713 ENABLED" : "\u26a0 DISABLED"} ` +
-      `(provider=asi1, roster=${Asi1Client.ASI1_ALL_MODELS.join("/")})`
+      `(primary=${this.provider}, tokenmix=${this.tokenmixEnabled ? `${TOKENMIX_MODEL}` : 'no-key'}, ` +
+      `asi1-fallback=${Asi1Client.hasAsi1Credentials() ? 'yes' : 'no-key'}, roster=${Asi1Client.ASI1_ALL_MODELS.join("/")})`
     );
     if (this.envDiagnostics.dotenvLoaded) {
       console.log(`[LLMSignalAssistant] Loaded env from: ${this.envDiagnostics.dotenvSources.join(" | ")}`);
@@ -419,6 +547,71 @@ Use this recall only as context, and prioritize current market snapshot data if 
       || String(snapshot?.horizon || '') === '60m'
       || String(snapshot?.horizon || '') === '1h'
     );
+
+    // TokenMix-first: primary provider while ASI1/Fetch.ai credits are
+    // unfunded (see LLM_PRIMARY_PROVIDER, default 'tokenmix'). Falls through
+    // to the existing ASI1 path below on any failure -- key missing, network
+    // error, credit exhaustion (cooldown), or bad/empty response.
+    if (LLM_PRIMARY_PROVIDER === 'tokenmix' && TOKENMIX_API_KEY && !this._isTokenmixInCooldown()
+        && process.env.LLM_DISABLE_TOKENMIX !== '1') {
+      const coinTm = String(snapshot?.coin || 'GLOBAL');
+      const horizonTm = is5mPtb ? '5m-ptb' : String(snapshot?.horizon || snapshot?.horizonMinutes || '15m');
+      const promptLengthTm = (systemPrompt || '').length + (userPrompt || '').length;
+      const startTm = Date.now();
+      try {
+        console.log(`[LLM ${horizonTm}] trying tokenmix (${TOKENMIX_MODEL})`);
+        const res = await this.callTokenMixAPI(systemPrompt, userPrompt, {});
+        const parsed = this.parseLlmJsonContent(res.content, { provider: 'tokenmix', rawText: res.content });
+        parsed._provider = 'tokenmix';
+        parsed._model = res.model;
+        this._recordQueryExecution({
+          id: `llm-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          timestamp: new Date().toISOString(),
+          ts: Date.now(),
+          coin: coinTm,
+          horizon: horizonTm,
+          provider: 'tokenmix',
+          model: res.model,
+          status: 'SUCCESS',
+          latencyMs: Date.now() - startTm,
+          promptChars: promptLengthTm,
+          responseChars: res.content.length,
+          resultCall: parsed?.call || parsed?.direction || null,
+          regime: parsed?.regime || null,
+          confidence: parsed?.confidence ?? null,
+          notes: parsed?.suggestions?.notes?.slice(0, 280) || null,
+          attempted: ['tokenmix'],
+          skipped: [],
+          error: null,
+        });
+        this._lastProvider = 'tokenmix';
+        this._lastModel = res.model;
+        return this.normalizeResponse(parsed, snapshot);
+      } catch (err) {
+        this._recordQueryExecution({
+          id: `llm-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          timestamp: new Date().toISOString(),
+          ts: Date.now(),
+          coin: coinTm,
+          horizon: horizonTm,
+          provider: 'tokenmix',
+          model: TOKENMIX_MODEL,
+          status: 'FAILURE',
+          latencyMs: Date.now() - startTm,
+          promptChars: promptLengthTm,
+          responseChars: 0,
+          resultCall: null,
+          regime: null,
+          confidence: null,
+          notes: null,
+          attempted: ['tokenmix'],
+          skipped: [],
+          error: String(err.message || err),
+        });
+        console.warn(`[LLM ${horizonTm}] tokenmix failed, falling back to asi1: ${String(err.message || err).slice(0, 180)}`);
+      }
+    }
+
     if (!Asi1Client.hasAsi1Credentials() || process.env.LLM_DISABLE_ASI1 === '1') {
       const coin = String(snapshot?.coin || 'GLOBAL');
       const horizon = is5mPtb ? '5m-ptb' : String(snapshot?.horizon || snapshot?.horizonMinutes || '15m');
@@ -612,6 +805,210 @@ Use this recall only as context, and prioritize current market snapshot data if 
       _provider: meta.provider || null,
       _softParsed: true,
     };
+  }
+
+  // ── TokenMix (tokenmix.ai) provider ──────────────────────────────────────
+  // Restored 2026-08-22 as primary provider while ASI1/Fetch.ai credits are
+  // unfunded. Recovered from git history (commit a1276d1c^, the last version
+  // before PR #86 removed it) rather than rewritten from scratch, including
+  // the enable_thinking:false empty-content fix from commit 4410e5e6.
+
+  _isTokenmixInCooldown() {
+    if (this._tokenmixCreditExhausted) {
+      const cd = this._providerCooldowns.tokenmix;
+      if (cd && cd.until > Date.now()) return true;
+      // Cooldown window elapsed -- allow a retry to see if credits landed.
+      this._tokenmixCreditExhausted = false;
+    }
+    return false;
+  }
+
+  _markTokenmixCooldown(err) {
+    const msg = String(err?.message || err || '');
+    const status = Number(err?.status || err?.statusCode || 0);
+    if (status !== 402 && !TOKENMIX_CREDIT_RE.test(msg)) return false;
+    this._tokenmixCreditExhausted = true;
+    this._providerCooldowns.tokenmix = {
+      until: Date.now() + TOKENMIX_CREDIT_COOLDOWN_MS,
+      reason: 'payment required (402) -- no credits on TokenMix account',
+    };
+    console.warn(`[TokenMix] credit exhaustion detected, cooling down ${Math.round(TOKENMIX_CREDIT_COOLDOWN_MS / 60000)}m: ${msg.slice(0, 160)}`);
+    return true;
+  }
+
+  extractOpenAICompatibleContent(data) {
+    if (!data || typeof data !== 'object') return '';
+    if (data.error?.message) {
+      const err = new Error(`LLM API error: ${data.error.message}`);
+      err.status = data.error.code || data.error.status;
+      throw err;
+    }
+    const choice = data.choices?.[0] || data.data?.choices?.[0] || null;
+    const msg = choice?.message || choice?.delta || null;
+    const pick = (v) => {
+      if (v == null) return '';
+      if (typeof v === 'string') return v;
+      if (Array.isArray(v)) {
+        return v.map((part) => {
+          if (typeof part === 'string') return part;
+          if (part?.text) return part.text;
+          if (part?.content) return typeof part.content === 'string' ? part.content : '';
+          if (part?.type === 'text' && part?.text) return part.text;
+          return '';
+        }).join('');
+      }
+      if (typeof v === 'object' && typeof v.text === 'string') return v.text;
+      return '';
+    };
+    let content = '';
+    if (msg) {
+      content = pick(msg.content) || pick(msg.reasoning_content) || pick(msg.reasoning)
+        || pick(msg.output_text) || pick(msg.text);
+    }
+    if (!content && choice) {
+      content = pick(choice.text) || pick(choice.content) || pick(choice.output);
+    }
+    if (!content) {
+      content = pick(data.output_text) || pick(data.output) || pick(data.content)
+        || pick(data.result) || pick(data.message?.content);
+    }
+    return String(content || '').trim();
+  }
+
+  /**
+   * Generic OpenAI-compatible chat-completions caller, trimmed to what
+   * TokenMix needs (no xAI/Google/Anthropic branches -- those providers stay
+   * removed per PR #86; only TokenMix was asked back).
+   */
+  async callCompatibleAPI(systemPrompt, userPrompt, config = {}) {
+    const url = config.url;
+    const model = config.model;
+    const key = config.key;
+    const maxTokens = Number(config.maxTokens || 1500);
+    const providerLabel = config.providerLabel || 'compatible';
+    if (!key) throw new Error(`API key missing for ${providerLabel}`);
+    if (!url) throw new Error(`API url missing for ${providerLabel}`);
+
+    const payload = {
+      model,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt },
+      ],
+      temperature: 0.1,
+      max_tokens: maxTokens,
+      stream: false,
+    };
+    if (config.responseFormat) payload.response_format = config.responseFormat;
+    if (typeof config.enableThinking === 'boolean') payload.enable_thinking = config.enableThinking;
+
+    const controller = new AbortController();
+    const timeoutMs = Number(config.timeoutMs || 45000);
+    const timer = setTimeout(() => {
+      try { controller.abort(new Error(`${providerLabel} timeout after ${timeoutMs}ms`)); }
+      catch (_) { try { controller.abort(); } catch (_) {} }
+    }, timeoutMs);
+
+    let response;
+    try {
+      response = await fetch(url, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+
+    if (!response.ok) {
+      const errBody = await response.text().catch(() => '');
+      const err = new Error(
+        `LLM API error ${response.status}: ${response.statusText}${errBody ? ` — ${errBody.slice(0, 220)}` : ''}`
+      );
+      err.status = response.status;
+      throw err;
+    }
+
+    const data = await response.json();
+    const content = this.extractOpenAICompatibleContent(data);
+    if (!content) {
+      const choice = data?.choices?.[0] || null;
+      const finish = choice?.finish_reason || 'unknown';
+      const usage = data?.usage || {};
+      const reasonTok = usage?.completion_tokens_details?.reasoning_tokens ?? usage?.reasoning_tokens ?? null;
+      const keys = Object.keys(data || {}).slice(0, 12).join(',');
+      throw new Error(
+        `Unexpected LLM API response format (${providerLabel}) empty content`
+        + ` finish=${finish} reasoning_tokens=${reasonTok} max_tokens=${maxTokens} keys=[${keys}]`
+      );
+    }
+    return content;
+  }
+
+  /**
+   * TokenMix -> DeepSeek V4 Flash (default). Retries: json->plain, and if
+   * reasoning ate max_tokens (empty content), re-calls with
+   * enable_thinking:false and a larger budget.
+   */
+  async callTokenMixAPI(systemPrompt, userPrompt, config = {}) {
+    if (!TOKENMIX_API_KEY) throw new Error('TOKENMIX_API_KEY missing');
+    if (this._isTokenmixInCooldown()) {
+      throw new Error('TokenMix in credit-exhaustion cooldown');
+    }
+    const model = config.model || TOKENMIX_MODEL;
+    const baseMaxTokens = Number(config.maxTokens || TOKENMIX_MAX_TOKENS);
+    const timeoutMs = Number(config.timeoutMs || TOKENMIX_TIMEOUT_MS);
+    const preferThinking = config.enableThinking != null ? !!config.enableThinking : TOKENMIX_ENABLE_THINKING;
+
+    const jsonFirst = TOKENMIX_FORCE_JSON && preferThinking;
+    const modeAttempts = jsonFirst
+      ? [{ jsonMode: true }, { jsonMode: false }]
+      : TOKENMIX_FORCE_JSON
+        ? [{ jsonMode: false }, { jsonMode: true }]
+        : [{ jsonMode: false }];
+
+    const attempts = [
+      ...modeAttempts.map((m) => ({ ...m, enableThinking: preferThinking, maxTokens: baseMaxTokens })),
+      { jsonMode: false, enableThinking: false, maxTokens: Math.max(baseMaxTokens, 2000), rescue: true },
+      { jsonMode: true, enableThinking: false, maxTokens: Math.max(baseMaxTokens, 2000), rescue: true },
+    ];
+    const seen = new Set();
+    const uniqueAttempts = attempts.filter((a) => {
+      const k = `${a.jsonMode}|${a.enableThinking}|${a.maxTokens}`;
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    });
+
+    let lastErr = null;
+    for (const attempt of uniqueAttempts) {
+      try {
+        const content = await this.callCompatibleAPI(systemPrompt, userPrompt, {
+          url: TOKENMIX_BASE_URL,
+          model,
+          key: TOKENMIX_API_KEY,
+          maxTokens: attempt.maxTokens,
+          timeoutMs,
+          responseFormat: attempt.jsonMode ? { type: 'json_object' } : null,
+          enableThinking: attempt.enableThinking,
+          providerLabel: 'tokenmix',
+        });
+        return { content, model, thinking: attempt.enableThinking };
+      } catch (err) {
+        lastErr = err;
+        this._markTokenmixCooldown(err);
+        const msg = String(err?.message || err);
+        const reasoningStarve = /empty content|reasoning_tokens|finish=length|Unexpected LLM API response format/i.test(msg);
+        console.warn(
+          `[TokenMix] attempt json=${attempt.jsonMode} think=${attempt.enableThinking}`
+          + ` maxTok=${attempt.maxTokens}${attempt.rescue ? ' rescue' : ''} failed: ${msg.slice(0, 180)}`
+        );
+        if (/\b(401|402|403)\b/.test(msg)) break;
+        if (!reasoningStarve && attempt.rescue) continue;
+      }
+    }
+    throw lastErr || new Error('TokenMix DeepSeek failed');
   }
 
   /**
