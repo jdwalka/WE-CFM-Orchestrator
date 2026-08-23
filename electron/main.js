@@ -308,6 +308,16 @@ function readPythLazerSecret() {
   ]);
 }
 
+// Pyth Pro (docs.pyth.network/price-feeds/pro) — a distinct product/key from
+// the Lazer streaming token above; used for the REST history API
+// (/v1/real_time/history), which now requires this specific key.
+function readPythProSecret() {
+  return readSecretFileValue([
+    'PYTH_PRO_API_KEY',
+    'PYTH_PRO_API_KEY.txt',
+  ]);
+}
+
 function decodeJsonStringFragment(value) {
   try {
     return JSON.parse(`"${String(value).replace(/"/g, '\\"')}"`);
@@ -470,6 +480,14 @@ function resolveCoinGeckoPublicConfig() {
     out.PYTH_API_KEY = pythKey;
     out.PYTH_LAZER_TOKEN = pythKey;
     out.LAZER_TOKEN = pythKey;
+  }
+
+  // Pyth Pro key (secrets/PYTH_PRO_API_KEY.txt) -- distinct from the Lazer
+  // streaming token above; only used to auth the REST history endpoint.
+  const pythProSecret = readPythProSecret();
+  const pythProKey = pythProSecret.value || readEnvValue(['PYTH_PRO_API_KEY']);
+  if (pythProKey) {
+    out.PYTH_PRO_API_KEY = pythProKey;
   }
 
   return out;
