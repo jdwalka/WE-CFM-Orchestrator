@@ -75,7 +75,16 @@ const server = net.createServer((client) => {
       });
 
       client.on('error', () => { dest.destroy(); });
-      dest.on('error', () => { client.destroy(); });
+      dest.on('error', (err) => {
+        if (!dest._loggedErr) {
+          dest._loggedErr = true;
+          console.error(`[mullvad-standalone-socks] dest ${host}:${port} via ${TUNNEL_LOCAL_ADDR} -> ${err.message}`);
+          // #region agent log
+          fetch('http://127.0.0.1:7629/ingest/9b1c0a9c-43ba-46f7-b483-8aad6ef8128f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8ad9ce'},body:JSON.stringify({sessionId:'8ad9ce',runId:'post-fix',hypothesisId:'I',location:'mullvad-standalone-socks.js:dest-error',message:'Tunnel dest connect failed',data:{host,port,error:err.message,code:err.code||null,tunnelLocal:TUNNEL_LOCAL_ADDR},timestamp:Date.now()})}).catch(()=>{});
+          // #endregion
+        }
+        client.destroy();
+      });
       client.on('close', () => dest.destroy());
       dest.on('close', () => client.destroy());
     }

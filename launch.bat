@@ -109,6 +109,17 @@ if %errorlevel% equ 0 (
 )
 set "WECRYPTO_SWEDEN_SOCKS=socks5://127.0.0.1:18090"
 
+echo [6b/7] Verifying Mullvad tunnel egress (API WireGuard + SOCKS5)...
+powershell -NoProfile -File "%SCRIPT_DIR%\cloudflared\Test-TunnelConnectivity.ps1" >nul 2>&1
+if %errorlevel% neq 0 (
+    echo [ERROR] Mullvad SOCKS5 on 18090 cannot reach exchanges through wecrypto-mullvad.
+    echo [ERROR] The WireGuard tunnel interface may be up but has no working handshake/route.
+    echo [ERROR] Restart WireGuardTunnel$wecrypto-mullvad, or re-provision via Mullvad API.
+    pause
+    exit /b 1
+)
+echo [INFO] Mullvad API tunnel egress verified.
+
 REM -- 7. Environment Defaults ----------------------------------------------
 set "WECRYPTO_OPEN_DEVTOOLS=1"
 set "ELECTRON_ENABLE_LOGGING=1"

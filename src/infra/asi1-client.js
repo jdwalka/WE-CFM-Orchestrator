@@ -238,7 +238,15 @@ async function fetchWithTimeout(url, options, timeoutMs) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    return await fetch(url, { ...options, signal: controller.signal });
+    const startedAt = Date.now();
+    const response = await fetch(url, { ...options, signal: controller.signal });
+    if (!fetchWithTimeout._logged) {
+      fetchWithTimeout._logged = true;
+      // #region agent log
+      fetch('http://127.0.0.1:7629/ingest/9b1c0a9c-43ba-46f7-b483-8aad6ef8128f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'f97978'},body:JSON.stringify({sessionId:'f97978',runId:'pre-fix',hypothesisId:'E',location:'asi1-client.js:first-fetch',message:'First ASI1 fetch completed',data:{url:String(url).slice(0,80),status:response.status,elapsedMs:Date.now()-startedAt,routeMode:classifyAsi1RouteMode(),routeLatencyMs:routeState.lastLatencyMs,directProxy:process.env.WECRYPTO_DIRECT_PROXY||null,asi1Proxy:process.env.WECRYPTO_ASI1_PROXY||null,swedenSocks:process.env.WECRYPTO_SWEDEN_SOCKS||null},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
+    }
+    return response;
   } finally {
     clearTimeout(timer);
   }
