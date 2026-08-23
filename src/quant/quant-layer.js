@@ -730,6 +730,7 @@ function startHistoricalPolling() {
                 if (window._kalshiLog.length > LOG_CAP) {
                     window._kalshiLog = window._kalshiLog.slice(-LOG_CAP);
                 }
+                saveKalshiLog();
                 if (currentView === 'log' || currentView === 'debuglog')
                     render();
                 // Record outcomes for learning engine without monopolizing the UI thread.
@@ -1131,6 +1132,7 @@ function snapshotPredictions() {
         });
     }
     saveLastPred();
+    saveLastKalshi();
     scheduleWebStatePublish('prediction-snapshot');
 }
 function _webStateConfiguredCoins() {

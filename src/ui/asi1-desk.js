@@ -203,11 +203,23 @@
     const el = document.getElementById('adAccounts');
     if (!el) return;
     const accounts = diag?.accounts || {};
-    const rows = ['gitgoin', 'mauro'].map((id) => {
+    const accountIds = ['icloud', 'gitgoin', 'mauro'];
+    for (const k of Object.keys(accounts)) {
+      if (!accountIds.includes(k)) accountIds.push(k);
+    }
+    const rows = accountIds.map((id) => {
       const a = accounts[id] || {};
       const keys = a.keys || 0;
+      const email = a.email || (id === 'icloud' ? 'mauro_fanelli@icloud.com' : (id === 'gitgoin' ? 'gitgoin87@gmail.com' : 'maurofanellijr@gmail.com'));
       const live = keys > 0;
-      return `<div class="ad-pill"><span class="ad-dot ${live ? 'live' : 'rate'}"></span><span>${id}</span><span style="margin-left:auto;color:#8b929a">${keys} key${keys === 1 ? '' : 's'}</span></div>`;
+      const dotClass = live ? 'live' : 'rate';
+      const label = id === 'icloud' ? 'icloud (Pro)' : id;
+      return `<div class="ad-pill">
+        <span class="ad-dot ${dotClass}"></span>
+        <span style="font-weight:600;color:${live ? '#00e676' : '#e6e8eb'}">${label}</span>
+        <span style="font-size:9px;color:#8ab4f8;margin-left:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:140px;" title="${email}">${email}</span>
+        <span style="margin-left:auto;color:${live ? '#00e676' : '#8b929a'};font-weight:700;">${keys} key${keys === 1 ? '' : 's'}</span>
+      </div>`;
     });
     el.innerHTML = rows.join('') || '<div class="ad-pill">no ASI1 keys</div>';
   }
@@ -225,7 +237,7 @@
     document.getElementById('adEdge').textContent = contract.edge_vs_crowd || '—';
     document.getElementById('adSize').textContent = contract.size_hint || '—';
     document.getElementById('adModel').textContent = contract._meta?.model || '—';
-    document.getElementById('adAcct').textContent = contract._meta?.account || '—';
+    document.getElementById('adAcct').textContent = contract._meta?.account || contract._meta?.email || '—';
     document.getElementById('adLat').textContent = contract._meta?.latency != null ? contract._meta.latency + 'ms' : '—';
     document.getElementById('adNotes').textContent = contract.notes || '';
     const warns = (contract.warnings || []).join(' · ');
@@ -335,7 +347,7 @@
   refreshStatus();
   // Auto-refresh connectivity (free diagnostics probe) without requiring a
   // click — actual trade-signal inference (ask()) stays manual/on-demand.
-  setInterval(refreshStatus, 10_000);
+  setInterval(refreshStatus, 3000);
 
   window.Asi1Desk = {
     getMode: () => mode,
