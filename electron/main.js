@@ -1154,12 +1154,7 @@ async function startPythLazerService(win) {
         priceFeedIds: LAZER_FEED_IDS,
         properties: ["price", "bestBidPrice", "publisherCount", "fundingRate", "confidence", "bestAskPrice", "marketSession", "fundingRateInterval", "exponent", "fundingTimestamp"],
         formats: ["solana", "leEcdsa", "leUnsigned", "evm"],
-        // real_time pushes each update immediately as it's generated (1-50ms
-        // window per docs.pyth.network/price-feeds/pro/payload-reference),
-        // vs fixed_rate@50ms which waits for the next scheduled tick even
-        // when a fresher price is already available -- strictly lower
-        // latency for live trading, no documented tier/entitlement cost.
-        channel: "real_time",
+        channel: "fixed_rate@50ms",
         deliveryFormat: "json",
         jsonBinaryEncoding: "hex",
         parsed: true,
@@ -1603,6 +1598,7 @@ const PROXY_PORT_CASCADE = [3010, 3011, 3012, 3013, 3014, 3015, 3016, 3017, 3018
 const PROXY_EXCHANGE_BASES = {
   'binance': 'https://data-api.binance.vision',
   'binance-f': 'https://fapi.binance.com',
+  'binance-d': 'https://dapi.binance.com',
   'coingecko': 'https://api.coingecko.com',
   'coinbase': 'https://api.coinbase.com',
   'coinbase-ex': 'https://api.exchange.coinbase.com',

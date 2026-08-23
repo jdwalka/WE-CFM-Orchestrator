@@ -62,7 +62,10 @@
     return arr;
   }
 
-  // ── Open interest (Binance fapi, with OKX fallback) ───────────────
+  // ── Open interest (Binance fapi USDT-margined, dapi COIN-margined
+  //    fallback, OKX last resort) ───────────────────────────────────
+  const DAPI_PERP_SYM = Object.fromEntries(COINS.map(c => [c, `${c}USD_PERP`]));
+
   async function fetchOpenInterest(sym) {
     const symbol = PERP_SYM[sym];
     // Binance returns OI in *contracts* for /openInterest; multiply by mark for USD.
@@ -79,6 +82,29 @@
         const oiUsd = oiContracts * mark;
         const basisPct = index > 0 ? ((mark - index) / index) * 100 : null;
         if (oiUsd > 0) return { venue: 'binance', oiUsd, mark, funding, basisPct };
+      }
+    } catch (_) { /* fall through */ }
+
+    // Binance dapi fallback (COIN-margined perpetuals) -- same account/geo
+    // status as fapi in practice, but a distinct product/endpoint, so it
+    // isn't blocked by exactly the same failure (rate limit, single-endpoint
+    // outage) that took fapi down. Contracts here are priced in USD directly
+    // (1 contract = $100 or $10 notional depending on symbol), not coin qty,
+    // so premiumIndex's markPrice is only needed for the funding rate/basis,
+    // not to convert OI to USD like the fapi branch above.
+    try {
+      const dapiSymbol = DAPI_PERP_SYM[sym];
+      const [oiRes, markRes] = await Promise.allSettled([
+        getJson(`https://dapi.binance.com/dapi/v1/openInterest?symbol=${dapiSymbol}`),
+        getJson(`https://dapi.binance.com/dapi/v1/premiumIndex?symbol=${dapiSymbol}`),
+      ]);
+      if (oiRes.status === 'fulfilled') {
+        const oiUsd = parseFloat(oiRes.value?.sumOpenInterestValue || 0);
+        const mark = markRes.status === 'fulfilled' ? parseFloat(markRes.value?.markPrice || 0) : null;
+        const index = markRes.status === 'fulfilled' ? parseFloat(markRes.value?.indexPrice || 0) : null;
+        const funding = markRes.status === 'fulfilled' ? parseFloat(markRes.value?.lastFundingRate || 0) * 100 : null;
+        const basisPct = mark && index > 0 ? ((mark - index) / index) * 100 : null;
+        if (oiUsd > 0) return { venue: 'binance-coinm', oiUsd, mark, funding, basisPct };
       }
     } catch (_) { /* fall through */ }
 

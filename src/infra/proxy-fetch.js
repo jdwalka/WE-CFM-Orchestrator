@@ -37,6 +37,7 @@
   const CF_PROTECTED = new Set([
     'api.binance.com',
     'fapi.binance.com',
+    'dapi.binance.com',
     'data-api.binance.vision',
     'api.bybit.com',
     'api.bytick.com',
@@ -89,6 +90,7 @@
     'api.binance.com': 'binance',
     'data-api.binance.vision': 'binance',
     'fapi.binance.com': 'binance-f',
+    'dapi.binance.com': 'binance-d',
     'api.coingecko.com': 'coingecko',
     'pro-api.coingecko.com': 'coingecko-pro',
     'api.coinbase.com': 'coinbase',
