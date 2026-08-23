@@ -1182,7 +1182,12 @@ async function startPythLazerService(win) {
         priceFeedIds: LAZER_FEED_IDS,
         properties: ["price", "bestBidPrice", "publisherCount", "fundingRate", "confidence", "bestAskPrice", "marketSession", "fundingRateInterval", "exponent", "fundingTimestamp"],
         formats: ["solana", "leEcdsa", "leUnsigned", "evm"],
-        channel: "fixed_rate@50ms",
+        // real_time pushes each update immediately as it's generated (1-50ms
+        // window per docs.pyth.network/price-feeds/pro/payload-reference),
+        // vs fixed_rate@50ms which waits for the next scheduled tick even
+        // when a fresher price is already available -- strictly lower
+        // latency for live trading, no documented tier/entitlement cost.
+        channel: "real_time",
         deliveryFormat: "json",
         jsonBinaryEncoding: "hex",
         parsed: true,
