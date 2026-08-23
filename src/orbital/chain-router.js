@@ -709,31 +709,6 @@
     };
   }
 
-  // ── DOGE: chain.so free API (no key, no rate limit) ─────────────
-
-  async function dogeChainSo() {
-    const data = await getJson('https://chain.so/api/v2/get_info/DOGE');
-    const s = data?.data || {};
-    if (data?.status !== 'success' || !s.blocks) return Promise.reject(new Error('chain.so DOGE empty'));
-    const txs = s.tx_count || 0;
-    const score = txs > 200000000 ? 0.30 : txs > 100000000 ? 0.10 : 0;
-    return {
-      sym: 'DOGE', label: 'Dogecoin', chain: 'Dogecoin Network',
-      source: 'chain.so', explorerUrl: 'https://live.blockcypher.com/doge',
-      metrics: [
-        { k: 'Block Height', v: Number(s.blocks).toLocaleString() },
-        { k: 'Total Txs', v: txs ? Number(txs).toLocaleString() : '—' },
-        { k: 'Difficulty', v: s.difficulty ? Number(s.difficulty).toExponential(2) : '—' },
-        { k: 'Unconfirmed', v: '—' },
-        { k: 'Low Fee', v: '—' },
-        { k: 'High Fee', v: '—' },
-      ],
-      congestion: 'LOW',
-      score, signal: scoreLabel(score), ts: Date.now(),
-      raw: { txCount: 0, highFee: 0, medFee: 0 },
-    };
-  }
-
   // ── BNB: Ankr public BSC RPC (no key required) ────────────────────
 
   async function bnbAnkrRpc() {
@@ -872,7 +847,7 @@
       ]
     },
     { sym: 'BNB',  handlers: [bnbAlchemy, bnbAnkrRpc, bnbBscscan, bnbBlockscout] },
-    { sym: 'DOGE', handlers: [dogeBlockcypher, dogeChainSo, dogeBlockchair] },
+    { sym: 'DOGE', handlers: [dogeBlockcypher, dogeBlockchair] },
     { sym: 'HYPE', handlers: [hypeHyperliquid] },
   ];
 

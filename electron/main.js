@@ -1554,6 +1554,9 @@ let proxyPort = 3010;
 let proxyRestartTimer = null;
 let proxyRestartAttempts = 0;
 let proxyManualStop = false;
+let proxyForwardsCheckTimer = null;
+const PROXY_FORWARDS_CHECK_INTERVAL_MS = 45_000;
+let proxyDemotedToJsFallback = false;
 
 const PROXY_PORT_CASCADE = [3010, 3011, 3012, 3013, 3014, 3015, 3016, 3017, 3018, 3019, 3020];
 
@@ -1780,14 +1783,31 @@ async function proxyUpstreamWorks(port) {
 // are both up (PowerShell/Node using the Windows cert store still work).
 // /health stays 200, so waitForProxy thinks everything is fine while the
 // renderer gets a 502 storm. Promote the Node fallback in that case.
+//
+// This same rustls/SOCKS-vs-loopback split can develop mid-session (a VPN/
+// Tailscale route flapping after startup), not just at boot — so this check
+// also self-reschedules via scheduleProxyForwardsCheck() rather than running
+// once, so a mid-session 502 storm self-heals instead of persisting for the
+// rest of the run.
 async function ensureProxyForwards() {
+  const usingJsFallback = !!(jsProxyServer && jsProxyServer.listening);
   const port = proxyPort || 3010;
   if (await proxyUpstreamWorks(port)) {
-    console.log(`[proxy] upstream OK on ${port}`);
+    if (usingJsFallback) console.log(`[proxy-js] upstream still OK on ${port}`);
+    else console.log(`[proxy] upstream OK on ${port}`);
+    proxyHealthy = true;
+    return;
+  }
+  if (usingJsFallback) {
+    // Already on the Node fallback and it's failing too — the underlying
+    // network path (SOCKS/VPN hop) is down, not just the rustls binary.
+    console.error(`[proxy-js] fallback on ${port} cannot reach exchanges (network path likely down)`);
+    proxyHealthy = false;
     return;
   }
   console.warn(`[proxy] native proxy on ${port} cannot reach exchanges; switching to Node TLS fallback`);
-  stopProxy();
+  proxyDemotedToJsFallback = true;
+  stopProxyProcessOnly();
   await new Promise((resolve) => setTimeout(resolve, 300));
   try {
     await startJsProxyFallback(port);
@@ -1798,10 +1818,26 @@ async function ensureProxyForwards() {
   }
   if (await proxyUpstreamWorks(proxyPort)) {
     console.log(`[proxy-js] upstream OK on ${proxyPort}`);
+    proxyHealthy = true;
   } else {
     console.error('[proxy-js] fallback also cannot reach exchanges');
     proxyHealthy = false;
   }
+}
+
+function scheduleProxyForwardsCheck() {
+  if (proxyForwardsCheckTimer) clearTimeout(proxyForwardsCheckTimer);
+  proxyForwardsCheckTimer = setTimeout(async () => {
+    proxyForwardsCheckTimer = null;
+    if (proxyManualStop) return;
+    try {
+      await ensureProxyForwards();
+    } catch (err) {
+      console.error('[proxy] periodic forwards check failed:', err.message);
+    } finally {
+      scheduleProxyForwardsCheck();
+    }
+  }, PROXY_FORWARDS_CHECK_INTERVAL_MS);
 }
 
 async function startProxy() {
@@ -1809,6 +1845,7 @@ async function startProxy() {
     return;
   }
   proxyManualStop = false;
+  proxyDemotedToJsFallback = false;
 
   // Dev: __dirname  |  Packaged: resources/app.asar.unpacked/
   // KEY: When running inside app.asar, __dirname is inside the archive (can't execute).
@@ -1897,7 +1934,7 @@ async function startProxy() {
   proxyProcess.on('exit', (code, signal) => {
     console.log('[proxy] exited, code', code, 'signal', signal || 'none');
     proxyProcess = null;
-    if (proxyManualStop) return;
+    if (proxyManualStop || proxyDemotedToJsFallback) return;
 
     // Auto-restart with capped exponential backoff to keep feeds alive.
     const delayMs = Math.min(1000 * Math.pow(2, proxyRestartAttempts), 30000);
@@ -1919,6 +1956,23 @@ async function startProxy() {
 
 function stopProxy() {
   proxyManualStop = true;
+  if (proxyForwardsCheckTimer) {
+    clearTimeout(proxyForwardsCheckTimer);
+    proxyForwardsCheckTimer = null;
+  }
+  stopProxyProcessOnly();
+  if (jsProxyServer) {
+    try { jsProxyServer.close(); } catch (_) { }
+    jsProxyServer = null;
+  }
+}
+
+// Kills just the native rustls proxy process, without the permanent
+// proxyManualStop flag or touching a JS fallback server — used when
+// ensureProxyForwards() is demoting the native binary to the Node
+// fallback mid-session and still wants the periodic health check and
+// the native on('exit') restart handler to keep functioning normally.
+function stopProxyProcessOnly() {
   if (proxyRestartTimer) {
     clearTimeout(proxyRestartTimer);
     proxyRestartTimer = null;
@@ -1926,10 +1980,6 @@ function stopProxy() {
   if (proxyProcess && !proxyProcess.killed) {
     try { proxyProcess.kill(); } catch (_) { }
     proxyProcess = null;
-  }
-  if (jsProxyServer) {
-    try { jsProxyServer.close(); } catch (_) { }
-    jsProxyServer = null;
   }
 }
 
@@ -4049,6 +4099,7 @@ app.whenReady().then(async () => {
   Menu.setApplicationMenu(null);
   await waitForProxy();   // give proxy ~3s to bind before renderer fires fetchAll
   await ensureProxyForwards();
+  scheduleProxyForwardsCheck(); // keep re-checking so a mid-session SOCKS/VPN flap self-heals
 
   // Start web service (HTTPS)
   webServiceHealth = startWebService() || webServiceHealth;
