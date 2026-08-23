@@ -243,7 +243,7 @@ async function fetchWithTimeout(url, options, timeoutMs) {
     if (!fetchWithTimeout._logged) {
       fetchWithTimeout._logged = true;
       // #region agent log
-      fetch('http://127.0.0.1:7629/ingest/9b1c0a9c-43ba-46f7-b483-8aad6ef8128f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'f97978'},body:JSON.stringify({sessionId:'f97978',runId:'pre-fix',hypothesisId:'E',location:'asi1-client.js:first-fetch',message:'First ASI1 fetch completed',data:{url:String(url).slice(0,80),status:response.status,elapsedMs:Date.now()-startedAt,routeMode:classifyAsi1RouteMode(),routeLatencyMs:routeState.lastLatencyMs,directProxy:process.env.WECRYPTO_DIRECT_PROXY||null,asi1Proxy:process.env.WECRYPTO_ASI1_PROXY||null,swedenSocks:process.env.WECRYPTO_SWEDEN_SOCKS||null},timestamp:Date.now()})}).catch(()=>{});
+      fetch('http://127.0.0.1:7629/ingest/9b1c0a9c-43ba-46f7-b483-8aad6ef8128f', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'f97978' }, body: JSON.stringify({ sessionId: 'f97978', runId: 'pre-fix', hypothesisId: 'E', location: 'asi1-client.js:first-fetch', message: 'First ASI1 fetch completed', data: { url: String(url).slice(0, 80), status: response.status, elapsedMs: Date.now() - startedAt, routeMode: classifyAsi1RouteMode(), routeLatencyMs: routeState.lastLatencyMs, directProxy: process.env.WECRYPTO_DIRECT_PROXY || null, asi1Proxy: process.env.WECRYPTO_ASI1_PROXY || null, swedenSocks: process.env.WECRYPTO_SWEDEN_SOCKS || null }, timestamp: Date.now() }) }).catch(() => { });
       // #endregion
     }
     return response;
@@ -291,15 +291,15 @@ function classifyAsi1RouteMode() {
   return routeState.lastLatencyMs <= NATIVE_ROUTE_LATENCY_THRESHOLD_MS ? 'native' : 'fallback';
 }
 
-// Probes the LOCAL proxy's own port, not asi1.ai:443 directly — a raw TCP
-// connect to a remote :443 from this box says nothing about local proxy
-// health, and per-user request keeps outbound probe traffic off 443
-// entirely. global.__WECRYPTO_PROXY_PORT__ is set by electron/main.js as
-// soon as the native/JS-fallback proxy binds (see startJsProxyFallback /
-// startProxy); default 3010 covers the case this runs before that fires.
+// Probe the actual ASI1 TLS endpoint, not the local proxy's listening port.
+// A loopback connect only proves that some process accepted a socket and will
+// therefore report single-digit latency even when the ASI1 route is slow or
+// unreachable. Node's raw socket bypasses renderer fetch wrappers and measures
+// the route selected by the OS routing table (including any direct /32 punch).
 function probeAsi1RouteOnce() {
-  const host = '127.0.0.1';
-  const port = Number(global.__WECRYPTO_PROXY_PORT__) || 3010;
+  const endpoint = new URL(ASI1_BASE_URL);
+  const host = endpoint.hostname;
+  const port = Number(endpoint.port) || (endpoint.protocol === 'http:' ? 80 : 443);
   const startedAt = Date.now();
   const socket = net.connect({ host, port, timeout: ROUTE_PROBE_TIMEOUT_MS });
   const finish = (ok, error) => {
