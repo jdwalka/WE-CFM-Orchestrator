@@ -250,12 +250,24 @@
     return sample;
   }
 
+  // Route/latency comes from asi1-client.js's free background TCP probe
+  // (no LLM call, no quota cost) — safe to poll on a timer, unlike ask()
+  // which fires a real ASI1 inference request.
+  function paintConnectivity(diag) {
+    const latEl = document.getElementById('adLat');
+    if (!latEl) return;
+    const routeMode = diag?.routeMode || 'unknown';
+    const routeLabel = { native: 'native', fallback: 'tunneled', unknown: 'unknown' }[routeMode] || 'unknown';
+    latEl.textContent = diag?.lastLatencyMs != null ? `${Math.round(diag.lastLatencyMs)}ms (${routeLabel})` : `— (${routeLabel})`;
+  }
+
   async function refreshStatus() {
     try {
       const st = await invoke('status');
       if (st?.mode) mode = st.mode;
       paintMode();
       paintAccounts(st?.diagnostics || {});
+      paintConnectivity(st?.diagnostics || {});
     } catch (_) {
       paintAccounts({});
     }
@@ -321,6 +333,9 @@
   paintMode();
   applyMode(mode);
   refreshStatus();
+  // Auto-refresh connectivity (free diagnostics probe) without requiring a
+  // click — actual trade-signal inference (ask()) stays manual/on-demand.
+  setInterval(refreshStatus, 10_000);
 
   window.Asi1Desk = {
     getMode: () => mode,
