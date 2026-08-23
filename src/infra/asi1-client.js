@@ -36,8 +36,8 @@ const ASI1_OFFICIAL_MODELS = Object.freeze(['asi1-ultra', 'asi1', 'asi1-mini']);
 const ASI1_EXTRA_MODELS = Object.freeze(['asi1-fast']);
 const ASI1_ALL_MODELS = Object.freeze([...ASI1_OFFICIAL_MODELS, ...ASI1_EXTRA_MODELS]);
 
-// gitgoin first: 2026-08-14 key still serves asi1-ultra. mauro keys share
-// that account's rate limit (ultra currently 429; mini/asi1/fast still work).
+// icloud (enterprise/Pro) first — routes here whenever its key is present
+// and not rate-limited; gitgoin/mauro are same-tier fallbacks only.
 const ASI1_ACCOUNTS = Object.freeze([
   {
     id: 'icloud',
