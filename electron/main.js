@@ -854,6 +854,13 @@ function configureCachePaths() {
     fs.mkdirSync(userDataPath, { recursive: true });
     fs.mkdirSync(sessionPath, { recursive: true });
     fs.mkdirSync(diskCacheDir, { recursive: true });
+    // One-time purge of a V8 "Code Cache" left over from before v8-cache-options
+    // was added below -- entries compiled from pre-fix script content have no
+    // reason to still exist, and leaving them on disk risks a stale read if
+    // Chromium's own handling of that flag ever changes.
+    try {
+      fs.rmSync(path.join(sessionPath, 'Code Cache'), { recursive: true, force: true });
+    } catch (_) { }
     app.setPath('userData', userDataPath);
     app.setPath('sessionData', sessionPath);
     app.commandLine.appendSwitch('disk-cache-dir', diskCacheDir);
@@ -868,6 +875,16 @@ function configureCachePaths() {
     // this app actually persists live there, not in the HTTP cache, so there is no
     // "cold start" for market data either way.
     app.commandLine.appendSwitch('disable-http-cache');
+    // disable-http-cache only stops the network-layer cache. Chromium/V8 keeps a
+    // SEPARATE compiled-bytecode cache (the "Code Cache" dir under sessionData)
+    // that is not covered by that switch and persists across restarts. For
+    // file:// script loads its invalidation has proven unreliable here in
+    // practice -- edited <script src="..."> files kept executing stale logic
+    // for multiple restarts in a row despite the source on disk being correct
+    // and disable-http-cache already being set. v8-cache-options=none disables
+    // V8 code caching outright so every script load always compiles from the
+    // current file content.
+    app.commandLine.appendSwitch('v8-cache-options', 'none');
 
     // V8 Optimizations for AMD Ryzen + Windows 11 Huge Pages (Fake Quant Box configuration) + WASM SIMD
     app.commandLine.appendSwitch('js-flags', '--use-largepages=on --max-old-space-size=8192 --no-lazy --turbo-fast-api-calls --experimental-wasm-simd');
