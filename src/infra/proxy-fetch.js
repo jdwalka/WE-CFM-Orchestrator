@@ -28,8 +28,8 @@
   // Initialize PROXY_ORIGIN immediately so early fetches are never sent unproxied.
   let PROXY_ORIGIN = (typeof window !== 'undefined' && window.__PROXY_PORT__)
     ? `http://127.0.0.1:${window.__PROXY_PORT__}`
-    : 'http://127.0.0.1:3010';
-  let proxyReady = true;
+    : null;
+  let proxyReady = !!PROXY_ORIGIN;
 
   const IS_ELECTRON = window.location.protocol === 'file:';
 
@@ -176,7 +176,7 @@
     if (typeof require !== 'undefined') {
       _nodeFetch = require('node-fetch');
     }
-  } catch (_) {}
+  } catch (_) { }
 
   function shouldUseNodeFetch(originalUrl, rewrittenUrl) {
     if (!_nodeFetch) return false;
