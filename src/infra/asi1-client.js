@@ -281,13 +281,16 @@ function classifyAsi1RouteMode() {
 
 function probeAsi1RouteOnce() {
   let host;
+  let port = 443;
   try {
-    host = new (require('url').URL)(ASI1_BASE_URL).hostname;
+    const parsedUrl = new (require('url').URL)(ASI1_BASE_URL);
+    host = parsedUrl.hostname;
+    port = parsedUrl.port ? Number(parsedUrl.port) : 443;
   } catch (_) {
     host = 'api.asi1.ai';
   }
   const startedAt = Date.now();
-  const socket = net.connect({ host, port: 443, timeout: ROUTE_PROBE_TIMEOUT_MS });
+  const socket = net.connect({ host, port, timeout: ROUTE_PROBE_TIMEOUT_MS });
   const finish = (ok, error) => {
     socket.removeAllListeners();
     socket.destroy();
