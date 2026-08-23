@@ -1491,7 +1491,10 @@ Use this recall only as context, and prioritize current market snapshot data if 
       lastProvider,
       lastModel,
       currentAccount: currentAccountId,
-      routeMode: 'native', // LLM endpoints bypass Sweden SOCKS5 — direct Ethernet
+      // Measured from actual request round-trips (asi1-client.js), not assumed —
+      // the direct-punch route can silently fall back to a slow tunnel.
+      routeMode: asi1Diag.routeMode || 'unknown',
+      lastLatencyMs: asi1Diag.lastLatencyMs ?? null,
       api_url: this.enabled ? "https://api.asi1.ai/v1" : "disabled",
       model: this.enabled ? (lastModel || "asi1-ultra") : "disabled",
       // ASI1-only: pre-contract 15m/60m uses the deep/ultra tier, 5m PTB uses mini/fast.

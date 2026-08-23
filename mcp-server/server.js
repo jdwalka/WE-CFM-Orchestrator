@@ -7,7 +7,7 @@
  * - Live WeCrypto Signals & Predictions (BTC, ETH, SOL, XRP, etc.)
  * - Kalshi & Polymarket Orderbook & CLOB Execution
  * - Quant Regime Analytics, Edge Weights, and LLM Diagnostics
- * - Tailscale Sweden Exit Node Routing & Tunnel Status (wecrypto.leaksnipe.win)
+ * - Cloudflare Tunnel Status (wecrypto.leaksnipe.win)
  */
 
 const https = require('https');
@@ -16,22 +16,19 @@ const { execSync } = require('child_process');
 
 const WECRYPTO_LOCAL_ORIGIN = process.env.WECRYPTO_LOCAL_ORIGIN || 'https://127.0.0.1:3450';
 const WECRYPTO_FALLBACK_HTTP = 'http://127.0.0.1:3450';
-const WECRYPTO_TAILSCALE_ORIGIN = 'https://wecrypto.prairiedog-godzilla.ts.net';
 const WECRYPTO_PUBLIC_ORIGIN = 'https://wecrypto.leaksnipe.win';
 const PROXY_ORIGIN = process.env.PROXY_ORIGIN || 'http://127.0.0.1:3010';
-const TAILSCALE_API_KEY = process.env.TAILSCALE_API_KEY || 'tskey-api-k4mb2nnbBX11CNTRL-guS8MGQBM9gGX7yBGcR7AgGvwLTrz4ZUS';
 
 // HTTPS agent ignoring self-signed local certs
 const httpsAgent = new https.Agent({ rejectUnauthorized: false });
 
 /**
- * Fetch helper across local, tailnet, or public fallbacks
+ * Fetch helper across local or public fallbacks
  */
 async function fetchEndpoint(path, options = {}) {
   const urls = [
     `${WECRYPTO_LOCAL_ORIGIN}${path}`,
     `${WECRYPTO_FALLBACK_HTTP}${path}`,
-    `${WECRYPTO_TAILSCALE_ORIGIN}${path}`,
     `${WECRYPTO_PUBLIC_ORIGIN}${path}`
   ];
 
@@ -265,15 +262,6 @@ const TOOLS = [
     }
   },
   {
-    name: 'wecrypto_tailscale_status',
-    description: 'Probe Tailscale tailnet connectivity, node status for mauro, and Sweden exit node routing latency.',
-    inputSchema: {
-      type: 'object',
-      properties: {},
-      required: []
-    }
-  },
-  {
     name: 'wecrypto_cloudflare_tunnel_status',
     description: 'Check Cloudflare Tunnel ingress health and public edge connectivity for wecrypto.leaksnipe.win.',
     inputSchema: {
@@ -396,41 +384,6 @@ async function handleToolCall(name, args = {}) {
       const query = args.query ? `&search=${encodeURIComponent(args.query)}` : '';
       const gammaUrl = `https://gamma-api.polymarket.com/markets?limit=${limit}${query}&active=true&closed=false`;
       return await fetchViaProxy(gammaUrl);
-    }
-
-    case 'wecrypto_tailscale_status': {
-      let localStatus = 'unknown';
-      let devices = [];
-      try {
-        const out = execSync('tailscale status --json', { encoding: 'utf8', timeout: 5000 });
-        localStatus = JSON.parse(out);
-      } catch (e) {
-        localStatus = { error: e.message };
-      }
-
-      try {
-        const hdr = { Authorization: `Bearer ${TAILSCALE_API_KEY}` };
-        const res = await requestPromise('https://api.tailscale.com/api/v2/tailnet/-/devices', { headers: hdr, timeout: 5000 });
-        devices = (res.devices || []).map(d => ({
-          hostname: d.hostname,
-          name: d.name,
-          addresses: d.addresses,
-          os: d.os,
-          tags: d.tags,
-          lastSeen: d.lastSeen,
-          authorized: d.authorized
-        }));
-      } catch (e) {
-        devices = { error: `Tailscale API query failed: ${e.message}` };
-      }
-
-      return {
-        success: true,
-        tailnet: 'prairiedog-godzilla.ts.net',
-        service_domain: 'wecrypto.prairiedog-godzilla.ts.net',
-        local_client: localStatus?.Self || localStatus,
-        tailnet_devices: devices
-      };
     }
 
     case 'wecrypto_cloudflare_tunnel_status': {

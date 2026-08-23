@@ -544,9 +544,20 @@
             modelSpan.textContent = rawModel;
             row1.appendChild(modelSpan);
 
+            // Route mode is measured from real request latency (asi1-client.js),
+            // not assumed — the direct-punch route can silently fall back to a
+            // slow tunnel while still "working", so this must reflect reality.
+            const ROUTE_BADGE = {
+                native: { label: 'native route', color: '#3ecf8e' },
+                fallback: { label: 'tunneled (slow)', color: '#f59e0b' },
+                unknown: { label: 'route unknown', color: '#666' },
+            };
+            const routeInfo = ROUTE_BADGE[diag.routeMode] || ROUTE_BADGE.unknown;
             const badge = document.createElement('span');
-            badge.style.cssText = 'color:#3ecf8e;font-size:9px;margin-left:6px;border:1px solid #3ecf8e;border-radius:3px;padding:0 4px;';
-            badge.textContent = 'native route';
+            badge.style.cssText = `color:${routeInfo.color};font-size:9px;margin-left:6px;border:1px solid ${routeInfo.color};border-radius:3px;padding:0 4px;`;
+            badge.textContent = diag.lastLatencyMs != null
+                ? `${routeInfo.label} · ${Math.round(diag.lastLatencyMs)}ms`
+                : routeInfo.label;
             row1.appendChild(badge);
 
             el.appendChild(row1);

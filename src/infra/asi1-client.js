@@ -244,6 +244,37 @@ async function fetchWithTimeout(url, options, timeoutMs) {
   }
 }
 
+// ── Route mode: measured, not assumed ──────────────────────────────────
+// ASI1 traffic is *designed* to bypass the Sweden SOCKS5 lane via a direct
+// Ethernet punch route (see cloudflared/Set-WeCryptoLanes.ps1), but that
+// punch route can silently fail (Tailscale exit-node WFP blocking, route not
+// installed) and traffic falls back through the slow Tailscale tunnel with
+// no error — just higher latency. Track actual round-trip time per request
+// so diagnostics/HUD report what's really happening instead of a hardcoded
+// "native" label that lies during a fallback.
+const NATIVE_ROUTE_LATENCY_THRESHOLD_MS = Number(process.env.ASI1_NATIVE_LATENCY_THRESHOLD_MS || 250);
+const ROUTE_STALE_MS = 5 * 60_000;
+const routeState = {
+  lastLatencyMs: null,
+  lastMeasuredAt: null,
+  lastRequestOk: null,
+  lastError: null,
+};
+
+function recordAsi1RouteTiming({ elapsedMs = null, ok = false, error = null } = {}) {
+  if (elapsedMs != null) routeState.lastLatencyMs = elapsedMs;
+  routeState.lastMeasuredAt = Date.now();
+  routeState.lastRequestOk = ok;
+  routeState.lastError = error;
+}
+
+function classifyAsi1RouteMode() {
+  if (routeState.lastLatencyMs == null) return 'unknown';
+  const ageMs = routeState.lastMeasuredAt ? Date.now() - routeState.lastMeasuredAt : Infinity;
+  if (ageMs > ROUTE_STALE_MS) return 'unknown';
+  return routeState.lastLatencyMs <= NATIVE_ROUTE_LATENCY_THRESHOLD_MS ? 'native' : 'fallback';
+}
+
 /**
  * Minimal chat/completion against ASI:One (OpenAI-compatible).
  */
@@ -301,6 +332,7 @@ async function chatCompletion(messages, options = {}) {
         const sessionId = options.sessionId || accountSession
           || (plannerOn ? `wecrypto-${account || 'shared'}-${Date.now().toString(36)}` : '');
         if (sessionId) headers['x-session-id'] = String(sessionId);
+        const _reqStartedAt = Date.now();
         const response = await fetchWithTimeout(
           ASI1_CHAT_URL,
           {
@@ -310,6 +342,7 @@ async function chatCompletion(messages, options = {}) {
           },
           options.timeoutMs || ASI1_REQUEST_TIMEOUT_MS,
         );
+        recordAsi1RouteTiming({ elapsedMs: Date.now() - _reqStartedAt, ok: response.ok });
 
         if (!response.ok) {
           const body = await response.text().catch(() => '');
@@ -380,6 +413,9 @@ async function chatCompletion(messages, options = {}) {
         } else {
           lastErr = err;
         }
+        // Request never completed — no valid latency sample, but do record the
+        // failure so a stuck connection can't keep reporting a stale "native" route.
+        recordAsi1RouteTiming({ ok: false, error: lastErr.message });
         // Continue to next key, then next model
         continue;
       }
@@ -477,6 +513,9 @@ function getDiagnostics() {
     defaultModel: ASI1_DEFAULT_MODEL,
     plannerMode: process.env.ASI1_PLANNER_MODE === '1',
     agenticNote: 'planner_mode + x-session-id routes through Agentverse; official models are asi1 / asi1-ultra / asi1-mini',
+    routeMode: classifyAsi1RouteMode(),
+    lastLatencyMs: routeState.lastLatencyMs,
+    lastMeasuredAt: routeState.lastMeasuredAt,
   };
 }
 
