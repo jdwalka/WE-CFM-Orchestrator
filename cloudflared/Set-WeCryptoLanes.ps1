@@ -6,21 +6,33 @@
 .DESCRIPTION
   Do not stack WARP full-tunnel exclude-mode with Tailscale RouteAll.
 
-  Fast:       Tailscale mesh, no exit. WARP stays on the Windows include profile
-              (or DoH). Speedtest uses Ethernet. Public IP ~64.25.2.144.
-  Sweden:     Tailscale exit se-sto-wg-209 + Ethernet punch for WARP endpoints.
-              WARP warp+doh on include-mode profile (not 0.0.0.0/0).
-              Trading SOCKS5: 10.64.0.1:1080 (Mullvad in-tunnel, Sweden).
-  WarpSweden: Same as Sweden, then force warp+doh + Sweden vnet + reconnect.
+  Fast:        Tailscale mesh, no exit. WARP stays on the Windows include profile
+               (or DoH). Speedtest uses Ethernet. Public IP ~64.25.2.144.
+  Sweden:      Tailscale exit se-sto-wg-209 (system-wide, ALL traffic incl.
+               ASI1/api.asi1.ai routes through Stockholm) + Ethernet punch for
+               WARP endpoints. WARP warp+doh on include-mode profile.
+               Trading SOCKS5: 10.64.0.1:1080 (Mullvad in-tunnel, Sweden).
+  SwedenSplit: Real split tunnel, no Cloudflare dependency. Same trading
+               SOCKS5 as Sweden (routes exactly the electron/main.js
+               WECRYPTO_SWEDEN_SOCKS needle list -- exchanges/Polymarket/etc,
+               tuned over 2 months, NOT api.asi1.ai) but the Tailscale exit
+               node is explicitly cleared, so everything NOT on that needle
+               list (ASI1 included) goes out native Ethernet at full speed
+               instead of taking a round trip through Stockholm it never
+               needed. Use this instead of Sweden when trading -- Sweden
+               only if you specifically need the whole box's default route
+               (not just the needled domains) to egress from Sweden.
+  WarpSweden:  Same as Sweden, then force warp+doh + Sweden vnet + reconnect.
 
 .EXAMPLE
   .\Set-WeCryptoLanes.ps1 -Lane Status
   .\Set-WeCryptoLanes.ps1 -Lane Fast
   .\Set-WeCryptoLanes.ps1 -Lane Sweden
+  .\Set-WeCryptoLanes.ps1 -Lane SwedenSplit
   .\Set-WeCryptoLanes.ps1 -Lane WarpSweden
 #>
 param(
-  [ValidateSet('Status', 'Fast', 'Sweden', 'WarpSweden', 'Together')]
+  [ValidateSet('Status', 'Fast', 'Sweden', 'SwedenSplit', 'WarpSweden', 'Together')]
   [string]$Lane = 'Status',
   [string]$SwedenExit = 'se-sto-wg-209.mullvad.ts.net',
   [string]$SwedenVnet = 'bc743e42-bbf6-4506-b5b2-db7c12f573cc',
@@ -60,6 +72,34 @@ function Install-WarpPunch {
   foreach ($p in $prefixes) {
     cmd /c "route -p add $($p.Dest) mask $($p.Mask) $Gateway metric 5 >nul 2>&1" | Out-Null
   }
+}
+
+# ASI1 (api.asi1.ai) is not in electron/main.js's WECRYPTO_SWEDEN_SOCKS needle
+# list and was never meant to go through the Mullvad exit -- but Tailscale has
+# no native way to exempt one domain from an active exit node's 0.0.0.0/0
+# route (confirmed against Tailscale's own open issues: mullvad/tailscale#11554
+# says Mullvad's exit-node integration doesn't advertise its SOCKS5 proxy as a
+# separable route, and tailscale/tailscale#7766 "bypass exit nodes for certain
+# domains" is still open -- App Connectors, the closest official feature,
+# require a publicly-reachable Linux node, not a fit here). A /32 host route
+# via the LAN gateway wins over any 0.0.0.0/0 default route on prefix length
+# alone, exit node or not -- same mechanism as Install-WarpPunch above, just
+# resolved live instead of a fixed CIDR list since api.asi1.ai is a GCP LB IP
+# behind fetch-ai.com, not a documented stable range.
+#
+# Verified 2026-08-22: 340ms+ (Stockholm-tunneled) -> 114.5ms with this route
+# in place, exit node and Mullvad SOCKS5 both still up for everything else.
+function Install-Asi1Punch {
+  param([string]$Gateway)
+  try {
+    $ips = (Resolve-DnsName -Name api.asi1.ai -Type A -Server 1.1.1.1 -ErrorAction Stop |
+      Where-Object { $_.Type -eq 'A' }).IPAddress
+  } catch { $ips = $null }
+  if (-not $ips) { $ips = @('34.149.190.89') } # last-known fallback if resolution fails
+  foreach ($ip in $ips) {
+    cmd /c "route -p add $ip mask 255.255.255.255 $Gateway metric 5 >nul 2>&1" | Out-Null
+  }
+  return $ips
 }
 
 function Start-TailscaleMesh {
@@ -130,18 +170,36 @@ switch ($Lane) {
     Write-Host 'Expect ~line-rate Ethernet, IP 64.25.2.144. Trading is NOT Sweden until -Lane Sweden.'
   }
   'Sweden' {
-    Write-Host "Lane Sweden: Tailscale $SwedenExit + SOCKS5 $Socks5 + Ethernet punch. WARP stays include (not exclude-all)."
+    Write-Host "Lane Sweden: Tailscale $SwedenExit + SOCKS5 $Socks5 + Ethernet punch. No Cloudflare/WARP -- Tailscale + Mullvad only, WARP drops too often to depend on for live trading."
     Install-WarpPunch -Gateway $EthernetGw
     Start-TailscaleMesh
     tailscale set --exit-node=$SwedenExit --exit-node-allow-lan-access=true
     Set-SwedenSocksEnv -Value ("socks5://{0}" -f $Socks5)
+    $asi1Ips = Install-Asi1Punch -Gateway $EthernetGw
+    Start-Sleep -Seconds 3
+    Show-Status
+    Write-Host "ASI1 punched direct via Ethernet: $($asi1Ips -join ', ') -- api.asi1.ai stays off the Stockholm exit even though everything else is on it."
+    Write-Host 'Expect ~500 Mbps, source 170.62.100.238 / SOCKS5 Stockholm. Include profile must be active on this box.'
+  }
+  'SwedenSplit' {
+    Write-Host "Lane SwedenSplit: SOCKS5 $Socks5 for the needled domains only (see electron/main.js WECRYPTO_SWEDEN_SOCKS list), Tailscale exit node explicitly cleared so everything else -- ASI1 included -- goes native Ethernet."
+    Install-WarpPunch -Gateway $EthernetGw
+    Start-TailscaleMesh
+    # Deliberately NOT setting --exit-node here, unlike Sweden/WarpSweden --
+    # that's the whole point: stop forcing the box's default route through
+    # Stockholm for traffic the app-level SOCKS5 patch was never routing
+    # there anyway (api.asi1.ai is not in the needle list in main.js).
+    tailscale set --exit-node=
+    Set-SwedenSocksEnv -Value ("socks5://{0}" -f $Socks5)
     if (Test-Path $warp) {
-      & $warp mode warp+doh | Out-Null
-      & $warp vnet $SwedenVnet | Out-Null
+      & $warp mode doh | Out-Null
     }
     Start-Sleep -Seconds 3
     Show-Status
-    Write-Host 'Expect ~500 Mbps, source 170.62.100.238 / SOCKS5 Stockholm. Include profile must be active on this box.'
+    Write-Host ''
+    Write-Host 'CHECK THE "== SOCKS5 ==" LINE ABOVE.'
+    Write-Host '  reachable=True  -> split worked: needled domains still hit Stockholm via SOCKS5, ASI1/everything else is native speed. This is the lane to trade on.'
+    Write-Host '  reachable=False -> 10.64.0.1:1080 needs the Tailscale exit node up to exist at all (it may be an address only routable through that peer connection, not independently). If so, SwedenSplit cannot work as-is on this Mullvad/Tailscale setup -- fall back to -Lane Sweden (accepts ASI1 going through Stockholm too) until a non-Tailscale Mullvad tunnel is set up for the SOCKS5 leg.'
   }
   'Together' {
     Write-Host 'Lane Together/Overlay: WARP first (Ethernet punch), Tailscale DNS off, then Sweden exit on top.'
@@ -156,8 +214,10 @@ switch ($Lane) {
       & $warp connect | Out-Null
     }
     tailscale set --exit-node-allow-lan-access=true | Out-Null
+    $asi1Ips = Install-Asi1Punch -Gateway $EthernetGw
     Start-Sleep -Seconds 4
     Show-Status
+    Write-Host "ASI1 punched direct via Ethernet: $($asi1Ips -join ', ')"
     Write-Host 'CF_DNS_LOOKUP_FAILURE fix: Tailscale CorpDNS must be false so WARP owns its local DNS proxy.'
     Write-Host 'Internet = Tailscale SE/CH exit. WARP include = exchanges only.'
   }
@@ -172,8 +232,10 @@ switch ($Lane) {
       & $warp vnet $SwedenVnet | Out-Null
       Restart-Warp
     }
+    $asi1Ips = Install-Asi1Punch -Gateway $EthernetGw
     Start-Sleep -Seconds 4
     Show-Status
+    Write-Host "ASI1 punched direct via Ethernet: $($asi1Ips -join ', ')"
     Write-Host 'WARP must show Profile ID of WeCrypto Windows include (not default) and Include mode.'
   }
   default { Show-Status }
