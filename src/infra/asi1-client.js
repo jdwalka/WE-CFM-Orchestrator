@@ -283,16 +283,15 @@ function classifyAsi1RouteMode() {
   return routeState.lastLatencyMs <= NATIVE_ROUTE_LATENCY_THRESHOLD_MS ? 'native' : 'fallback';
 }
 
+// Probes the LOCAL proxy's own port, not asi1.ai:443 directly — a raw TCP
+// connect to a remote :443 from this box says nothing about local proxy
+// health, and per-user request keeps outbound probe traffic off 443
+// entirely. global.__WECRYPTO_PROXY_PORT__ is set by electron/main.js as
+// soon as the native/JS-fallback proxy binds (see startJsProxyFallback /
+// startProxy); default 3010 covers the case this runs before that fires.
 function probeAsi1RouteOnce() {
-  let host;
-  let port = 443;
-  try {
-    const parsedUrl = new (require('url').URL)(ASI1_BASE_URL);
-    host = parsedUrl.hostname;
-    port = parsedUrl.port ? Number(parsedUrl.port) : 443;
-  } catch (_) {
-    host = 'api.asi1.ai';
-  }
+  const host = '127.0.0.1';
+  const port = Number(global.__WECRYPTO_PROXY_PORT__) || 3010;
   const startedAt = Date.now();
   const socket = net.connect({ host, port, timeout: ROUTE_PROBE_TIMEOUT_MS });
   const finish = (ok, error) => {

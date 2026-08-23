@@ -1743,6 +1743,7 @@ async function startJsProxyFallback(port) {
     jsProxyServer.listen(port, '127.0.0.1', resolve);
   });
   proxyPort = port;
+  global.__WECRYPTO_PROXY_PORT__ = proxyPort;
   proxyHealthy = true;
   console.log(`[proxy-js] fallback proxy listening on http://127.0.0.1:${port}`);
 }
@@ -1888,6 +1889,7 @@ async function startProxy() {
   // Pick a free port then write config.toml
   const chosenPort = await findFreePort(PROXY_PORT_CASCADE);
   proxyPort = chosenPort;
+  global.__WECRYPTO_PROXY_PORT__ = proxyPort;
 
   // If exe is in asar (read-only), write config to temp dir; otherwise beside exe
   let proxyDir = exePath ? path.dirname(exePath) : cargoProjectDir;
