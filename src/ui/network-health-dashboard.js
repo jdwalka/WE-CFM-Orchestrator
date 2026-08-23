@@ -496,28 +496,74 @@
         const el = document.getElementById('ai-inference-status');
         if (!el) return;
         try {
-            let diag = null;
+            let diagRaw = null;
             if (window.electron?.invoke) {
-                diag = await window.electron.invoke('llm:getDiagnostics');
+                diagRaw = await window.electron.invoke('llm:getDiagnostics');
             } else if (window.LLMSignalAssistant && typeof window.LLMSignalAssistant.getDiagnostics === 'function') {
-                diag = window.LLMSignalAssistant.getDiagnostics();
+                diagRaw = window.LLMSignalAssistant.getDiagnostics();
             } else if (window._llmDiagnostics) {
-                diag = window._llmDiagnostics;
+                diagRaw = window._llmDiagnostics;
             }
+            // Unwrap IPC envelope { success, diagnostics } — main.js returns this shape.
+            // Direct renderer calls (LLMSignalAssistant.getDiagnostics) return the flat object.
+            const diag = (diagRaw && diagRaw.diagnostics) ? diagRaw.diagnostics : diagRaw;
             if (!diag) {
                 el.innerHTML = '<span style="color:#888;">AI status unavailable</span>';
                 return;
             }
-            const fiveProv = (diag.fiveMinuteProvider || diag.provider || 'unknown').toUpperCase();
-            const fiveModel = diag.fiveMinuteModel || diag.model || '';
+            // Derive safe values from IPC response — provider/model strings come from
+            // the main-process diagnostics object and must not be trusted as HTML.
+            const rawProv = String(diag.fiveMinuteProvider || diag.provider || 'ASI1');
+            const rawModel = String(diag.fiveMinuteModel || diag.model || 'asi1-mini');
+            const fiveProv = rawProv.toUpperCase();
             const is5m = !!diag.fiveMinuteProvider;
-            const color = fiveProv.includes('XAI') ? '#a78bfa' : (fiveProv.includes('ASI') ? '#34d399' : (fiveProv.includes('OPENAI') ? '#f59e0b' : '#60a5fa'));
-            const enabled = diag.enabled !== false ? 'active' : 'disabled';
-            const cooldown = diag.cooldown?.active ? ` (cooldown ${Math.ceil((diag.cooldown.remaining_ms||0)/1000)}s)` : '';
-            el.innerHTML = `
-                <div><span style="color:#e0e6f0;">5m PTB:</span> <span style="color:${color};font-weight:600;">${fiveProv}</span> <span style="color:#666;font-size:10px;">${fiveModel}</span></div>
-                <div style="font-size:10px;color:#9aa6b2;">${enabled}${cooldown} · ${is5m ? 'specialized 5m path' : 'main path'}</div>
-            `;
+            // Color is derived from a fixed allowlist — never user-supplied directly.
+            const COLOR_MAP = { XAI: '#a78bfa', ASI: '#34d399', OPENAI: '#f59e0b' };
+            const color = Object.entries(COLOR_MAP).find(([k]) => fiveProv.includes(k))?.[1] ?? '#60a5fa';
+            const enabledLabel = diag.enabled !== false ? 'active' : 'disabled';
+            const cooldownSecs = diag.cooldown?.active ? Math.ceil((diag.cooldown.remaining_ms || 0) / 1000) : 0;
+            const accId = String(diag.env?.asi1AccountId || diag.currentAccount || '');
+
+            // Build DOM nodes — textContent auto-escapes; no user data touches innerHTML.
+            el.textContent = '';
+
+            const row1 = document.createElement('div');
+
+            const lbl = document.createElement('span');
+            lbl.style.color = '#e0e6f0';
+            lbl.textContent = '5m PTB: ';
+            row1.appendChild(lbl);
+
+            const provSpan = document.createElement('span');
+            provSpan.style.cssText = `color:${color};font-weight:600;`;
+            provSpan.textContent = fiveProv;
+            row1.appendChild(provSpan);
+
+            const modelSpan = document.createElement('span');
+            modelSpan.style.cssText = 'color:#666;font-size:10px;margin-left:4px;';
+            modelSpan.textContent = rawModel;
+            row1.appendChild(modelSpan);
+
+            const badge = document.createElement('span');
+            badge.style.cssText = 'color:#3ecf8e;font-size:9px;margin-left:6px;border:1px solid #3ecf8e;border-radius:3px;padding:0 4px;';
+            badge.textContent = 'native route';
+            row1.appendChild(badge);
+
+            el.appendChild(row1);
+
+            const row2 = document.createElement('div');
+            row2.style.cssText = 'font-size:10px;color:#9aa6b2;';
+            let statusText = enabledLabel;
+            if (cooldownSecs > 0) statusText += ` (cooldown ${cooldownSecs}s)`;
+            statusText += ` · ${is5m ? 'specialized 5m path' : 'main path'}`;
+            row2.textContent = statusText;
+            if (accId) {
+                const accSpan = document.createElement('span');
+                accSpan.style.color = '#a3e635';
+                accSpan.textContent = ` · ${accId}`;
+                row2.appendChild(accSpan);
+            }
+            el.appendChild(row2);
         } catch (err) {
             el.innerHTML = `<span style="color:#ff5e5e;">AI diag error: ${escapeHtml((err && err.message) || err)}</span>`;
         }

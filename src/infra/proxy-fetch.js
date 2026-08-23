@@ -31,8 +31,13 @@
 
   const IS_ELECTRON = window.location.protocol === 'file:';
 
-  // ── Bucket A: Cloudflare Bot Mgmt — always needs the proxy ──────────────
+  // ── Bucket A: Cloudflare Bot Mgmt / Geo-blocked — always needs the proxy ──────────────
   const CF_PROTECTED = new Set([
+    'fapi.binance.com',
+    'api.binance.com',
+    'data-api.binance.vision',
+    'api.bybit.com',
+    'api.bytick.com',
     'www.okx.com',
     'api-pub.bitfinex.com',
     'api.kucoin.com',
@@ -40,12 +45,27 @@
     'api.crypto.com',
     'api.bitvavo.com',
     'api.upbit.com',
+    'api.bitget.com',
+    'open-api.bingx.com',
+    'api.whitebit.com',
+    'whitebit.com',
+    'www.coinw.com',
+    'ourbit.com',
+    'www.lbank.com',
+    'www.bitstamp.net',
+    'api.bitso.com',
+    'www.bullish.com',
+    'www.weex.com',
   ]);
 
   // ── Bucket B: rate-limited public APIs — proxy for headroom ─────────────
   const RATE_LIMITED = new Set([
+    'api.coingecko.com',
+    'pro-api.coingecko.com',
     'api.dexscreener.com',
     'api.blockchair.com',
+    'api.blockcypher.com',
+    'chain.so',
     'hypurrscan.io',
     'api.etherscan.io',
     'api.bscscan.com',
