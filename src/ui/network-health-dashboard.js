@@ -550,12 +550,16 @@
             const ROUTE_BADGE = {
                 native: { label: 'native route', color: '#3ecf8e' },
                 fallback: { label: 'tunneled (slow)', color: '#f59e0b' },
+                unreachable: { label: 'route probe failed', color: '#e5484d' },
                 unknown: { label: 'route unknown', color: '#666' },
             };
             const routeInfo = ROUTE_BADGE[diag.routeMode] || ROUTE_BADGE.unknown;
             const badge = document.createElement('span');
             badge.style.cssText = `color:${routeInfo.color};font-size:9px;margin-left:6px;border:1px solid ${routeInfo.color};border-radius:3px;padding:0 4px;`;
-            badge.textContent = diag.lastLatencyMs != null
+            // For 'unreachable' the elapsed ms is the probe timeout firing, not a
+            // real connection latency — showing it as "Xms" would read as "slow but
+            // working" when the probe never actually connected.
+            badge.textContent = diag.lastLatencyMs != null && diag.routeMode !== 'unreachable'
                 ? `${routeInfo.label} · ${Math.round(diag.lastLatencyMs)}ms`
                 : routeInfo.label;
             row1.appendChild(badge);

@@ -269,8 +269,10 @@
     const latEl = document.getElementById('adLat');
     if (!latEl) return;
     const routeMode = diag?.routeMode || 'unknown';
-    const routeLabel = { native: 'native', fallback: 'tunneled', unknown: 'unknown' }[routeMode] || 'unknown';
-    latEl.textContent = diag?.lastLatencyMs != null ? `${Math.round(diag.lastLatencyMs)}ms (${routeLabel})` : `— (${routeLabel})`;
+    const routeLabel = { native: 'native', fallback: 'tunneled', unreachable: 'unreachable', unknown: 'unknown' }[routeMode] || 'unknown';
+    latEl.textContent = diag?.lastLatencyMs != null && routeMode !== 'unreachable'
+      ? `${Math.round(diag.lastLatencyMs)}ms (${routeLabel})`
+      : `— (${routeLabel})`;
   }
 
   async function refreshStatus() {

@@ -276,6 +276,10 @@ function classifyAsi1RouteMode() {
   if (routeState.lastLatencyMs == null) return 'unknown';
   const ageMs = routeState.lastMeasuredAt ? Date.now() - routeState.lastMeasuredAt : Infinity;
   if (ageMs > ROUTE_STALE_MS) return 'unknown';
+  // A timed-out/errored probe still has an elapsedMs (~= ROUTE_PROBE_TIMEOUT_MS),
+  // which would otherwise get misclassified as "fallback" (slow-but-connected)
+  // instead of surfacing that the probe couldn't connect at all.
+  if (routeState.lastRequestOk === false) return 'unreachable';
   return routeState.lastLatencyMs <= NATIVE_ROUTE_LATENCY_THRESHOLD_MS ? 'native' : 'fallback';
 }
 
