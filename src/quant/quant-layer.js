@@ -1097,7 +1097,7 @@ function snapshotPredictions() {
                     // Signal components for per-indicator gradient descent retuner
                     signalComponents: p.diagnostics?.components ?? null,
                 };
-            if (window._lastKalshiSnapshot[coin.sym]) {
+            if (window._lastKalshiSnapshot?.[coin.sym]) {
                 capturePredictionTrail2m(coin.sym, window._lastKalshiSnapshot[coin.sym]);
             }
             if (ka.dirConflict) {
