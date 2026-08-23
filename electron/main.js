@@ -1605,7 +1605,7 @@ const PROXY_EXCHANGE_BASES = {
   'xrpl': 'https://xrplcluster.com',
   'solana': 'https://api.mainnet-beta.solana.com',
   'crypto-com': 'https://api.crypto.com',
-  'chainso': 'https://chain.so',
+  'pyth-history': 'https://pyth.dourolabs.app',
   'upbit': 'https://api.upbit.com',
   'bitget': 'https://api.bitget.com',
   'bingx': 'https://open-api.bingx.com',

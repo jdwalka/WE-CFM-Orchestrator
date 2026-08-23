@@ -78,6 +78,7 @@
     'api.bscscan.com',
     'api.gateio.ws',
     'fx-api.gateio.ws',
+    'pyth.dourolabs.app',
   ]);
 
   // ── Bucket C: open / first-party APIs ──────────────────────────────────
@@ -119,6 +120,7 @@
     'xrplcluster.com': 'xrpl',
     'api.mainnet-beta.solana.com': 'solana',
     'api.crypto.com': 'crypto-com',
+    'pyth.dourolabs.app': 'pyth-history',
     'api.upbit.com': 'upbit',
     'api.bitget.com': 'bitget',
     'open-api.bingx.com': 'bingx',
