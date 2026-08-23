@@ -249,11 +249,15 @@ async function fetchWithTimeout(url, options, timeoutMs) {
 // Ethernet punch route (see cloudflared/Set-WeCryptoLanes.ps1), but that
 // punch route can silently fail (Tailscale exit-node WFP blocking, route not
 // installed) and traffic falls back through the slow Tailscale tunnel with
-// no error — just higher latency. Track actual round-trip time per request
-// so diagnostics/HUD report what's really happening instead of a hardcoded
-// "native" label that lies during a fallback.
+// no error — just higher latency. This must be measured from a raw TCP
+// connect, NOT full chat-completion time — a completion includes seconds of
+// actual model inference on ASI1's servers, which would swamp any network
+// latency signal and make every request look "slow" regardless of route.
+const net = require('net');
 const NATIVE_ROUTE_LATENCY_THRESHOLD_MS = Number(process.env.ASI1_NATIVE_LATENCY_THRESHOLD_MS || 250);
 const ROUTE_STALE_MS = 5 * 60_000;
+const ROUTE_PROBE_INTERVAL_MS = Number(process.env.ASI1_ROUTE_PROBE_INTERVAL_MS || 30_000);
+const ROUTE_PROBE_TIMEOUT_MS = 5_000;
 const routeState = {
   lastLatencyMs: null,
   lastMeasuredAt: null,
@@ -273,6 +277,34 @@ function classifyAsi1RouteMode() {
   const ageMs = routeState.lastMeasuredAt ? Date.now() - routeState.lastMeasuredAt : Infinity;
   if (ageMs > ROUTE_STALE_MS) return 'unknown';
   return routeState.lastLatencyMs <= NATIVE_ROUTE_LATENCY_THRESHOLD_MS ? 'native' : 'fallback';
+}
+
+function probeAsi1RouteOnce() {
+  let host;
+  try {
+    host = new (require('url').URL)(ASI1_BASE_URL).hostname;
+  } catch (_) {
+    host = 'api.asi1.ai';
+  }
+  const startedAt = Date.now();
+  const socket = net.connect({ host, port: 443, timeout: ROUTE_PROBE_TIMEOUT_MS });
+  const finish = (ok, error) => {
+    socket.removeAllListeners();
+    socket.destroy();
+    recordAsi1RouteTiming({ elapsedMs: Date.now() - startedAt, ok, error: error || null });
+  };
+  socket.once('connect', () => finish(true, null));
+  socket.once('timeout', () => finish(false, 'connect timeout'));
+  socket.once('error', (err) => finish(false, err.message));
+}
+
+// Runs only in a long-lived process (Electron main); harmless no-op timer
+// elsewhere. Disable with ASI1_DISABLE_ROUTE_PROBE=1 (e.g. in short-lived
+// CLI/test invocations of this module).
+if (process.env.ASI1_DISABLE_ROUTE_PROBE !== '1') {
+  probeAsi1RouteOnce();
+  const probeTimer = setInterval(probeAsi1RouteOnce, ROUTE_PROBE_INTERVAL_MS);
+  if (typeof probeTimer.unref === 'function') probeTimer.unref();
 }
 
 /**
@@ -332,7 +364,6 @@ async function chatCompletion(messages, options = {}) {
         const sessionId = options.sessionId || accountSession
           || (plannerOn ? `wecrypto-${account || 'shared'}-${Date.now().toString(36)}` : '');
         if (sessionId) headers['x-session-id'] = String(sessionId);
-        const _reqStartedAt = Date.now();
         const response = await fetchWithTimeout(
           ASI1_CHAT_URL,
           {
@@ -342,7 +373,6 @@ async function chatCompletion(messages, options = {}) {
           },
           options.timeoutMs || ASI1_REQUEST_TIMEOUT_MS,
         );
-        recordAsi1RouteTiming({ elapsedMs: Date.now() - _reqStartedAt, ok: response.ok });
 
         if (!response.ok) {
           const body = await response.text().catch(() => '');
@@ -413,9 +443,6 @@ async function chatCompletion(messages, options = {}) {
         } else {
           lastErr = err;
         }
-        // Request never completed — no valid latency sample, but do record the
-        // failure so a stuck connection can't keep reporting a stale "native" route.
-        recordAsi1RouteTiming({ ok: false, error: lastErr.message });
         // Continue to next key, then next model
         continue;
       }
