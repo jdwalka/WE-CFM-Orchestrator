@@ -130,9 +130,7 @@ const ORCH_LOG_STORE = 'beta1_orch_log';
 
 const MARKET_TRAIL_STORE = 'beta1_kalshi_2m_trail';
 
-const POLYMARKET_SCORECARD_LOG_STORE = 'beta1_polymarket_scorecard_log';
-
-const LAST_POLYMARKET_SNAPSHOT_STORE = 'beta1_last_polymarket_snapshot';
+const SCORECARD_LOG_STORE = 'beta1_scorecard_log';
 
 const LOG_CAP = 250;
 
@@ -177,15 +175,16 @@ function saveLastPred() { try { localStorage.setItem(LAST_PRED_STORE, JSON.strin
 
 function saveLastMarket() { try { localStorage.setItem(LAST_MARKET_STORE, JSON.stringify(window._lastMarketSnapshot)); } catch (e) { } }
 
-function savePolymarketScorecardLog() {
+// Settlement scorecard log — populated exclusively from Polymarket settlement
+// data (historical-settlement-fetcher.js; Kalshi network I/O is permanently
+// disabled), despite the app's earlier Kalshi-era naming.
+function saveScorecardLog() {
     try {
-      window._kalshiLog = capArray(window._kalshiLog || []);
-      localStorage.setItem(POLYMARKET_SCORECARD_LOG_STORE, JSON.stringify(window._kalshiLog));
+      window._scorecardLog = capArray(window._scorecardLog || []);
+      localStorage.setItem(SCORECARD_LOG_STORE, JSON.stringify(window._scorecardLog));
       scheduleLogBackup();
     } catch (e) { }
   }
-
-function saveLastPolymarketSnapshot() { try { localStorage.setItem(LAST_POLYMARKET_SNAPSHOT_STORE, JSON.stringify(window._lastKalshiSnapshot || {})); } catch (e) { } }
 
 function saveKalshiErrors() {
     try {
@@ -349,8 +348,7 @@ window.savePredLog = savePredLog;
 window.saveMarketLog = saveMarketLog;
 window.saveLastPred = saveLastPred;
 window.saveLastMarket = saveLastMarket;
-window.saveKalshiLog = savePolymarketScorecardLog;
-window.saveLastKalshi = saveLastPolymarketSnapshot;
+window.saveScorecardLog = saveScorecardLog;
 window.saveKalshiErrors = saveKalshiErrors;
 window.saveOrchLog = saveOrchLog;
 window.saveMarketTrail = saveMarketTrail;
