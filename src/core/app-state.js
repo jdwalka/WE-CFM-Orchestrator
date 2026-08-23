@@ -130,9 +130,9 @@ const ORCH_LOG_STORE = 'beta1_orch_log';
 
 const MARKET_TRAIL_STORE = 'beta1_kalshi_2m_trail';
 
-const KALSHI_SCORECARD_LOG_STORE = 'beta1_kalshi_scorecard_log';
+const POLYMARKET_SCORECARD_LOG_STORE = 'beta1_polymarket_scorecard_log';
 
-const LAST_KALSHI_SNAPSHOT_STORE = 'beta1_last_kalshi_snapshot';
+const LAST_POLYMARKET_SNAPSHOT_STORE = 'beta1_last_polymarket_snapshot';
 
 const LOG_CAP = 250;
 
@@ -177,15 +177,15 @@ function saveLastPred() { try { localStorage.setItem(LAST_PRED_STORE, JSON.strin
 
 function saveLastMarket() { try { localStorage.setItem(LAST_MARKET_STORE, JSON.stringify(window._lastMarketSnapshot)); } catch (e) { } }
 
-function saveKalshiLog() {
+function savePolymarketScorecardLog() {
     try {
       window._kalshiLog = capArray(window._kalshiLog || []);
-      localStorage.setItem(KALSHI_SCORECARD_LOG_STORE, JSON.stringify(window._kalshiLog));
+      localStorage.setItem(POLYMARKET_SCORECARD_LOG_STORE, JSON.stringify(window._kalshiLog));
       scheduleLogBackup();
     } catch (e) { }
   }
 
-function saveLastKalshi() { try { localStorage.setItem(LAST_KALSHI_SNAPSHOT_STORE, JSON.stringify(window._lastKalshiSnapshot || {})); } catch (e) { } }
+function saveLastPolymarketSnapshot() { try { localStorage.setItem(LAST_POLYMARKET_SNAPSHOT_STORE, JSON.stringify(window._lastKalshiSnapshot || {})); } catch (e) { } }
 
 function saveKalshiErrors() {
     try {
@@ -349,8 +349,8 @@ window.savePredLog = savePredLog;
 window.saveMarketLog = saveMarketLog;
 window.saveLastPred = saveLastPred;
 window.saveLastMarket = saveLastMarket;
-window.saveKalshiLog = saveKalshiLog;
-window.saveLastKalshi = saveLastKalshi;
+window.saveKalshiLog = savePolymarketScorecardLog;
+window.saveLastKalshi = saveLastPolymarketSnapshot;
 window.saveKalshiErrors = saveKalshiErrors;
 window.saveOrchLog = saveOrchLog;
 window.saveMarketTrail = saveMarketTrail;
