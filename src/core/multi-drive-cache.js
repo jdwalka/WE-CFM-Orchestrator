@@ -195,12 +195,20 @@
           `C:\\Users\\${username}`,
           'C:\\Users\\Public',
         ]);
+        // OneDrive candidates found this pass, personal-account folders first --
+        // a bare "OneDrive" or "OneDrive - Personal" ranks ahead of a work/school
+        // variant ("OneDrive - <Org>") so trading-cache data prefers the
+        // account the user actually controls over one an org IT policy might
+        // restrict, wipe, or DLP-scan. Still probed for writability below,
+        // same as Google Drive, instead of added on name-match alone.
+        const onedriveCandidates = [];
         for (const home of homeCandidates) {
           const res = await window.dataStore.listDir(home);
           if (!res?.ok) continue;
           for (const entry of (res.entries || [])) {
             if (entry.startsWith('OneDrive')) {
-              this.onedriveFolders.push(...this._candidateCacheDirs(this._join(home, entry)));
+              const isPersonal = entry === 'OneDrive' || /-\s*Personal\b/i.test(entry);
+              onedriveCandidates.push({ home, entry, isPersonal });
             }
             if (this._isGoogleDriveRoot(entry)) {
               for (const dir of this._candidateCacheDirs(this._join(home, entry))) {
@@ -211,9 +219,22 @@
             }
           }
         }
+
+        onedriveCandidates.sort((a, b) => (b.isPersonal ? 1 : 0) - (a.isPersonal ? 1 : 0));
+        for (const { home, entry } of onedriveCandidates) {
+          for (const dir of this._candidateCacheDirs(this._join(home, entry))) {
+            const probe = await this._probeWritableDir(dir);
+            if (probe.ok) this.onedriveFolders.push(dir);
+            else this.lastSyncFailures.push({ path: probe.dirPath, error: probe.error || probe.code || 'probe failed' });
+          }
+        }
+
         this.onedriveFolders = this._uniquePaths(this.onedriveFolders);
         if (this.onedriveFolders.length) {
           this.onedriveFolder = this.onedriveFolders[0];
+          console.log('[MultiDriveCache] Writable OneDrive targets:', this.onedriveFolders.join(' | '));
+        } else {
+          console.warn('[MultiDriveCache] No writable OneDrive cache targets found');
         }
 
         // Google Drive - use the Electron-exposed mounted account roots first.

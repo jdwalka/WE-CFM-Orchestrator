@@ -22,7 +22,7 @@ test('sample packet is UP / BUY_UP / ~0.62 / with_crowd / now / half', () => {
   assert.strictEqual(c.confidence, 0.62);
   assert.strictEqual(c.planner_on_5m, false);
   assert.ok(String(c.notes).startsWith('UP'));
-  assert.deepStrictEqual(c.account_order, ['gitgoin', 'mauro']);
+  assert.deepStrictEqual(c.account_order, ['icloud', 'gitgoin', 'mauro']);
 });
 
 test('missing fields hold flat', () => {

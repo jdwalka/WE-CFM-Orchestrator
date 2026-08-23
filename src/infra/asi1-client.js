@@ -5,7 +5,10 @@
  * shape per account: asi1 (default), asi1-ultra (deep), asi1-mini (fast).
  * We also try undocumented `asi1-fast` last because this repo used it.
  *
- * Two Fetch.ai / ASI:One accounts (gitgoin first — only key that serves ultra):
+ * Three Fetch.ai / ASI:One accounts (icloud first — fresh daily quota as of
+ * 2026-08-22; gitgoin/mauro both maxed their day request quota that date
+ * and neither has ever had asi1-ultra token allowance, limit=0 "eon"):
+ *   mauro_fanelli@icloud.com  → ASI1_API_KEY_ICLOUD / secrets/ASI1_ICLOUD.txt
  *   gitgoin87@gmail.com       → ASI1_API_KEY_GITGOIN / secrets/ASI1_GITGOIN.txt
  *   maurofanellijr@gmail.com  → ASI1_API_KEY_MAURO / secrets/ASI1_MAURO.txt
  * Plus legacy aliases (ASI_ONE_API_KEY, ASI1_API_KEY_FALLBACK, ASI1_API.txt).
@@ -37,6 +40,13 @@ const ASI1_ALL_MODELS = Object.freeze([...ASI1_OFFICIAL_MODELS, ...ASI1_EXTRA_MO
 // that account's rate limit (ultra currently 429; mini/asi1/fast still work).
 const ASI1_ACCOUNTS = Object.freeze([
   {
+    id: 'icloud',
+    email: 'mauro_fanelli@icloud.com',
+    envNames: ['ASI1_API_KEY_ICLOUD', 'ASI_ONE_API_KEY_ICLOUD'],
+    sessionEnv: 'ASI1_SESSION_ICLOUD',
+    secretFiles: ['ASI1_ICLOUD.txt'],
+  },
+  {
     id: 'gitgoin',
     email: 'gitgoin87@gmail.com',
     envNames: ['ASI1_API_KEY_GITGOIN', 'ASI_ONE_API_KEY_GITGOIN', 'ASI1_API_KEY_GITGOIN87'],
@@ -54,6 +64,10 @@ const ASI1_ACCOUNTS = Object.freeze([
 
 function inferAccountFromLabel(token) {
   const s = String(token || '').toLowerCase();
+  // Check icloud before the generic 'mauro' match below -- the icloud
+  // account's own address ('mauro_fanelli@icloud.com') contains 'mauro'
+  // and would otherwise get misfiled under the gmail/mauro account.
+  if (s.includes('icloud')) return { account: 'icloud', email: 'mauro_fanelli@icloud.com' };
   if (s.includes('gitgoin')) return { account: 'gitgoin', email: 'gitgoin87@gmail.com' };
   if (s.includes('mauro')) return { account: 'mauro', email: 'maurofanellijr@gmail.com' };
   return null;
