@@ -325,7 +325,18 @@ if (process.env.ASI1_DISABLE_ROUTE_PROBE !== '1') {
  * Minimal chat/completion against ASI:One (OpenAI-compatible).
  */
 async function chatCompletion(messages, options = {}) {
-  const keys = resolveAsi1ApiKeys();
+  const allKeys = resolveAsi1ApiKeys();
+  // onlyAccount pins a caller (e.g. the HUD's quick-narrative lane) to a
+  // single account with no cross-account fallback -- that cascade through
+  // every key is what makes a lone-wolf HUD poll take minutes instead of
+  // failing fast on its own path. Falls back to the full key list if the
+  // pinned account has no key configured, so a HUD call never hard-fails
+  // just because e.g. icloud creds are momentarily missing.
+  const keys = options.onlyAccount
+    ? (allKeys.filter((k) => k.account === options.onlyAccount).length
+      ? allKeys.filter((k) => k.account === options.onlyAccount)
+      : allKeys)
+    : allKeys;
   if (!keys.length) {
     throw new Error('ASI:One API key missing — set ASI_ONE_API_KEY or asi1_api_key2_fallback');
   }

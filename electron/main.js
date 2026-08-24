@@ -2533,6 +2533,8 @@ async function handleAsi1NarrativeRequest(args = {}, defaultModel = 'asi1-ultra'
       [{ role: 'user', content: prompt }],
       {
         model,
+        candidateModels: [model], // HUD is a lone wolf: no model cascade, fail fast
+        onlyAccount: process.env.ASI1_PREFERRED_ACCOUNT || 'icloud',
         max_tokens: model.includes('ultra') ? 350 : 120,
         temperature: 0.1,
         timeoutMs: model.includes('ultra') ? 25000 : 12000,
