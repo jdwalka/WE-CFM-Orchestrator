@@ -776,6 +776,13 @@ if (
     default: 120000
   };
 
+  // No retry limit or queue depth cap previously existed here: a genuinely
+  // dead shared transport (not just one slow request) meant a single
+  // request retried forever and everything else queued behind it,
+  // indefinitely -- see the fix in enqueue()/_processQueue() below.
+  const MAX_ENDPOINT_RETRIES = 3;
+  const MAX_QUEUE_DEPTH = 10;
+
   // ── TIMEOUT ORCHESTRATOR CLASS ───────────────────────────────────
   /**
    * TimeoutOrchestrator: Manages long-running connection stability (9+ hours overnight)
@@ -796,11 +803,11 @@ if (
       }, intervalMs);
     }
 
-    _triggerRefresh(endpoint, reason) {
-      console.log(`[TimeoutOrchestrator] Refreshing connection for ${endpoint} due to ${reason}`);
+    _triggerRefresh(endpoint, reason, delayMs = 3000) {
+      console.log(`[TimeoutOrchestrator] Refreshing connection for ${endpoint} due to ${reason} (${delayMs}ms)`);
       this.health[endpoint] = { ...this.health[endpoint], state: 'recovering' };
       // Simulate connection drop & revival, pausing queue
-      setTimeout(() => this.revive(endpoint), 3000);
+      setTimeout(() => this.revive(endpoint), delayMs);
     }
 
     _checkZombies() {
@@ -827,9 +834,20 @@ if (
       if (!this.queues[endpoint]) this.queues[endpoint] = [];
       if (!this.health[endpoint]) this.health[endpoint] = { state: 'active', lastSuccess: Date.now() };
 
+      // Bound the queue: an endpoint stuck retrying a dead shared transport
+      // would otherwise accumulate every subsequent poll forever. Drop the
+      // oldest queued requests first -- for live market data, a fresher
+      // request superseding a stale one is correct; blocking on stale data
+      // is not.
+      const q = this.queues[endpoint];
+      while (q.length >= MAX_QUEUE_DEPTH) {
+        const dropped = q.shift();
+        dropped.reject(new Error(`[TimeoutOrchestrator] queue overflow for ${endpoint}, dropping stale request`));
+      }
+
       return new Promise((resolve, reject) => {
-        const req = { executor, resolve, reject, timestamp: Date.now() };
-        this.queues[endpoint].push(req);
+        const req = { executor, resolve, reject, timestamp: Date.now(), attempts: 0 };
+        q.push(req);
         this._processQueue(endpoint);
       });
     }
@@ -845,12 +863,30 @@ if (
         req.resolve(result);
         this.recordActivity(endpoint, true);
       } catch (err) {
-        // If connection dropped/timeout, pause and trigger revival, put req back
-        if (/timeout|abort/i.test(err.message)) {
-          console.warn(`[TimeoutOrchestrator] Detected timeout for ${endpoint}, triggering recovery...`);
+        req.attempts += 1;
+        if (/timeout|abort/i.test(err.message) && req.attempts < MAX_ENDPOINT_RETRIES) {
+          // Pause and trigger revival, put req back at the front to retry --
+          // but only up to MAX_ENDPOINT_RETRIES. Without a cap, a genuinely
+          // dead shared transport (not just one slow request) means this
+          // single request retries forever and every subsequent request to
+          // this endpoint queues up behind it indefinitely -- which is what
+          // "18 unrelated providers degrade at once" actually was: one dead
+          // proxy, not 18 real outages.
+          console.warn(
+            `[TimeoutOrchestrator] Timeout for ${endpoint} ` +
+            `(attempt ${req.attempts}/${MAX_ENDPOINT_RETRIES}), retrying...`
+          );
           q.unshift(req);
-          this._triggerRefresh(endpoint, 'timeout_error');
+          const backoffMs = Math.min(3000 * (2 ** (req.attempts - 1)), 30000);
+          this._triggerRefresh(endpoint, 'timeout_error', backoffMs);
         } else {
+          if (req.attempts >= MAX_ENDPOINT_RETRIES) {
+            console.error(
+              `[TimeoutOrchestrator] ${endpoint} exceeded ${MAX_ENDPOINT_RETRIES} retries, ` +
+              `marking degraded and dropping request`
+            );
+            this.health[endpoint] = { state: 'active', lastSuccess: this.health[endpoint]?.lastSuccess || 0 };
+          }
           req.reject(err);
         }
       }
