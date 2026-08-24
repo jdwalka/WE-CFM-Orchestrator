@@ -4168,7 +4168,32 @@ function createWindow() {
   });
 }
 
+// Best-effort nudge for the wecrypto-wsl WireGuard tunnel: boots the WSL VM
+// (starting its systemd units, including wg-quick@wg0) if it isn't already
+// resident, and starts the unit if it isn't already running. No-op on
+// failure -- the Windows-side WireGuard service and .wslconfig
+// vmIdleTimeout=-1 are the primary always-on mechanisms; this just covers
+// the case where the WSL VM idled out before the app launched.
+function ensureWslWireguardTunnel() {
+  if (process.platform !== 'win32') return;
+  const distro = process.env.WECRYPTO_WSL_DISTRO || 'Ubuntu';
+  const child = spawn('wsl.exe', ['-d', distro, '-u', 'root', '--', 'systemctl', 'start', 'wg-quick@wg0'], {
+    windowsHide: true,
+  });
+  child.on('error', (err) => {
+    console.warn(`[wsl-wg] failed to spawn wsl.exe: ${err.message}`);
+  });
+  child.on('exit', (code) => {
+    if (code === 0) {
+      console.log('[wsl-wg] wg-quick@wg0 confirmed running in WSL.');
+    } else {
+      console.warn(`[wsl-wg] systemctl start wg-quick@wg0 exited with code ${code}.`);
+    }
+  });
+}
+
 app.whenReady().then(async () => {
+  ensureWslWireguardTunnel(); // best-effort; never blocks boot
   if (process.argv.includes('--polycool')) {
     createPolycoolWindow();
     return;
