@@ -783,16 +783,22 @@ function precomputeAllSignals(candles, sym, horizonMin) {
   const horizonBars = Math.max(1, Math.round(horizonMin / BARMIN));
   const startIdx    = Math.max(52, BACKTEST_MIN_TRAIN_OBS);
   const signals     = [];
-  for (let idx = startIdx; idx < candles.length - horizonBars; idx++) {
-    const windowCandles = candles.slice(Math.max(0, idx - LIVE_WINDOW + 1), idx + 1);
+  for (let idx = startIdx; idx <= candles.length - horizonBars; idx++) {
+    // Model indicators built strictly on completed candles prior to this contract window
+    const windowCandles = candles.slice(Math.max(0, idx - LIVE_WINDOW), idx);
+    if (windowCandles.length < 26) continue;
     const model = buildSignalModel(windowCandles, sym);
     if (!model) continue;
-    const entry = candles[idx].c;
-    const ptb = candles[idx].o || entry;
-    const exit = candles[idx + horizonBars].c;
+
+    // Polymarket contract window:
+    // Strike (Price To Beat) = Open of contract window at idx
+    const ptb   = candles[idx].o;
+    const entry = candles[idx].o;
+    // Settlement TWAP = Close of contract window at idx + horizonBars - 1
+    const exit  = candles[idx + horizonBars - 1].c;
 
     const atrDollar = entry * (model.atrPct ? (model.atrPct / 100) : 0.0035);
-    const remainingFrac = 0.60;
+    const remainingFrac = 0.80; // Trade entered near contract open
     const expectedMove = model.score * atrDollar * 0.40 * remainingFrac;
     const meanFinal = entry + expectedMove;
     const sigma = Math.max(entry * 0.0015, atrDollar * Math.sqrt(remainingFrac));
@@ -815,6 +821,7 @@ function precomputeAllSignals(candles, sym, horizonMin) {
       persistenceScore: model.persistenceScore || 0,
       emaCross: model.emaCross, mom: model.mom, atrPct: model.atrPct,
       returnPct, t: candles[idx].t,
+      isWin,
     });
   }
   return signals;

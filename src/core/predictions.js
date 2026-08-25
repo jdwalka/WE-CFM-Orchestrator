@@ -5933,6 +5933,72 @@
     return { score: clamp(score, -1, 1), confidence, diagnostics: diag };
   }
 
+  /**
+   * Pre-Open Horizon Forecaster (T+1)
+   * Predicts 3-5 minutes ahead of the upcoming contract window open (:00, :05, :10, :15...).
+   * Projects estimated Strike (Price To Beat) and calculates forward CDF probability.
+   */
+  function computePreOpenHorizonForecast(coin, horizonMin = 5) {
+    const sym = coin.sym || coin;
+    const cache = candleCache[sym];
+    if (!cache || (!cache.candles && !cache.candles1m)) return null;
+
+    const nowMs = Date.now();
+    const windowSecMs = horizonMin * 60_000;
+    const nextBoundaryMs = Math.ceil(nowMs / windowSecMs) * windowSecMs;
+    const msToNextBoundary = Math.max(0, nextBoundaryMs - nowMs);
+    const minsToNextBoundary = msToNextBoundary / 60_000;
+
+    const candles = (horizonMin <= 5 && cache.candles1m && cache.candles1m.length >= 26) ? cache.candles1m : cache.candles;
+    if (!candles || candles.length < 10) return null;
+    const lastCandle = candles[candles.length - 1];
+    const lastPrice = Number(lastCandle.c || lastCandle.o);
+    if (!Number.isFinite(lastPrice) || lastPrice <= 0) return null;
+
+    const lastPred = cache._lastPrediction || window._predictions?.[sym] || null;
+    const atrPctRaw = Number(lastPred?.volatility?.atrPct);
+    const atrPct = Number.isFinite(atrPctRaw) && atrPctRaw > 0 ? atrPctRaw / 100 : 0.0035;
+    const atrDollar = lastPrice * atrPct;
+
+    const baseScore = Number(lastPred?.score || 0);
+    const drift1mPct = Number(lastPred?.diagnostics?.liveTimingGuard?.drift1mPct || 0);
+    const surge = typeof window !== 'undefined' && window.SurgePrefetch?.get ? window.SurgePrefetch.get(sym) : null;
+
+    // Project Price at Next Boundary (Estimated PTB for T+1)
+    const leadInDriftDollar = lastPrice * ((drift1mPct / 100) * (msToNextBoundary / 60_000) * 0.5);
+    const surgeBiasDollar = surge?.active ? lastPrice * (surge.call === 'UP' ? 0.0008 : -0.0008) : 0;
+    const projectedOpenPtb = lastPrice + leadInDriftDollar + surgeBiasDollar;
+
+    // Project Settlement Price 5m/15m after Next Boundary
+    const expectedHorizonMove = baseScore * atrDollar * 0.40;
+    const projectedSettlement = projectedOpenPtb + expectedHorizonMove;
+
+    // Calculate Forward CDF Probability against Projected PTB
+    const sigma = Math.max(projectedOpenPtb * 0.0015, atrDollar);
+    const z = (projectedSettlement - projectedOpenPtb) / (sigma || 1);
+    const pUp = normalCDF(z);
+    const forecastDirection = pUp >= 0.50 ? 'UP' : 'DOWN';
+    const confidence = Math.round(Math.abs(pUp - 0.50) * 200);
+
+    return {
+      sym,
+      horizonMin,
+      targetBoundaryTs: nextBoundaryMs,
+      targetBoundaryIso: new Date(nextBoundaryMs).toISOString(),
+      msToNextBoundary,
+      minsToNextBoundary: parseFloat(minsToNextBoundary.toFixed(2)),
+      currentPrice: lastPrice,
+      projectedOpenPtb: parseFloat(projectedOpenPtb.toFixed(sym === 'XRP' ? 4 : sym === 'DOGE' ? 6 : 2)),
+      projectedSettlement: parseFloat(projectedSettlement.toFixed(sym === 'XRP' ? 4 : sym === 'DOGE' ? 6 : 2)),
+      forecastDirection,
+      pUp: parseFloat(pUp.toFixed(4)),
+      confidence,
+      preOpenCall: forecastDirection,
+      sniperAction: confidence >= 40 ? `PRE_POSITION_${forecastDirection}` : 'STANDBY_CONFIRM',
+      surgeState: surge?.active ? surge.call : 'calm',
+    };
+  }
+
   function computePrediction(coin, backtest = null) {
     const computedTs = Date.now();
     const cache = candleCache[coin.sym];
@@ -6274,6 +6340,10 @@
         qft: qftResult,
       },
       backtest,
+      preOpenForecast: {
+        h5: computePreOpenHorizonForecast(coin, 5),
+        h15: computePreOpenHorizonForecast(coin, 15),
+      },
       // --- Derivatives: funding, OI, squeeze ---
       derivatives: derivCache[coin.sym] || null,
       squeeze: detectSqueeze(coin.sym),
@@ -6935,6 +7005,7 @@
     getAll() { return window._predictions; },
     getBacktest(sym) { return window._backtests[sym] || null; },
     getBacktests() { return window._backtests; },
+    getPreOpenForecast(sym, horizonMin = 5) { return computePreOpenHorizonForecast(sym, horizonMin); },
     getSession() { return getSessionInfo(); },
     startAutoRefresh() {
       this.stopAutoRefresh();

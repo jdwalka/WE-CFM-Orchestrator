@@ -98,6 +98,15 @@
       <div class="ad-row"><span class="ad-k">Spot</span><span class="ad-v" id="adSpot">—</span></div>
       <div class="ad-row"><span class="ad-k">PTB</span><span class="ad-v" id="adPtb">—</span></div>
       <div class="ad-row"><span class="ad-k">Closes in</span><span class="ad-v" id="adTtc">—</span></div>
+      <div style="margin:8px 0 4px 0;padding:6px 8px;background:#06080a;border:1px solid #1f2a38;border-radius:6px">
+        <div style="display:flex;justify-content:space-between;align-items:center;font-size:10px;font-weight:700;color:#00d4ff;margin-bottom:4px">
+          <span>NEXT HORIZON (T+1) · 3–5m PRE-OPEN</span>
+          <span id="adNextCountdown">—</span>
+        </div>
+        <div class="ad-row" style="margin:2px 0"><span class="ad-k">Est. Strike PTB</span><span class="ad-v" id="adNextPtb">—</span></div>
+        <div class="ad-row" style="margin:2px 0"><span class="ad-k">Pre-Open Call</span><span class="ad-v" id="adNextCall">—</span></div>
+        <div class="ad-row" style="margin:2px 0"><span class="ad-k">Sniper Stance</span><span class="ad-v" id="adNextSniper">—</span></div>
+      </div>
       <div class="ad-row"><span class="ad-k">Asked</span><span class="ad-v" id="adAskedAt">—</span></div>
       <div class="ad-row"><span class="ad-k">Model</span><span class="ad-v" id="adModel">—</span></div>
       <div class="ad-row"><span class="ad-k">Account</span><span class="ad-v" id="adAcct">—</span></div>
@@ -289,6 +298,36 @@
       : `— (${routeLabel})`;
   }
 
+  function paintNextHorizon() {
+    const coin = document.getElementById('adCoin')?.value || 'BTC';
+    const horizon = document.getElementById('adHorizon')?.value || '5m';
+    const hMin = horizon === '15m' ? 15 : 5;
+    const forecast = window.PredictionEngine?.getPreOpenForecast?.(coin, hMin);
+    if (!forecast) return;
+
+    const countEl = document.getElementById('adNextCountdown');
+    if (countEl) {
+      const mins = Math.floor(forecast.msToNextBoundary / 60000);
+      const secs = Math.floor((forecast.msToNextBoundary % 60000) / 1000);
+      countEl.textContent = `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+    }
+
+    const ptbEl = document.getElementById('adNextPtb');
+    if (ptbEl) ptbEl.textContent = forecast.projectedOpenPtb != null ? `$${forecast.projectedOpenPtb.toLocaleString()}` : '—';
+
+    const callEl = document.getElementById('adNextCall');
+    if (callEl) {
+      callEl.textContent = `${forecast.forecastDirection} (${forecast.confidence}%)`;
+      callEl.style.color = forecast.forecastDirection === 'UP' ? '#00e676' : '#ff5252';
+    }
+
+    const sniperEl = document.getElementById('adNextSniper');
+    if (sniperEl) {
+      sniperEl.textContent = forecast.sniperAction;
+      sniperEl.style.color = forecast.sniperAction.startsWith('PRE_POSITION') ? '#00d4ff' : '#8b929a';
+    }
+  }
+
   async function refreshStatus() {
     try {
       const st = await invoke('status');
@@ -296,9 +335,11 @@
       paintMode();
       paintAccounts(st?.diagnostics || {});
       paintConnectivity(st?.diagnostics || {});
+      paintNextHorizon();
     } catch (_) {
       paintAccounts({});
       paintConnectivity({});
+      paintNextHorizon();
     }
   }
 

@@ -534,6 +534,14 @@ function buildSignalModel(candles, sym = null) {
   };
 }
 
+function normalCDF(z) {
+  const t = 1 / (1 + 0.2316419 * Math.abs(z));
+  const poly = t * (0.319381530 + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429))));
+  const pdf = Math.exp(-0.5 * z * z) / Math.sqrt(2 * Math.PI);
+  const p = 1 - pdf * poly;
+  return z >= 0 ? p : 1 - p;
+}
+
 // ── HTTP helpers ──────────────────────────────────────────────────
 function httpGet(url) {
   return new Promise((resolve, reject) => {
