@@ -9,9 +9,11 @@
 
   if (typeof window === 'undefined') return;
 
-  const PERPS_HTTP_URL = 'https://api.perpetuals.polymarket.com';
-  const PERPS_WS_URL   = 'wss://ws.perpetuals.polymarket.com/v1/ws';
-  const PROXY_PERPS_URL = 'http://127.0.0.1:8080/polymarket-perps';
+  function getProxyPerpsUrl() {
+    const p = (typeof window !== 'undefined' && window.__PROXY_PORT__) || 3010;
+    return `http://127.0.0.1:${p}/polymarket-perps`;
+  }
+  const PROXY_PERPS_URL = getProxyPerpsUrl();
 
   // Perps auth (if required) must come from Electron IPC — never hardcode.
   const CREDENTIALS = {

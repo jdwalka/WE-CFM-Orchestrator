@@ -224,6 +224,20 @@
     el.innerHTML = rows.join('') || '<div class="ad-pill">no ASI1 keys</div>';
   }
 
+  // Route/latency comes from asi1-client.js's free background probe of the
+  // LOCAL proxy port (no LLM call, no quota cost, and off port 443 — that's
+  // only used by real ASI1 chat requests) — safe to poll on a timer, unlike
+  // ask() which fires a real ASI1 inference request.
+  function paintConnectivity(diag) {
+    const latEl = document.getElementById('adLat');
+    if (!latEl) return;
+    const routeMode = diag?.routeMode || 'unknown';
+    const routeLabel = { native: 'proxy up', unreachable: 'proxy unreachable', unknown: 'unknown' }[routeMode] || 'unknown';
+    latEl.textContent = diag?.lastLatencyMs != null && routeMode !== 'unreachable'
+      ? `${Math.round(diag.lastLatencyMs)}ms (${routeLabel})`
+      : `— (${routeLabel})`;
+  }
+
   function paintContract(contract, extra) {
     if (!contract) return;
     const action = String(contract.action || 'HOLD_FLAT');
@@ -284,6 +298,7 @@
       paintConnectivity(st?.diagnostics || {});
     } catch (_) {
       paintAccounts({});
+      paintConnectivity({});
     }
   }
 
