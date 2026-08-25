@@ -3246,8 +3246,22 @@
       const baseBias = coinBias;
       coinBias = window._h15Tuner.getTunedBias(15, options.sym?.toUpperCase(), baseBias);
     }
+
+    // MergeKit Ensembling: SLERP interpolation across regime matrices + coin biases
+    let effectiveWeights = adaptiveWeights;
+    if (typeof window !== 'undefined' && window.PredictionWeightMergeKit?.mergeModelWeights) {
+      try {
+        effectiveWeights = window.PredictionWeightMergeKit.mergeModelWeights(
+          COMPOSITE_WEIGHTS,
+          coinBias,
+          window.PredictionRegimeWeights?.REGIME_WEIGHT_MULTS?.[liveRegime.regime] || {},
+          { slerpT: 0.35 }
+        );
+      } catch (_) { effectiveWeights = adaptiveWeights; }
+    }
+
     const weightedComposite = keys => {
-      const effW = key => ((adaptiveWeights[key] ?? OUTER_ORBITAL_WEIGHTS[key] ?? 0) * (coinBias[key] ?? 1.0));
+      const effW = key => ((effectiveWeights[key] ?? OUTER_ORBITAL_WEIGHTS[key] ?? 0) * (coinBias[key] ?? 1.0));
       const totalWeight = keys.reduce((sum, key) => sum + effW(key), 0) || 1;
       return keys.reduce((sum, key) => sum + signalVector[key] * effW(key), 0) / totalWeight;
     };
