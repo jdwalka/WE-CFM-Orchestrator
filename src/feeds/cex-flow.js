@@ -16,32 +16,17 @@
 
   const COINS = ['BTC', 'ETH', 'SOL', 'XRP', 'BNB', 'DOGE', 'HYPE'];
   const BINANCE_SPOT_SYMS = new Set(['BTC', 'ETH', 'SOL', 'XRP', 'BNB', 'DOGE']);
-  const POLL_MS = 25000; // was 15s — secondary REST fallbacks don't need sub-20s cadence
+  const POLL_MS = 45000; // Relaxed cadence: Pyth Lazer handles sub-second spot
   const TIMEOUT = 9000;
   const CACHE = {};        // sym → { exchanges[], aggregate, ts }
   const VOL_HISTORY = {};    // `${exchange}_${sym}` → [vol24h, ...]  (rolling 8)
   const EXCHANGE_CACHE = {}; // `${exchange}_${sym}` -> { value, ts, inFlight }
   const EXCHANGE_POLL_INTERVAL_MS = {
-    Binance: 30000,
-    Coinbase: 15000,
-    Kraken: 30000,
-    Bybit: 30000,
-    OKX: 30000,
-    KuCoin: 30000,
-    'Gate.io': 30000,
-    Upbit: 30000,
-    Bitget: 30000,
-    BingX: 60000,
-    Bitvavo: 60000,
-    Gemini: 120000,
-    CoinW: 120000,
-    LBank: 180000,
-    Bitstamp: 30000,
-    Bitso: 180000,
-    Bullish: 300000,
-    WhiteBIT: 300000,
-    Ourbit: 300000,
-    WEEX: 300000,
+    Binance: 45000,
+    Bybit: 45000,
+    OKX: 45000,
+    Coinbase: 30000,
+    Kraken: 45000,
   };
   const SECONDARY_EXCHANGES = Object.keys(EXCHANGE_POLL_INTERVAL_MS);
   let _timer = null;
@@ -741,7 +726,7 @@
 
   // ── aggregate ─────────────────────────────────────────────────────
 
-  const WEIGHTS = { Binance: 0.22, Bybit: 0.16, OKX: 0.14, Upbit: 0.12, Bitget: 0.08, BingX: 0.06, Coinbase: 0.08, Kraken: 0.06, KuCoin: 0.02, 'Gate.io': 0.02, Bitstamp: 0.02, Bitvavo: 0.02 };
+  const WEIGHTS = { Binance: 0.40, Bybit: 0.25, OKX: 0.20, Coinbase: 0.10, Kraken: 0.05 };
 
   function computeAggregate(exchanges) {
     let score = 0;
@@ -802,21 +787,14 @@
     window.dispatchEvent(new CustomEvent('market-data-envelope', { detail: envelope }));
   }
 
-  // ── per-coin fetch ────────────────────────────────────────────────
+  // ── per-coin fetch (Pure Tier-1: Binance, Bybit, OKX, Coinbase, Kraken) ─────
   async function fetchCoin(sym) {
     const results = await Promise.allSettled([
       withExchangeCadence('Binance', sym, () => fetchBinance(sym)),
-      withExchangeCadence('Coinbase', sym, () => fetchCoinbase(sym)),
-      withExchangeCadence('Kraken', sym, () => fetchKraken(sym)),
       withExchangeCadence('Bybit', sym, () => fetchBybit(sym)),
       withExchangeCadence('OKX', sym, () => fetchOkx(sym)),
-      withExchangeCadence('KuCoin', sym, () => fetchKuCoin(sym)),
-      withExchangeCadence('Gate.io', sym, () => fetchGate(sym)),
-      withExchangeCadence('Upbit', sym, () => fetchUpbit(sym)),
-      withExchangeCadence('Bitget', sym, () => fetchBitget(sym)),
-      withExchangeCadence('BingX', sym, () => fetchBingX(sym)),
-      withExchangeCadence('Bitstamp', sym, () => fetchBitstamp(sym)),
-      withExchangeCadence('Bitvavo', sym, () => fetchBitvavo(sym)),
+      withExchangeCadence('Coinbase', sym, () => fetchCoinbase(sym)),
+      withExchangeCadence('Kraken', sym, () => fetchKraken(sym)),
     ]);
 
     const exchanges = results.map(r =>

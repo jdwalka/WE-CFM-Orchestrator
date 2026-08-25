@@ -142,8 +142,11 @@
   const _origFetch = window.fetch.bind(window);
   const EXTERNAL = /^https?:\/\//;
 
-  // Explicit direct bypass for AI/LLM endpoints so they always use native source IP
-  const IGNORE_DOMAINS = /localhost|127\.0\.0\.1|asi1\.ai|fetch-ai\.com|openai\.com|anthropic\.com|x\.ai|deepseek\.com|timeapi\.io|polymarket\.com/i;
+  // Explicit direct bypass for AI/LLM endpoints so they always use native source IP.
+  // pyth added 2026-08-24: Hermes/Lazer aren't geo-blocked, so routing them through
+  // the local proxy (and from there, the Mullvad/Sweden path) only adds latency and
+  // ties price-feed reliability to that tunnel's health for no access-control benefit.
+  const IGNORE_DOMAINS = /localhost|127\.0\.0\.1|asi1\.ai|fetch-ai\.com|openai\.com|anthropic\.com|x\.ai|deepseek\.com|timeapi\.io|polymarket\.com|pyth/i;
 
   function needsProxy(hostname) {
     if (IGNORE_DOMAINS.test(hostname)) return false;

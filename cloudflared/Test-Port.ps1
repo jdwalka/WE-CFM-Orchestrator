@@ -5,9 +5,10 @@
 # inside a nested batch for/if block.
 param(
     [Parameter(Mandatory = $true)]
-    [int]$Port
+    [int]$Port,
+    [string]$HostName = '127.0.0.1'
 )
-if (Test-NetConnection -ComputerName 127.0.0.1 -Port $Port -InformationLevel Quiet -WarningAction SilentlyContinue) {
+if (Test-NetConnection -ComputerName $HostName -Port $Port -InformationLevel Quiet -WarningAction SilentlyContinue) {
     exit 0
 } else {
     exit 1

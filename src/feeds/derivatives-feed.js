@@ -24,7 +24,7 @@
   const COINS = ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'BNB'];
   const PERP_SYM = Object.fromEntries(COINS.map(c => [c, `${c}USDT`]));
 
-  const POLL_MS = 20000;          // OI/funding REST cadence (liquidations are WS push)
+  const POLL_MS = 45000;          // OI/funding REST cadence (liquidations are real-time WS push)
   const TIMEOUT_MS = 9000;
   const OI_HISTORY_MAX = 30;      // ~10 min of 20s samples
   const FUND_HISTORY_MAX = 12;

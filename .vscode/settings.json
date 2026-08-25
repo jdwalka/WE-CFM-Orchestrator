@@ -49,5 +49,12 @@
     },
     "[markdown]": {
         "editor.defaultFormatter": "yzhang.markdown-all-in-one"
-    }
+    },
+    "telemetry.editStats.details.enabled": true,
+    "telemetry.editStats.showDecorations": true,
+    "telemetry.editStats.showStatusBar": true,
+    "application.experimental.rendererProfiling": true,
+    "chat.agent.collapseCompletedResponses": true,
+    "chat.checkpoints.showFileChanges": true,
+    "chat.planAgent.defaultModel": "DeepSeek V4 Pro (deepseek-v4)"
 }

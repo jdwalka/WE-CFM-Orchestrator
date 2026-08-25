@@ -617,26 +617,6 @@ if (process.env.WECRYPTO_TOR_SOCKS) {
   }
 }
 
-const SWEDEN_PROXY_NEEDLES = [
-  'binance', 'bybit', 'okx', 'kraken', 'kucoin', 'mexc', 'bitfinex',
-  'gateio', 'crypto.com', 'coinbase', 'coingecko', 'dexscreener',
-  'hyperliquid', 'polymarket', 'kalshi', 'pyth.network', 'etherscan',
-  'ripple.com', 'xrplcluster',
-];
-
-function swedenProxyAgentForUrl(targetUrl) {
-  const swedenUrl = process.env.WECRYPTO_SWEDEN_SOCKS;
-  if (!swedenUrl) return null;
-  const urlStr = String(targetUrl || '').toLowerCase();
-  if (!SWEDEN_PROXY_NEEDLES.some((d) => urlStr.includes(d))) return null;
-  try {
-    const { SocksProxyAgent } = require('socks-proxy-agent');
-    return new SocksProxyAgent(swedenUrl);
-  } catch (_) {
-    return null;
-  }
-}
-
 // Mullvad Stockholm SOCKS5 (in-tunnel 10.64.0.1:1080). Inverse of TOR: only
 // exchange/feed hosts go through the proxy so Fast-lane Ethernet stays native.
 if (process.env.WECRYPTO_SWEDEN_SOCKS) {
@@ -646,7 +626,12 @@ if (process.env.WECRYPTO_SWEDEN_SOCKS) {
     const https = require('https');
     const swedenUrl = process.env.WECRYPTO_SWEDEN_SOCKS;
     const swedenAgent = new SocksProxyAgent(swedenUrl);
-    const swedenNeedles = SWEDEN_PROXY_NEEDLES;
+    const swedenNeedles = [
+      'binance', 'bybit', 'okx', 'kraken', 'kucoin', 'mexc', 'bitfinex',
+      'gateio', 'crypto.com', 'coinbase', 'coingecko', 'dexscreener',
+      'hyperliquid', 'polymarket', 'kalshi', 'pyth.network', 'etherscan',
+      'ripple.com', 'xrplcluster',
+    ];
 
     const originalHttpRequestSe = http.request;
     const originalHttpsRequestSe = https.request;
@@ -675,24 +660,11 @@ if (process.env.WECRYPTO_SWEDEN_SOCKS) {
     http.request = patchedSwedenRequest(originalHttpRequestSe);
     https.request = patchedSwedenRequest(originalHttpsRequestSe);
     console.warn(`[NETWORK] Sweden SOCKS5 for exchange hosts: ${swedenUrl}`);
-    // #region agent log
-        fetch('http://127.0.0.1:7629/ingest/9b1c0a9c-43ba-46f7-b483-8aad6ef8128f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8ad9ce'},body:JSON.stringify({sessionId:'8ad9ce',runId:'post-fix',hypothesisId:'A,C',location:'electron/main.js:sweden-socks',message:'Sweden SOCKS5 patch applied',data:{swedenUrl,profile:process.env.WECRYPTO_PROFILE||null,webPort:process.env.WECRYPTO_WEB_PORT||null,skipInference:process.env.WECRYPTO_SKIP_INFERENCE||null},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
   } catch (e) {
     console.error('[NETWORK] Failed to instantiate Sweden SOCKS5:', e.message);
-    // #region agent log
-    fetch('http://127.0.0.1:7629/ingest/9b1c0a9c-43ba-46f7-b483-8aad6ef8128f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8ad9ce'},body:JSON.stringify({sessionId:'8ad9ce',runId:'pre-fix',hypothesisId:'A',location:'electron/main.js:sweden-socks-error',message:'Sweden SOCKS5 patch failed',data:{error:e.message,swedenUrl:process.env.WECRYPTO_SWEDEN_SOCKS||null},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
   }
-} else {
-  // #region agent log
-  fetch('http://127.0.0.1:7629/ingest/9b1c0a9c-43ba-46f7-b483-8aad6ef8128f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8ad9ce'},body:JSON.stringify({sessionId:'8ad9ce',runId:'pre-fix',hypothesisId:'B,C',location:'electron/main.js:no-sweden-socks',message:'WECRYPTO_SWEDEN_SOCKS unset at module load',data:{profile:process.env.WECRYPTO_PROFILE||null,webPort:process.env.WECRYPTO_WEB_PORT||null,directProxy:process.env.WECRYPTO_DIRECT_PROXY||null,asi1Proxy:process.env.WECRYPTO_ASI1_PROXY||null},timestamp:Date.now()})}).catch(()=>{});
-  // #endregion
 }
 
-// #region agent log
-fetch('http://127.0.0.1:7629/ingest/9b1c0a9c-43ba-46f7-b483-8aad6ef8128f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8ad9ce'},body:JSON.stringify({sessionId:'8ad9ce',runId:'pre-fix',hypothesisId:'D,E',location:'electron/main.js:proxy-env-snapshot',message:'Full proxy env snapshot at startup',data:{profile:process.env.WECRYPTO_PROFILE||null,webPort:process.env.WECRYPTO_WEB_PORT||null,swedenSocks:process.env.WECRYPTO_SWEDEN_SOCKS||null,directProxy:process.env.WECRYPTO_DIRECT_PROXY||null,asi1Proxy:process.env.WECRYPTO_ASI1_PROXY||null,torSocks:process.env.WECRYPTO_TOR_SOCKS||null,cwd:process.cwd()},timestamp:Date.now()})}).catch(()=>{});
-// #endregion
 
 // ── Tor-routed Fetch Bridge ─────────────────────────────────────────────────
 require('./tor-fetch-ipc-bridge.js');
@@ -1182,12 +1154,7 @@ async function startPythLazerService(win) {
         priceFeedIds: LAZER_FEED_IDS,
         properties: ["price", "bestBidPrice", "publisherCount", "fundingRate", "confidence", "bestAskPrice", "marketSession", "fundingRateInterval", "exponent", "fundingTimestamp"],
         formats: ["solana", "leEcdsa", "leUnsigned", "evm"],
-        // real_time pushes each update immediately as it's generated (1-50ms
-        // window per docs.pyth.network/price-feeds/pro/payload-reference),
-        // vs fixed_rate@50ms which waits for the next scheduled tick even
-        // when a fresher price is already available -- strictly lower
-        // latency for live trading, no documented tier/entitlement cost.
-        channel: "real_time",
+        channel: "fixed_rate@50ms",
         deliveryFormat: "json",
         jsonBinaryEncoding: "hex",
         parsed: true,
@@ -1743,24 +1710,8 @@ async function startJsProxyFallback(port) {
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), 12000);
     try {
-      const agent = swedenProxyAgentForUrl(targetUrl);
-      const fetchImpl = agent ? require('node-fetch') : fetch;
-      const fetchOpts = { method, headers, body, signal: ctrl.signal, redirect: 'follow' };
-      if (agent) fetchOpts.agent = agent;
-      if (!forward._loggedBinance && String(targetUrl).includes('binance')) {
-        forward._loggedBinance = true;
-        // #region agent log
-        fetch('http://127.0.0.1:7629/ingest/9b1c0a9c-43ba-46f7-b483-8aad6ef8128f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8ad9ce'},body:JSON.stringify({sessionId:'8ad9ce',runId:'post-fix',hypothesisId:'F',location:'electron/main.js:js-proxy-forward',message:'JS proxy forwarding binance request',data:{targetUrl:String(targetUrl).slice(0,120),usesSwedenAgent:!!agent,swedenSocks:process.env.WECRYPTO_SWEDEN_SOCKS||null},timestamp:Date.now()})}).catch(()=>{});
-        // #endregion
-      }
-      const up = await fetchImpl(targetUrl, fetchOpts);
+      const up = await fetch(targetUrl, { method, headers, body, signal: ctrl.signal, redirect: 'follow' });
       clearTimeout(t);
-      if (!forward._loggedBinanceResult && String(targetUrl).includes('binance')) {
-        forward._loggedBinanceResult = true;
-        // #region agent log
-        fetch('http://127.0.0.1:7629/ingest/9b1c0a9c-43ba-46f7-b483-8aad6ef8128f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8ad9ce'},body:JSON.stringify({sessionId:'8ad9ce',runId:'post-fix',hypothesisId:'F',location:'electron/main.js:js-proxy-forward-result',message:'JS proxy binance upstream response',data:{status:up.status,usesSwedenAgent:!!agent,targetHost:(()=>{try{return new URL(targetUrl).hostname}catch(_){return null}})()},timestamp:Date.now()})}).catch(()=>{});
-        // #endregion
-      }
 
       res.statusCode = up.status;
       for (const [k, v] of up.headers.entries()) {
