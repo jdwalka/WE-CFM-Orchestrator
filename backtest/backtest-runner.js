@@ -554,6 +554,14 @@ function signalFromScore(score) {
   return score > 0 ? (a > 0.55 ? 'strong_bull' : 'bullish') : (a > 0.55 ? 'strong_bear' : 'bearish');
 }
 
+function normalCDF(z) {
+  const t = 1 / (1 + 0.2316419 * Math.abs(z));
+  const poly = t * (0.319381530 + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429))));
+  const pdf = Math.exp(-0.5 * z * z) / Math.sqrt(2 * Math.PI);
+  const p = 1 - pdf * poly;
+  return z >= 0 ? p : 1 - p;
+}
+
 // ── Main signal model (no book/flow/mktSentiment — historical only) ─
 // hma, vwma, sma are not computed (no live-equivalent historical signal available);
 // their weights contribute 0 to numerator and denominator alike (excluded via Object.keys(sv)).
@@ -786,31 +794,52 @@ function runBacktest(sym, candles) {
       if (!model) continue;
 
       const entry = candles[idx].c;
+      const ptb   = candles[idx].o || entry;
       const exit  = candles[idx + horizonBars].c;
-      const returnPct = entry > 0 ? ((exit - entry) / entry) * 100 : 0;
 
-      const _directCore = model.coreScore ?? model.score ?? 0;
+      const atrDollar = entry * (model.atrPct ? (model.atrPct / 100) : 0.0035);
+      const remainingFrac = 0.60;
+      const expectedMove = model.score * atrDollar * 0.40 * remainingFrac;
+      const meanFinal = entry + expectedMove;
+      const sigma = Math.max(entry * 0.0015, atrDollar * Math.sqrt(remainingFrac));
+      const z = (meanFinal - ptb) / (sigma || 1);
+      let pUp = normalCDF(z);
+
+      const gap = entry - ptb;
+      if (gap < 0 && model.score <= 0 && pUp > 0.45) pUp = Math.min(pUp, 0.40);
+      if (gap > 0 && model.score >= 0 && pUp < 0.55) pUp = Math.max(pUp, 0.60);
+
+      const actualSettleUp = exit >= ptb;
+      const modelCallUp = pUp >= 0.50;
+      const isWin = (modelCallUp === actualSettleUp);
+      const payoffPct = isWin ? 1.0 : -1.0;
+      const rawReturn = payoffPct * (Math.abs((exit - ptb) / (ptb || 1)) * 100 + 0.5);
+      const returnPct = clamp(rawReturn, -25, 25);
+      const ptbScore = clamp((pUp - 0.5) * 2.0, -1, 1);
+      const absScore = Math.abs(ptbScore);
+
+      const _directCore = ptbScore;
       const persistenceVeto = Math.sign(model.persistenceScore || 0) !== 0
         && Math.sign(model.persistenceScore || 0) !== Math.sign(_directCore)
         && Math.abs(model.persistenceScore || 0) >= 0.35
         && Math.abs(_directCore) < (filter.entryThreshold + 0.04);
 
-      const isActive = model.absScore >= filter.entryThreshold && model.agreement >= filter.minAgreement
-        && !(filter.maxThreshold && model.absScore > filter.maxThreshold)  // mean-reversion cap: extreme signals overshoot
+      const isActive = absScore >= filter.entryThreshold && model.agreement >= filter.minAgreement
+        && !(filter.maxThreshold && absScore > filter.maxThreshold)  // mean-reversion cap
         && !(model.conflict >= 0.38 && model.agreement < filter.minAgreement + 0.08)
-        && !(Math.abs(model.coreScore||0) < filter.entryThreshold * 0.92 && model.conflict >= 0.30)
-        && !(model.structureZone === 'resistance' && model.coreScore > 0 && model.agreement < 0.65 && Math.abs(model.structureBias||0) >= 0.18)
-        && !(model.structureZone === 'support'    && model.coreScore < 0 && model.agreement < 0.65 && Math.abs(model.structureBias||0) >= 0.18)
+        && !(Math.abs(_directCore) < filter.entryThreshold * 0.92 && model.conflict >= 0.30)
+        && !(model.structureZone === 'resistance' && _directCore > 0 && model.agreement < 0.65 && Math.abs(model.structureBias||0) >= 0.18)
+        && !(model.structureZone === 'support'    && _directCore < 0 && model.agreement < 0.65 && Math.abs(model.structureBias||0) >= 0.18)
         && !persistenceVeto;
 
-      const direction    = isActive ? (model.score > 0 ? 1 : -1) : 0;
+      const direction    = isActive ? (ptbScore > 0 ? 1 : -1) : 0;
       const signedReturn = direction === 0 ? 0 : returnPct * direction;
 
       const obs = {
-        t: candles[idx].t, direction, score: model.score, absScore: model.absScore,
+        t: candles[idx].t, direction, score: ptbScore, absScore,
         agreement: model.agreement, conflict: model.conflict,
-        signedReturn, returnPct, bucket: direction === 0 ? 'neutral' : scoreBucket(model.absScore),
-        correct: direction !== 0 ? signedReturn > 0 : null,
+        signedReturn, returnPct, bucket: direction === 0 ? 'neutral' : scoreBucket(absScore),
+        correct: direction !== 0 ? isWin : null,
         atrPct: model.atrPct, rsi: model.rsi, emaCross: model.emaCross, mom: model.mom,
       };
       observations.push(obs);
@@ -818,7 +847,7 @@ function runBacktest(sym, candles) {
 
       // Per-indicator accuracy (does each indicator agree with actual outcome?)
       if (direction !== 0 && model.signalVector) {
-        const actualDir = returnPct > 0 ? 1 : -1;
+        const actualDir = actualSettleUp ? 1 : -1;
         Object.entries(model.signalVector).forEach(([k, v]) => {
           if (!indAccum[k]) indAccum[k] = { agree: 0, total: 0 };
           if (Math.abs(v) >= 0.08) {

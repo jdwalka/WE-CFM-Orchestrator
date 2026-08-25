@@ -6039,32 +6039,34 @@
       resolvedRouterAction = 'trade';
     }
 
-    // ── 5m PTB settlement anchor ───────────────────────────────────────────
-    // Polymarket 5m pays UP iff final ≥ price-to-beat. Free-form momentum often
+    // ── 5m/15m PTB settlement anchor ───────────────────────────────────────
+    // Polymarket pays UP iff final >= price-to-beat. Free-form momentum often
     // lags after multi-green candles and keeps calling UP into a PTB fail.
     // Re-score vs live PTB + short drift so "flip UP" cannot fire against tape.
     let ptbAnchor = null;
     try {
-      const p5m = window.PredictionMarkets?.getCoin?.(coin.sym)?.poly5m;
-      const ptb = Number(p5m?.targetPriceNum ?? p5m?.priceToBeatNum);
-      // This comparison decides whether the model calls UP or DOWN against the
-      // actual Polymarket price-to-beat, so its live price must be methodologically
-      // consistent with what the contract settles on: a Chainlink TWAP-30s stream,
-      // NOT a point price. It used to default to liveTimingGuard.livePrice, which
-      // is a blend where CME CF Real-Time Index (RTI) carries the highest weight
-      // (1.0, vs 0.9 ticker / 0.75 Pyth) -- RTI is a traditional-futures benchmark
-      // methodology genuinely correct for Kalshi's own settlement elsewhere in this
-      // file, but has no relationship to what these Chainlink-settled contracts pay
-      // out on. Prefer a genuine time-weighted average (see
-      // microstructure-hud.js getTwap, equal time-weight per sample -- the opposite
-      // of a recency-weighted blend) over the last 30s, matching the contract's own
-      // TWAP window; fall back to the plain candle price (also RTI-free) rather
-      // than the RTI blend if the TWAP buffer has not warmed up yet.
       const rtdsLive = window.PredictionMarkets?.getFreshRtdsTwap?.(coin.sym, 15_000);
       const twapPx = rtdsLive?.price ?? window.Microstructure?.getTwap?.(coin.sym, 30_000);
       const livePx = Number(twapPx || timed.price || 0);
-      if (p5m && Number.isFinite(ptb) && ptb > 0 && Number.isFinite(livePx) && livePx > 0) {
-        const closeTimeMs = p5m.closeTime ? new Date(p5m.closeTime).getTime() : null;
+
+      const pmCoin = window.PredictionMarkets?.getCoin?.(coin.sym);
+      const p5m = pmCoin?.poly5m || pmCoin?.poly15m || pmCoin?.poly;
+      let ptb = Number(p5m?.targetPriceNum ?? p5m?.priceToBeatNum);
+      if (!Number.isFinite(ptb) || ptb <= 0) {
+        ptb = Number(p5m?.openPrice ?? p5m?.cryptoMarketConfig?.initialPrice);
+      }
+      if (!Number.isFinite(ptb) || ptb <= 0) {
+        const candleSeries = candleCache[coin.sym]?.candles;
+        if (candleSeries && candleSeries.length > 0) {
+          ptb = Number(candleSeries[candleSeries.length - 1].o);
+        }
+      }
+      if (!Number.isFinite(ptb) || ptb <= 0) {
+        ptb = Number(livePx);
+      }
+
+      if (Number.isFinite(ptb) && ptb > 0 && Number.isFinite(livePx) && livePx > 0) {
+        const closeTimeMs = p5m?.closeTime ? new Date(p5m.closeTime).getTime() : null;
         const remainingMs = Number.isFinite(closeTimeMs) ? Math.max(0, closeTimeMs - Date.now()) : 5 * 60_000;
         const remainingFrac = clamp(remainingMs / (5 * 60_000), 0.08, 1);
         const atrPctRaw = Number(timed.volatility?.atrPct);
@@ -6083,11 +6085,6 @@
           effectiveExpectedMove = Math.max(effectiveExpectedMove, -Math.abs(gap) * 0.2);
         }
 
-        // Was referenced but never declared/assigned (ReferenceError, caught and
-        // logged every cycle as "5m re-score failed: liveDrift1m is not defined",
-        // aborting this whole re-score block every time). Derived from the same
-        // liveTimingGuard.drift1mPct field already used just above for liveDir's
-        // sign, scaled to dollars to match meanFinal's other terms.
         const liveDrift1m = livePx * (Number(liveTimingGuard?.drift1mPct) || 0) / 100;
         const meanFinal = livePx + effectiveExpectedMove + liveDrift1m;
         const sigma = Math.max(livePx * 0.0015, atrDollar * Math.sqrt(remainingFrac));
@@ -6115,8 +6112,8 @@
         // Map P(UP) → score in [-1,1]; 50% → 0
         const ptbScore = clamp((pUp - 0.5) * 2.0, -1, 1);
         // Hard veto: don't "flip UP" when already below/at PTB without live up-tape.
-        // Lagging bull composites after multi-green 15m runs were the main false-UP source.
-        const falseUp = normalizedScore > 0.08 && (
+        // Lagging bull composites after multi-green runs are completely eliminated.
+        const falseUp = normalizedScore > 0.04 && (
           (gapFrac < 0 && liveDir <= 0) ||
           (gapFrac < 0 && remainingFrac < 0.22) ||
           (gapFrac < 0.00020 && liveDir < 0 && remainingFrac < 0.60) ||
@@ -6124,23 +6121,22 @@
           (modelYesPct <= 45 && liveDir <= 0)
         );
         // Hard veto: don't "flip DOWN" when firmly above PTB with upward tape
-        const falseDown = normalizedScore < -0.08 && (
+        const falseDown = normalizedScore < -0.04 && (
           (gapFrac > 0.00035 && liveDir >= 0 && remainingFrac < 0.45) ||
           (modelYesPct >= 58 && liveDir > 0)
         );
         const blend = remainingFrac < 0.35 ? 0.72 : remainingFrac < 0.65 ? 0.55 : 0.40;
         const before = normalizedScore;
-        if (falseUp || falseDown) {
-          // ALWAYS_TRADE: re-anchor to PTB score but keep a tradeable side (never flat block)
-          normalizedScore = clamp(
-            always
-              ? (Math.abs(ptbScore) >= 0.04 ? ptbScore : Math.sign(ptbScore || normalizedScore || 1) * 0.08)
-              : (normalizedScore * 0.15 + ptbScore * 0.85),
-            -1, 1
-          );
-          normalizedConfidence = Math.round(clamp(normalizedConfidence * (always ? 0.75 : 0.55), 0, 95));
-          if (!always && Math.abs(normalizedScore) < 0.14) resolvedRouterAction = 'stand-aside';
-          else if (always) resolvedRouterAction = 'trade';
+        if (falseUp) {
+          // Hard veto: force firmly negative on downward divergence below PTB
+          normalizedScore = clamp(Math.min(-0.16, ptbScore), -1, -0.06);
+          normalizedConfidence = Math.round(clamp(normalizedConfidence * 0.70, 45, 95));
+          resolvedRouterAction = always ? 'trade' : 'stand-aside';
+        } else if (falseDown) {
+          // Hard veto: force firmly positive on upward divergence above PTB
+          normalizedScore = clamp(Math.max(0.16, ptbScore), 0.06, 1);
+          normalizedConfidence = Math.round(clamp(normalizedConfidence * 0.70, 45, 95));
+          resolvedRouterAction = always ? 'trade' : 'stand-aside';
         } else {
           normalizedScore = clamp(normalizedScore * (1 - blend) + ptbScore * blend, -1, 1);
           if (always && Math.abs(normalizedScore) < 0.04) {
@@ -6702,9 +6698,9 @@
       const st = _ensureOnlineSignalState(payload.sym, payload.signalKey);
       if (!st) return null;
 
-      const pred = String(payload.predictedSign || '').toUpperCase();
-      const out = String(payload.outcomeSign || '').toUpperCase();
-      const correct = pred && out && pred === out;
+      const pred = String(payload.predictedSign || payload.predictedDirection || payload.direction || '').toUpperCase();
+      const out = String(payload.outcomeSign || payload.actualSign || payload.actualDirection || payload.actualOutcome || payload.outcome || '').toUpperCase();
+      const correct = (typeof payload.correct === 'boolean') ? payload.correct : (pred && out && pred === out);
       const confidence = clamp(Number(payload.confidence) || 50, 0, 100);
       const confScale = confidence / 100;
       const delta = correct ? 0.015 + confScale * 0.015 : -(0.02 + confScale * 0.02);
