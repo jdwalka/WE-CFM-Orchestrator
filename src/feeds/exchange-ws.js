@@ -46,8 +46,9 @@ const PROVIDER_BREAKER_CONFIG = {
     'KUCOIN', 'GATE', 'BITGET', 'BINGX', 'BITVAVO', 'GEMINI', 'KRAKEN', 'HYPERLIQUID'
   ]);
   const DEFAULT_BINANCE_WS_ENDPOINTS = [
+    'wss://fstream.binance.com',
     'wss://data-stream.binance.vision',
-    'wss://stream.binance.com:9443',
+    'wss://stream.binance.us:9443',
   ];
   const OPTIONAL_WS_POOL = { timer: null, roster: [] };
   const OPTIONAL_REST_STATUS = {};

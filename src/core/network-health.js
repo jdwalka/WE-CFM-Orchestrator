@@ -946,6 +946,9 @@
         'polygon-mainnet.g.alchemy.com': 'Alchemy RPC',
         'api.whale-alert.io': 'Whale Alert',
         's1.ripple.com': 'XRP Ledger',
+        'xrplcluster.com': 'XRP Ledger',
+        'ethereum.publicnode.com': 'Alchemy RPC',
+        'cloudflare-eth.com': 'Alchemy RPC',
     };
 
     const ENDPOINT_HOST_PROBES = [
@@ -953,9 +956,9 @@
         { provider: 'Mempool.space', url: 'https://mempool.space/api/blocks/tip/height' },
         { provider: 'Solana RPC', url: 'https://api.mainnet-beta.solana.com', fallbackUrl: 'https://solana-mainnet.g.alchemy.com/v2/UNcUYppLXPl4s0jAkQe_J', method: 'POST', body: '{"jsonrpc":"2.0","id":1,"method":"getEpochInfo"}' },
         { provider: 'Etherscan', url: 'https://api.etherscan.io/api?module=proxy&action=eth_blockNumber' },
-        { provider: 'XRP Ledger', url: 'https://s1.ripple.com:51234', method: 'POST', body: '{"method":"server_info","params":[{}]}' },
-        { provider: 'Alchemy RPC', url: 'https://cloudflare-eth.com', fallbackUrl: 'https://ethereum.publicnode.com', method: 'POST', body: '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber"}' },
-        { provider: 'Whale Alert', url: 'https://mempool.space/api/v1/fees/recommended' },
+        { provider: 'XRP Ledger', url: 'https://xrplcluster.com', fallbackUrl: 'https://s1.ripple.com:51234', method: 'POST', body: '{"method":"server_info","params":[{}]}' },
+        { provider: 'Alchemy RPC', url: 'https://ethereum.publicnode.com', fallbackUrl: 'https://cloudflare-eth.com', method: 'POST', body: '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber"}' },
+        { provider: 'Whale Alert', url: 'https://mempool.space/api/blocks/tip/height' },
         { provider: 'LocalProxy', url: 'http://127.0.0.1:3010/health' },
     ];
 
