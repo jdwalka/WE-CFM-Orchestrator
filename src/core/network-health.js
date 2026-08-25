@@ -8,7 +8,14 @@
         'ProxyOrchestrator',
         'Pyth',
         'Crypto.com',
-        // Add more as needed
+        'Coinbase',
+        'Binance',
+        'Mempool.space',
+        'Solana RPC',
+        'Etherscan',
+        'XRP Ledger',
+        'Alchemy RPC',
+        'Whale Alert',
     ];
 
     const DEFAULT_STATUS = {
@@ -27,6 +34,7 @@
         'Binance',
         'Crypto.com',
         'ProxyOrchestrator',
+        'Mempool.space',
     ]);
 
     const WS_PROVIDER_NAMES = {
@@ -49,14 +57,34 @@
     const FAILURE_THRESHOLD = 3; // cycles before alert
     const OPTIONAL_FAILURE_TTL_MS = 2 * 60_000;
     const OPTIONAL_PROVIDERS = new Set([
+        'Solana RPC',
+        'Etherscan',
+        'XRP Ledger',
+        'Alchemy RPC',
+        'Whale Alert',
+        'BSCScan',
+        'Polygonscan',
+        'Blockchair',
+        'Blockcypher',
+        'Blockscout',
+        'LocalProxy',
         'Bybit',
         'OKX',
-        'LocalProxy',
     ]);
     const OPTIONAL_PROVIDER_KEYS = new Set([
+        'solana rpc',
+        'etherscan',
+        'xrp ledger',
+        'alchemy rpc',
+        'whale alert',
+        'bscscan',
+        'polygonscan',
+        'blockchair',
+        'blockcypher',
+        'blockscout',
+        'localproxy',
         'bybit',
         'okx',
-        'localproxy',
     ]);
     const TRANSIENT_REASON_RE = /(abort|timed?\s*out|timeout|502|503|504|429|network\s*changed|econnreset|socket hang up|failed to fetch)/i;
     const APP_LOGIC_RE = /(stale[-\s]*watchdog|stale[-\s]*demote|stale-reconnect|lifecycle-reconnect|auth-config-fail|demote|hysteresis|scheduler|circuit|loop|oscillat|internal|state bug|coordination|reconnect storm|thrash|browser websocket cannot send|requires node ws|credential|crypto unavailable|signature generation|ipc-sdk|rpc\/http)/i;
@@ -913,9 +941,22 @@
         'api.crypto.com': 'Crypto.com',
         'api.bybit.com': 'Bybit',
         'www.okx.com': 'OKX',
+        'mempool.space': 'Mempool.space',
+        'api.etherscan.io': 'Etherscan',
+        'api.mainnet-beta.solana.com': 'Solana RPC',
+        'eth-mainnet.g.alchemy.com': 'Alchemy RPC',
+        'polygon-mainnet.g.alchemy.com': 'Alchemy RPC',
+        'api.whale-alert.io': 'Whale Alert',
+        's1.ripple.com': 'XRP Ledger',
     };
 
     const ENDPOINT_HOST_PROBES = [
+        { provider: 'Mempool.space', url: 'https://mempool.space/api/blocks/tip/height' },
+        { provider: 'Solana RPC', url: 'https://api.mainnet-beta.solana.com', fallbackUrl: 'https://solana-mainnet.g.alchemy.com/v2/UNcUYppLXPl4s0jAkQe_J', method: 'POST', body: '{"jsonrpc":"2.0","id":1,"method":"getEpochInfo"}' },
+        { provider: 'Etherscan', url: 'https://api.etherscan.io/api?module=proxy&action=eth_blockNumber' },
+        { provider: 'XRP Ledger', url: 'https://s1.ripple.com:51234', method: 'POST', body: '{"method":"server_info","params":[{}]}' },
+        { provider: 'Alchemy RPC', url: 'https://eth-mainnet.g.alchemy.com/v2/demo', method: 'POST', body: '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber"}' },
+        { provider: 'Whale Alert', url: 'https://api.whale-alert.io/v1/status' },
         { provider: 'LocalProxy', url: 'http://127.0.0.1:3010/health' },
     ];
 

@@ -6,11 +6,11 @@
   const entries = [];
   const listeners = new Set();
 
-  // Tier-1 Core domains to monitor actively
-  const TIER1_DOMAINS = /pyth|polymarket|coinbase|binance|bybit|crypto\.com|asi1\.ai|127\.0\.0\.1:3010/i;
+  // Tier-1 Core & On-Chain Intel domains to monitor actively
+  const TIER1_DOMAINS = /pyth|polymarket|coinbase|binance|bybit|crypto\.com|asi1\.ai|mempool|solana|etherscan|alchemy|ripple|xrpl|whale-alert|blockchair|blockscout|bscscan|polygonscan|127\.0\.0\.1:3010/i;
 
-  // Suppress spam from dropped/deprecated third-party scrapers
-  const SUPPRESS_DOMAINS = /deribit|bitvavo|whale-alert|blockchair|blockcypher|blockscout|bscscan|etherscan|polygonscan|alchemy|ankr|chain\.so/i;
+  // Suppress spam from dropped secondary CEXs only
+  const SUPPRESS_DOMAINS = /deribit|bitvavo|bitstamp|kucoin|gate\.io|bullish|ourbit|coinw|lbank|whitebit|weex|bitso|bingx|bitget|chain\.so/i;
 
   function now() {
     return Date.now();
