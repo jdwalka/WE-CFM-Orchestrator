@@ -5935,11 +5935,25 @@
       score = narrative.score;
     }
 
-    if (diag.temporal || diag.graph || diag.narrative) {
+    // ASI1 Advisory Blend: inject high-conviction ASI1 Pre-Contract signals into model score
+    try {
+      const asi1Brief = window.Asi1PreContract?.get?.(sym, '5m') || window.Asi1PreContract?.get?.(sym, '15m');
+      if (asi1Brief && asi1Brief.call && (asi1Brief.confidence >= 0.60)) {
+        const asi1Dir = asi1Brief.call === 'UP' ? 1 : (asi1Brief.call === 'DOWN' ? -1 : 0);
+        if (asi1Dir !== 0) {
+          const asi1Weight = 0.12;
+          score = score * (1 - asi1Weight) + asi1Dir * (asi1Brief.confidence * 0.35) * asi1Weight;
+          diag.asi1 = { call: asi1Brief.call, confidence: asi1Brief.confidence, weight: asi1Weight };
+        }
+      }
+    } catch (_) { /* */ }
+
+    if (diag.temporal || diag.graph || diag.narrative || diag.asi1) {
       const boosts = [
         diag.temporal?.conflict ? -4 : 0,
         diag.graph?.adjusted ? 2 : 0,
         diag.narrative?.adjusted ? 2 : 0,
+        diag.asi1 ? Math.round((diag.asi1.confidence || 0.6) * 6) : 0,
       ];
       confidence = Math.round(clamp(confidence + boosts.reduce((s, v) => s + v, 0), 0, 95));
     }

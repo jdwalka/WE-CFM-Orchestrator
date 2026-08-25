@@ -1945,6 +1945,7 @@ async function ensureProxyForwards() {
   console.warn(`[proxy] native proxy on ${port} cannot reach exchanges; switching to Node TLS fallback`);
   proxyDemotedToJsFallback = true;
   stopProxyProcessOnly();
+  if (await proxyUpstreamWorks(port)) {
     console.log(`[proxy] upstream OK on ${port}`);
     proxyHealthy = true;
     return;
@@ -2036,26 +2037,7 @@ async function startProxy() {
   } else {
     console.warn('[proxy] executable missing in dev mode; falling back to `cargo run --bin we-crypto-proxy`.');
   }
-let proxyForwardsCheckTimer = null;
-const PROXY_FORWARDS_CHECK_INTERVAL_MS = 45_000;
 
-function scheduleProxyForwardsCheck() {
-  if (proxyForwardsCheckTimer) clearTimeout(proxyForwardsCheckTimer);
-  proxyForwardsCheckTimer = setTimeout(async () => {
-    proxyForwardsCheckTimer = null;
-    if (proxyManualStop) return;
-    try {
-      await ensureProxyForwards();
-    } catch (err) {
-      console.error('[proxy] periodic forwards check failed:', err.message);
-    } finally {
-      scheduleProxyForwardsCheck();
-    }
-  }, PROXY_FORWARDS_CHECK_INTERVAL_MS);
-}
-
-async function startProxy() {
-  proxyManualStop = false;
   const chosenPort = await findFreePort(PROXY_PORT_CASCADE);
   proxyPort = chosenPort;
   global.__WECRYPTO_PROXY_PORT__ = proxyPort;

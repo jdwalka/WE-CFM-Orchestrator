@@ -327,11 +327,14 @@ class LLMSignalAssistant {
         : isRange
           ? generateRangeSystemPrompt(rangeHorizon === 60 ? 60 : 15)
           : generateSystemPrompt(getHorizonMinutes(snap) || 15);
-      const rawUserPrompt = fiveMin
+      const baseUserPrompt = fiveMin
         ? generateFiveMinUserPrompt(snap)
         : isRange
           ? generateRangeUserPrompt(snap)
           : generateUserPrompt(snap);
+      const rawUserPrompt = snap.prompt
+        ? `${snap.prompt}\n\n--- Standard Market Snapshot ---\n${baseUserPrompt}`
+        : baseUserPrompt;
       const userPrompt = this.enrichPromptWithRecall(snap, rawUserPrompt);
 
       const rawResponse = await this.callAPI(systemPrompt, userPrompt, snap);

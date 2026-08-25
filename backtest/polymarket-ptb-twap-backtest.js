@@ -215,51 +215,85 @@ function buildSignalModel(candles, sym) {
   const closes = candles.map(c => c.c);
   const lastPrice = closes[closes.length - 1];
 
-  const rsi = calcRSI(closes);
-  let rsiSig = rsi > 70 ? -0.6 - ((rsi - 70) / 30) * 0.4 : rsi < 30 ? 0.6 + ((30 - rsi) / 30) * 0.4 : (rsi - 50) / 50 * 0.3;
+  // 1. Multi-scale EMA Trend (9, 21, 50)
+  const ema9 = calcEMA(closes, 9);
+  const ema21 = calcEMA(closes, 21);
+  const ema50 = closes.length >= 50 ? calcEMA(closes, 50) : calcEMA(closes, 26);
+  const ema9Last = ema9[ema9.length - 1];
+  const ema21Last = ema21[ema21.length - 1];
+  const ema50Last = ema50[ema50.length - 1];
+  const emaCrossShort = (ema9Last - ema21Last) / (ema21Last || 1) * 100;
+  const emaCrossLong = (ema21Last - ema50Last) / (ema50Last || 1) * 100;
+  const emaSig = clamp(emaCrossShort * 4.0 + emaCrossLong * 2.5, -1, 1);
 
-  const ema9 = calcEMA(closes, 9), ema21 = calcEMA(closes, 21);
-  const emaCross = (ema9[ema9.length - 1] - ema21[ema21.length - 1]) / (ema21[ema21.length - 1] || 1) * 100;
-  const emaSig = clamp(emaCross * 5, -1, 1);
+  // 2. Multi-horizon Momentum & Impulse
+  const mom1 = closes.length > 1 ? ((lastPrice - closes[closes.length - 2]) / (closes[closes.length - 2] || 1)) * 100 : 0;
+  const mom3 = closes.length > 3 ? ((lastPrice - closes[closes.length - 4]) / (closes[closes.length - 4] || 1)) * 100 : 0;
+  const mom6 = closes.length > 6 ? ((lastPrice - closes[closes.length - 7]) / (closes[closes.length - 7] || 1)) * 100 : 0;
+  const momSig = clamp(mom1 * 2.5 + mom3 * 1.5 + mom6 * 0.8, -1, 1);
 
-  const bands = calcBollinger(closes);
-  let bandSig = bands.position >= 0.88 ? -clamp((bands.position - 0.88) / 0.12, 0, 1)
-    : bands.position <= 0.12 ? clamp((0.12 - bands.position) / 0.12, 0, 1)
-    : clamp(-(bands.position - 0.5) * 0.45, -0.22, 0.22);
-
+  // 3. MACD with Histogram Acceleration
   const macdR = calcMACD(closes);
   const macdHistNorm = lastPrice > 0 ? (macdR.histogram / lastPrice) * 1000 : 0;
-  const macdSig = clamp(macdHistNorm * 2.5 + (macdR.macd > macdR.signal ? 0.18 : -0.18), -1, 1);
+  const macdSig = clamp(macdHistNorm * 3.2 + (macdR.macd > macdR.signal ? 0.25 : -0.25), -1, 1);
 
-  const wR = calcWilliamsR(candles);
-  let wRSig = wR > -20 ? -0.6 - ((wR + 20) / 20) * 0.4 : wR < -80 ? 0.6 + ((-80 - wR) / 20) * 0.4 : (wR + 50) / 50 * -0.3;
+  // 4. Supertrend
+  const stR = calcSupertrend(candles, 10, 2.5);
+  const supertrendSig = stR.signal;
 
-  const stR = calcSupertrend(candles);
-  const atr = calcATR(candles);
+  // 5. ATR Volatility
+  const atr = calcATR(candles, 14);
   const atrPct = lastPrice > 0 ? (atr / lastPrice) * 100 : 0.4;
 
-  const mom = closes.length > 6 ? ((closes[closes.length - 1] - closes[closes.length - 7]) / (closes[closes.length - 7] || 1)) * 100 : 0;
-  const momSig = clamp(mom / 2, -1, 1);
+  // 6. Trend Strength / Regime Classifier
+  const isStrongTrend = Math.abs(emaCrossShort) > 0.08 || Math.abs(mom3) > 0.20 || supertrendSig !== 0;
+  const trendDir = emaCrossShort > 0 ? 1 : -1;
+
+  // 7. Regime-Adaptive Oscillators
+  const rsi = calcRSI(closes, 14);
+  let rsiSig = 0;
+  if (isStrongTrend) {
+    // In strong trends, RSI confirms momentum direction rather than fading
+    rsiSig = rsi >= 50 ? clamp((rsi - 50) / 25, 0, 1) : -clamp((50 - rsi) / 25, 0, 1);
+  } else {
+    // In range/chop, RSI acts as mean-reversion boundary
+    rsiSig = rsi > 70 ? -clamp((rsi - 70) / 20, 0, 1) : rsi < 30 ? clamp((30 - rsi) / 20, 0, 1) : (rsi - 50) / 50 * 0.2;
+  }
+
+  const bands = calcBollinger(closes, 20, 2.0);
+  let bandSig = 0;
+  if (isStrongTrend) {
+    bandSig = bands.position > 0.75 ? 0.65 : bands.position < 0.25 ? -0.65 : 0;
+  } else {
+    bandSig = bands.position >= 0.88 ? -clamp((bands.position - 0.88) / 0.12, 0, 1)
+      : bands.position <= 0.12 ? clamp((0.12 - bands.position) / 0.12, 0, 1)
+      : clamp(-(bands.position - 0.5) * 0.4, -0.2, 0.2);
+  }
+
+  const wR = calcWilliamsR(candles, 14);
+  let wRSig = isStrongTrend
+    ? (wR > -50 ? clamp((wR + 50) / 40, 0, 1) : -clamp((-50 - wR) / 40, 0, 1))
+    : (wR > -20 ? -0.6 : wR < -80 ? 0.6 : (wR + 50) / 50 * -0.2);
 
   const sv = {
-    rsi: rsiSig,
     ema: emaSig,
-    bands: bandSig,
-    macd: macdSig,
-    williamsR: wRSig,
-    supertrend: stR.signal,
     momentum: momSig,
+    macd: macdSig,
+    supertrend: supertrendSig,
+    rsi: rsiSig,
+    bands: bandSig,
+    williamsR: wRSig,
   };
 
   const coinBias = PER_COIN_INDICATOR_BIAS[sym] || {};
   let totalW = 0, sumScore = 0;
   for (const [k, v] of Object.entries(sv)) {
-    const w = (COMPOSITE_WEIGHTS[k] ?? OUTER_ORBITAL_WEIGHTS[k] ?? 0.05) * (coinBias[k] ?? 1.0);
+    const w = (COMPOSITE_WEIGHTS[k] ?? OUTER_ORBITAL_WEIGHTS[k] ?? 0.08) * (coinBias[k] ?? 1.0);
     totalW += w;
     sumScore += v * w;
   }
   const rawScore = totalW > 0 ? sumScore / totalW : 0;
-  const score = clamp(rawScore * 1.6, -1, 1);
+  const score = clamp(rawScore * 1.8, -1, 1);
 
   return {
     score,
@@ -267,7 +301,8 @@ function buildSignalModel(candles, sym) {
     atrPct,
     lastPrice,
     rsi,
-    emaCross,
+    emaCross: emaCrossShort,
+    isStrongTrend,
   };
 }
 

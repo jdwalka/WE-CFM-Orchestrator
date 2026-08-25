@@ -107,11 +107,37 @@
         <div class="ad-row" style="margin:2px 0"><span class="ad-k">Pre-Open Call</span><span class="ad-v" id="adNextCall">—</span></div>
         <div class="ad-row" style="margin:2px 0"><span class="ad-k">Sniper Stance</span><span class="ad-v" id="adNextSniper">—</span></div>
       </div>
+      <div style="margin:8px 0 4px 0;padding:6px 8px;background:#06080a;border:1px solid #1f2a38;border-radius:6px">
+        <div style="display:flex;justify-content:space-between;align-items:center;font-size:10px;font-weight:700;color:#00d4ff;margin-bottom:4px">
+          <span>MERGEKIT ENSEMBLER</span>
+          <span style="font-size:9px;color:#00e676" id="adMergeMethod">SLERP + DARE</span>
+        </div>
+        <div class="ad-row" style="margin:2px 0"><span class="ad-k">Weight Matrix</span><span class="ad-v" id="adMergeWeights" style="font-size:10px">Adaptive Active</span></div>
+      </div>
       <div class="ad-row"><span class="ad-k">Asked</span><span class="ad-v" id="adAskedAt">—</span></div>
       <div class="ad-row"><span class="ad-k">Model</span><span class="ad-v" id="adModel">—</span></div>
       <div class="ad-row"><span class="ad-k">Account</span><span class="ad-v" id="adAcct">—</span></div>
       <div class="ad-row"><span class="ad-k">Latency</span><span class="ad-v" id="adLat">—</span></div>
       <div class="ad-notes" id="adNotes">TokenMix-off path. Click Ask ASI1.</div>
+
+      <!-- Interactive ASI1 Custom Query Prompt Box -->
+      <div style="margin-top:10px;padding-top:8px;border-top:1px solid #1e2129;display:flex;flex-direction:column;gap:6px">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <span style="font-size:10px;font-weight:700;color:#00d4ff;letter-spacing:.04em">ASI1 CUSTOM QUERY / PROMPT</span>
+          <span style="font-size:9px;color:#8b929a">Enter ↵ or click Send</span>
+        </div>
+        <div style="display:flex;gap:4px;flex-wrap:wrap">
+          <button type="button" class="ad-chip" data-query="Will price hold PTB before expiry?" style="background:#111318;border:1px solid #2a2f38;color:#8b929a;font-size:9px;padding:2px 6px;border-radius:4px;cursor:pointer">🎯 PTB Defense</button>
+          <button type="button" class="ad-chip" data-query="Analyze orderbook imbalance and whale absorption" style="background:#111318;border:1px solid #2a2f38;color:#8b929a;font-size:9px;padding:2px 6px;border-radius:4px;cursor:pointer">🐋 Whale Book</button>
+          <button type="button" class="ad-chip" data-query="Give me 3-5m pre-open sniper entry guidance for next contract" style="background:#111318;border:1px solid #2a2f38;color:#8b929a;font-size:9px;padding:2px 6px;border-radius:4px;cursor:pointer">⚡ Sniper Entry</button>
+        </div>
+        <div style="display:flex;gap:4px">
+          <textarea id="adCustomPrompt" placeholder="Ask ASI1 anything with live market context..." rows="2" style="flex:1;background:#06080a;color:#e6e8eb;border:1px solid #1f2a38;border-radius:6px;padding:6px;font-size:11px;resize:none;outline:none;font-family:inherit"></textarea>
+          <button id="adSendPrompt" type="button" style="background:#00d4ff;color:#06080a;font-weight:700;border:0;border-radius:6px;padding:0 10px;font-size:11px;cursor:pointer">Send</button>
+        </div>
+        <div id="adCustomAnswer" style="display:none;background:#06080a;border:1px solid #1f2a38;border-radius:6px;padding:8px;font-size:11px;line-height:1.45;color:#e6e8eb;max-height:160px;overflow-y:auto"></div>
+      </div>
+
       <div class="ad-warn" id="adWarn"></div>
       <div class="ad-fb" id="adFb"></div>
     </div>
@@ -356,6 +382,12 @@
       sniperEl.textContent = forecast.sniperAction;
       sniperEl.style.color = forecast.sniperAction.startsWith('PRE_POSITION') ? '#00d4ff' : '#8b929a';
     }
+
+    const mergeEl = document.getElementById('adMergeWeights');
+    if (mergeEl) {
+      const diag = window.PredictionWeightMergeKit?.getMergeDiagnostics?.(coin);
+      mergeEl.textContent = diag ? `SLERP θ=${(diag.thetaDeg || 24).toFixed(0)}° · Sparsity ${(diag.sparsityPct || 12).toFixed(0)}%` : 'Adaptive Matrix Live';
+    }
   }
 
   async function refreshStatus() {
@@ -423,11 +455,99 @@
     }
   }
 
+  async function sendCustomPrompt() {
+    const promptInput = document.getElementById('adCustomPrompt');
+    const answerEl = document.getElementById('adCustomAnswer');
+    const sendBtn = document.getElementById('adSendPrompt');
+    const query = String(promptInput?.value || '').trim();
+    if (!query) return;
+
+    if (sendBtn) {
+      sendBtn.disabled = true;
+      sendBtn.textContent = '…';
+    }
+    if (answerEl) {
+      answerEl.style.display = 'block';
+      answerEl.textContent = '';
+      const loadingSpan = document.createElement('span');
+      loadingSpan.style.color = '#00d4ff';
+      loadingSpan.textContent = 'ASI1 analyzing live market context…';
+      answerEl.appendChild(loadingSpan);
+    }
+
+    try {
+      const packet = buildPacket();
+      const modelChoice = document.getElementById('adModelChoice')?.value || 'auto';
+      const effortChoice = document.getElementById('adReasoningEffort')?.value || 'auto';
+      const webSearch = document.getElementById('adWebSearch')?.checked || false;
+
+      const payload = {
+        prompt: `User Query: "${query}"\n\nLive Market Context:\n- Coin: ${packet.sym}\n- Horizon: ${packet.horizon}\n- Live Spot: $${packet.spot}\n- Polymarket PTB: $${packet.priceToBeatNum}\n- Delta vs PTB: ${packet.deltaVsPtb >= 0 ? '+' : ''}$${packet.deltaVsPtb}\n- Live Tape Direction: ${packet.liveDirection}\n- Yes Probability: ${(packet.yesProb * 100).toFixed(1)}%\n- Seconds to Close: ${packet.secondsToClose}s\n- Depth Imbalance: ${(packet.depthImbalance * 100).toFixed(1)}%\n\nPlease answer the user query directly with concise trading intelligence based on these live numbers.`,
+        context: {
+          coin: packet.sym,
+          horizon: packet.horizon === '5m' ? 5 : 15,
+          spot: packet.spot,
+          ptb: packet.priceToBeatNum,
+          model: modelChoice !== 'auto' ? modelChoice : 'asi1-mini',
+          reasoning_effort: effortChoice !== 'auto' ? effortChoice : 'medium',
+          web_search: webSearch,
+        }
+      };
+
+      const res = await invoke('ai:run-inference', payload);
+      const out = res?.output?.suggestions?.notes || res?.output?.ai_wording?.primary_rationale || res?.output?.notes || res?.output?.content || res?.output || 'Analysis complete.';
+      const cleanOut = typeof out === 'object' ? JSON.stringify(out, null, 2) : String(out);
+      if (answerEl) {
+        answerEl.textContent = '';
+        const titleDiv = document.createElement('div');
+        titleDiv.style.cssText = 'color:#00e676;font-weight:700;margin-bottom:4px';
+        titleDiv.textContent = 'ASI1 Intelligence:';
+
+        const bodyDiv = document.createElement('div');
+        bodyDiv.style.cssText = 'color:#e6e8eb;font-size:11px;white-space:pre-wrap';
+        bodyDiv.textContent = cleanOut;
+
+        answerEl.appendChild(titleDiv);
+        answerEl.appendChild(bodyDiv);
+      }
+    } catch (err) {
+      if (answerEl) {
+        answerEl.textContent = '';
+        const errorSpan = document.createElement('span');
+        errorSpan.style.color = '#ff5252';
+        errorSpan.textContent = `Query Error: ${err?.message || String(err)}`;
+        answerEl.appendChild(errorSpan);
+      }
+    } finally {
+      if (sendBtn) {
+        sendBtn.disabled = false;
+        sendBtn.textContent = 'Send';
+      }
+    }
+  }
+
   dash.querySelectorAll('.ad-mode').forEach((b) => {
     b.addEventListener('click', () => applyMode(b.getAttribute('data-mode')));
   });
   document.getElementById('adMin')?.addEventListener('click', () => setMinimized(!minimized));
   document.getElementById('adAsk')?.addEventListener('click', ask);
+  document.getElementById('adSendPrompt')?.addEventListener('click', sendCustomPrompt);
+  document.getElementById('adCustomPrompt')?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      sendCustomPrompt();
+    }
+  });
+  dash.querySelectorAll('.ad-chip').forEach((chip) => {
+    chip.addEventListener('click', () => {
+      const q = chip.getAttribute('data-query');
+      const input = document.getElementById('adCustomPrompt');
+      if (input && q) {
+        input.value = q;
+        sendCustomPrompt();
+      }
+    });
+  });
 
   setMinimized(minimized);
   paintMode();
