@@ -131,10 +131,13 @@
     }
     if (!m || !m.slug) return null;
 
-    // Spot = Pyth only (never RTI/CEX as AI spot)
+    // Spot = Pyth with immediate live prediction/candle fallback so AI is never starved of spot price
     const spot = Number(
       window.PythBrowser?.getPrice?.(sym)
       || window._pythPrices?.[String(sym).toUpperCase()]
+      || window.PredictionEngine?.get?.(sym)?.price
+      || window.candleCache?.[sym]?.ticker?.usd
+      || window.candleCache?.[sym]?.candles?.[window.candleCache?.[sym]?.candles?.length - 1]?.c
       || 0
     );
     const rawPtb = Number(m.priceToBeatNum || m.targetPriceNum || 0);
