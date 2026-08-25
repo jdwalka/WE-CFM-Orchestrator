@@ -273,16 +273,46 @@
   function buildPacket() {
     const Desk = window.Asi1DeskContract;
     const coin = document.getElementById('adCoin')?.value || 'BTC';
-    const horizon = document.getElementById('adHorizon')?.value || '15m';
+    const horizon = document.getElementById('adHorizon')?.value || '5m';
+    let pkt = {};
     try {
       if (window.OracleSnapshot?.buildOraclePacket && Desk?.packetFromOracle) {
         const o = window.OracleSnapshot.buildOraclePacket(coin, horizon);
-        const pkt = Desk.packetFromOracle(o, { sym: coin, horizon });
-        if (pkt.spot != null && pkt.priceToBeatNum != null) return pkt;
+        pkt = Desk.packetFromOracle(o, { sym: coin, horizon }) || {};
       }
-    } catch (_) { /* fall through to sample */ }
-    const sample = Desk?.SAMPLE_PACKET ? { ...Desk.SAMPLE_PACKET, sym: coin, horizon } : { sym: coin, horizon };
-    return sample;
+    } catch (_) { pkt = {}; }
+
+    const pmCoin = (typeof window !== 'undefined' && window.PredictionMarkets?.getCoin?.(coin)) || {};
+    const poly = (horizon === '5m' ? pmCoin.poly5m : pmCoin.poly15m) || pmCoin.poly5m || pmCoin.poly15m || {};
+    const pred = (typeof window !== 'undefined' && (window.PredictionEngine?.get?.(coin) || window._predictions?.[coin])) || {};
+    const cache = (typeof window !== 'undefined' && window.candleCache?.[coin]) || {};
+
+    const rawSpot = Number(pkt.spot || window.PythBrowser?.getPrice?.(coin) || pred.price || pred.currentPrice || cache.ticker?.usd || cache.candles?.[cache.candles.length - 1]?.c || 0);
+    const rawPtb = Number(pkt.priceToBeatNum || poly.priceToBeatNum || poly.targetPriceNum || 0);
+    const spot = Number.isFinite(rawSpot) && rawSpot > 0 ? rawSpot : (Number(pred.price) || 0);
+    const ptb = Number.isFinite(rawPtb) && rawPtb > 0 ? rawPtb : spot;
+    const yesProb = Number.isFinite(Number(pkt.yesProb)) ? Number(pkt.yesProb) : (Number.isFinite(Number(poly.probability)) ? Number(poly.probability) : 0.50);
+    const mid = Number.isFinite(Number(pkt.mid)) ? Number(pkt.mid) : (Number.isFinite(Number(poly.mid)) ? Number(poly.mid) : yesProb);
+    const ttc = Number.isFinite(Number(pkt.secondsToClose)) ? Number(pkt.secondsToClose) : (Number.isFinite(Number(poly.secondsToClose)) ? Number(poly.secondsToClose) : 180);
+
+    const delta = (spot > 0 && ptb > 0) ? (spot - ptb) : 0;
+    const pathDir = delta > 0 ? 'UP' : delta < 0 ? 'DOWN' : 'FLAT';
+
+    return {
+      ...(Desk?.SAMPLE_PACKET || {}),
+      ...pkt,
+      sym: coin,
+      horizon,
+      spot,
+      priceToBeatNum: ptb,
+      yesProb,
+      mid,
+      spread: Number.isFinite(Number(pkt.spread)) ? Number(pkt.spread) : (Number(poly.spread) || 0.02),
+      depthImbalance: Number.isFinite(Number(pkt.depthImbalance)) ? Number(pkt.depthImbalance) : (Number(poly.depthImbalance) || 0),
+      secondsToClose: ttc,
+      deltaVsPtb: delta,
+      liveDirection: pkt.liveDirection || pathDir,
+    };
   }
 
   // Route/latency comes from asi1-client.js's free background TCP probe
