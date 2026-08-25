@@ -4,7 +4,7 @@ WE-CRYPTO validates its AI-generated signals by mapping them directly against re
 
 ## Contract Cache Discovery
 
-To backtest models quickly, the system stores millions of historical Kalshi resolutions in a local drive cache.
+To backtest models quickly, the system stores millions of historical Polymarket resolutions in a local drive cache.
 
 ```mermaid
 flowchart TD
@@ -25,4 +25,4 @@ flowchart TD
 The Adaptive Tuning Engine continuously refines model weights using a Walk-Forward backtest methodology.
 
 - **Window Sizing:** Tests 400-candle windows with up to 250 iterations to prevent OOM (Out Of Memory) crashes.
-- **Outcome Retuner:** Adjusts signal strength modifiers based on whether the previous Kalshi contract resolved `YES` or `NO`.
+- **Outcome Retuner:** Adjusts signal strength modifiers based on whether the previous Polymarket contract resolved `YES` or `NO`.
