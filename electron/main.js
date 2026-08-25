@@ -308,6 +308,16 @@ function readPythLazerSecret() {
   ]);
 }
 
+// Pyth Pro (docs.pyth.network/price-feeds/pro) — a distinct product/key from
+// the Lazer streaming token above; used for the REST history API
+// (/v1/real_time/history), which now requires this specific key.
+function readPythProSecret() {
+  return readSecretFileValue([
+    'PYTH_PRO_API_KEY',
+    'PYTH_PRO_API_KEY.txt',
+  ]);
+}
+
 function decodeJsonStringFragment(value) {
   try {
     return JSON.parse(`"${String(value).replace(/"/g, '\\"')}"`);
@@ -472,6 +482,14 @@ function resolveCoinGeckoPublicConfig() {
     out.LAZER_TOKEN = pythKey;
   }
 
+  // Pyth Pro key (secrets/PYTH_PRO_API_KEY.txt) -- distinct from the Lazer
+  // streaming token above; only used to auth the REST history endpoint.
+  const pythProSecret = readPythProSecret();
+  const pythProKey = pythProSecret.value || readEnvValue(['PYTH_PRO_API_KEY']);
+  if (pythProKey) {
+    out.PYTH_PRO_API_KEY = pythProKey;
+  }
+
   return out;
 }
 
@@ -599,6 +617,26 @@ if (process.env.WECRYPTO_TOR_SOCKS) {
   }
 }
 
+const SWEDEN_PROXY_NEEDLES = [
+  'binance', 'bybit', 'okx', 'kraken', 'kucoin', 'mexc', 'bitfinex',
+  'gateio', 'crypto.com', 'coinbase', 'coingecko', 'dexscreener',
+  'hyperliquid', 'polymarket', 'kalshi', 'pyth.network', 'etherscan',
+  'ripple.com', 'xrplcluster',
+];
+
+function swedenProxyAgentForUrl(targetUrl) {
+  const swedenUrl = process.env.WECRYPTO_SWEDEN_SOCKS;
+  if (!swedenUrl) return null;
+  const urlStr = String(targetUrl || '').toLowerCase();
+  if (!SWEDEN_PROXY_NEEDLES.some((d) => urlStr.includes(d))) return null;
+  try {
+    const { SocksProxyAgent } = require('socks-proxy-agent');
+    return new SocksProxyAgent(swedenUrl);
+  } catch (_) {
+    return null;
+  }
+}
+
 // Mullvad Stockholm SOCKS5 (in-tunnel 10.64.0.1:1080). Inverse of TOR: only
 // exchange/feed hosts go through the proxy so Fast-lane Ethernet stays native.
 if (process.env.WECRYPTO_SWEDEN_SOCKS) {
@@ -608,12 +646,7 @@ if (process.env.WECRYPTO_SWEDEN_SOCKS) {
     const https = require('https');
     const swedenUrl = process.env.WECRYPTO_SWEDEN_SOCKS;
     const swedenAgent = new SocksProxyAgent(swedenUrl);
-    const swedenNeedles = [
-      'binance', 'bybit', 'okx', 'kraken', 'kucoin', 'mexc', 'bitfinex',
-      'gateio', 'crypto.com', 'coinbase', 'coingecko', 'dexscreener',
-      'hyperliquid', 'polymarket', 'kalshi', 'pyth.network', 'etherscan',
-      'ripple.com', 'xrplcluster',
-    ];
+    const swedenNeedles = SWEDEN_PROXY_NEEDLES;
 
     const originalHttpRequestSe = http.request;
     const originalHttpsRequestSe = https.request;
@@ -642,11 +675,24 @@ if (process.env.WECRYPTO_SWEDEN_SOCKS) {
     http.request = patchedSwedenRequest(originalHttpRequestSe);
     https.request = patchedSwedenRequest(originalHttpsRequestSe);
     console.warn(`[NETWORK] Sweden SOCKS5 for exchange hosts: ${swedenUrl}`);
+    // #region agent log
+        fetch('http://127.0.0.1:7629/ingest/9b1c0a9c-43ba-46f7-b483-8aad6ef8128f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8ad9ce'},body:JSON.stringify({sessionId:'8ad9ce',runId:'post-fix',hypothesisId:'A,C',location:'electron/main.js:sweden-socks',message:'Sweden SOCKS5 patch applied',data:{swedenUrl,profile:process.env.WECRYPTO_PROFILE||null,webPort:process.env.WECRYPTO_WEB_PORT||null,skipInference:process.env.WECRYPTO_SKIP_INFERENCE||null},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
   } catch (e) {
     console.error('[NETWORK] Failed to instantiate Sweden SOCKS5:', e.message);
+    // #region agent log
+    fetch('http://127.0.0.1:7629/ingest/9b1c0a9c-43ba-46f7-b483-8aad6ef8128f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8ad9ce'},body:JSON.stringify({sessionId:'8ad9ce',runId:'pre-fix',hypothesisId:'A',location:'electron/main.js:sweden-socks-error',message:'Sweden SOCKS5 patch failed',data:{error:e.message,swedenUrl:process.env.WECRYPTO_SWEDEN_SOCKS||null},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
   }
+} else {
+  // #region agent log
+  fetch('http://127.0.0.1:7629/ingest/9b1c0a9c-43ba-46f7-b483-8aad6ef8128f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8ad9ce'},body:JSON.stringify({sessionId:'8ad9ce',runId:'pre-fix',hypothesisId:'B,C',location:'electron/main.js:no-sweden-socks',message:'WECRYPTO_SWEDEN_SOCKS unset at module load',data:{profile:process.env.WECRYPTO_PROFILE||null,webPort:process.env.WECRYPTO_WEB_PORT||null,directProxy:process.env.WECRYPTO_DIRECT_PROXY||null,asi1Proxy:process.env.WECRYPTO_ASI1_PROXY||null},timestamp:Date.now()})}).catch(()=>{});
+  // #endregion
 }
 
+// #region agent log
+fetch('http://127.0.0.1:7629/ingest/9b1c0a9c-43ba-46f7-b483-8aad6ef8128f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8ad9ce'},body:JSON.stringify({sessionId:'8ad9ce',runId:'pre-fix',hypothesisId:'D,E',location:'electron/main.js:proxy-env-snapshot',message:'Full proxy env snapshot at startup',data:{profile:process.env.WECRYPTO_PROFILE||null,webPort:process.env.WECRYPTO_WEB_PORT||null,swedenSocks:process.env.WECRYPTO_SWEDEN_SOCKS||null,directProxy:process.env.WECRYPTO_DIRECT_PROXY||null,asi1Proxy:process.env.WECRYPTO_ASI1_PROXY||null,torSocks:process.env.WECRYPTO_TOR_SOCKS||null,cwd:process.cwd()},timestamp:Date.now()})}).catch(()=>{});
+// #endregion
 
 // ── Tor-routed Fetch Bridge ─────────────────────────────────────────────────
 require('./tor-fetch-ipc-bridge.js');
@@ -1576,6 +1622,9 @@ let proxyPort = 3010;
 let proxyRestartTimer = null;
 let proxyRestartAttempts = 0;
 let proxyManualStop = false;
+let proxyForwardsCheckTimer = null;
+const PROXY_FORWARDS_CHECK_INTERVAL_MS = 45_000;
+let proxyDemotedToJsFallback = false;
 
 const PROXY_PORT_CASCADE = [3010, 3011, 3012, 3013, 3014, 3015, 3016, 3017, 3018, 3019, 3020];
 
@@ -1583,6 +1632,7 @@ const PROXY_EXCHANGE_BASES = {
   'binance': 'https://api.binance.com',
   'binance-data': 'https://data-api.binance.vision',
   'binance-f': 'https://fapi.binance.com',
+  'binance-d': 'https://dapi.binance.com',
   'coingecko': 'https://api.coingecko.com',
   'coinbase': 'https://api.coinbase.com',
   'coinbase-ex': 'https://api.exchange.coinbase.com',
@@ -1608,7 +1658,7 @@ const PROXY_EXCHANGE_BASES = {
   'xrpl': 'https://xrplcluster.com',
   'solana': 'https://api.mainnet-beta.solana.com',
   'crypto-com': 'https://api.crypto.com',
-  'chainso': 'https://chain.so',
+  'pyth-history': 'https://pyth.dourolabs.app',
   'upbit': 'https://api.upbit.com',
   'bitget': 'https://api.bitget.com',
   'bingx': 'https://open-api.bingx.com',
@@ -1719,6 +1769,24 @@ async function startJsProxyFallback(port) {
     const body = isGet ? undefined : await readBody(req);
 
     try {
+      const agent = swedenProxyAgentForUrl(targetUrl);
+      const fetchImpl = agent ? require('node-fetch') : fetch;
+      const fetchOpts = { method, headers, body, signal: ctrl.signal, redirect: 'follow' };
+      if (agent) fetchOpts.agent = agent;
+      if (!forward._loggedBinance && String(targetUrl).includes('binance')) {
+        forward._loggedBinance = true;
+        // #region agent log
+        fetch('http://127.0.0.1:7629/ingest/9b1c0a9c-43ba-46f7-b483-8aad6ef8128f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8ad9ce'},body:JSON.stringify({sessionId:'8ad9ce',runId:'post-fix',hypothesisId:'F',location:'electron/main.js:js-proxy-forward',message:'JS proxy forwarding binance request',data:{targetUrl:String(targetUrl).slice(0,120),usesSwedenAgent:!!agent,swedenSocks:process.env.WECRYPTO_SWEDEN_SOCKS||null},timestamp:Date.now()})}).catch(()=>{});
+        // #endregion
+      }
+      const up = await fetchImpl(targetUrl, fetchOpts);
+      clearTimeout(t);
+      if (!forward._loggedBinanceResult && String(targetUrl).includes('binance')) {
+        forward._loggedBinanceResult = true;
+        // #region agent log
+        fetch('http://127.0.0.1:7629/ingest/9b1c0a9c-43ba-46f7-b483-8aad6ef8128f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8ad9ce'},body:JSON.stringify({sessionId:'8ad9ce',runId:'post-fix',hypothesisId:'F',location:'electron/main.js:js-proxy-forward-result',message:'JS proxy binance upstream response',data:{status:up.status,usesSwedenAgent:!!agent,targetHost:(()=>{try{return new URL(targetUrl).hostname}catch(_){return null}})()},timestamp:Date.now()})}).catch(()=>{});
+        // #endregion
+      }
       const parsedUrl = new URL(targetUrl);
       const isHttps = parsedUrl.protocol === 'https:';
       const transport = isHttps ? https : http;
@@ -1883,6 +1951,16 @@ async function proxyUpstreamWorks(port) {
   return false;
 }
 
+// The packaged rustls proxy often cannot complete HTTPS while WARP/Tailscale
+// are both up (PowerShell/Node using the Windows cert store still work).
+// /health stays 200, so waitForProxy thinks everything is fine while the
+// renderer gets a 502 storm. Promote the Node fallback in that case.
+//
+// This same rustls/SOCKS-vs-loopback split can develop mid-session (a VPN/
+// Tailscale route flapping after startup), not just at boot — so this check
+// also self-reschedules via scheduleProxyForwardsCheck() rather than running
+// once, so a mid-session 502 storm self-heals instead of persisting for the
+// rest of the run.
 // The proxy process (JS SOCKS5) can stay up and bound to its port while its
 // own outbound leg to exchanges silently dies — e.g. a VPN/SOCKS route
 // flapping after boot, or the box's egress IP getting flagged mid-session.
@@ -1892,8 +1970,24 @@ async function proxyUpstreamWorks(port) {
 // mid-session upstream failure gets a chance to self-heal by rebinding to a
 // fresh port instead of persisting silently.
 async function ensureProxyForwards() {
+  const usingJsFallback = !!(jsProxyServer && jsProxyServer.listening);
   const port = proxyPort || 3010;
   if (await proxyUpstreamWorks(port)) {
+    if (usingJsFallback) console.log(`[proxy-js] upstream still OK on ${port}`);
+    else console.log(`[proxy] upstream OK on ${port}`);
+    proxyHealthy = true;
+    return;
+  }
+  if (usingJsFallback) {
+    // Already on the Node fallback and it's failing too — the underlying
+    // network path (SOCKS/VPN hop) is down, not just the rustls binary.
+    console.error(`[proxy-js] fallback on ${port} cannot reach exchanges (network path likely down)`);
+    proxyHealthy = false;
+    return;
+  }
+  console.warn(`[proxy] native proxy on ${port} cannot reach exchanges; switching to Node TLS fallback`);
+  proxyDemotedToJsFallback = true;
+  stopProxyProcessOnly();
     console.log(`[proxy] upstream OK on ${port}`);
     proxyHealthy = true;
     return;
@@ -1909,6 +2003,7 @@ async function ensureProxyForwards() {
     return;
   }
   if (await proxyUpstreamWorks(proxyPort)) {
+    console.log(`[proxy-js] upstream OK on ${proxyPort}`);
     console.log(`[proxy] upstream OK on rebind port ${proxyPort}`);
     proxyHealthy = true;
   } else {
@@ -1917,6 +2012,73 @@ async function ensureProxyForwards() {
   }
 }
 
+function scheduleProxyForwardsCheck() {
+  if (proxyForwardsCheckTimer) clearTimeout(proxyForwardsCheckTimer);
+  proxyForwardsCheckTimer = setTimeout(async () => {
+    proxyForwardsCheckTimer = null;
+    if (proxyManualStop) return;
+    try {
+      await ensureProxyForwards();
+    } catch (err) {
+      console.error('[proxy] periodic forwards check failed:', err.message);
+    } finally {
+      scheduleProxyForwardsCheck();
+    }
+  }, PROXY_FORWARDS_CHECK_INTERVAL_MS);
+}
+
+async function startProxy() {
+  if (proxyProcess && !proxyProcess.killed) {
+    return;
+  }
+  proxyManualStop = false;
+  proxyDemotedToJsFallback = false;
+
+  // Dev: __dirname  |  Packaged: resources/app.asar.unpacked/
+  // KEY: When running inside app.asar, __dirname is inside the archive (can't execute).
+  // Must ALWAYS look in app.asar.unpacked, not app.asar.
+  const proxyBinName = process.platform === 'win32' ? 'we-crypto-proxy.exe' : 'we-crypto-proxy';
+  const candidates = [
+    // Correct packaged path: resources/app.asar.unpacked/we-crypto-proxy(.exe) (CHECK FIRST)
+    path.join(process.resourcesPath || '', 'app.asar.unpacked', proxyBinName),
+    // Alternate: resourcesPath itself
+    path.join(process.resourcesPath || '', proxyBinName),
+    // Dev path: electron/ is one level down from root
+    path.join(__dirname, '..', proxyBinName),
+    path.join(__dirname, '..', 'we-crypto-proxy.exe'), // Windows artifact still recognized on mixed drives
+    // Linux release (cargo build --release)
+    path.join(__dirname, '..', 'proxy', 'target', 'release', 'we-crypto-proxy'),
+    path.join(__dirname, '..', 'proxy', 'target', 'x86_64-unknown-linux-gnu', 'release', 'we-crypto-proxy'),
+    // Build output path: proxy/target/x86_64-pc-windows-gnu/release/we-crypto-proxy.exe
+    path.join(__dirname, '..', 'proxy', 'target', 'x86_64-pc-windows-gnu', 'release', 'we-crypto-proxy.exe'),
+  ];
+
+  const exePath = candidates.find(p => fs.existsSync(p));
+  const projectRoot = path.join(__dirname, '..');
+  const cargoProjectDir = path.join(projectRoot, 'proxy');
+  const cargoTomlPath = path.join(cargoProjectDir, 'Cargo.toml');
+  const canUseCargoFallback = !app.isPackaged
+    && fs.existsSync(cargoTomlPath)
+    && ['cache', 'codec', 'grades', 'proxy', 'utils'].every(name => moduleFileExists(cargoProjectDir, name));
+  const requireJsProxyForSweden = !!process.env.WECRYPTO_SWEDEN_SOCKS;
+  const shouldUseJsFallback = requireJsProxyForSweden || (!exePath && !canUseCargoFallback);
+  if (shouldUseJsFallback) {
+    if (requireJsProxyForSweden && exePath) {
+      console.warn('[proxy] WECRYPTO_SWEDEN_SOCKS set — using JS fallback (native binary cannot route upstream via SOCKS5)');
+    } else {
+      console.warn('[proxy] native executable/source unavailable; starting JS fallback proxy.');
+    }
+    const chosenPort = await findFreePort(PROXY_PORT_CASCADE);
+    proxyPort = chosenPort;
+    global.__WECRYPTO_PROXY_PORT__ = proxyPort;
+    await startJsProxyFallback(proxyPort);
+    return;
+  }
+  if (exePath) {
+    console.log(`[proxy] found executable at: ${exePath}`);
+  } else {
+    console.warn('[proxy] executable missing in dev mode; falling back to `cargo run --bin we-crypto-proxy`.');
+  }
 let proxyForwardsCheckTimer = null;
 const PROXY_FORWARDS_CHECK_INTERVAL_MS = 45_000;
 
@@ -1940,12 +2102,93 @@ async function startProxy() {
   const chosenPort = await findFreePort(PROXY_PORT_CASCADE);
   proxyPort = chosenPort;
   global.__WECRYPTO_PROXY_PORT__ = proxyPort;
+
+  // If exe is in asar (read-only), write config to temp dir; otherwise beside exe
+  let proxyDir = exePath ? path.dirname(exePath) : cargoProjectDir;
+  if (proxyDir.includes('app.asar')) {
+    proxyDir = path.join(process.env.TEMP || path.join(app.getPath('appData'), 'WECRYPTO'), 'proxy-config');
+    fs.mkdirSync(proxyDir, { recursive: true });
+    console.log(`[proxy] writing config to temp: ${proxyDir}`);
+  }
+
+  try {
+    fs.writeFileSync(path.join(proxyDir, 'config.toml'), buildProxyConfig(chosenPort));
+    console.log(`[proxy] config.toml → port ${chosenPort}`);
+  } catch (e) {
+    console.warn('[proxy] could not write config.toml:', e.message);
+  }
+
+  const spawnEnv = {
+    ...process.env,
+    ...(process.env.WECRYPTO_SWEDEN_SOCKS
+      ? { ALL_PROXY: process.env.WECRYPTO_SWEDEN_SOCKS }
+      : process.env.WECRYPTO_TOR_SOCKS
+        ? { ALL_PROXY: process.env.WECRYPTO_TOR_SOCKS }
+        : {})
+  };
+
+  if (exePath) {
+    proxyProcess = spawn(exePath, [], {
+      detached: false,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      cwd: proxyDir,
+      env: spawnEnv,
+    });
+  } else {
+    proxyProcess = spawn('cargo', ['run', '--bin', 'we-crypto-proxy'], {
+      detached: false,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      cwd: cargoProjectDir,
+      env: spawnEnv,
+    });
+  }
+  proxyProcess.stdout.on('data', chunk => console.log('[proxy]', chunk.toString().trim()));
+  proxyProcess.stderr?.on('data', chunk => console.warn('[proxy:stderr]', chunk.toString().trim()));
+  proxyProcess.on('error', e => console.error('[proxy] start error:', e.message));
+  proxyProcess.on('exit', (code, signal) => {
+    console.log('[proxy] exited, code', code, 'signal', signal || 'none');
+    proxyProcess = null;
+    if (proxyManualStop || proxyDemotedToJsFallback) return;
+
+    // Auto-restart with capped exponential backoff to keep feeds alive.
+    const delayMs = Math.min(1000 * Math.pow(2, proxyRestartAttempts), 30000);
+    proxyRestartAttempts = Math.min(proxyRestartAttempts + 1, 10);
+    if (proxyRestartTimer) clearTimeout(proxyRestartTimer);
+    proxyRestartTimer = setTimeout(async () => {
+      try {
+        console.warn(`[proxy] restarting after unexpected exit (attempt ${proxyRestartAttempts}, delay ${delayMs}ms)`);
+        await startProxy();
+        await waitForProxy(5000, 150);
+      } catch (e) {
+        console.error('[proxy] restart failed:', e?.message || e);
+      }
+    }, delayMs);
+  });
+  proxyRestartAttempts = 0;
+  console.log(`[proxy] started on port ${chosenPort} — pid ${proxyProcess.pid}`);
   console.log(`[proxy] starting JS SOCKS5 proxy on port ${chosenPort}`);
   await startJsProxyFallback(chosenPort);
 }
 
 function stopProxy() {
   proxyManualStop = true;
+  if (proxyForwardsCheckTimer) {
+    clearTimeout(proxyForwardsCheckTimer);
+    proxyForwardsCheckTimer = null;
+  }
+  stopProxyProcessOnly();
+  if (jsProxyServer) {
+    try { jsProxyServer.close(); } catch (_) { }
+    jsProxyServer = null;
+  }
+}
+
+// Kills just the native rustls proxy process, without the permanent
+// proxyManualStop flag or touching a JS fallback server — used when
+// ensureProxyForwards() is demoting the native binary to the Node
+// fallback mid-session and still wants the periodic health check and
+// the native on('exit') restart handler to keep functioning normally.
+function stopProxyProcessOnly() {
   if (proxyRestartTimer) {
     clearTimeout(proxyRestartTimer);
     proxyRestartTimer = null;
@@ -1957,10 +2200,6 @@ function stopProxy() {
   if (proxyProcess && !proxyProcess.killed) {
     try { proxyProcess.kill(); } catch (_) { }
     proxyProcess = null;
-  }
-  if (jsProxyServer) {
-    try { jsProxyServer.close(); } catch (_) { }
-    jsProxyServer = null;
   }
 }
 
@@ -2420,6 +2659,8 @@ async function handleAsi1NarrativeRequest(args = {}, defaultModel = 'asi1-ultra'
       [{ role: 'user', content: prompt }],
       {
         model,
+        candidateModels: [model], // HUD is a lone wolf: no model cascade, fail fast
+        onlyAccount: process.env.ASI1_PREFERRED_ACCOUNT || 'icloud',
         max_tokens: model.includes('ultra') ? 350 : 120,
         temperature: 0.1,
         timeoutMs: model.includes('ultra') ? 25000 : 12000,
@@ -4053,7 +4294,32 @@ function createWindow() {
   });
 }
 
+// Best-effort nudge for the wecrypto-wsl WireGuard tunnel: boots the WSL VM
+// (starting its systemd units, including wg-quick@wg0) if it isn't already
+// resident, and starts the unit if it isn't already running. No-op on
+// failure -- the Windows-side WireGuard service and .wslconfig
+// vmIdleTimeout=-1 are the primary always-on mechanisms; this just covers
+// the case where the WSL VM idled out before the app launched.
+function ensureWslWireguardTunnel() {
+  if (process.platform !== 'win32') return;
+  const distro = process.env.WECRYPTO_WSL_DISTRO || 'Ubuntu';
+  const child = spawn('wsl.exe', ['-d', distro, '-u', 'root', '--', 'systemctl', 'start', 'wg-quick@wg0'], {
+    windowsHide: true,
+  });
+  child.on('error', (err) => {
+    console.warn(`[wsl-wg] failed to spawn wsl.exe: ${err.message}`);
+  });
+  child.on('exit', (code) => {
+    if (code === 0) {
+      console.log('[wsl-wg] wg-quick@wg0 confirmed running in WSL.');
+    } else {
+      console.warn(`[wsl-wg] systemctl start wg-quick@wg0 exited with code ${code}.`);
+    }
+  });
+}
+
 app.whenReady().then(async () => {
+  ensureWslWireguardTunnel(); // best-effort; never blocks boot
   if (process.argv.includes('--polycool')) {
     createPolycoolWindow();
     return;
@@ -4081,6 +4347,7 @@ app.whenReady().then(async () => {
   Menu.setApplicationMenu(null);
   await waitForProxy();   // give proxy ~3s to bind before renderer fires fetchAll
   await ensureProxyForwards();
+  scheduleProxyForwardsCheck(); // keep re-checking so a mid-session SOCKS/VPN flap self-heals
   scheduleProxyForwardsCheck(); // keep re-checking so a mid-session upstream flap self-heals
 
   // Start web service (HTTPS)

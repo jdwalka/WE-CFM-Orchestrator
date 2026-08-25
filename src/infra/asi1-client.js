@@ -36,8 +36,8 @@ const ASI1_OFFICIAL_MODELS = Object.freeze(['asi1-ultra', 'asi1', 'asi1-mini']);
 const ASI1_EXTRA_MODELS = Object.freeze(['asi1-fast']);
 const ASI1_ALL_MODELS = Object.freeze([...ASI1_OFFICIAL_MODELS, ...ASI1_EXTRA_MODELS]);
 
-// gitgoin first: 2026-08-14 key still serves asi1-ultra. mauro keys share
-// that account's rate limit (ultra currently 429; mini/asi1/fast still work).
+// icloud (enterprise/Pro) first — routes here whenever its key is present
+// and not rate-limited; gitgoin/mauro are same-tier fallbacks only.
 const ASI1_ACCOUNTS = Object.freeze([
   {
     id: 'icloud',
@@ -239,6 +239,22 @@ function isRetryableAsi1Error(err) {
     || msg.includes('econnreset') || msg.includes('fetch failed');
 }
 
+async function fetchWithTimeout(url, options, timeoutMs) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const startedAt = Date.now();
+    const response = await fetch(url, { ...options, signal: controller.signal });
+    if (!fetchWithTimeout._logged) {
+      fetchWithTimeout._logged = true;
+      // #region agent log
+      fetch('http://127.0.0.1:7629/ingest/9b1c0a9c-43ba-46f7-b483-8aad6ef8128f', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'f97978' }, body: JSON.stringify({ sessionId: 'f97978', runId: 'pre-fix', hypothesisId: 'E', location: 'asi1-client.js:first-fetch', message: 'First ASI1 fetch completed', data: { url: String(url).slice(0, 80), status: response.status, elapsedMs: Date.now() - startedAt, routeMode: classifyAsi1RouteMode(), routeLatencyMs: routeState.lastLatencyMs, directProxy: process.env.WECRYPTO_DIRECT_PROXY || null, asi1Proxy: process.env.WECRYPTO_ASI1_PROXY || null, swedenSocks: process.env.WECRYPTO_SWEDEN_SOCKS || null }, timestamp: Date.now() }) }).catch(() => { });
+      // #endregion
+    }
+    return response;
+  } finally {
+    clearTimeout(timer);
+  }
 function fetchWithTimeout(url, options = {}, timeoutMs = 35000) {
   return new Promise((resolve, reject) => {
     const parsed = new URL(url);
@@ -281,11 +297,91 @@ function fetchWithTimeout(url, options = {}, timeoutMs = 35000) {
   });
 }
 
+// ── Route mode: measured, not assumed ──────────────────────────────────
+// ASI1 traffic is *designed* to bypass the Sweden SOCKS5 lane via a direct
+// Ethernet punch route (see cloudflared/Set-WeCryptoLanes.ps1), but that
+// punch route can silently fail (Tailscale exit-node WFP blocking, route not
+// installed) and traffic falls back through the slow Tailscale tunnel with
+// no error — just higher latency. This must be measured from a raw TCP
+// connect, NOT full chat-completion time — a completion includes seconds of
+// actual model inference on ASI1's servers, which would swamp any network
+// latency signal and make every request look "slow" regardless of route.
+const net = require('net');
+const NATIVE_ROUTE_LATENCY_THRESHOLD_MS = Number(process.env.ASI1_NATIVE_LATENCY_THRESHOLD_MS || 250);
+const ROUTE_STALE_MS = 5 * 60_000;
+const ROUTE_PROBE_INTERVAL_MS = Number(process.env.ASI1_ROUTE_PROBE_INTERVAL_MS || 30_000);
+const ROUTE_PROBE_TIMEOUT_MS = 5_000;
+const routeState = {
+  lastLatencyMs: null,
+  lastMeasuredAt: null,
+  lastRequestOk: null,
+  lastError: null,
+};
+
+function recordAsi1RouteTiming({ elapsedMs = null, ok = false, error = null } = {}) {
+  if (elapsedMs != null) routeState.lastLatencyMs = elapsedMs;
+  routeState.lastMeasuredAt = Date.now();
+  routeState.lastRequestOk = ok;
+  routeState.lastError = error;
+}
+
+function classifyAsi1RouteMode() {
+  if (routeState.lastLatencyMs == null) return 'unknown';
+  const ageMs = routeState.lastMeasuredAt ? Date.now() - routeState.lastMeasuredAt : Infinity;
+  if (ageMs > ROUTE_STALE_MS) return 'unknown';
+  // A timed-out/errored probe still has an elapsedMs (~= ROUTE_PROBE_TIMEOUT_MS),
+  // which would otherwise get misclassified as "fallback" (slow-but-connected)
+  // instead of surfacing that the probe couldn't connect at all.
+  if (routeState.lastRequestOk === false) return 'unreachable';
+  return routeState.lastLatencyMs <= NATIVE_ROUTE_LATENCY_THRESHOLD_MS ? 'native' : 'fallback';
+}
+
+// Probe the actual ASI1 TLS endpoint, not the local proxy's listening port.
+// A loopback connect only proves that some process accepted a socket and will
+// therefore report single-digit latency even when the ASI1 route is slow or
+// unreachable. Node's raw socket bypasses renderer fetch wrappers and measures
+// the route selected by the OS routing table (including any direct /32 punch).
+function probeAsi1RouteOnce() {
+  const endpoint = new URL(ASI1_BASE_URL);
+  const host = endpoint.hostname;
+  const port = Number(endpoint.port) || (endpoint.protocol === 'http:' ? 80 : 443);
+  const startedAt = Date.now();
+  const socket = net.connect({ host, port, timeout: ROUTE_PROBE_TIMEOUT_MS });
+  const finish = (ok, error) => {
+    socket.removeAllListeners();
+    socket.destroy();
+    recordAsi1RouteTiming({ elapsedMs: Date.now() - startedAt, ok, error: error || null });
+  };
+  socket.once('connect', () => finish(true, null));
+  socket.once('timeout', () => finish(false, 'connect timeout'));
+  socket.once('error', (err) => finish(false, err.message));
+}
+
+// Runs only in a long-lived process (Electron main); harmless no-op timer
+// elsewhere. Disable with ASI1_DISABLE_ROUTE_PROBE=1 (e.g. in short-lived
+// CLI/test invocations of this module).
+if (process.env.ASI1_DISABLE_ROUTE_PROBE !== '1') {
+  probeAsi1RouteOnce();
+  const probeTimer = setInterval(probeAsi1RouteOnce, ROUTE_PROBE_INTERVAL_MS);
+  if (typeof probeTimer.unref === 'function') probeTimer.unref();
+}
+
 /**
  * Minimal chat/completion against ASI:One (OpenAI-compatible).
  */
 async function chatCompletion(messages, options = {}) {
-  const keys = resolveAsi1ApiKeys();
+  const allKeys = resolveAsi1ApiKeys();
+  // onlyAccount pins a caller (e.g. the HUD's quick-narrative lane) to a
+  // single account with no cross-account fallback -- that cascade through
+  // every key is what makes a lone-wolf HUD poll take minutes instead of
+  // failing fast on its own path. Falls back to the full key list if the
+  // pinned account has no key configured, so a HUD call never hard-fails
+  // just because e.g. icloud creds are momentarily missing.
+  const keys = options.onlyAccount
+    ? (allKeys.filter((k) => k.account === options.onlyAccount).length
+      ? allKeys.filter((k) => k.account === options.onlyAccount)
+      : allKeys)
+    : allKeys;
   if (!keys.length) {
     throw new Error('ASI:One API key missing — set ASI_ONE_API_KEY or asi1_api_key2_fallback');
   }

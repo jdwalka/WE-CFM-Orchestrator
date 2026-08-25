@@ -29,6 +29,10 @@ const server = net.createServer((client) => {
       if (buffer.length < 2) return;
       const ver = buffer[0];
       const nmethods = buffer[1];
+      if (ver !== 0x05) {
+        client.destroy();
+        return;
+      }
       if (buffer.length < 2 + nmethods) return;
       buffer = buffer.slice(2 + nmethods);
       client.write(Buffer.from([0x05, 0x00])); // no-auth
@@ -40,6 +44,16 @@ const server = net.createServer((client) => {
       const ver = buffer[0];
       const cmd = buffer[1];
       const atyp = buffer[3];
+      if (ver !== 0x05) {
+        replySocks(client, 0x01, 0);
+        client.end();
+        return;
+      }
+      if (cmd !== 0x01) {
+        replySocks(client, 0x07, 0);
+        client.end();
+        return;
+      }
       let host, port, headerLen;
 
       if (atyp === 0x01) { // IPv4
@@ -53,6 +67,13 @@ const server = net.createServer((client) => {
         host = buffer.slice(5, 5 + dlen).toString('utf8');
         port = buffer.readUInt16BE(5 + dlen);
         headerLen = 5 + dlen + 2;
+      } else if (atyp === 0x04) {
+        if (buffer.length < 22) return;
+        const parts = [];
+        for (let i = 0; i < 8; i++) parts.push(buffer.readUInt16BE(4 + i * 2).toString(16));
+        host = parts.join(':');
+        port = buffer.readUInt16BE(20);
+        headerLen = 22;
       } else {
         replySocks(client, 0x08, 0); // address type not supported
         client.end();
@@ -75,6 +96,16 @@ const server = net.createServer((client) => {
       });
 
       client.on('error', () => { dest.destroy(); });
+      dest.on('error', (err) => {
+        if (!dest._loggedErr) {
+          dest._loggedErr = true;
+          console.error(`[mullvad-standalone-socks] dest ${host}:${port} via ${TUNNEL_LOCAL_ADDR} -> ${err.message}`);
+          // #region agent log
+          fetch('http://127.0.0.1:7629/ingest/9b1c0a9c-43ba-46f7-b483-8aad6ef8128f', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '8ad9ce' }, body: JSON.stringify({ sessionId: '8ad9ce', runId: 'post-fix', hypothesisId: 'I', location: 'mullvad-standalone-socks.js:dest-error', message: 'Tunnel dest connect failed', data: { host, port, error: err.message, code: err.code || null, tunnelLocal: TUNNEL_LOCAL_ADDR }, timestamp: Date.now() }) }).catch(() => { });
+          // #endregion
+        }
+        client.destroy();
+      });
       dest.on('error', () => { client.destroy(); });
       client.on('close', () => dest.destroy());
       dest.on('close', () => client.destroy());
@@ -87,6 +118,7 @@ const server = net.createServer((client) => {
   }
 
   client.on('data', onData);
+  client.on('error', () => { });
   client.on('error', () => {});
 });
 

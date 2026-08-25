@@ -1087,7 +1087,16 @@ async function fetchPythHistoryCandles(instrument, timeframe) {
     const now = Math.floor(Date.now() / 1000);
     const from = now - (SEC[res] || 3600) * (BARS[res] || 100);
     const url = `${PYTH_HISTORY_BASE}/v1/real_time/history?symbol=${encodeURIComponent(sym)}&from=${from}&to=${now}&resolution=${res}`;
-    const r = await fetchWithTimeout(url, 20000);
+    // Pyth's real-time history API moved behind Pyth Pro auth
+    // (docs.pyth.network/price-feeds/pro/api/history#authentication) -- was
+    // 401ing on every call with no key attached. This is a distinct product/
+    // key from the Lazer streaming token (PYTH_API/PYTH_NEW) used elsewhere --
+    // secrets/PYTH_PRO_API_KEY.txt, loaded via preload.js.
+    const pythApiKey = String(resolveRuntimeKeyLocal('PYTH_PRO_API_KEY') || '').trim();
+    if (!pythApiKey) throw new Error('Pyth History skipped: no API key configured');
+    const r = await fetchWithTimeout(url, 20000, {
+      headers: { Authorization: `Bearer ${pythApiKey}` },
+    });
     if (!r.ok) throw new Error(`Pyth History HTTP ${r.status}`);
     const d = await r.json();
     if (d.s !== 'ok' || !d.c?.length) throw new Error(`Pyth History no data (s=${d.s})`);

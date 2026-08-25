@@ -517,6 +517,63 @@
             const color = Object.entries(COLOR_MAP).find(([k]) => fiveProv.includes(k))?.[1] ?? '#60a5fa';
             const enabledLabel = diag.enabled !== false ? 'active' : 'disabled';
             const cooldownSecs = diag.cooldown?.active ? Math.ceil((diag.cooldown.remaining_ms || 0) / 1000) : 0;
+            const accId = String(diag.env?.asi1AccountId || diag.currentAccount || '');
+
+            // Build DOM nodes — textContent auto-escapes; no user data touches innerHTML.
+            el.textContent = '';
+
+            const row1 = document.createElement('div');
+
+            const lbl = document.createElement('span');
+            lbl.style.color = '#e0e6f0';
+            lbl.textContent = '5m PTB: ';
+            row1.appendChild(lbl);
+
+            const provSpan = document.createElement('span');
+            provSpan.style.cssText = `color:${color};font-weight:600;`;
+            provSpan.textContent = fiveProv;
+            row1.appendChild(provSpan);
+
+            const modelSpan = document.createElement('span');
+            modelSpan.style.cssText = 'color:#666;font-size:10px;margin-left:4px;';
+            modelSpan.textContent = rawModel;
+            row1.appendChild(modelSpan);
+
+            // Route mode is measured from real request latency (asi1-client.js),
+            // not assumed — the direct-punch route can silently fall back to a
+            // slow tunnel while still "working", so this must reflect reality.
+            const ROUTE_BADGE = {
+                native: { label: 'native route', color: '#3ecf8e' },
+                fallback: { label: 'tunneled (slow)', color: '#f59e0b' },
+                unreachable: { label: 'route probe failed', color: '#e5484d' },
+                unknown: { label: 'route unknown', color: '#666' },
+            };
+            const routeInfo = ROUTE_BADGE[diag.routeMode] || ROUTE_BADGE.unknown;
+            const badge = document.createElement('span');
+            badge.style.cssText = `color:${routeInfo.color};font-size:9px;margin-left:6px;border:1px solid ${routeInfo.color};border-radius:3px;padding:0 4px;`;
+            // For 'unreachable' the elapsed ms is the probe timeout firing, not a
+            // real connection latency — showing it as "Xms" would read as "slow but
+            // working" when the probe never actually connected.
+            badge.textContent = diag.lastLatencyMs != null && diag.routeMode !== 'unreachable'
+                ? `${routeInfo.label} · ${Math.round(diag.lastLatencyMs)}ms`
+                : routeInfo.label;
+            row1.appendChild(badge);
+
+            el.appendChild(row1);
+
+            const row2 = document.createElement('div');
+            row2.style.cssText = 'font-size:10px;color:#9aa6b2;';
+            let statusText = enabledLabel;
+            if (cooldownSecs > 0) statusText += ` (cooldown ${cooldownSecs}s)`;
+            statusText += ` · ${is5m ? 'specialized 5m path' : 'main path'}`;
+            row2.textContent = statusText;
+            if (accId) {
+                const accSpan = document.createElement('span');
+                accSpan.style.color = '#a3e635';
+                accSpan.textContent = ` · ${accId}`;
+                row2.appendChild(accSpan);
+            }
+            el.appendChild(row2);
             const accId = String(diag.currentAccount || diag.env?.asi1AccountId || 'mauro_fanelli@icloud.com');
 
             // Route mode is measured from a free background probe of the local

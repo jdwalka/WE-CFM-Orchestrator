@@ -1495,6 +1495,9 @@ Use this recall only as context, and prioritize current market snapshot data if 
       provider: lastProvider || this.provider,
       lastProvider,
       lastModel,
+      currentAccount: currentAccountId,
+      // Measured from actual request round-trips (asi1-client.js), not assumed —
+      // the direct-punch route can silently fall back to a slow tunnel.
       currentAccount,
       currentAccountId,
       routeMode: asi1Diag.routeMode || 'unknown',

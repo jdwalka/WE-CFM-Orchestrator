@@ -28,6 +28,8 @@
   // Initialize PROXY_ORIGIN immediately so early fetches are never sent unproxied.
   let PROXY_ORIGIN = (typeof window !== 'undefined' && window.__PROXY_PORT__)
     ? `http://127.0.0.1:${window.__PROXY_PORT__}`
+    : null;
+  let proxyReady = !!PROXY_ORIGIN;
     : 'http://127.0.0.1:3010';
   let proxyReady = true;
 
@@ -37,6 +39,7 @@
   const CF_PROTECTED = new Set([
     'api.binance.com',
     'fapi.binance.com',
+    'dapi.binance.com',
     'data-api.binance.vision',
     'api.bybit.com',
     'api.bytick.com',
@@ -59,11 +62,13 @@
   const RATE_LIMITED = new Set([
     'api.dexscreener.com',
     'api.blockchair.com',
+    'api.blockcypher.com',
     'hypurrscan.io',
     'api.etherscan.io',
     'api.bscscan.com',
     'api.gateio.ws',
     'fx-api.gateio.ws',
+    'pyth.dourolabs.app',
   ]);
 
   // ── Bucket C: open / first-party APIs ──────────────────────────────────
@@ -74,6 +79,7 @@
     'api.binance.com': 'binance',
     'data-api.binance.vision': 'binance',
     'fapi.binance.com': 'binance-f',
+    'dapi.binance.com': 'binance-d',
     'api.coingecko.com': 'coingecko',
     'pro-api.coingecko.com': 'coingecko-pro',
     'api.coinbase.com': 'coinbase',
@@ -105,6 +111,7 @@
     'xrplcluster.com': 'xrpl',
     'api.mainnet-beta.solana.com': 'solana',
     'api.crypto.com': 'crypto-com',
+    'pyth.dourolabs.app': 'pyth-history',
     'api.upbit.com': 'upbit',
     'api.bitget.com': 'bitget',
     'open-api.bingx.com': 'bingx',
@@ -158,7 +165,7 @@
     if (typeof require !== 'undefined') {
       _nodeFetch = require('node-fetch');
     }
-  } catch (_) {}
+  } catch (_) { }
 
   function shouldUseNodeFetch(originalUrl, rewrittenUrl) {
     if (!_nodeFetch) return false;
@@ -166,34 +173,98 @@
     return isProxyRoute; // ONLY use node-fetch for the local proxy (127.0.0.1) route. External DNS hangs in Electron renderer.
   }
 
+  // ── Per-host circuit breaker: stop re-hammering a dead upstream leg ─────
+  // The local proxy binary can stay up (health-checks green) while its own
+  // outbound connections fail — e.g. the box's current egress IP is flagged
+  // by a provider's Cloudflare edge. Without this, every poll loop across the
+  // app keeps re-dispatching to the same doomed host every ~20s, drowning the
+  // health dashboard in identical "502 Bad Gateway" rows. Track failures per
+  // real upstream hostname (not the local proxy port) and fail fast during an
+  // open backoff window instead. Reuses ApiCircuitBreaker (src/feeds/api-
+  // circuit-breaker.js) when present so state shows up alongside the app's
+  // other resilience tooling; degrades to a no-op if that module isn't loaded.
+  const CIRCUIT_TRIP_STATUSES = new Set([502, 503, 504, 522, 524]);
+
+  function safeHostname(url) {
+    try { return new URL(url).hostname; } catch (_) { return null; }
+  }
+
+  function getHostBreaker(hostname) {
+    if (!hostname || !window.ApiCircuitBreaker) return null;
+    return window.ApiCircuitBreaker.getBreaker(`proxy-fetch:${hostname}`, { threshold: 3, timeout: 30000 });
+  }
+
+  function hostCircuitResponse(hostname, breaker) {
+    const retryAfterSec = breaker?.nextRetryTime
+      ? Math.max(1, Math.ceil((breaker.nextRetryTime - Date.now()) / 1000))
+      : 30;
+    return new Response(
+      JSON.stringify({ error: 'circuit_open', hostname, retryAfterSeconds: retryAfterSec }),
+      {
+        status: 503,
+        statusText: `Circuit open for ${hostname} (WE proxy-fetch backoff)`,
+        headers: { 'content-type': 'application/json', 'retry-after': String(retryAfterSec) },
+      },
+    );
+  }
+
+  function trackHostResult(hostname, res) {
+    const breaker = getHostBreaker(hostname);
+    if (!breaker || !res) return;
+    if (CIRCUIT_TRIP_STATUSES.has(res.status)) {
+      breaker.recordFailure();
+    } else if (res.status < 500) {
+      // Any non-5xx response means the upstream leg is reachable again —
+      // only gateway/timeout-class errors indicate a broken network path.
+      if (breaker.state !== 'CLOSED') breaker.close();
+      else breaker.failureCount = 0;
+    }
+  }
+
+  function trackHostFailure(hostname) {
+    const breaker = getHostBreaker(hostname);
+    if (breaker) breaker.recordFailure();
+  }
+
+  function dispatch(originalUrl, requestInput, init) {
+    const hostname = safeHostname(originalUrl);
+    const breaker = getHostBreaker(hostname);
+    if (breaker && !breaker.isAvailable()) {
+      return Promise.resolve(hostCircuitResponse(hostname, breaker));
+    }
+
+    const urlToUse = IGNORE_DOMAINS.test(originalUrl) ? originalUrl : rewrite(originalUrl);
+    let fetchPromise;
+    if (shouldUseNodeFetch(originalUrl, urlToUse)) {
+      if (requestInput instanceof Request) {
+        const opts = init || {};
+        opts.method = opts.method || requestInput.method;
+        opts.headers = opts.headers || requestInput.headers;
+        if (requestInput.body && !opts.body) opts.body = requestInput.body;
+        opts.signal = opts.signal || requestInput.signal;
+        fetchPromise = _nodeFetch(urlToUse, opts);
+      } else {
+        fetchPromise = _nodeFetch(urlToUse, init);
+      }
+    } else {
+      const finalInput = requestInput instanceof Request
+        ? (urlToUse !== requestInput.url ? new Request(urlToUse, requestInput) : requestInput)
+        : urlToUse;
+      fetchPromise = _origFetch(finalInput, init);
+    }
+
+    if (!hostname) return fetchPromise;
+    return fetchPromise.then(
+      (res) => { trackHostResult(hostname, res); return res; },
+      (err) => { trackHostFailure(hostname); throw err; },
+    );
+  }
+
   window.fetch = function (input, init) {
     if (typeof input === 'string') {
-      let urlToUse = input;
-      if (!IGNORE_DOMAINS.test(input)) {
-        urlToUse = rewrite(input);
-      }
-      if (shouldUseNodeFetch(input, urlToUse)) {
-        return _nodeFetch(urlToUse, init);
-      }
-      if (urlToUse !== input) {
-        input = urlToUse;
-      }
+      return dispatch(input, input, init);
     } else if (input instanceof Request && EXTERNAL.test(input.url)) {
-      let urlToUse = input.url;
-      if (!IGNORE_DOMAINS.test(input.url)) {
-        urlToUse = rewrite(input.url);
-      }
-      if (shouldUseNodeFetch(input.url, urlToUse)) {
-        const opts = init || {};
-        opts.method = opts.method || input.method;
-        opts.headers = opts.headers || input.headers;
-        if (input.body && !opts.body) opts.body = input.body;
-        opts.signal = opts.signal || input.signal;
-        return _nodeFetch(urlToUse, opts);
-      }
-      if (urlToUse !== input.url) {
-        input = new Request(urlToUse, input);
-      }
+      return dispatch(input.url, input, init);
     }
     return _origFetch(input, init);
   };
