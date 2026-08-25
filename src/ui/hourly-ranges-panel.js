@@ -499,7 +499,7 @@
     return `
       <div class="hr-panel" id="hourly-ranges-panel">
         <div class="hr-panel-hdr">
-          <h2 class="hr-panel-title">⏱ Polymarket 15m Up/Down</h2>
+          <h2 class="hr-panel-title">▲▼ Polymarket 15m Up/Down</h2>
           <span class="hr-panel-updated">Updated ${now}</span>
         </div>
         <div class="hr-grid">

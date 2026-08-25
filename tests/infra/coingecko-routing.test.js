@@ -73,6 +73,7 @@ function proxyFetchRewrite(inputUrl, protocol = 'http:') {
     encodeURIComponent,
     setTimeout,
     URL,
+    Request: globalThis.Request || class Request {},
     XMLHttpRequest: FakeXMLHttpRequest,
     window: {
       location: { protocol },

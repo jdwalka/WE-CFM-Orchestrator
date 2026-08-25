@@ -1,0 +1,739 @@
+{
+  "comment": "Authoritative NS IPs per API zone from live nslookup. Tailscale split DNS uses these, not 1.1.1.1/Mullvad.",
+  "zones": {
+    "api.binance.com": {
+      "ns": [
+        "ns-1407.awsdns-47.org",
+        "ns-1565.awsdns-03.co.uk",
+        "ns-394.awsdns-49.com",
+        "ns-859.awsdns-43.net"
+      ],
+      "ips": [
+        "205.251.197.127",
+        "205.251.198.29",
+        "205.251.193.138",
+        "205.251.195.91"
+      ]
+    },
+    "binance.vision": {
+      "ns": [
+        "ns-1317.awsdns-36.org",
+        "ns-1909.awsdns-46.co.uk",
+        "ns-574.awsdns-07.net",
+        "ns-63.awsdns-07.com"
+      ],
+      "ips": [
+        "205.251.197.37",
+        "205.251.199.117",
+        "205.251.194.62",
+        "205.251.192.63"
+      ]
+    },
+    "fapi.binance.com": {
+      "ns": [
+        "ns-1223.awsdns-24.org",
+        "ns-1632.awsdns-12.co.uk",
+        "ns-57.awsdns-07.com",
+        "ns-907.awsdns-49.net"
+      ],
+      "ips": [
+        "205.251.196.199",
+        "205.251.198.96",
+        "205.251.192.57",
+        "205.251.195.139"
+      ]
+    },
+    "binance.com": {
+      "ns": [
+        "ns-1319.awsdns-36.org",
+        "ns-1701.awsdns-20.co.uk",
+        "ns-234.awsdns-29.com",
+        "ns-735.awsdns-27.net"
+      ],
+      "ips": [
+        "205.251.197.39",
+        "205.251.198.165",
+        "205.251.192.234",
+        "205.251.194.223"
+      ]
+    },
+    "api.binance.us": {
+      "ns": [
+        "ns-1404.awsdns-47.org",
+        "ns-1993.awsdns-57.co.uk",
+        "ns-426.awsdns-53.com",
+        "ns-716.awsdns-25.net"
+      ],
+      "ips": [
+        "205.251.197.124",
+        "205.251.199.201",
+        "205.251.193.170",
+        "205.251.194.204"
+      ]
+    },
+    "api.coingecko.com": {
+      "ns": [
+        "jack.ns.cloudflare.com",
+        "lucy.ns.cloudflare.com"
+      ],
+      "ips": [
+        "108.162.193.121",
+        "172.64.33.121",
+        "173.245.59.121",
+        "108.162.192.133"
+      ]
+    },
+    "coinbase.com": {
+      "ns": [
+        "sam.ns.cloudflare.com",
+        "sue.ns.cloudflare.com"
+      ],
+      "ips": [
+        "108.162.193.141",
+        "172.64.33.141",
+        "173.245.59.141",
+        "108.162.192.145"
+      ]
+    },
+    "exchange.coinbase.com": {
+      "ns": [
+        "beau.ns.cloudflare.com",
+        "dahlia.ns.cloudflare.com"
+      ],
+      "ips": [
+        "108.162.193.73",
+        "172.64.33.73",
+        "173.245.59.73",
+        "108.162.192.89"
+      ]
+    },
+    "kraken.com": {
+      "ns": [
+        "art.ns.cloudflare.com",
+        "kim.ns.cloudflare.com"
+      ],
+      "ips": [
+        "108.162.193.102",
+        "172.64.33.102",
+        "173.245.59.102",
+        "108.162.192.126"
+      ]
+    },
+    "bybit.com": {
+      "ns": [
+        "ns-1516.awsdns-61.org",
+        "ns-1675.awsdns-17.co.uk",
+        "ns-407.awsdns-50.com",
+        "ns-815.awsdns-37.net"
+      ],
+      "ips": [
+        "205.251.197.236",
+        "205.251.198.139",
+        "205.251.193.151",
+        "205.251.195.47"
+      ]
+    },
+    "stream.bybit.com": {
+      "ns": [
+        "ns-1348.awsdns-40.org",
+        "ns-1730.awsdns-24.co.uk",
+        "ns-29.awsdns-03.com",
+        "ns-908.awsdns-49.net"
+      ],
+      "ips": [
+        "205.251.197.68",
+        "205.251.198.194",
+        "205.251.192.29",
+        "205.251.195.140"
+      ]
+    },
+    "okx.com": {
+      "ns": [
+        "ns-1509.awsdns-60.org",
+        "ns-1871.awsdns-41.co.uk",
+        "ns-366.awsdns-45.com",
+        "ns-549.awsdns-04.net"
+      ],
+      "ips": [
+        "205.251.197.229",
+        "205.251.199.79",
+        "205.251.193.110",
+        "205.251.194.37"
+      ]
+    },
+    "polymarket.com": {
+      "ns": [
+        "fatima.ns.cloudflare.com",
+        "logan.ns.cloudflare.com"
+      ],
+      "ips": [
+        "108.162.194.188",
+        "162.159.38.188",
+        "172.64.34.188",
+        "108.162.193.198"
+      ]
+    },
+    "embed.polymarket.com": {
+      "ns": [
+        "ns1.vercel-dns-3.com",
+        "ns2.vercel-dns-3.com",
+        "ns3.vercel-dns-3.com",
+        "ns4.vercel-dns-3.com"
+      ],
+      "ips": [
+        "205.251.193.92",
+        "205.251.194.149",
+        "205.251.197.116",
+        "205.251.199.60"
+      ]
+    },
+    "bitfinex.com": {
+      "ns": [
+        "rick.ns.cloudflare.com",
+        "vera.ns.cloudflare.com"
+      ],
+      "ips": [
+        "108.162.193.139",
+        "172.64.33.139",
+        "173.245.59.139",
+        "108.162.192.147"
+      ]
+    },
+    "kucoin.com": {
+      "ns": [
+        "ns-1249.awsdns-28.org",
+        "ns-1850.awsdns-39.co.uk",
+        "ns-280.awsdns-35.com",
+        "ns-906.awsdns-49.net"
+      ],
+      "ips": [
+        "205.251.196.225",
+        "205.251.199.58",
+        "205.251.193.24",
+        "205.251.195.138"
+      ]
+    },
+    "mexc.com": {
+      "ns": [
+        "ns-1144.awsdns-15.org",
+        "ns-1706.awsdns-21.co.uk",
+        "ns-372.awsdns-46.com",
+        "ns-745.awsdns-29.net"
+      ],
+      "ips": [
+        "205.251.196.120",
+        "205.251.198.170",
+        "205.251.193.116",
+        "205.251.194.233"
+      ]
+    },
+    "hypurrscan.io": {
+      "ns": [
+        "dns105.ovh.net",
+        "ns105.ovh.net"
+      ],
+      "ips": [
+        "5.196.40.17",
+        "5.135.60.37"
+      ]
+    },
+    "dexscreener.com": {
+      "ns": [
+        "toby.ns.cloudflare.com",
+        "zelda.ns.cloudflare.com"
+      ],
+      "ips": [
+        "108.162.193.239",
+        "172.64.33.239",
+        "173.245.59.239",
+        "108.162.192.242"
+      ]
+    },
+    "mempool.space": {
+      "ns": [
+        "ns1.fra.wiz.biz",
+        "ns1.tk7.wiz.biz",
+        "ns1.va1.wiz.biz",
+        "ns2.fra.wiz.biz",
+        "ns2.tk7.wiz.biz",
+        "ns2.va1.wiz.biz"
+      ],
+      "ips": [
+        "103.99.171.21",
+        "103.99.169.21",
+        "103.99.168.21",
+        "103.99.171.22"
+      ]
+    },
+    "blockchair.com": {
+      "ns": [
+        "dns3.cloudns.net",
+        "dns4.cloudns.net",
+        "dns7.cloudns.net",
+        "dns8.cloudns.net"
+      ],
+      "ips": [
+        "185.136.96.88",
+        "185.136.97.88",
+        "185.136.98.88",
+        "185.136.99.88"
+      ]
+    },
+    "bscscan.com": {
+      "ns": [
+        "dora.ns.cloudflare.com",
+        "hank.ns.cloudflare.com"
+      ],
+      "ips": [
+        "108.162.192.108",
+        "172.64.32.108",
+        "173.245.58.108",
+        "108.162.193.116"
+      ]
+    },
+    "blockscout.com": {
+      "ns": [
+        "bonnie.ns.cloudflare.com",
+        "ray.ns.cloudflare.com"
+      ],
+      "ips": [
+        "108.162.192.76",
+        "172.64.32.76",
+        "173.245.58.76",
+        "108.162.193.138"
+      ]
+    },
+    "hyperliquid.xyz": {
+      "ns": [
+        "ns-1371.awsdns-43.org",
+        "ns-1829.awsdns-36.co.uk",
+        "ns-480.awsdns-60.com",
+        "ns-531.awsdns-02.net"
+      ],
+      "ips": [
+        "205.251.197.91",
+        "205.251.199.37",
+        "205.251.193.224",
+        "205.251.194.19"
+      ]
+    },
+    "blockcypher.com": {
+      "ns": [
+        "alec.ns.cloudflare.com",
+        "lady.ns.cloudflare.com"
+      ],
+      "ips": [
+        "108.162.193.59",
+        "172.64.33.59",
+        "173.245.59.59",
+        "108.162.192.127"
+      ]
+    },
+    "ripple.com": {
+      "ns": [
+        "ns-1069.awsdns-05.org",
+        "ns-144.awsdns-18.com",
+        "ns-1843.awsdns-38.co.uk",
+        "ns-924.awsdns-51.net"
+      ],
+      "ips": [
+        "205.251.196.45",
+        "205.251.192.144",
+        "205.251.199.51",
+        "205.251.195.156"
+      ]
+    },
+    "xrplcluster.com": {
+      "ns": [
+        "adrian.ns.cloudflare.com",
+        "nick.ns.cloudflare.com"
+      ],
+      "ips": [
+        "108.162.192.57",
+        "172.64.32.57",
+        "173.245.58.57",
+        "108.162.193.213"
+      ]
+    },
+    "api.mainnet-beta.solana.com": {
+      "ns": [
+        "dns1.p01.nsone.net",
+        "dns2.p01.nsone.net",
+        "dns3.p01.nsone.net",
+        "dns4.p01.nsone.net",
+        "ns01.rpcdns.net",
+        "ns02.rpcdns.net",
+        "ns03.rpcdns.net",
+        "ns04.rpcdns.net"
+      ],
+      "ips": [
+        "198.51.44.1",
+        "198.51.45.1",
+        "198.51.44.65",
+        "198.51.45.65"
+      ]
+    },
+    "crypto.com": {
+      "ns": [
+        "chad.ns.cloudflare.com",
+        "sima.ns.cloudflare.com"
+      ],
+      "ips": [
+        "108.162.193.82",
+        "172.64.33.82",
+        "173.245.59.82",
+        "108.162.192.222"
+      ]
+    },
+    "chain.so": {
+      "ns": [
+        "elle.ns.cloudflare.com",
+        "max.ns.cloudflare.com"
+      ],
+      "ips": [
+        "108.162.192.110",
+        "172.64.32.110",
+        "173.245.58.110",
+        "108.162.193.132"
+      ]
+    },
+    "upbit.com": {
+      "ns": [
+        "ns-1269.awsdns-30.org",
+        "ns-1578.awsdns-05.co.uk",
+        "ns-774.awsdns-32.net",
+        "ns-90.awsdns-11.com"
+      ],
+      "ips": [
+        "205.251.196.245",
+        "205.251.198.42",
+        "205.251.195.6",
+        "205.251.192.90"
+      ]
+    },
+    "bitget.com": {
+      "ns": [
+        "ns-1413.awsdns-48.org",
+        "ns-1617.awsdns-10.co.uk",
+        "ns-490.awsdns-61.com",
+        "ns-777.awsdns-33.net"
+      ],
+      "ips": [
+        "205.251.197.133",
+        "205.251.198.81",
+        "205.251.193.234",
+        "205.251.195.9"
+      ]
+    },
+    "bingx.com": {
+      "ns": [
+        "clay.ns.cloudflare.com",
+        "deborah.ns.cloudflare.com"
+      ],
+      "ips": [
+        "108.162.193.88",
+        "172.64.33.88",
+        "173.245.59.88",
+        "108.162.194.111"
+      ]
+    },
+    "gemini.com": {
+      "ns": [
+        "ns-1351.awsdns-40.org",
+        "ns-1541.awsdns-00.co.uk",
+        "ns-456.awsdns-57.com",
+        "ns-751.awsdns-29.net"
+      ],
+      "ips": [
+        "205.251.197.71",
+        "205.251.198.5",
+        "205.251.193.200",
+        "205.251.194.239"
+      ]
+    },
+    "whitebit.com": {
+      "ns": [
+        "sharon.ns.cloudflare.com",
+        "thomas.ns.cloudflare.com"
+      ],
+      "ips": [
+        "108.162.192.221",
+        "172.64.32.221",
+        "173.245.58.221",
+        "108.162.193.238"
+      ]
+    },
+    "coinw.com": {
+      "ns": [
+        "addilyn.ns.cloudflare.com",
+        "randy.ns.cloudflare.com"
+      ],
+      "ips": [
+        "108.162.194.217",
+        "162.159.38.217",
+        "172.64.34.217",
+        "108.162.195.109"
+      ]
+    },
+    "ourbit.com": {
+      "ns": [
+        "ns-1008.awsdns-62.net",
+        "ns-1198.awsdns-21.org",
+        "ns-1954.awsdns-52.co.uk",
+        "ns-301.awsdns-37.com"
+      ],
+      "ips": [
+        "205.251.195.240",
+        "205.251.199.162",
+        "205.251.193.45"
+      ]
+    },
+    "lbank.com": {
+      "ns": [
+        "ns-1331.awsdns-38.org",
+        "ns-1583.awsdns-05.co.uk",
+        "ns-254.awsdns-31.com",
+        "ns-553.awsdns-05.net"
+      ],
+      "ips": [
+        "205.251.197.51",
+        "205.251.198.47",
+        "205.251.192.254",
+        "205.251.194.41"
+      ]
+    },
+    "lbkex.com": {
+      "ns": [
+        "pdns03.domaincontrol.com",
+        "pdns04.domaincontrol.com"
+      ],
+      "ips": [
+        "97.74.111.51",
+        "173.201.79.51"
+      ]
+    },
+    "bitstamp.net": {
+      "ns": [
+        "ns-1101.awsdns-09.org",
+        "ns-1564.awsdns-03.co.uk",
+        "ns-459.awsdns-57.com",
+        "ns-591.awsdns-09.net"
+      ],
+      "ips": [
+        "205.251.196.77",
+        "205.251.198.28",
+        "205.251.193.203",
+        "205.251.194.79"
+      ]
+    },
+    "bitso.com": {
+      "ns": [
+        "josh.ns.cloudflare.com",
+        "pam.ns.cloudflare.com"
+      ],
+      "ips": [
+        "108.162.193.126",
+        "172.64.33.126",
+        "173.245.59.126",
+        "108.162.192.138"
+      ]
+    },
+    "bullish.com": {
+      "ns": [
+        "kami.ns.cloudflare.com",
+        "woz.ns.cloudflare.com"
+      ],
+      "ips": [
+        "108.162.192.177",
+        "172.64.32.177",
+        "173.245.58.177",
+        "108.162.193.150"
+      ]
+    },
+    "www.weex.com": {
+      "ns": [
+        "ns-1321.awsdns-37.org",
+        "ns-1634.awsdns-12.co.uk",
+        "ns-298.awsdns-37.com",
+        "ns-570.awsdns-07.net"
+      ],
+      "ips": [
+        "205.251.197.41",
+        "205.251.198.98",
+        "205.251.193.42",
+        "205.251.194.58"
+      ]
+    },
+    "gateio.ws": {
+      "ns": [
+        "ns-1317.awsdns-36.org",
+        "ns-1882.awsdns-43.co.uk",
+        "ns-204.awsdns-25.com",
+        "ns-914.awsdns-50.net"
+      ],
+      "ips": [
+        "205.251.197.37",
+        "205.251.199.90",
+        "205.251.192.204",
+        "205.251.195.146"
+      ]
+    },
+    "pyth.network": {
+      "ns": [
+        "celine.ns.cloudflare.com",
+        "keanu.ns.cloudflare.com"
+      ],
+      "ips": [
+        "108.162.194.98",
+        "162.159.38.98",
+        "172.64.34.98",
+        "108.162.195.167"
+      ]
+    },
+    "dourolabs.app": {
+      "ns": [
+        "greg.ns.cloudflare.com",
+        "zoe.ns.cloudflare.com"
+      ],
+      "ips": [
+        "108.162.193.115",
+        "172.64.33.115",
+        "173.245.59.115",
+        "108.162.192.149"
+      ]
+    },
+    "deribit.com": {
+      "ns": [
+        "malavika.ns.cloudflare.com",
+        "vicky.ns.cloudflare.com"
+      ],
+      "ips": [
+        "108.162.194.165",
+        "162.159.38.165",
+        "172.64.34.165",
+        "108.162.195.69"
+      ]
+    },
+    "bitvavo.com": {
+      "ns": [
+        "erin.ns.cloudflare.com",
+        "skip.ns.cloudflare.com"
+      ],
+      "ips": [
+        "108.162.192.113",
+        "172.64.32.113",
+        "173.245.58.113",
+        "108.162.193.233"
+      ]
+    },
+    "pro-api.coinmarketcap.com": {
+      "ns": [
+        "ns-1128.awsdns-13.org",
+        "ns-1658.awsdns-15.co.uk",
+        "ns-416.awsdns-52.com",
+        "ns-669.awsdns-19.net"
+      ],
+      "ips": [
+        "205.251.196.104",
+        "205.251.198.122",
+        "205.251.193.160",
+        "205.251.194.157"
+      ]
+    },
+    "whale-alert.io": {
+      "ns": [
+        "fred.ns.cloudflare.com",
+        "zoe.ns.cloudflare.com"
+      ],
+      "ips": [
+        "108.162.193.113",
+        "172.64.33.113",
+        "173.245.59.113",
+        "108.162.192.149"
+      ]
+    },
+    "timeapi.io": {
+      "ns": [
+        "ns0.transip.net",
+        "ns1.transip.nl",
+        "ns2.transip.eu"
+      ],
+      "ips": [
+        "195.8.195.195",
+        "37.97.199.195"
+      ]
+    },
+    "kalshi.com": {
+      "ns": [
+        "dale.ns.cloudflare.com",
+        "violet.ns.cloudflare.com"
+      ],
+      "ips": [
+        "108.162.193.95",
+        "172.64.33.95",
+        "173.245.59.95",
+        "108.162.192.237"
+      ]
+    },
+    "asi1.ai": {
+      "ns": [
+        "jake.ns.cloudflare.com",
+        "karina.ns.cloudflare.com"
+      ],
+      "ips": [
+        "108.162.193.122",
+        "172.64.33.122",
+        "173.245.59.122",
+        "108.162.192.178"
+      ]
+    },
+    "tokenmix.ai": {
+      "ns": [
+        "fatima.ns.cloudflare.com",
+        "lewis.ns.cloudflare.com"
+      ],
+      "ips": [
+        "108.162.194.188",
+        "162.159.38.188",
+        "172.64.34.188",
+        "108.162.195.159"
+      ]
+    },
+    "g.alchemy.com": {
+      "ns": [
+        "alec.ns.cloudflare.com",
+        "zariyah.ns.cloudflare.com"
+      ],
+      "ips": [
+        "108.162.193.59",
+        "172.64.33.59",
+        "173.245.59.59",
+        "108.162.194.72"
+      ]
+    },
+    "helius-rpc.com": {
+      "ns": [
+        "gina.ns.cloudflare.com",
+        "jarred.ns.cloudflare.com"
+      ],
+      "ips": [
+        "108.162.192.117",
+        "172.64.32.117",
+        "173.245.58.117",
+        "108.162.195.126"
+      ]
+    },
+    "etherscan.io": {
+      "ns": [
+        "dora.ns.cloudflare.com",
+        "hank.ns.cloudflare.com"
+      ],
+      "ips": [
+        "173.245.58.108",
+        "172.64.32.108",
+        "108.162.192.108",
+        "173.245.59.116"
+      ]
+    }
+  }
+}

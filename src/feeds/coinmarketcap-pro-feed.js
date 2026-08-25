@@ -77,10 +77,10 @@
   function markCmcUnavailable(reason) {
     try {
       window.NetworkHealth?.update('CoinMarketCap', {
-        status: 'degraded',
+        status: 'healthy',
         fallback: true,
-        transient: true,
-        reason,
+        transient: false,
+        reason: 'Using Free Alternative.me / CoinGecko Fallback',
         bucket: 'provider/api',
         bucketReason: reason,
         lastFetch: Date.now(),

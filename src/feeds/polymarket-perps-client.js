@@ -9,6 +9,8 @@
 
   if (typeof window === 'undefined') return;
 
+  const PERPS_HTTP_URL = 'https://api.perpetuals.polymarket.com';
+  const PERPS_WS_URL   = 'wss://ws.perpetuals.polymarket.com/v1/ws';
   function getProxyPerpsUrl() {
     const p = (typeof window !== 'undefined' && window.__PROXY_PORT__) || 3010;
     return `http://127.0.0.1:${p}/polymarket-perps`;
@@ -50,11 +52,6 @@
     };
     // Optional address-only context (never secrets)
     if (CREDENTIALS.address) headers['POLY_ADDRESS'] = CREDENTIALS.address;
-
-    try {
-      const res = await fetch(`${PROXY_PERPS_URL}${path}`, { ...options, headers });
-      if (res.ok) return await res.json();
-    } catch (_) {}
 
     const res = await fetch(`${PERPS_HTTP_URL}${path}`, { ...options, headers });
     if (!res.ok) throw new Error(`Perps API HTTP ${res.status}: ${res.statusText}`);

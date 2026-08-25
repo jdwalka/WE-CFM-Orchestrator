@@ -41,26 +41,18 @@ const PROVIDER_BREAKER_CONFIG = {
   const STORE = {}; // provider -> sym -> snapshot
   const MEMPOOL = { btcUnconfirmed: 0, btcValue: 0, lastTxTs: 0 };
   const CONNECTIONS = {}; // name -> { ws, reconnectMs, timer, active, extra }
-  const DEFAULT_DISABLED_WS_PROVIDERS = new Set(['BULLISH', 'OURBIT', 'COINW', 'UPBIT', 'BITSTAMP', 'WHITEBIT', 'COINW', 'BITSO', 'LBANK', 'WEEX']);
+  const DEFAULT_DISABLED_WS_PROVIDERS = new Set([
+    'BULLISH', 'OURBIT', 'COINW', 'UPBIT', 'BITSTAMP', 'WHITEBIT', 'BITSO', 'LBANK', 'WEEX',
+    'KUCOIN', 'GATE', 'BITGET', 'BINGX', 'BITVAVO', 'GEMINI', 'KRAKEN', 'HYPERLIQUID'
+  ]);
   const DEFAULT_BINANCE_WS_ENDPOINTS = [
+    'wss://fstream.binance.com',
     'wss://data-stream.binance.vision',
-    'wss://stream.binance.com:9443',
+    'wss://stream.binance.us:9443',
   ];
   const OPTIONAL_WS_POOL = { timer: null, roster: [] };
   const OPTIONAL_REST_STATUS = {};
-  const OPTIONAL_REST_ENDPOINTS = {
-    // Only real public API endpoints that return JSON and are not homepages
-    UPBIT: 'https://api.upbit.com/v1/market/all',
-    BITGET: 'https://api.bitget.com/api/v2/spot/public/symbols',
-    BINGX: 'https://open-api.bingx.com/openApi/swap/v2/quote/contracts',
-    BITVAVO: 'https://api.bitvavo.com/v2/markets',
-    GEMINI: 'https://api.gemini.com/v1/symbols',
-    // Skip flaky/homepage ones to reduce 403 noise and rate limits on proxy
-    // COINW, BITSTAMP (homepage), WHITEBIT, OURBIT, WEEX, LBANK, BULLISH, BITSO disabled by default
-    // If you want them, enable explicitly and use proper API paths e.g.:
-    // BITSTAMP: 'https://www.bitstamp.net/api/v2/ticker/btcusd/',
-    // WHITEBIT: 'https://api.whitebit.com/api/v4/public/markets',
-  };
+  const OPTIONAL_REST_ENDPOINTS = {};
 
   function flagEnabled(value) {
     if (typeof value === 'boolean') return value;
