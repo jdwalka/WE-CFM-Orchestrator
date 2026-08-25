@@ -42,6 +42,8 @@
     "build:installer": "node scripts/build-electron-safe.js nsis",
     "build:installer:release": "npm run preflight:release && node scripts/build-electron-safe.js nsis",
     "build:artifact-plan": "node scripts/build-electron-safe.js portable --dry-run",
+    "backtest:polymarket-ptb": "node backtest/polymarket-ptb-twap-backtest.js --coins BTC,ETH,SOL,XRP --interval 5m --days 7",
+    "backtest:polymarket-ptb:15m": "node backtest/polymarket-ptb-twap-backtest.js --coins BTC,ETH,SOL,XRP --interval 15m --days 7",
     "backtest:recalibrate": "node backtest/outcome-retuner.js --days 60 --coins BTC,ETH,SOL,XRP",
     "backtest:recalibrate:week": "node backtest/outcome-retuner.js --days 7 --coins BTC,ETH,SOL,XRP --write-weights",
     "backtest:advanced": "node backtest/advanced-backtest.js --days 30",
