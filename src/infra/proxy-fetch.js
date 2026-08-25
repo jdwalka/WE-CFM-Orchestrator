@@ -30,6 +30,8 @@
     ? `http://127.0.0.1:${window.__PROXY_PORT__}`
     : null;
   let proxyReady = !!PROXY_ORIGIN;
+    : 'http://127.0.0.1:3010';
+  let proxyReady = true;
 
   const IS_ELECTRON = window.location.protocol === 'file:';
 
@@ -54,23 +56,10 @@
     'api.crypto.com',
     'api.bitvavo.com',
     'api.upbit.com',
-    'api.bitget.com',
-    'open-api.bingx.com',
-    'api.whitebit.com',
-    'whitebit.com',
-    'www.coinw.com',
-    'ourbit.com',
-    'www.lbank.com',
-    'www.bitstamp.net',
-    'api.bitso.com',
-    'www.bullish.com',
-    'www.weex.com',
   ]);
 
   // ── Bucket B: rate-limited public APIs — proxy for headroom ─────────────
   const RATE_LIMITED = new Set([
-    'api.coingecko.com',
-    'pro-api.coingecko.com',
     'api.dexscreener.com',
     'api.blockchair.com',
     'api.blockcypher.com',
