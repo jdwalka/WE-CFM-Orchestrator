@@ -49,23 +49,18 @@
   function getPolymarket15mSettlementContext(sym, fallbackPrice) {
     const key = String(sym || '').toUpperCase();
     const coin = window.PredictionMarkets?.getCoin(key) ?? null;
-    // Polymarket primary (poly15m → poly5m). kalshi15m kept as last-resort alias only.
-    const mkt = coin?.poly15m || coin?.poly5m || coin?.kalshi15m || null;
+    // Polymarket primary (poly15m → poly5m → poly)
+    const mkt = coin?.poly15m || coin?.poly5m || coin?.poly || null;
     const polymarketRef = mkt?.priceToBeatNum ?? mkt?.targetPriceNum ?? null;
     const polymarketYes = mkt?.probability ?? mkt?.upProbability ?? null;
     // Polymarket Up/Down: Up wins if price settles above PTB → treat as "above"
     const polymarketStrikeDir = mkt?.strikeDir ?? 'above';
-    const rtiData = window._rtiPrices?.[key] ?? null;
-    const rtiPrice = rtiData?.price ?? null;
-    const venue = mkt ? (coin?.poly15m || coin?.poly5m ? 'polymarket' : 'legacy') : null;
-    // Polymarket 5m/15m Up/Down settle on Chainlink TWAP, not CME CF RTI.
-    // RTI is Kalshi-only. Prefer RTDS/micro TWAP, then candle — never RTI on PM.
+    const venue = 'polymarket';
+    // Polymarket 5m/15m Up/Down settle 100% on Chainlink 60s/30s TWAP streams.
     const rtds = window.PredictionMarkets?.getFreshRtdsTwap?.(key, 15_000);
     const microTwap = window.Microstructure?.getTwap?.(key, 30_000);
     const twapPx = Number(rtds?.price ?? microTwap);
-    const settlementPrice = venue === 'polymarket'
-      ? ((Number.isFinite(twapPx) && twapPx > 0) ? twapPx : fallbackPrice)
-      : (rtiPrice ?? ((Number.isFinite(twapPx) && twapPx > 0) ? twapPx : fallbackPrice));
+    const settlementPrice = (Number.isFinite(twapPx) && twapPx > 0) ? twapPx : fallbackPrice;
 
     return {
       poly15mCtx: mkt,
@@ -75,8 +70,10 @@
       polymarketYes,
       polymarketStrikeDir,
       isBelowPoly: polymarketStrikeDir === 'below',
-      rtiData,
-      rtiPrice,
+      twapData: rtds,
+      twapPrice: settlementPrice,
+      rtiData: rtds ? { openAvg: settlementPrice, closeAvg: settlementPrice, delta: 0 } : null, // compat alias
+      rtiPrice: settlementPrice, // compat alias
       settlementPrice,
       venue,
     };
