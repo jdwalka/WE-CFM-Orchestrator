@@ -15,6 +15,7 @@ function test(name, fn) {
 
 test('official docs roster is ultra + asi1 + mini; fast is extra', () => {
   assert.deepStrictEqual(Asi1.ASI1_OFFICIAL_MODELS, ['asi1-ultra', 'asi1', 'asi1-mini']);
+  assert.ok(Asi1.ASI1_ALL_MODELS.includes('asi1-fast'));
   assert.ok(Asi1.ASI1_ACCOUNTS.some((a) => a.email === 'mauro_fanelli@icloud.com'));
   assert.ok(Asi1.ASI1_ACCOUNTS.some((a) => a.email === 'maurofanellijr@gmail.com'));
   assert.ok(Asi1.ASI1_ACCOUNTS.some((a) => a.email === 'gitgoin87@gmail.com'));

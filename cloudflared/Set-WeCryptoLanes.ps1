@@ -57,6 +57,45 @@ function Get-PublicIp {
   } catch { return $_.Exception.Message }
 }
 
+function Install-DirectHostPunch {
+  param(
+    [string]$Gateway,
+    [string[]]$HostNames = @('api.asi1.ai')
+  )
+  if (-not $Gateway) { return }
+
+  # Reconcile managed /32 direct-host routes before adding new resolutions:
+  # Delete any stale /32 routes assigned to this gateway with metric 5 so IP changes don't leave permanent dead routes.
+  Get-NetRoute -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+    Where-Object {
+      $_.DestinationPrefix -match '/32$' -and
+      $_.NextHop -eq $Gateway -and
+      $_.RouteMetric -eq 5
+    } |
+    ForEach-Object {
+      $staleIp = $_.DestinationPrefix -replace '/32$', ''
+      cmd /c "route delete $staleIp >nul 2>&1" | Out-Null
+    }
+
+  $punched = @()
+  foreach ($name in $HostNames) {
+    $ips = @()
+    try {
+      $resolved = Resolve-DnsName -Name $name -Type A -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress }
+      $ips = @($resolved | ForEach-Object { $_.IPAddress })
+    } catch { }
+
+    if (-not $ips -and $name -eq 'api.asi1.ai') { $ips = @('34.149.190.89') }
+    foreach ($ip in $ips) {
+      if ($ip -match '^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$') {
+        cmd /c "route add $ip mask 255.255.255.255 $Gateway metric 5 >nul 2>&1" | Out-Null
+        $punched += ('{0}={1}' -f $name, $ip)
+      }
+    }
+  }
+  return $punched
+}
+
 function Install-WarpPunch {
   param([string]$Gateway)
   $prefixes = @(
@@ -72,6 +111,7 @@ function Install-WarpPunch {
   foreach ($p in $prefixes) {
     cmd /c "route -p add $($p.Dest) mask $($p.Mask) $Gateway metric 5 >nul 2>&1" | Out-Null
   }
+  Install-DirectHostPunch -Gateway $Gateway | Out-Null
 }
 
 # ASI1 (api.asi1.ai) is not in electron/main.js's WECRYPTO_SWEDEN_SOCKS needle
@@ -147,6 +187,10 @@ function Show-Status {
   Write-Host '== WARP Ethernet punch =='
   Get-NetRoute -AddressFamily IPv4 |
     Where-Object { $_.DestinationPrefix -match '^162\.159\.(192|193|197|36|46)\.0/24$' -and $_.NextHop -eq $EthernetGw } |
+    Format-Table DestinationPrefix, NextHop, InterfaceAlias, RouteMetric -AutoSize
+  Write-Host '== Direct host Ethernet punch =='
+  Get-NetRoute -AddressFamily IPv4 |
+    Where-Object { $_.DestinationPrefix -match '/32$' -and $_.NextHop -eq $EthernetGw -and $_.RouteMetric -eq 5 } |
     Format-Table DestinationPrefix, NextHop, InterfaceAlias, RouteMetric -AutoSize
   Write-Host '== SOCKS5 =='
   $tcp = Test-NetConnection -ComputerName ($Socks5.Split(':')[0]) -Port 1080 -WarningAction SilentlyContinue

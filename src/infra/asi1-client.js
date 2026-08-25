@@ -107,6 +107,8 @@ const KEY_ENV_NAMES = [
 
 const fs = require('fs');
 const pathMod = require('path');
+const http = require('http');
+const https = require('https');
 
 function secretSearchDirs() {
   return [
@@ -197,7 +199,9 @@ function readAsi1KeysFromSecrets() {
 function resolveAsi1ApiKeys() {
   const keys = [];
   const seen = new Set();
+  const allowedAccount = process.env.ASI1_ONLY_ACCOUNT || process.env.ASI1_PREFERRED_ACCOUNT;
   for (const spec of KEY_ENV_NAMES) {
+    if (allowedAccount && spec.account && spec.account !== allowedAccount) continue;
     const value = String(process.env[spec.env] || '').trim();
     if (!value || seen.has(value)) continue;
     seen.add(value);
@@ -209,6 +213,7 @@ function resolveAsi1ApiKeys() {
     });
   }
   for (const k of readAsi1KeysFromSecrets()) {
+    if (allowedAccount && k.account && k.account !== allowedAccount) continue;
     if (seen.has(k.value)) continue;
     seen.add(k.value);
     keys.push(k);
@@ -250,6 +255,46 @@ async function fetchWithTimeout(url, options, timeoutMs) {
   } finally {
     clearTimeout(timer);
   }
+function fetchWithTimeout(url, options = {}, timeoutMs = 35000) {
+  return new Promise((resolve, reject) => {
+    const parsed = new URL(url);
+    const transport = parsed.protocol === 'https:' ? https : http;
+    const body = options.body;
+    const headers = { ...(options.headers || {}) };
+    if (body && !headers['Content-Length'] && !headers['content-length']) {
+      headers['Content-Length'] = Buffer.byteLength(body);
+    }
+
+    const req = transport.request(url, {
+      method: options.method || 'GET',
+      headers,
+      timeout: timeoutMs,
+    }, (res) => {
+      const chunks = [];
+      res.on('data', (c) => chunks.push(c));
+      res.on('end', () => {
+        const rawBody = Buffer.concat(chunks).toString('utf8');
+        resolve({
+          ok: res.statusCode >= 200 && res.statusCode < 300,
+          status: res.statusCode,
+          statusText: res.statusMessage || '',
+          headers: res.headers,
+          text: async () => rawBody,
+          json: async () => JSON.parse(rawBody),
+        });
+      });
+    });
+
+    req.on('timeout', () => {
+      req.destroy(new Error(`Request timeout after ${timeoutMs}ms`));
+    });
+    req.on('error', (err) => {
+      reject(err);
+    });
+
+    if (body) req.write(body);
+    req.end();
+  });
 }
 
 // ── Route mode: measured, not assumed ──────────────────────────────────
@@ -542,6 +587,68 @@ async function healthCheck(options = {}) {
       baseUrl: ASI1_BASE_URL,
     };
   }
+}
+
+// ── Connectivity badge: a free background probe, decoupled from real ASI1
+// requests ──────────────────────────────────────────────────────────────
+// The HUD/ASI1-Desk connectivity badge previously only updated on a manual
+// "Ask ASI1" click (a real, quota-costing inference call) or not at all.
+// Probe the actual ASI1 TLS endpoint, not the local proxy's listening port.
+// A loopback connect only proves that some process accepted a socket and will
+// therefore report single-digit latency even when the ASI1 route is slow or
+// unreachable. Node's raw socket bypasses renderer fetch wrappers and measures
+// the route selected by the OS routing table (including any direct /32 punch).
+const net = require('net');
+const ROUTE_PROBE_INTERVAL_MS = Number(process.env.ASI1_ROUTE_PROBE_INTERVAL_MS || 30_000);
+const ROUTE_PROBE_TIMEOUT_MS = 5_000;
+const ROUTE_STALE_MS = 5 * 60_000;
+const routeState = {
+  lastLatencyMs: null,
+  lastMeasuredAt: null,
+  lastRequestOk: null,
+  lastError: null,
+};
+
+function recordAsi1RouteTiming({ elapsedMs = null, ok = false, error = null } = {}) {
+  if (elapsedMs != null) routeState.lastLatencyMs = elapsedMs;
+  routeState.lastMeasuredAt = Date.now();
+  routeState.lastRequestOk = ok;
+  routeState.lastError = error;
+}
+
+function classifyAsi1RouteMode() {
+  if (routeState.lastLatencyMs == null) return 'unknown';
+  const ageMs = routeState.lastMeasuredAt ? Date.now() - routeState.lastMeasuredAt : Infinity;
+  if (ageMs > ROUTE_STALE_MS) return 'unknown';
+  // A timed-out/errored probe still has an elapsedMs (~= ROUTE_PROBE_TIMEOUT_MS),
+  // which would otherwise get misclassified as "fallback" (slow-but-connected)
+  // instead of surfacing that the probe couldn't connect at all.
+  if (routeState.lastRequestOk === false) return 'unreachable';
+  return 'native';
+}
+
+function probeAsi1RouteOnce() {
+  const endpoint = new URL(ASI1_BASE_URL);
+  const host = endpoint.hostname;
+  const port = Number(endpoint.port) || (endpoint.protocol === 'http:' ? 80 : 443);
+  const startedAt = Date.now();
+  const socket = net.connect({ host, port, timeout: ROUTE_PROBE_TIMEOUT_MS });
+  const finish = (ok, error) => {
+    socket.removeAllListeners();
+    socket.destroy();
+    recordAsi1RouteTiming({ elapsedMs: Date.now() - startedAt, ok, error: error || null });
+  };
+  socket.once('connect', () => finish(true, null));
+  socket.once('timeout', () => finish(false, 'connect timeout'));
+  socket.once('error', (err) => finish(false, err.message));
+}
+
+// Runs only in a long-lived process (Electron main); harmless no-op timer
+// elsewhere. Disable with ASI1_DISABLE_ROUTE_PROBE=1 (e.g. short-lived
+// CLI/test invocations of this module).
+if (process.env.ASI1_DISABLE_ROUTE_PROBE !== '1') {
+  probeAsi1RouteOnce();
+  setInterval(probeAsi1RouteOnce, ROUTE_PROBE_INTERVAL_MS).unref?.();
 }
 
 function getDiagnostics() {

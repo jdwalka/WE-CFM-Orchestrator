@@ -106,6 +106,7 @@ const server = net.createServer((client) => {
         }
         client.destroy();
       });
+      dest.on('error', () => { client.destroy(); });
       client.on('close', () => dest.destroy());
       dest.on('close', () => client.destroy());
     }
@@ -118,6 +119,7 @@ const server = net.createServer((client) => {
 
   client.on('data', onData);
   client.on('error', () => { });
+  client.on('error', () => {});
 });
 
 server.maxConnections = 256;

@@ -1629,7 +1629,8 @@ let proxyDemotedToJsFallback = false;
 const PROXY_PORT_CASCADE = [3010, 3011, 3012, 3013, 3014, 3015, 3016, 3017, 3018, 3019, 3020];
 
 const PROXY_EXCHANGE_BASES = {
-  'binance': 'https://data-api.binance.vision',
+  'binance': 'https://api.binance.com',
+  'binance-data': 'https://data-api.binance.vision',
   'binance-f': 'https://fapi.binance.com',
   'binance-d': 'https://dapi.binance.com',
   'coingecko': 'https://api.coingecko.com',
@@ -1710,6 +1711,17 @@ function moduleFileExists(crateRoot, name) {
 
 async function startJsProxyFallback(port) {
   const http = require('http');
+  const https = require('https');
+  let socksAgent = null;
+  try {
+    const { SocksProxyAgent } = require('socks-proxy-agent');
+    socksAgent = new SocksProxyAgent(process.env.WECRYPTO_SWEDEN_SOCKS || 'socks5://127.0.0.1:18090', {
+      keepAlive: true,
+      keepAliveMsecs: 60000,
+      maxSockets: 64,
+    });
+  } catch (_) { }
+
   if (jsProxyServer && jsProxyServer.listening) {
     return;
   }
@@ -1718,6 +1730,9 @@ async function startJsProxyFallback(port) {
   // original encoding header with the decoded bytes or Chromium will decode it
   // again and reject an otherwise successful response.
   const responseHeadersToStrip = new Set([...hopByHop, 'content-encoding']);
+
+  const proxyMicroCache = new Map();
+  const PROXY_CACHE_TTL_MS = 600;
 
   const readBody = (req) => new Promise(resolve => {
     const chunks = [];
@@ -1734,14 +1749,25 @@ async function startJsProxyFallback(port) {
 
   const forward = async (targetUrl, req, res) => {
     const method = String(req.method || 'GET').toUpperCase();
-    const headers = {};
-    for (const [k, v] of Object.entries(req.headers || {})) {
-      if (!hopByHop.has(String(k).toLowerCase())) headers[k] = v;
-    }
-    const body = (method === 'GET' || method === 'HEAD') ? undefined : await readBody(req);
+    const isGet = method === 'GET' || method === 'HEAD';
+    const noCache = req.headers['x-no-cache'] || req.headers['cache-control'] === 'no-cache';
 
-    const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), 12000);
+    if (isGet && !noCache) {
+      const now = Date.now();
+      const cached = proxyMicroCache.get(targetUrl);
+      if (cached && (now - cached.ts) < PROXY_CACHE_TTL_MS) {
+        res.statusCode = cached.statusCode;
+        for (const [k, v] of Object.entries(cached.headers)) {
+          if (!responseHeadersToStrip.has(String(k).toLowerCase())) res.setHeader(k, v);
+        }
+        res.setHeader('X-Proxy-Cache', 'HIT');
+        writeCors(res);
+        return res.end(cached.body);
+      }
+    }
+
+    const body = isGet ? undefined : await readBody(req);
+
     try {
       const agent = swedenProxyAgentForUrl(targetUrl);
       const fetchImpl = agent ? require('node-fetch') : fetch;
@@ -1761,16 +1787,76 @@ async function startJsProxyFallback(port) {
         fetch('http://127.0.0.1:7629/ingest/9b1c0a9c-43ba-46f7-b483-8aad6ef8128f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8ad9ce'},body:JSON.stringify({sessionId:'8ad9ce',runId:'post-fix',hypothesisId:'F',location:'electron/main.js:js-proxy-forward-result',message:'JS proxy binance upstream response',data:{status:up.status,usesSwedenAgent:!!agent,targetHost:(()=>{try{return new URL(targetUrl).hostname}catch(_){return null}})()},timestamp:Date.now()})}).catch(()=>{});
         // #endregion
       }
+      const parsedUrl = new URL(targetUrl);
+      const isHttps = parsedUrl.protocol === 'https:';
+      const transport = isHttps ? https : http;
 
-      res.statusCode = up.status;
-      for (const [k, v] of up.headers.entries()) {
-        if (!responseHeadersToStrip.has(String(k).toLowerCase())) res.setHeader(k, v);
-      }
-      writeCors(res);
-      const buf = Buffer.from(await up.arrayBuffer());
-      res.end(buf);
+      const outgoingHeaders = {
+        'host': parsedUrl.hostname,
+        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
+        'accept': req.headers['accept'] || '*/*',
+        'accept-language': 'en-US,en;q=0.9',
+      };
+      if (req.headers['content-type']) outgoingHeaders['content-type'] = req.headers['content-type'];
+      if (req.headers['authorization']) outgoingHeaders['authorization'] = req.headers['authorization'];
+      if (req.headers['x-mbx-apikey']) outgoingHeaders['x-mbx-apikey'] = req.headers['x-mbx-apikey'];
+      if (req.headers['x-api-key']) outgoingHeaders['x-api-key'] = req.headers['x-api-key'];
+      if (req.headers['x-signature']) outgoingHeaders['x-signature'] = req.headers['x-signature'];
+      if (req.headers['x-timestamp']) outgoingHeaders['x-timestamp'] = req.headers['x-timestamp'];
+      if (body && body.length) outgoingHeaders['content-length'] = body.length;
+
+      const outgoingReq = transport.request({
+        host: parsedUrl.hostname,
+        hostname: parsedUrl.hostname,
+        servername: parsedUrl.hostname,
+        port: parsedUrl.port || (isHttps ? 443 : 80),
+        path: parsedUrl.pathname + parsedUrl.search,
+        method,
+        headers: outgoingHeaders,
+        agent: socksAgent,
+        timeout: 12000,
+      }, (upstreamRes) => {
+        res.statusCode = upstreamRes.statusCode;
+        for (const [k, v] of Object.entries(upstreamRes.headers)) {
+          if (!responseHeadersToStrip.has(String(k).toLowerCase())) res.setHeader(k, v);
+        }
+        writeCors(res);
+        const chunks = [];
+        upstreamRes.on('data', chunk => {
+          chunks.push(chunk);
+          res.write(chunk);
+        });
+        upstreamRes.on('end', () => {
+          if (isGet && upstreamRes.statusCode === 200) {
+            const fullBody = Buffer.concat(chunks);
+            proxyMicroCache.set(targetUrl, {
+              statusCode: 200,
+              headers: upstreamRes.headers,
+              body: fullBody,
+              ts: Date.now(),
+            });
+            if (proxyMicroCache.size > 500) {
+              const firstKey = proxyMicroCache.keys().next().value;
+              proxyMicroCache.delete(firstKey);
+            }
+          }
+          res.end();
+        });
+      });
+
+      outgoingReq.on('timeout', () => {
+        outgoingReq.destroy(new Error('upstream timeout'));
+      });
+      outgoingReq.on('error', (e) => {
+        writeCors(res);
+        res.statusCode = 502;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ error: 'proxy-forward-failed', message: e?.message || 'unknown error' }));
+      });
+
+      if (body && body.length > 0) outgoingReq.write(body);
+      outgoingReq.end();
     } catch (e) {
-      clearTimeout(t);
       writeCors(res);
       res.statusCode = 502;
       res.setHeader('Content-Type', 'application/json');
@@ -1875,6 +1961,14 @@ async function proxyUpstreamWorks(port) {
 // also self-reschedules via scheduleProxyForwardsCheck() rather than running
 // once, so a mid-session 502 storm self-heals instead of persisting for the
 // rest of the run.
+// The proxy process (JS SOCKS5) can stay up and bound to its port while its
+// own outbound leg to exchanges silently dies — e.g. a VPN/SOCKS route
+// flapping after boot, or the box's egress IP getting flagged mid-session.
+// A liveness check that only runs once at boot misses that: the renderer
+// keeps 502ing for the rest of the run with no recovery. So this both runs
+// at boot AND self-reschedules via scheduleProxyForwardsCheck() below, so a
+// mid-session upstream failure gets a chance to self-heal by rebinding to a
+// fresh port instead of persisting silently.
 async function ensureProxyForwards() {
   const usingJsFallback = !!(jsProxyServer && jsProxyServer.listening);
   const port = proxyPort || 3010;
@@ -1894,19 +1988,26 @@ async function ensureProxyForwards() {
   console.warn(`[proxy] native proxy on ${port} cannot reach exchanges; switching to Node TLS fallback`);
   proxyDemotedToJsFallback = true;
   stopProxyProcessOnly();
+    console.log(`[proxy] upstream OK on ${port}`);
+    proxyHealthy = true;
+    return;
+  }
+  console.warn(`[proxy] proxy on ${port} cannot reach exchanges; rebinding to a fresh port`);
+  stopProxy();
   await new Promise((resolve) => setTimeout(resolve, 300));
   try {
-    await startJsProxyFallback(port);
+    await startProxy();
   } catch (err) {
-    const alt = await findFreePort(PROXY_PORT_CASCADE);
-    console.warn(`[proxy] JS fallback bind ${port} failed (${err.message}); trying ${alt}`);
-    await startJsProxyFallback(alt);
+    console.error('[proxy] rebind failed:', err.message);
+    proxyHealthy = false;
+    return;
   }
   if (await proxyUpstreamWorks(proxyPort)) {
     console.log(`[proxy-js] upstream OK on ${proxyPort}`);
+    console.log(`[proxy] upstream OK on rebind port ${proxyPort}`);
     proxyHealthy = true;
   } else {
-    console.error('[proxy-js] fallback also cannot reach exchanges');
+    console.error('[proxy] rebind also cannot reach exchanges');
     proxyHealthy = false;
   }
 }
@@ -1978,8 +2079,26 @@ async function startProxy() {
   } else {
     console.warn('[proxy] executable missing in dev mode; falling back to `cargo run --bin we-crypto-proxy`.');
   }
+let proxyForwardsCheckTimer = null;
+const PROXY_FORWARDS_CHECK_INTERVAL_MS = 45_000;
 
-  // Pick a free port then write config.toml
+function scheduleProxyForwardsCheck() {
+  if (proxyForwardsCheckTimer) clearTimeout(proxyForwardsCheckTimer);
+  proxyForwardsCheckTimer = setTimeout(async () => {
+    proxyForwardsCheckTimer = null;
+    if (proxyManualStop) return;
+    try {
+      await ensureProxyForwards();
+    } catch (err) {
+      console.error('[proxy] periodic forwards check failed:', err.message);
+    } finally {
+      scheduleProxyForwardsCheck();
+    }
+  }, PROXY_FORWARDS_CHECK_INTERVAL_MS);
+}
+
+async function startProxy() {
+  proxyManualStop = false;
   const chosenPort = await findFreePort(PROXY_PORT_CASCADE);
   proxyPort = chosenPort;
   global.__WECRYPTO_PROXY_PORT__ = proxyPort;
@@ -2047,6 +2166,8 @@ async function startProxy() {
   });
   proxyRestartAttempts = 0;
   console.log(`[proxy] started on port ${chosenPort} — pid ${proxyProcess.pid}`);
+  console.log(`[proxy] starting JS SOCKS5 proxy on port ${chosenPort}`);
+  await startJsProxyFallback(chosenPort);
 }
 
 function stopProxy() {
@@ -2071,6 +2192,10 @@ function stopProxyProcessOnly() {
   if (proxyRestartTimer) {
     clearTimeout(proxyRestartTimer);
     proxyRestartTimer = null;
+  }
+  if (proxyForwardsCheckTimer) {
+    clearTimeout(proxyForwardsCheckTimer);
+    proxyForwardsCheckTimer = null;
   }
   if (proxyProcess && !proxyProcess.killed) {
     try { proxyProcess.kill(); } catch (_) { }
@@ -2172,6 +2297,7 @@ function waitForProxy(maxMs = 5000, pollMs = 150) {
         res.on('end', () => {
           if (res.statusCode === 200 && body.trim() === 'OK') {
             proxyPort = port;           // lock in the responsive port
+            global.__WECRYPTO_PROXY_PORT__ = proxyPort;
             proxyHealthy = true;
             resolve();
           } else {
@@ -4222,6 +4348,7 @@ app.whenReady().then(async () => {
   await waitForProxy();   // give proxy ~3s to bind before renderer fires fetchAll
   await ensureProxyForwards();
   scheduleProxyForwardsCheck(); // keep re-checking so a mid-session SOCKS/VPN flap self-heals
+  scheduleProxyForwardsCheck(); // keep re-checking so a mid-session upstream flap self-heals
 
   // Start web service (HTTPS)
   webServiceHealth = startWebService() || webServiceHealth;
