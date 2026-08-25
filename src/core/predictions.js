@@ -189,41 +189,41 @@
   // (63–70% WR for BTC/ETH). Weights now reflect empirical reality.
   // ================================================================
   const COMPOSITE_WEIGHTS = {
-     supertrend: 0.1,
-     hma: 0.07,
-     vwma: 0.06,
-     ema: 0.05,
-     sma: 0.03,
-     macd: 0.07,
-     persistence: 0.07,
-     bands: 0.05,
-     keltner: 0.05,
-     williamsR: 0.07,
-     rsi: 0.06,
-     cci: 0.05,
-     stochrsi: 0.04,
-     volume: 0.12,
-     obv: 0.07,
-     cmf: 0.07,
-     mfi: 0.07,
-     structure: 0.1,
-     ichimoku: 0.05,
-     adx: 0.04,
-     fisher: 0.04,
-     book: 0.25,
-     flow: 0.22,
-     toxicity: 0.06,
-     spoof: 0.07,
-     iceberg: 0.08,
-     orderBookImbalance: 0.18,
-     imbalanceVelocity: 0.12,
-     liquidityDepth: 0.08,
-     liquidityVacuum: 0.12,
-     fundingRate: 0.1,
-     mktSentiment: 0.18,
-     fearGreed: 0.12,
-     cmcMacro: 0.08,
-   };
+    supertrend: 0.1,
+    hma: 0.07,
+    vwma: 0.06,
+    ema: 0.05,
+    sma: 0.03,
+    macd: 0.07,
+    persistence: 0.07,
+    bands: 0.05,
+    keltner: 0.05,
+    williamsR: 0.07,
+    rsi: 0.06,
+    cci: 0.05,
+    stochrsi: 0.04,
+    volume: 0.12,
+    obv: 0.07,
+    cmf: 0.07,
+    mfi: 0.07,
+    structure: 0.1,
+    ichimoku: 0.05,
+    adx: 0.04,
+    fisher: 0.04,
+    book: 0.25,
+    flow: 0.22,
+    toxicity: 0.06,
+    spoof: 0.07,
+    iceberg: 0.08,
+    orderBookImbalance: 0.18,
+    imbalanceVelocity: 0.12,
+    liquidityDepth: 0.08,
+    liquidityVacuum: 0.12,
+    fundingRate: 0.1,
+    mktSentiment: 0.18,
+    fearGreed: 0.12,
+    cmcMacro: 0.08,
+  };
 
   const {
     REGIME_WEIGHT_MULTS,
@@ -242,197 +242,71 @@
   // Caps extremes (no bias > 1.6 on tradable coins). XRP/SOL trade-disabled via TRADING_POLICY.
   // Micro book/flow kept modest for live path (not in offline advanced suite).
   const PER_COIN_INDICATOR_BIAS = {
-     BTC: {
-       bands: 1.09,
-       williamsR: 1.08,
-       obv: 0.956,
-       vwap: 1.05,
-       hma: 0.9,
-       momentum: 0.55,
-       stochrsi: 1.05,
-       sma: 0.95,
-       adx: 1.01,
-       mfi: 1.13,
-       supertrend: 0.942,
-       ichimoku: 0.885,
-       keltner: 1.131,
-       volume: 0.94,
-       ema: 0.891,
-       vwma: 0.86,
-       macd: 0.91,
-       structure: 1.158,
-       fisher: 1.08,
-       persistence: 0.963,
-       rsi: 0.637,
-       cci: 1.07,
-       cmf: 1.01,
-       fearGreed: 1,
-       book: 0.85,
-       flow: 0.8,
-     },
-     ETH: {
-       bands: 1.33,
-       mfi: 1.1,
-       sma: 0.957,
-       adx: 1.11,
-       supertrend: 1.069,
-       ichimoku: 0.964,
-       hma: 0.85,
-       vwap: 0.82,
-       ema: 0.908,
-       cmf: 1.1,
-       momentum: 0.55,
-       obv: 0.918,
-       fisher: 1.24,
-       vwma: 0.94,
-       macd: 0.851,
-       cci: 1.22,
-       rsi: 0.81,
-       structure: 1.2,
-       persistence: 0.981,
-       stochrsi: 1.11,
-       williamsR: 1.3,
-       keltner: 1.291,
-       volume: 0.92,
-       fearGreed: 1,
-       book: 0.9,
-       flow: 0.85,
-     },
-     SOL: {
-       williamsR: 1.152,
-       cci: 1.12,
-       sma: 1.061,
-       mfi: 1.13,
-       rsi: 1.02,
-       supertrend: 0.963,
-       ema: 0.876,
-       bands: 1.18,
-       stochrsi: 0.86,
-       volume: 0.95,
-       cmf: 0.8,
-       ichimoku: 0.88,
-       persistence: 0.709,
-       adx: 0.9,
-       hma: 0.76,
-       vwap: 0.7,
-       vwma: 0.712,
-       macd: 0.9,
-       keltner: 1.351,
-       fisher: 1.13,
-       momentum: 0.55,
-       obv: 0.863,
-       structure: 1.285,
-       fearGreed: 0.9,
-       book: 0.75,
-       flow: 0.7,
-     },
-     XRP: {
-       vwap: 0.98,
-       rsi: 0.91,
-       fisher: 0.83,
-       hma: 1.009,
-       mfi: 1.02,
-       momentum: 0.55,
-       sma: 0.765,
-       macd: 1.063,
-       vwma: 0.803,
-       persistence: 0.865,
-       ichimoku: 0.859,
-       obv: 0.809,
-       volume: 0.84,
-       adx: 0.83,
-       ema: 0.733,
-       keltner: 0.947,
-       cci: 0.936,
-       williamsR: 0.875,
-       supertrend: 0.728,
-       cmf: 0.84,
-       stochrsi: 0.988,
-       bands: 0.992,
-       structure: 1.127,
-       fearGreed: 0.7,
-       book: 0.606,
-       flow: 0.556,
-     },
-     HYPE: {
-       williamsR: 6.5,
-       fisher: 5,
-       cci: 4.5,
-       bands: 3,
-       keltner: 2,
-       rsi: 1.5,
-       stochrsi: 1.2,
-       structure: 0.8,
-       obv: 0.5,
-       persistence: 0.4,
-       vwap: 0.3,
-       ema: 0.3,
-       cmf: 0.3,
-       adx: 0.3,
-       ichimoku: 0.2,
-       sma: 0,
-       vwma: 0.2,
-       supertrend: 0.1,
-       momentum: 0.05,
-       hma: 0.05,
-       macd: 0.1,
-       volume: 0.3,
-       mfi: 0.3,
-       fearGreed: 1.8,
-     },
-     DOGE: {
-       obv: 4.5,
-       volume: 3.5,
-       cmf: 3,
-       bands: 2.5,
-       mfi: 2,
-       structure: 1.8,
-       fisher: 1.8,
-       keltner: 1.212,
-       cci: 1.012,
-       williamsR: 0.824,
-       rsi: 0.5,
-       persistence: 0.252,
-       ema: 0.277,
-       macd: 0.181,
-       ichimoku: 0.177,
-       adx: 0.105,
-       hma: 0.296,
-       sma: 0,
-       supertrend: 0.197,
-       vwap: 0.102,
-       stochrsi: 0.068,
-       momentum: 0.052,
-       vwma: 0.029,
-       fearGreed: 2,
-     },
-     BNB: {
-       sma: 5,
-       mfi: 4.5,
-       ema: 4,
-       vwap: 3.5,
-       hma: 3,
-       vwma: 2.5,
-       volume: 3.5,
-       momentum: 2,
-       persistence: 2,
-       macd: 1.5,
-       ichimoku: 2,
-       supertrend: 2,
-       cmf: 1.5,
-       obv: 0.5,
-       fisher: 0.831,
-       cci: 0.34,
-       adx: 0.505,
-       structure: 0.065,
-       keltner: 0.093,
-       williamsR: 0.089,
-       bands: 0.093,
-       rsi: 0.071,
-       stochrsi: 0.089,
-       fearGreed: 0.8,
-     },
-   };
+    BTC: {
+      bands: 1.001,
+      williamsR: 1.001,
+      obv: 1,
+      vwap: 1,
+      hma: 0.9,
+      momentum: 0.6,
+      stochrsi: 1,
+      sma: 0.95,
+      adx: 1,
+      mfi: 1.1,
+      supertrend: 1,
+      ema: 0.899,
+      macd: 0.899,
+      rsi: 0.7,
+    },
+    ETH: {
+      bands: 1.001,
+      williamsR: 1.002,
+      obv: 1,
+      vwap: 1,
+      hma: 0.9,
+      momentum: 0.6,
+      stochrsi: 1,
+      sma: 0.95,
+      adx: 1,
+      mfi: 1.1,
+      supertrend: 1,
+      ema: 0.899,
+      macd: 0.897,
+      rsi: 0.7,
+    },
+    SOL: {
+      bands: 1.001,
+      williamsR: 1.003,
+      obv: 1,
+      vwap: 1,
+      hma: 0.9,
+      momentum: 0.599,
+      stochrsi: 1,
+      sma: 0.95,
+      adx: 1,
+      mfi: 1.1,
+      supertrend: 1,
+      ema: 0.899,
+      macd: 0.897,
+      rsi: 0.7,
+    },
+    XRP: {
+      bands: 1,
+      williamsR: 1.001,
+      obv: 1,
+      vwap: 1,
+      hma: 0.9,
+      momentum: 0.6,
+      stochrsi: 1,
+      sma: 0.95,
+      adx: 1,
+      mfi: 1.1,
+      supertrend: 1,
+      ema: 0.899,
+      macd: 0.898,
+      rsi: 0.7,
+    },
+  };
 
   // Expose for adaptive retuner (live mutations propagate to next prediction run)
   window.PER_COIN_INDICATOR_BIAS = PER_COIN_INDICATOR_BIAS;
@@ -4882,24 +4756,43 @@
         if (!model) continue;
 
         const entry = windowCandles[windowCandles.length - 1].c;
+        const ptb = windowCandles[windowCandles.length - 1].o || entry;
         const exit = candles[idx + horizonBars].c;
-        const returnPct = entry > 0 ? ((exit - entry) / entry) * 100 : 0;
+
+        const atrPctRaw = Number(model.volatility?.atrPct);
+        const atrPct = (Number.isFinite(atrPctRaw) && atrPctRaw > 0) ? (atrPctRaw / 100) : 0.0035;
+        const atrDollar = entry * atrPct;
+        const remainingFrac = 0.60;
+        const expectedMove = model.score * atrDollar * 0.40 * remainingFrac;
+        const meanFinal = entry + expectedMove;
+        const sigma = Math.max(entry * 0.0015, atrDollar * Math.sqrt(remainingFrac));
+        const z = (meanFinal - ptb) / (sigma || 1);
+        let pUp = normalCDF(z);
+
+        const actualSettleUp = exit >= ptb;
+        const modelCallUp = pUp >= 0.50;
+        const isWin = (modelCallUp === actualSettleUp);
+        const payoffPct = isWin ? 1.0 : -1.0;
+        const rawReturn = payoffPct * (Math.abs((exit - ptb) / (ptb || 1)) * 100 + 0.5);
+        const returnPct = clamp(rawReturn, -25, 25);
+        const ptbScore = clamp((pUp - 0.5) * 2.0, -1, 1);
+
         observations.push({
           idx,
           ...applyBacktestFilter({
             idx,
-            score: model.score,
-            absScore: Math.abs(model.score),
+            score: ptbScore,
+            absScore: Math.abs(ptbScore),
             signal: model.signal,
             agreement: model.diagnostics?.agreement ?? 0.5,
             conflict: model.diagnostics?.conflict ?? 0,
-            coreScore: model.diagnostics?.coreScore ?? model.score,
+            coreScore: ptbScore,
             persistenceScore: model.diagnostics?.persistenceScore ?? 0,
             structureBias: model.diagnostics?.structureBias ?? 0,
             structureZone: model.diagnostics?.structureZone ?? 'middle',
             regime: classifyMarketRegime(model),
             returnPct,
-            bucket: scoreBucket(Math.abs(model.score)),
+            bucket: scoreBucket(Math.abs(ptbScore)),
           }, filter),
           calibrationSample: 0,
           regimeAware: false,
@@ -5009,25 +4902,48 @@
         if (!model) continue;
 
         const entry = windowCandles[windowCandles.length - 1].c;
+        const ptb = windowCandles[windowCandles.length - 1].o || entry;
         const exit = candles[idx + horizonBars].c;
-        // Guard against bad-data candles (e.g. near-zero close from one exchange
-        // not corrected by pooling median) — cap at ±25% which covers any real move
-        const rawReturn = entry > 0 ? ((exit - entry) / entry) * 100 : 0;
+
+        // PTB CDF probability & intrawindow expected move (matching live predictions.js)
+        const atrPctRaw = Number(model.volatility?.atrPct);
+        const atrPct = (Number.isFinite(atrPctRaw) && atrPctRaw > 0) ? (atrPctRaw / 100) : 0.0035;
+        const atrDollar = entry * atrPct;
+        const remainingFrac = 0.60;
+        const expectedMove = model.score * atrDollar * 0.40 * remainingFrac;
+        const meanFinal = entry + expectedMove;
+        const sigma = Math.max(entry * 0.0015, atrDollar * Math.sqrt(remainingFrac));
+        const z = (meanFinal - ptb) / (sigma || 1);
+        let pUp = normalCDF(z);
+
+        const gap = entry - ptb;
+        if (gap < 0 && model.score <= 0 && pUp > 0.45) pUp = Math.min(pUp, 0.40);
+        if (gap > 0 && model.score >= 0 && pUp < 0.55) pUp = Math.max(pUp, 0.60);
+
+        // In Polymarket binary contract terms:
+        // Settlement is: exit (Chainlink settlement TWAP) >= PTB ? UP : DOWN
+        const actualSettleUp = exit >= ptb;
+        const modelCallUp = pUp >= 0.50;
+        const isWin = (modelCallUp === actualSettleUp);
+        const payoffPct = isWin ? 1.0 : -1.0;
+        const rawReturn = payoffPct * (Math.abs((exit - ptb) / (ptb || 1)) * 100 + 0.5);
         const returnPct = clamp(rawReturn, -25, 25);
+        const ptbScore = clamp((pUp - 0.5) * 2.0, -1, 1);
+
         const rawObservation = {
           idx,
-          score: model.score,
-          absScore: Math.abs(model.score),
+          score: ptbScore,
+          absScore: Math.abs(ptbScore),
           signal: model.signal,
           agreement: model.diagnostics?.agreement ?? 0.5,
           conflict: model.diagnostics?.conflict ?? 0,
-          coreScore: model.diagnostics?.coreScore ?? model.score,
+          coreScore: ptbScore,
           persistenceScore: model.diagnostics?.persistenceScore ?? 0,
           structureBias: model.diagnostics?.structureBias ?? 0,
           structureZone: model.diagnostics?.structureZone ?? 'middle',
           regime: classifyMarketRegime(model),
           returnPct,
-          bucket: scoreBucket(Math.abs(model.score)),
+          bucket: scoreBucket(Math.abs(ptbScore)),
         };
         const calibration = history.length >= BACKTEST_MIN_TRAIN_OBS
           ? calibrateBacktestFilter(history, rawObservation.regime, horizonMin, horizonBars)
@@ -6123,32 +6039,34 @@
       resolvedRouterAction = 'trade';
     }
 
-    // ── 5m PTB settlement anchor ───────────────────────────────────────────
-    // Polymarket 5m pays UP iff final ≥ price-to-beat. Free-form momentum often
+    // ── 5m/15m PTB settlement anchor ───────────────────────────────────────
+    // Polymarket pays UP iff final >= price-to-beat. Free-form momentum often
     // lags after multi-green candles and keeps calling UP into a PTB fail.
     // Re-score vs live PTB + short drift so "flip UP" cannot fire against tape.
     let ptbAnchor = null;
     try {
-      const p5m = window.PredictionMarkets?.getCoin?.(coin.sym)?.poly5m;
-      const ptb = Number(p5m?.targetPriceNum ?? p5m?.priceToBeatNum);
-      // This comparison decides whether the model calls UP or DOWN against the
-      // actual Polymarket price-to-beat, so its live price must be methodologically
-      // consistent with what the contract settles on: a Chainlink TWAP-30s stream,
-      // NOT a point price. It used to default to liveTimingGuard.livePrice, which
-      // is a blend where CME CF Real-Time Index (RTI) carries the highest weight
-      // (1.0, vs 0.9 ticker / 0.75 Pyth) -- RTI is a traditional-futures benchmark
-      // methodology genuinely correct for Kalshi's own settlement elsewhere in this
-      // file, but has no relationship to what these Chainlink-settled contracts pay
-      // out on. Prefer a genuine time-weighted average (see
-      // microstructure-hud.js getTwap, equal time-weight per sample -- the opposite
-      // of a recency-weighted blend) over the last 30s, matching the contract's own
-      // TWAP window; fall back to the plain candle price (also RTI-free) rather
-      // than the RTI blend if the TWAP buffer has not warmed up yet.
       const rtdsLive = window.PredictionMarkets?.getFreshRtdsTwap?.(coin.sym, 15_000);
       const twapPx = rtdsLive?.price ?? window.Microstructure?.getTwap?.(coin.sym, 30_000);
       const livePx = Number(twapPx || timed.price || 0);
-      if (p5m && Number.isFinite(ptb) && ptb > 0 && Number.isFinite(livePx) && livePx > 0) {
-        const closeTimeMs = p5m.closeTime ? new Date(p5m.closeTime).getTime() : null;
+
+      const pmCoin = window.PredictionMarkets?.getCoin?.(coin.sym);
+      const p5m = pmCoin?.poly5m || pmCoin?.poly15m || pmCoin?.poly;
+      let ptb = Number(p5m?.targetPriceNum ?? p5m?.priceToBeatNum);
+      if (!Number.isFinite(ptb) || ptb <= 0) {
+        ptb = Number(p5m?.openPrice ?? p5m?.cryptoMarketConfig?.initialPrice);
+      }
+      if (!Number.isFinite(ptb) || ptb <= 0) {
+        const candleSeries = candleCache[coin.sym]?.candles;
+        if (candleSeries && candleSeries.length > 0) {
+          ptb = Number(candleSeries[candleSeries.length - 1].o);
+        }
+      }
+      if (!Number.isFinite(ptb) || ptb <= 0) {
+        ptb = Number(livePx);
+      }
+
+      if (Number.isFinite(ptb) && ptb > 0 && Number.isFinite(livePx) && livePx > 0) {
+        const closeTimeMs = p5m?.closeTime ? new Date(p5m.closeTime).getTime() : null;
         const remainingMs = Number.isFinite(closeTimeMs) ? Math.max(0, closeTimeMs - Date.now()) : 5 * 60_000;
         const remainingFrac = clamp(remainingMs / (5 * 60_000), 0.08, 1);
         const atrPctRaw = Number(timed.volatility?.atrPct);
@@ -6167,11 +6085,6 @@
           effectiveExpectedMove = Math.max(effectiveExpectedMove, -Math.abs(gap) * 0.2);
         }
 
-        // Was referenced but never declared/assigned (ReferenceError, caught and
-        // logged every cycle as "5m re-score failed: liveDrift1m is not defined",
-        // aborting this whole re-score block every time). Derived from the same
-        // liveTimingGuard.drift1mPct field already used just above for liveDir's
-        // sign, scaled to dollars to match meanFinal's other terms.
         const liveDrift1m = livePx * (Number(liveTimingGuard?.drift1mPct) || 0) / 100;
         const meanFinal = livePx + effectiveExpectedMove + liveDrift1m;
         const sigma = Math.max(livePx * 0.0015, atrDollar * Math.sqrt(remainingFrac));
@@ -6199,8 +6112,8 @@
         // Map P(UP) → score in [-1,1]; 50% → 0
         const ptbScore = clamp((pUp - 0.5) * 2.0, -1, 1);
         // Hard veto: don't "flip UP" when already below/at PTB without live up-tape.
-        // Lagging bull composites after multi-green 15m runs were the main false-UP source.
-        const falseUp = normalizedScore > 0.08 && (
+        // Lagging bull composites after multi-green runs are completely eliminated.
+        const falseUp = normalizedScore > 0.04 && (
           (gapFrac < 0 && liveDir <= 0) ||
           (gapFrac < 0 && remainingFrac < 0.22) ||
           (gapFrac < 0.00020 && liveDir < 0 && remainingFrac < 0.60) ||
@@ -6208,23 +6121,22 @@
           (modelYesPct <= 45 && liveDir <= 0)
         );
         // Hard veto: don't "flip DOWN" when firmly above PTB with upward tape
-        const falseDown = normalizedScore < -0.08 && (
+        const falseDown = normalizedScore < -0.04 && (
           (gapFrac > 0.00035 && liveDir >= 0 && remainingFrac < 0.45) ||
           (modelYesPct >= 58 && liveDir > 0)
         );
         const blend = remainingFrac < 0.35 ? 0.72 : remainingFrac < 0.65 ? 0.55 : 0.40;
         const before = normalizedScore;
-        if (falseUp || falseDown) {
-          // ALWAYS_TRADE: re-anchor to PTB score but keep a tradeable side (never flat block)
-          normalizedScore = clamp(
-            always
-              ? (Math.abs(ptbScore) >= 0.04 ? ptbScore : Math.sign(ptbScore || normalizedScore || 1) * 0.08)
-              : (normalizedScore * 0.15 + ptbScore * 0.85),
-            -1, 1
-          );
-          normalizedConfidence = Math.round(clamp(normalizedConfidence * (always ? 0.75 : 0.55), 0, 95));
-          if (!always && Math.abs(normalizedScore) < 0.14) resolvedRouterAction = 'stand-aside';
-          else if (always) resolvedRouterAction = 'trade';
+        if (falseUp) {
+          // Hard veto: force firmly negative on downward divergence below PTB
+          normalizedScore = clamp(Math.min(-0.16, ptbScore), -1, -0.06);
+          normalizedConfidence = Math.round(clamp(normalizedConfidence * 0.70, 45, 95));
+          resolvedRouterAction = always ? 'trade' : 'stand-aside';
+        } else if (falseDown) {
+          // Hard veto: force firmly positive on upward divergence above PTB
+          normalizedScore = clamp(Math.max(0.16, ptbScore), 0.06, 1);
+          normalizedConfidence = Math.round(clamp(normalizedConfidence * 0.70, 45, 95));
+          resolvedRouterAction = always ? 'trade' : 'stand-aside';
         } else {
           normalizedScore = clamp(normalizedScore * (1 - blend) + ptbScore * blend, -1, 1);
           if (always && Math.abs(normalizedScore) < 0.04) {
@@ -6786,9 +6698,9 @@
       const st = _ensureOnlineSignalState(payload.sym, payload.signalKey);
       if (!st) return null;
 
-      const pred = String(payload.predictedSign || '').toUpperCase();
-      const out = String(payload.outcomeSign || '').toUpperCase();
-      const correct = pred && out && pred === out;
+      const pred = String(payload.predictedSign || payload.predictedDirection || payload.direction || '').toUpperCase();
+      const out = String(payload.outcomeSign || payload.actualSign || payload.actualDirection || payload.actualOutcome || payload.outcome || '').toUpperCase();
+      const correct = (typeof payload.correct === 'boolean') ? payload.correct : (pred && out && pred === out);
       const confidence = clamp(Number(payload.confidence) || 50, 0, 100);
       const confScale = confidence / 100;
       const delta = correct ? 0.015 + confScale * 0.015 : -(0.02 + confScale * 0.02);
