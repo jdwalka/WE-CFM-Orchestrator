@@ -410,16 +410,30 @@ function buildSignalModel(candles, sym = null) {
   if (!candles || candles.length < 26) return null;
   const closes = candles.map(c => c.c), lastPrice = closes[closes.length - 1];
 
-  const rsi = calcRSI(closes);
-  let rsiSig = rsi > 70 ? -0.6 - ((rsi - 70) / 30) * 0.4 : rsi < 30 ? 0.6 + ((30 - rsi) / 30) * 0.4 : (rsi - 50) / 50 * 0.3;
+  // 1. Multi-scale EMA Trend (9, 21, 50)
+  const ema9 = calcEMA(closes, 9);
+  const ema21 = calcEMA(closes, 21);
+  const ema50 = closes.length >= 50 ? calcEMA(closes, 50) : calcEMA(closes, 26);
+  const emaCrossShort = (ema9[ema9.length-1] - ema21[ema21.length-1]) / (ema21[ema21.length-1] || 1) * 100;
+  const emaCrossLong = (ema21[ema21.length-1] - ema50[ema50.length-1]) / (ema50[ema50.length-1] || 1) * 100;
+  const emaSig = clamp(emaCrossShort * 4.0 + emaCrossLong * 2.5, -1, 1);
 
-  const ema9 = calcEMA(closes, 9), ema21 = calcEMA(closes, 21);
-  const emaCross = (ema9[ema9.length-1] - ema21[ema21.length-1]) / (ema21[ema21.length-1] || 1) * 100;
-  const emaSig = clamp(emaCross * 5, -1, 1);
+  // 2. Multi-horizon Momentum & Impulse
+  const mom1 = closes.length > 1 ? ((lastPrice - closes[closes.length - 2]) / (closes[closes.length - 2] || 1)) * 100 : 0;
+  const mom3 = closes.length > 3 ? ((lastPrice - closes[closes.length - 4]) / (closes[closes.length - 4] || 1)) * 100 : 0;
+  const mom6 = closes.length > 6 ? ((lastPrice - closes[closes.length - 7]) / (closes[closes.length - 7] || 1)) * 100 : 0;
+  const momSig = clamp(mom1 * 2.5 + mom3 * 1.5 + mom6 * 0.8, -1, 1);
 
+  // 3. Volatility & Supertrend
+  const supertrendSig = calcSupertrend(candles, 10, 2.5).signal;
+  const isStrongTrend = Math.abs(emaCrossShort) > 0.08 || Math.abs(mom3) > 0.20 || supertrendSig !== 0;
+
+  // 4. VWAP & Volume Delta
   const vwapRolling = calcVWAP(candles.slice(-80)), vwapRollingLast = vwapRolling[vwapRolling.length - 1];
   const vwapDev = ((lastPrice - vwapRollingLast) / (vwapRollingLast || 1)) * 100;
-  let vwapSig = Math.abs(vwapDev) < 0.3 ? 0 : vwapDev > 1.5 ? -0.5 : vwapDev < -1.5 ? 0.5 : vwapDev > 0 ? 0.3 : -0.3;
+  let vwapSig = isStrongTrend
+    ? (vwapDev > 0 ? 0.6 : -0.6)
+    : (Math.abs(vwapDev) < 0.3 ? 0 : vwapDev > 1.5 ? -0.5 : vwapDev < -1.5 ? 0.5 : vwapDev > 0 ? 0.3 : -0.3);
 
   const obv = calcOBV(candles), obvSig = clamp(slopeOBV(obv, 8) / 5, -1, 1);
 
@@ -427,87 +441,66 @@ function buildSignalModel(candles, sym = null) {
   recent.forEach(c => { const range = c.h - c.l || 0.0001, bodyPos = (c.c - c.l) / range, vol = c.v || 1; buyV += vol * bodyPos; sellV += vol * (1 - bodyPos); });
   const volSig = clamp((buyV / (sellV || 1) - 1) * 0.5, -1, 1);
 
-  const mom = closes.length > 6 ? ((closes[closes.length-1] - closes[closes.length-7]) / (closes[closes.length-7] || 1)) * 100 : 0;
-  const momSig = clamp(mom / 2, -1, 1);
+  const atr = calcATR(candles), atrPct = lastPrice > 0 ? (atr / lastPrice) * 100 : 0.4;
 
-  const atr = calcATR(candles), atrPct = lastPrice > 0 ? (atr / lastPrice) * 100 : 0;
-  const bands = calcBollinger(closes);
-  let bandSig = bands.position >= 0.88 ? -clamp((bands.position - 0.88) / 0.12, 0, 1) : bands.position <= 0.12 ? clamp((0.12 - bands.position) / 0.12, 0, 1) : clamp(-(bands.position - 0.5) * 0.45, -0.22, 0.22);
+  // 5. Regime-Adaptive Oscillators
+  const rsi = calcRSI(closes, 14);
+  let rsiSig = isStrongTrend
+    ? (rsi >= 50 ? clamp((rsi - 50) / 25, 0, 1) : -clamp((50 - rsi) / 25, 0, 1))
+    : (rsi > 70 ? -clamp((rsi - 70) / 20, 0, 1) : rsi < 30 ? clamp((30 - rsi) / 20, 0, 1) : (rsi - 50) / 50 * 0.2);
+
+  const bands = calcBollinger(closes, 20);
+  let bandSig = 0;
+  if (isStrongTrend) {
+    bandSig = bands.position > 0.75 ? 0.65 : bands.position < 0.25 ? -0.65 : 0;
+  } else {
+    bandSig = bands.position >= 0.88 ? -clamp((bands.position - 0.88) / 0.12, 0, 1)
+      : bands.position <= 0.12 ? clamp((0.12 - bands.position) / 0.12, 0, 1)
+      : clamp(-(bands.position - 0.5) * 0.4, -0.2, 0.2);
+  }
 
   const persistence = calcTrendPersistence(closes, ema21), structure = calcStructureBias(candles, atrPct);
   const macdR = calcMACD(closes);
   const macdHistNorm = lastPrice > 0 ? (macdR.histogram / lastPrice) * 1000 : 0;
-  const macdSig = clamp(macdHistNorm * 2.5 + (macdR.macd > macdR.signal ? 0.18 : macdR.macd < macdR.signal ? -0.18 : 0), -1, 1);
+  const macdSig = clamp(macdHistNorm * 3.2 + (macdR.macd > macdR.signal ? 0.25 : -0.25), -1, 1);
 
   const stochR = calcStochRSI(closes);
-  let stochSig = stochR.k > 80 ? -0.6 - ((stochR.k - 80) / 20) * 0.4 : stochR.k < 20 ? 0.6 + ((20 - stochR.k) / 20) * 0.4 : (stochR.k - 50) / 50 * 0.35;
-  stochSig = clamp(stochSig + clamp((stochR.k - stochR.d) / 20, -0.18, 0.18), -1, 1);
+  let stochSig = isStrongTrend
+    ? (stochR.k >= 50 ? clamp((stochR.k - 50) / 35, 0, 1) : -clamp((50 - stochR.k) / 35, 0, 1))
+    : (stochR.k > 80 ? -0.6 : stochR.k < 20 ? 0.6 : (stochR.k - 50) / 50 * 0.2);
 
   const adxR = calcADX(candles);
-  const adxSig = clamp(((adxR.pdi - adxR.mdi) / Math.max(adxR.pdi + adxR.mdi, 1)) * clamp(adxR.adx / 50, 0, 1) * 1.2, -1, 1);
+  const adxSig = clamp(((adxR.pdi - adxR.mdi) / Math.max(adxR.pdi + adxR.mdi, 1)) * clamp(adxR.adx / 30, 0, 1) * 1.5, -1, 1);
 
   const ichi = calcIchimoku(candles);
-  let ichiSig = ichi.cloudPos === 'above' ? 0.5 + (ichi.tenkan > ichi.kijun ? 0.2 : 0) : ichi.cloudPos === 'below' ? -0.5 - (ichi.tenkan < ichi.kijun ? 0.2 : 0) : ichi.tenkan > ichi.kijun ? 0.12 : ichi.tenkan < ichi.kijun ? -0.12 : 0;
-  ichiSig = clamp(ichiSig, -1, 1);
+  let ichiSig = ichi.cloudPos === 'above' ? 0.6 + (ichi.tenkan > ichi.kijun ? 0.2 : 0) : ichi.cloudPos === 'below' ? -0.6 - (ichi.tenkan < ichi.kijun ? 0.2 : 0) : ichi.tenkan > ichi.kijun ? 0.15 : ichi.tenkan < ichi.kijun ? -0.15 : 0;
 
   const wR = calcWilliamsR(candles);
-  let wRSig = wR > -20 ? -0.6 - ((wR + 20) / 20) * 0.4 : wR < -80 ? 0.6 + ((-80 - wR) / 20) * 0.4 : (wR + 50) / 50 * -0.3;
-  wRSig = clamp(wRSig, -1, 1);
+  let wRSig = isStrongTrend
+    ? (wR > -50 ? clamp((wR + 50) / 40, 0, 1) : -clamp((-50 - wR) / 40, 0, 1))
+    : (wR > -20 ? -0.6 : wR < -80 ? 0.6 : (wR + 50) / 50 * -0.2);
 
   const mfi = calcMFI(candles);
-  let mfiSig = mfi > 80 ? -0.6 - ((mfi - 80) / 20) * 0.4 : mfi < 20 ? 0.6 + ((20 - mfi) / 20) * 0.4 : (mfi - 50) / 50 * 0.35;
-  mfiSig = clamp(mfiSig, -1, 1);
+  let mfiSig = isStrongTrend ? (mfi >= 50 ? 0.5 : -0.5) : (mfi > 80 ? -0.5 : mfi < 20 ? 0.5 : (mfi - 50) / 50 * 0.2);
 
   const hmaLine = calcHMA(closes, 16), hmaCurr = hmaLine.length ? hmaLine[hmaLine.length - 1] : lastPrice;
   const hmaPrev2 = hmaLine.length > 2 ? hmaLine[hmaLine.length - 3] : hmaCurr;
   let hmaSig = clamp(((hmaCurr - hmaPrev2) / (Math.abs(hmaPrev2) || 1) * 100) * 8, -0.7, 0.7);
-  const hmaDevPct = (lastPrice - hmaCurr) / (Math.abs(hmaCurr) || 1) * 100;
-  if (Math.abs(hmaDevPct) > 0.4) hmaSig += clamp(-hmaDevPct * 0.28, -0.3, 0.3);
-  hmaSig = clamp(hmaSig, -1, 1);
 
   const vwmaLine = calcVWMA(candles, 20), vwmaCurr = vwmaLine[vwmaLine.length - 1];
   const vwmaPrev = vwmaLine.length > 3 ? vwmaLine[vwmaLine.length - 4] : vwmaCurr;
   let vwmaSig = clamp(((vwmaCurr - vwmaPrev) / (Math.abs(vwmaPrev) || 1) * 100) * 6, -0.6, 0.6);
-  vwmaSig = clamp(vwmaSig + clamp(((lastPrice - vwmaCurr) / (Math.abs(vwmaCurr) || 1) * 100) * 0.35, -0.4, 0.4), -1, 1);
 
   const sma9arr = calcSMA(closes, 9), sma21arr = calcSMA(closes, 21);
   const smaSig = clamp(((sma9arr[sma9arr.length-1] - sma21arr[sma21arr.length-1]) / (Math.abs(sma21arr[sma21arr.length-1]) || 1) * 100) * 5, -1, 1);
 
-  const supertrendSig = calcSupertrend(candles, 10, 3.0).signal;
   const cciVal = calcCCI(candles, 14);
-  let cciSig = cciVal > 150 ? -clamp((cciVal - 100) / 150, 0, 1) : cciVal < -150 ? clamp((-100 - cciVal) / 150, 0, 1) : clamp(-cciVal / 200, -0.3, 0.3);
-  cciSig = clamp(cciSig, -1, 1);
+  let cciSig = isStrongTrend ? (cciVal >= 0 ? 0.6 : -0.6) : (cciVal > 150 ? -0.5 : cciVal < -150 ? 0.5 : 0);
 
   let cmfSig = clamp(calcCMF(candles, 20) * 2.5, -1, 1);
-  let fisherSig = clamp(calcFisher(candles, 10) / 2.5, -1, 1);
+  let fisherSig = clamp(calcFisher(candles, 10) / 2.0, -1, 1);
   const kelt = calcKeltner(candles, 20, 2.0);
-  let keltSig = kelt.position >= 0.88 ? -clamp((kelt.position - 0.88) / 0.12, 0, 1) : kelt.position <= 0.12 ? clamp((0.12 - kelt.position) / 0.12, 0, 1) : clamp(-(kelt.position - 0.5) * 0.45, -0.22, 0.22);
-
-  // --- Trend Regime Modulation ---
-  const isStrongBear = (supertrendSig === -1 || hmaSig < -0.15 || mom < -0.20 || vwmaSig < -0.15) && (adxR.mdi > adxR.pdi || adxR.adx > 18 || mom < -0.30);
-  const isStrongBull = (supertrendSig === 1 || hmaSig > 0.15 || mom > 0.20 || vwmaSig > 0.15) && (adxR.pdi > adxR.mdi || adxR.adx > 18 || mom > 0.30);
-
-  if (isStrongBear) {
-    if (rsiSig > 0) rsiSig = 0;
-    if (stochSig > 0) stochSig = 0;
-    if (wRSig > 0) wRSig = 0;
-    if (bandSig > 0) bandSig = 0;
-    if (mfiSig > 0) mfiSig = 0;
-    if (vwapSig > 0) vwapSig = 0;
-    if (cciSig > 0) cciSig = 0;
-    if (keltSig > 0) keltSig = 0;
-    if (fisherSig > 0) fisherSig = 0;
-  } else if (isStrongBull) {
-    if (rsiSig < 0) rsiSig = 0;
-    if (stochSig < 0) stochSig = 0;
-    if (wRSig < 0) wRSig = 0;
-    if (bandSig < 0) bandSig = 0;
-    if (mfiSig < 0) mfiSig = 0;
-    if (vwapSig < 0) vwapSig = 0;
-    if (cciSig < 0) cciSig = 0;
-    if (keltSig < 0) keltSig = 0;
-    if (fisherSig < 0) fisherSig = 0;
-  }
+  let keltSig = isStrongTrend ? (kelt.position > 0.7 ? 0.6 : kelt.position < 0.3 ? -0.6 : 0) : (kelt.position >= 0.88 ? -0.5 : kelt.position <= 0.12 ? 0.5 : 0);
 
   const sv = {
     rsi: rsiSig, ema: emaSig, vwap: vwapSig, obv: obvSig, volume: volSig,
@@ -519,18 +512,19 @@ function buildSignalModel(candles, sym = null) {
 
   const coinBias = (sym && PER_COIN_INDICATOR_BIAS[sym]) ? PER_COIN_INDICATOR_BIAS[sym] : {};
   const keys = Object.keys(sv);
-  const effW = k => (COMPOSITE_WEIGHTS[k] ?? OUTER_ORBITAL_WEIGHTS[k] ?? 0) * (coinBias[k] ?? 1.0);
+  const effW = k => (COMPOSITE_WEIGHTS[k] ?? OUTER_ORBITAL_WEIGHTS[k] ?? 0.05) * (coinBias[k] ?? 1.0);
   const totalWeight = keys.reduce((s, k) => s + effW(k), 0) || 1;
   const rawComposite = keys.reduce((s, k) => s + sv[k] * effW(k), 0) / totalWeight;
-  const adxGate = adxR.adx < 20 ? Math.max(0.25, adxR.adx / 20) : 1.0;
-  const score = clamp(rawComposite * SCORE_AMPLIFIER * adxGate, -1, 1);
+  const adxGate = adxR.adx < 15 ? Math.max(0.35, adxR.adx / 15) : 1.0;
+  const score = clamp(rawComposite * 1.8 * adxGate, -1, 1);
   const agr = summarizeAgreement(sv);
 
   return {
     score, absScore: Math.abs(score), coreScore: score,
     agreement: agr.agreement, conflict: agr.conflict,
     structureBias: structure.signal, structureZone: structure.zone, persistenceScore: persistence.signal,
-    emaCross, mom, rsi, atrPct, signalVector: sv,
+    emaCross: emaCrossShort, mom: mom3, rsi, atrPct, signalVector: sv,
+    isStrongTrend,
   };
 }
 

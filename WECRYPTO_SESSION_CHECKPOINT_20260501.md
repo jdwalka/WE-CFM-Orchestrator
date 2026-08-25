@@ -98,3 +98,8 @@
 - Days: 3  Train: 200  Test: 50  Step: 25
 - Coins: BTC, ETH, SOL, XRP
 - Log: /home/mar/WE-CFM-Orchestrator/backtest-logs/wf-2026-08-25.log
+
+## Advanced Backtest — 2026-08-25T22:50:06.055Z
+- Days: 20  Candles: 5760
+- Coins analyzed: BTC, ETH, SOL, XRP, DOGE, BNB, HYPE
+- Log: G:\WECRYP\backtest-logs\advanced-2026-08-25.log

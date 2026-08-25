@@ -2666,6 +2666,53 @@ ipcMain.handle('asi1:desk-infer', async (_event, args = {}) => {
   }
 });
 
+ipcMain.handle('asi1:desk-chat', async (_event, args = {}) => {
+  try {
+    const Asi1Client = require('../src/infra/asi1-client');
+    const prompt = String(args.prompt || '').trim();
+    const packet = args.packet || {};
+    const model = args.model || 'asi1-mini';
+    const reasoning_effort = args.reasoning_effort || 'medium';
+    const web_search = !!args.web_search;
+
+    if (!Asi1Client.hasAsi1Credentials()) {
+      return { ok: false, error: 'ASI1 API key not configured in secrets/ASI1_ICLOUD.txt or environment' };
+    }
+
+    const systemPrompt = `You are ASI1, an institutional cryptocurrency prediction and market microstructure expert assistant.
+You are embedded inside the WE|||CRYPTO terminal HUD.
+Provide ultra-concise, authoritative, actionable trading intelligence. Ground all conclusions in the provided live market context (Spot, Polymarket PTB strike, time to close, orderbook depth).`;
+
+    const userPrompt = `${prompt}\n\nLive Market Context:\n- Coin: ${packet.sym || 'BTC'}\n- Horizon: ${packet.horizon || '5m'}\n- Live Spot: $${packet.spot || 'N/A'}\n- Polymarket PTB Strike: $${packet.priceToBeatNum || 'N/A'}\n- Delta vs PTB: ${packet.deltaVsPtb >= 0 ? '+' : ''}$${packet.deltaVsPtb || 0}\n- Live Tape Direction: ${packet.liveDirection || 'NEUTRAL'}\n- Polymarket Yes Prob: ${((packet.yesProb || 0.5) * 100).toFixed(1)}%\n- Seconds to Expiry: ${packet.secondsToClose || 0}s\n- Depth Imbalance: ${((packet.depthImbalance || 0) * 100).toFixed(1)}%`;
+
+    const result = await Asi1Client.chatCompletion(
+      [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt }
+      ],
+      {
+        model: model !== 'auto' ? model : 'asi1-mini',
+        max_tokens: 450,
+        temperature: 0.2,
+        reasoning_effort: reasoning_effort !== 'auto' ? reasoning_effort : 'medium',
+        web_search,
+        onlyAccount: process.env.ASI1_PREFERRED_ACCOUNT || 'icloud',
+        timeoutMs: 30000,
+      }
+    );
+
+    return {
+      ok: true,
+      content: result.content,
+      model: result.model,
+      account: result.account,
+      latencyMs: result.latencyMs,
+    };
+  } catch (err) {
+    return { ok: false, error: err?.message || 'ASI1 Chat request failed' };
+  }
+});
+
 ipcMain.handle('asi1:precontract-brief', async (_event, args = {}) => {
   try {
     const Asi1Client = require('../src/infra/asi1-client');

@@ -442,6 +442,7 @@ contextBridge.exposeInMainWorld('electron', {
     status: () => ipcRenderer.invoke('asi1:desk-status'),
     setMode: (mode) => ipcRenderer.invoke('asi1:desk-mode', mode),
     infer: (payload) => ipcRenderer.invoke('asi1:desk-infer', payload),
+    chat: (payload) => ipcRenderer.invoke('asi1:desk-chat', payload),
   },
   telegram: {
     status: () => ipcRenderer.invoke('telegram:status'),

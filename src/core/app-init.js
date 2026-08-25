@@ -739,7 +739,7 @@ setInterval(async () => {
         _llmObsStats.queues = qStats;
 
         const sEl = document.getElementById('llm-obs-status');
-        if (sEl) sEl.innerHTML = _llmObsStats.enabled ? `🟢 ${_llmObsStats.provider.toUpperCase()} | ${_llmObsStats.model}` : '🔴 Offline';
+        if (sEl) sEl.textContent = _llmObsStats.enabled ? `🟢 ${_llmObsStats.provider.toUpperCase()} | ${_llmObsStats.model}` : '🔴 Offline';
         const qEl = document.getElementById('llm-obs-queues');
         if (qEl) {
           qEl.innerText = _llmObsStats.queues;
