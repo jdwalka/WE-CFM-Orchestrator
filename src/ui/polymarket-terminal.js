@@ -266,7 +266,7 @@
               style="padding:5px 12px;border-radius:4px;font-size:11px;font-weight:700;border:none;cursor:pointer;
                      background:${_activeTab === 'predictions' ? 'var(--color-surface)' : 'transparent'};
                      color:${_activeTab === 'predictions' ? '#00e5ff' : 'var(--color-text-muted)'};">
-              ⚡ 5M/15M Predictions
+              ▲▼ 5M/15M Up/Down
             </button>
             <button onclick="window.PolymarketTerminal.selectTab('perps')"
               style="padding:5px 12px;border-radius:4px;font-size:11px;font-weight:700;border:none;cursor:pointer;

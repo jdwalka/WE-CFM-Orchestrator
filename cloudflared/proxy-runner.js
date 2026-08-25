@@ -63,6 +63,8 @@ const server = http.createServer((req, res) => {
     target = `https://clob.polymarket.com/${u.pathname.replace(/^\/polymarket-clob\//, '')}${u.search}`;
   } else if (u.pathname.startsWith('/polymarket-data/')) {
     target = `https://data-api.polymarket.com/${u.pathname.replace(/^\/polymarket-data\//, '')}${u.search}`;
+  } else if (u.pathname.startsWith('/mempool/')) {
+    target = `https://mempool.space/${u.pathname.replace(/^\/mempool\//, '')}${u.search}`;
   } else {
     res.statusCode = 404;
     return res.end('Not Routed');
