@@ -523,12 +523,25 @@
           model: modelChoice !== 'auto' ? modelChoice : 'asi1-mini',
           reasoning_effort: effortChoice !== 'auto' ? effortChoice : 'medium',
           web_search: webSearch,
-        }
-      };
+        });
+      } catch (_) {
+        // Fallback to general AI inference bridge if chat channel not present
+        res = await invoke('ai:run-inference', {
+          prompt: query,
+          context: {
+            coin: packet.sym,
+            horizon: packet.horizon === '5m' ? 5 : 15,
+            spot: packet.spot,
+            ptb: packet.priceToBeatNum,
+            model: modelChoice !== 'auto' ? modelChoice : 'asi1-mini',
+            reasoning_effort: effortChoice !== 'auto' ? effortChoice : 'medium',
+            web_search: webSearch,
+          }
+        });
+      }
 
-      const res = await invoke('ai:run-inference', payload);
-      const out = res?.output?.suggestions?.notes || res?.output?.ai_wording?.primary_rationale || res?.output?.notes || res?.output?.content || res?.output || 'Analysis complete.';
-      const cleanOut = typeof out === 'object' ? JSON.stringify(out, null, 2) : String(out);
+      const rawOut = res?.content || res?.output?.suggestions?.notes || res?.output?.ai_wording?.primary_rationale || res?.output?.notes || res?.output?.content || res?.output || res?.error || 'Analysis complete.';
+      const cleanOut = typeof rawOut === 'object' ? JSON.stringify(rawOut, null, 2) : String(rawOut);
       if (answerEl) {
         answerEl.textContent = '';
         const titleDiv = document.createElement('div');
