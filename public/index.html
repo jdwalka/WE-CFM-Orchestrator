@@ -52,6 +52,9 @@
   <script defer src="vendors/chartjs-adapter-date-fns.bundle.min.js"></script>
   <script defer src="vendors/lightweight-charts.standalone.production.js"></script>
 
+  <!-- Smart Proxy Shim (MUST LOAD FIRST BEFORE ANY FETCH WRAPPERS) -->
+  <script src="../src/infra/proxy-fetch.js"></script>
+
   <!-- Network Log (must load before any market-data fetches) -->
   <script src="../src/infra/network-log.js"></script>
 
@@ -294,7 +297,6 @@
   </div>
 
   <script src="../src/infra/tauri-bridge.js"></script>
-  <script src="../src/infra/proxy-fetch.js"></script>
   <script src="../src/infra/throttled-fetch.js"></script>
   <script src="../src/infra/resilient-fetch.js"></script>
   <script src="../src/infra/proxy-orchestrator.js"></script>

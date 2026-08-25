@@ -472,7 +472,7 @@ function _collectNearCloseTimeline(entry) {
 
 function _getForensicsDataset(options = {}) {
     const out = [];
-    (window._kalshiLog || []).forEach(e => {
+    (window._scorecardLog || []).forEach(e => {
       const n = _logEntryToForensicsEntry(e);
       if (n) out.push(n);
     });
@@ -699,11 +699,11 @@ function startHistoricalPolling() {
         if (settled && settled.length > 0) {
           console.log(`[Historical] Fetched ${settled.length} settled contracts`);
 
-          // Add historical settlements to _kalshiLog for scorecard display
+          // Add historical settlements to _scorecardLog for scorecard display
           settled.forEach(contract => {
             const resolvedAt = contract.resolvedAt ?? contract.closeTime ?? contract.raw?.settleTime ?? contract.raw?.close_time ?? null;
             // Check if already in log (avoid duplicates)
-            const isDuplicate = window._kalshiLog.some(e =>
+            const isDuplicate = window._scorecardLog.some(e =>
               e.sym === contract.symbol &&
               e.resolved_at === resolvedAt
             );
@@ -721,7 +721,7 @@ function startHistoricalPolling() {
                 : contract.modelCorrect === false
                   ? _oppositeDir(_actualOutcome)
                   : (window._lastPrediction?.[contract.symbol]?.direction || null);
-              window._kalshiLog.push({
+              window._scorecardLog.push({
                 sym: contract.symbol,
                 outcome: contract.result,  // 'YES' or 'NO'
                 actualOutcome: _actualOutcome,
@@ -743,11 +743,11 @@ function startHistoricalPolling() {
             }
           });
 
-          // Keep _kalshiLog limited to LOG_CAP entries
-          if (window._kalshiLog.length > LOG_CAP) {
-            window._kalshiLog = window._kalshiLog.slice(-LOG_CAP);
+          // Keep _scorecardLog limited to LOG_CAP entries
+          if (window._scorecardLog.length > LOG_CAP) {
+            window._scorecardLog = window._scorecardLog.slice(-LOG_CAP);
           }
-          saveKalshiLog();
+          saveScorecardLog();
           if (currentView === 'log' || currentView === 'debuglog') render();
 
           // Record outcomes for learning engine without monopolizing the UI thread.
@@ -1091,45 +1091,6 @@ function snapshotPredictions() {
         // ── Update Market Divergence tracker for this coin ──────────────────
         const _mdiv = updateMarketDivergence(coin.sym, _modelDir, _kalshiDir, ka.kalshiYesPct, _modelScore);
 
-        if (false) window._lastKalshiSnapshot[coin.sym] = {
-          ref: ka.ref,
-          kYesPct: ka.kalshiYesPct,
-          mYesPct: ka.modelYesPct,
-          yesAsk: ka.yesAsk,
-          yesBid: ka.yesBid,
-          noAsk: ka.noAsk,
-          noBid: ka.noBid,
-          modelDir: _snapDir,
-          ts: nowMs,
-          // Contract structural fields — now passed through from prediction-markets.js
-          floorPrice: ka.floorPrice ?? ka.ref,
-          capPrice: ka.capPrice ?? null,
-          strikeDir: _strikeDir,
-          strikeType: ka.strikeType ?? null,
-          ticker: ka.ticker ?? null,
-          closeTimeMs: ka.closeTimeMs ?? null,
-          // Diagnostic flags
-          dirConflict: ka.dirConflict ?? false,
-          cdfImpliedDir: ka.cdfImpliedDir ?? null,
-          // Fade & model state
-          fadeActive: _fadeActive,
-          fadeSolid: _fadeSolid,
-          betAction: _betAction,
-          modelScore: _modelScore,
-          modelConf: _modelConf,
-          quantRegime: p.diagnostics?.quantRegime || null,
-          cfmCalibration: p.diagnostics?.cfmCalibration || null,
-          executionGuard: p.diagnostics?.executionGuard || null,
-          // Market Divergence state
-          mdivPhase: _mdiv.phase ?? 'STALE',
-          mdivDurationMs: _mdiv.durationMs ?? 0,
-          mdivCatchupDelta: _mdiv.catchupDelta ?? 0,
-          // Signal components for per-indicator gradient descent retuner
-          signalComponents: p.diagnostics?.components ?? null,
-        };
-        if (window._lastKalshiSnapshot[coin.sym]) {
-          capturePredictionTrail2m(coin.sym, window._lastKalshiSnapshot[coin.sym]);
-        }
         if (ka.dirConflict) {
           // console.warn(
           //   `[Snapshot] ⚠️ ${coin.sym} momentum=${dir} conflicts with CDF direction=${ka.cdfImpliedDir} ` +
@@ -1160,7 +1121,6 @@ function snapshotPredictions() {
     }
 
     saveLastPred();
-    saveLastKalshi();
     scheduleWebStatePublish('prediction-snapshot');
   }
 

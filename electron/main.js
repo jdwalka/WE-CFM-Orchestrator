@@ -854,6 +854,13 @@ function configureCachePaths() {
     fs.mkdirSync(userDataPath, { recursive: true });
     fs.mkdirSync(sessionPath, { recursive: true });
     fs.mkdirSync(diskCacheDir, { recursive: true });
+    // One-time purge of a V8 "Code Cache" left over from before v8-cache-options
+    // was added below -- entries compiled from pre-fix script content have no
+    // reason to still exist, and leaving them on disk risks a stale read if
+    // Chromium's own handling of that flag ever changes.
+    try {
+      fs.rmSync(path.join(sessionPath, 'Code Cache'), { recursive: true, force: true });
+    } catch (_) { }
     app.setPath('userData', userDataPath);
     app.setPath('sessionData', sessionPath);
     app.commandLine.appendSwitch('disk-cache-dir', diskCacheDir);
@@ -868,6 +875,16 @@ function configureCachePaths() {
     // this app actually persists live there, not in the HTTP cache, so there is no
     // "cold start" for market data either way.
     app.commandLine.appendSwitch('disable-http-cache');
+    // disable-http-cache only stops the network-layer cache. Chromium/V8 keeps a
+    // SEPARATE compiled-bytecode cache (the "Code Cache" dir under sessionData)
+    // that is not covered by that switch and persists across restarts. For
+    // file:// script loads its invalidation has proven unreliable here in
+    // practice -- edited <script src="..."> files kept executing stale logic
+    // for multiple restarts in a row despite the source on disk being correct
+    // and disable-http-cache already being set. v8-cache-options=none disables
+    // V8 code caching outright so every script load always compiles from the
+    // current file content.
+    app.commandLine.appendSwitch('v8-cache-options', 'none');
 
     // V8 Optimizations for AMD Ryzen + Windows 11 Huge Pages (Fake Quant Box configuration) + WASM SIMD
     app.commandLine.appendSwitch('js-flags', '--use-largepages=on --max-old-space-size=8192 --no-lazy --turbo-fast-api-calls --experimental-wasm-simd');
@@ -1119,7 +1136,12 @@ async function startPythLazerService(win) {
         priceFeedIds: LAZER_FEED_IDS,
         properties: ["price", "bestBidPrice", "publisherCount", "fundingRate", "confidence", "bestAskPrice", "marketSession", "fundingRateInterval", "exponent", "fundingTimestamp"],
         formats: ["solana", "leEcdsa", "leUnsigned", "evm"],
-        channel: "fixed_rate@50ms",
+        // real_time pushes each update immediately as it's generated (1-50ms
+        // window per docs.pyth.network/price-feeds/pro/payload-reference),
+        // vs fixed_rate@50ms which waits for the next scheduled tick even
+        // when a fresher price is already available -- strictly lower
+        // latency for live trading, no documented tier/entitlement cost.
+        channel: "real_time",
         deliveryFormat: "json",
         jsonBinaryEncoding: "hex",
         parsed: true,
@@ -1558,7 +1580,8 @@ let proxyManualStop = false;
 const PROXY_PORT_CASCADE = [3010, 3011, 3012, 3013, 3014, 3015, 3016, 3017, 3018, 3019, 3020];
 
 const PROXY_EXCHANGE_BASES = {
-  'binance': 'https://data-api.binance.vision',
+  'binance': 'https://api.binance.com',
+  'binance-data': 'https://data-api.binance.vision',
   'binance-f': 'https://fapi.binance.com',
   'coingecko': 'https://api.coingecko.com',
   'coinbase': 'https://api.coinbase.com',
@@ -1638,6 +1661,17 @@ function moduleFileExists(crateRoot, name) {
 
 async function startJsProxyFallback(port) {
   const http = require('http');
+  const https = require('https');
+  let socksAgent = null;
+  try {
+    const { SocksProxyAgent } = require('socks-proxy-agent');
+    socksAgent = new SocksProxyAgent(process.env.WECRYPTO_SWEDEN_SOCKS || 'socks5://127.0.0.1:18090', {
+      keepAlive: true,
+      keepAliveMsecs: 60000,
+      maxSockets: 64,
+    });
+  } catch (_) { }
+
   if (jsProxyServer && jsProxyServer.listening) {
     return;
   }
@@ -1646,6 +1680,9 @@ async function startJsProxyFallback(port) {
   // original encoding header with the decoded bytes or Chromium will decode it
   // again and reject an otherwise successful response.
   const responseHeadersToStrip = new Set([...hopByHop, 'content-encoding']);
+
+  const proxyMicroCache = new Map();
+  const PROXY_CACHE_TTL_MS = 600;
 
   const readBody = (req) => new Promise(resolve => {
     const chunks = [];
@@ -1662,27 +1699,96 @@ async function startJsProxyFallback(port) {
 
   const forward = async (targetUrl, req, res) => {
     const method = String(req.method || 'GET').toUpperCase();
-    const headers = {};
-    for (const [k, v] of Object.entries(req.headers || {})) {
-      if (!hopByHop.has(String(k).toLowerCase())) headers[k] = v;
-    }
-    const body = (method === 'GET' || method === 'HEAD') ? undefined : await readBody(req);
+    const isGet = method === 'GET' || method === 'HEAD';
+    const noCache = req.headers['x-no-cache'] || req.headers['cache-control'] === 'no-cache';
 
-    const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), 12000);
-    try {
-      const up = await fetch(targetUrl, { method, headers, body, signal: ctrl.signal, redirect: 'follow' });
-      clearTimeout(t);
-
-      res.statusCode = up.status;
-      for (const [k, v] of up.headers.entries()) {
-        if (!responseHeadersToStrip.has(String(k).toLowerCase())) res.setHeader(k, v);
+    if (isGet && !noCache) {
+      const now = Date.now();
+      const cached = proxyMicroCache.get(targetUrl);
+      if (cached && (now - cached.ts) < PROXY_CACHE_TTL_MS) {
+        res.statusCode = cached.statusCode;
+        for (const [k, v] of Object.entries(cached.headers)) {
+          if (!responseHeadersToStrip.has(String(k).toLowerCase())) res.setHeader(k, v);
+        }
+        res.setHeader('X-Proxy-Cache', 'HIT');
+        writeCors(res);
+        return res.end(cached.body);
       }
-      writeCors(res);
-      const buf = Buffer.from(await up.arrayBuffer());
-      res.end(buf);
+    }
+
+    const body = isGet ? undefined : await readBody(req);
+
+    try {
+      const parsedUrl = new URL(targetUrl);
+      const isHttps = parsedUrl.protocol === 'https:';
+      const transport = isHttps ? https : http;
+
+      const outgoingHeaders = {
+        'host': parsedUrl.hostname,
+        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
+        'accept': req.headers['accept'] || '*/*',
+        'accept-language': 'en-US,en;q=0.9',
+      };
+      if (req.headers['content-type']) outgoingHeaders['content-type'] = req.headers['content-type'];
+      if (req.headers['authorization']) outgoingHeaders['authorization'] = req.headers['authorization'];
+      if (req.headers['x-mbx-apikey']) outgoingHeaders['x-mbx-apikey'] = req.headers['x-mbx-apikey'];
+      if (req.headers['x-api-key']) outgoingHeaders['x-api-key'] = req.headers['x-api-key'];
+      if (req.headers['x-signature']) outgoingHeaders['x-signature'] = req.headers['x-signature'];
+      if (req.headers['x-timestamp']) outgoingHeaders['x-timestamp'] = req.headers['x-timestamp'];
+      if (body && body.length) outgoingHeaders['content-length'] = body.length;
+
+      const outgoingReq = transport.request({
+        host: parsedUrl.hostname,
+        hostname: parsedUrl.hostname,
+        servername: parsedUrl.hostname,
+        port: parsedUrl.port || (isHttps ? 443 : 80),
+        path: parsedUrl.pathname + parsedUrl.search,
+        method,
+        headers: outgoingHeaders,
+        agent: socksAgent,
+        timeout: 12000,
+      }, (upstreamRes) => {
+        res.statusCode = upstreamRes.statusCode;
+        for (const [k, v] of Object.entries(upstreamRes.headers)) {
+          if (!responseHeadersToStrip.has(String(k).toLowerCase())) res.setHeader(k, v);
+        }
+        writeCors(res);
+        const chunks = [];
+        upstreamRes.on('data', chunk => {
+          chunks.push(chunk);
+          res.write(chunk);
+        });
+        upstreamRes.on('end', () => {
+          if (isGet && upstreamRes.statusCode === 200) {
+            const fullBody = Buffer.concat(chunks);
+            proxyMicroCache.set(targetUrl, {
+              statusCode: 200,
+              headers: upstreamRes.headers,
+              body: fullBody,
+              ts: Date.now(),
+            });
+            if (proxyMicroCache.size > 500) {
+              const firstKey = proxyMicroCache.keys().next().value;
+              proxyMicroCache.delete(firstKey);
+            }
+          }
+          res.end();
+        });
+      });
+
+      outgoingReq.on('timeout', () => {
+        outgoingReq.destroy(new Error('upstream timeout'));
+      });
+      outgoingReq.on('error', (e) => {
+        writeCors(res);
+        res.statusCode = 502;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ error: 'proxy-forward-failed', message: e?.message || 'unknown error' }));
+      });
+
+      if (body && body.length > 0) outgoingReq.write(body);
+      outgoingReq.end();
     } catch (e) {
-      clearTimeout(t);
       writeCors(res);
       res.statusCode = 502;
       res.setHeader('Content-Type', 'application/json');
@@ -1740,6 +1846,7 @@ async function startJsProxyFallback(port) {
     jsProxyServer.listen(port, '127.0.0.1', resolve);
   });
   proxyPort = port;
+  global.__WECRYPTO_PROXY_PORT__ = proxyPort;
   proxyHealthy = true;
   console.log(`[proxy-js] fallback proxy listening on http://127.0.0.1:${port}`);
 }
@@ -1776,145 +1883,65 @@ async function proxyUpstreamWorks(port) {
   return false;
 }
 
-// The packaged rustls proxy often cannot complete HTTPS while WARP/Tailscale
-// are both up (PowerShell/Node using the Windows cert store still work).
-// /health stays 200, so waitForProxy thinks everything is fine while the
-// renderer gets a 502 storm. Promote the Node fallback in that case.
+// The proxy process (JS SOCKS5) can stay up and bound to its port while its
+// own outbound leg to exchanges silently dies — e.g. a VPN/SOCKS route
+// flapping after boot, or the box's egress IP getting flagged mid-session.
+// A liveness check that only runs once at boot misses that: the renderer
+// keeps 502ing for the rest of the run with no recovery. So this both runs
+// at boot AND self-reschedules via scheduleProxyForwardsCheck() below, so a
+// mid-session upstream failure gets a chance to self-heal by rebinding to a
+// fresh port instead of persisting silently.
 async function ensureProxyForwards() {
   const port = proxyPort || 3010;
   if (await proxyUpstreamWorks(port)) {
     console.log(`[proxy] upstream OK on ${port}`);
+    proxyHealthy = true;
     return;
   }
-  console.warn(`[proxy] native proxy on ${port} cannot reach exchanges; switching to Node TLS fallback`);
+  console.warn(`[proxy] proxy on ${port} cannot reach exchanges; rebinding to a fresh port`);
   stopProxy();
   await new Promise((resolve) => setTimeout(resolve, 300));
   try {
-    await startJsProxyFallback(port);
+    await startProxy();
   } catch (err) {
-    const alt = await findFreePort(PROXY_PORT_CASCADE);
-    console.warn(`[proxy] JS fallback bind ${port} failed (${err.message}); trying ${alt}`);
-    await startJsProxyFallback(alt);
+    console.error('[proxy] rebind failed:', err.message);
+    proxyHealthy = false;
+    return;
   }
   if (await proxyUpstreamWorks(proxyPort)) {
-    console.log(`[proxy-js] upstream OK on ${proxyPort}`);
+    console.log(`[proxy] upstream OK on rebind port ${proxyPort}`);
+    proxyHealthy = true;
   } else {
-    console.error('[proxy-js] fallback also cannot reach exchanges');
+    console.error('[proxy] rebind also cannot reach exchanges');
     proxyHealthy = false;
   }
 }
 
+let proxyForwardsCheckTimer = null;
+const PROXY_FORWARDS_CHECK_INTERVAL_MS = 45_000;
+
+function scheduleProxyForwardsCheck() {
+  if (proxyForwardsCheckTimer) clearTimeout(proxyForwardsCheckTimer);
+  proxyForwardsCheckTimer = setTimeout(async () => {
+    proxyForwardsCheckTimer = null;
+    if (proxyManualStop) return;
+    try {
+      await ensureProxyForwards();
+    } catch (err) {
+      console.error('[proxy] periodic forwards check failed:', err.message);
+    } finally {
+      scheduleProxyForwardsCheck();
+    }
+  }, PROXY_FORWARDS_CHECK_INTERVAL_MS);
+}
+
 async function startProxy() {
-  if (proxyProcess && !proxyProcess.killed) {
-    return;
-  }
   proxyManualStop = false;
-
-  // Dev: __dirname  |  Packaged: resources/app.asar.unpacked/
-  // KEY: When running inside app.asar, __dirname is inside the archive (can't execute).
-  // Must ALWAYS look in app.asar.unpacked, not app.asar.
-  const proxyBinName = process.platform === 'win32' ? 'we-crypto-proxy.exe' : 'we-crypto-proxy';
-  const candidates = [
-    // Correct packaged path: resources/app.asar.unpacked/we-crypto-proxy(.exe) (CHECK FIRST)
-    path.join(process.resourcesPath || '', 'app.asar.unpacked', proxyBinName),
-    // Alternate: resourcesPath itself
-    path.join(process.resourcesPath || '', proxyBinName),
-    // Dev path: electron/ is one level down from root
-    path.join(__dirname, '..', proxyBinName),
-    path.join(__dirname, '..', 'we-crypto-proxy.exe'), // Windows artifact still recognized on mixed drives
-    // Linux release (cargo build --release)
-    path.join(__dirname, '..', 'proxy', 'target', 'release', 'we-crypto-proxy'),
-    path.join(__dirname, '..', 'proxy', 'target', 'x86_64-unknown-linux-gnu', 'release', 'we-crypto-proxy'),
-    // Build output path: proxy/target/x86_64-pc-windows-gnu/release/we-crypto-proxy.exe
-    path.join(__dirname, '..', 'proxy', 'target', 'x86_64-pc-windows-gnu', 'release', 'we-crypto-proxy.exe'),
-  ];
-
-  const exePath = candidates.find(p => fs.existsSync(p));
-  const projectRoot = path.join(__dirname, '..');
-  const cargoProjectDir = path.join(projectRoot, 'proxy');
-  const cargoTomlPath = path.join(cargoProjectDir, 'Cargo.toml');
-  const canUseCargoFallback = !app.isPackaged
-    && fs.existsSync(cargoTomlPath)
-    && ['cache', 'codec', 'grades', 'proxy', 'utils'].every(name => moduleFileExists(cargoProjectDir, name));
-  const shouldUseJsFallback = !exePath && !canUseCargoFallback;
-  if (shouldUseJsFallback) {
-    console.warn('[proxy] native executable/source unavailable; starting JS fallback proxy.');
-    await startJsProxyFallback(proxyPort);
-    return;
-  }
-  if (exePath) {
-    console.log(`[proxy] found executable at: ${exePath}`);
-  } else {
-    console.warn('[proxy] executable missing in dev mode; falling back to `cargo run --bin we-crypto-proxy`.');
-  }
-
-  // Pick a free port then write config.toml
   const chosenPort = await findFreePort(PROXY_PORT_CASCADE);
   proxyPort = chosenPort;
-
-  // If exe is in asar (read-only), write config to temp dir; otherwise beside exe
-  let proxyDir = exePath ? path.dirname(exePath) : cargoProjectDir;
-  if (proxyDir.includes('app.asar')) {
-    proxyDir = path.join(process.env.TEMP || path.join(app.getPath('appData'), 'WECRYPTO'), 'proxy-config');
-    fs.mkdirSync(proxyDir, { recursive: true });
-    console.log(`[proxy] writing config to temp: ${proxyDir}`);
-  }
-
-  try {
-    fs.writeFileSync(path.join(proxyDir, 'config.toml'), buildProxyConfig(chosenPort));
-    console.log(`[proxy] config.toml → port ${chosenPort}`);
-  } catch (e) {
-    console.warn('[proxy] could not write config.toml:', e.message);
-  }
-
-  const spawnEnv = {
-    ...process.env,
-    ...(process.env.WECRYPTO_SWEDEN_SOCKS
-      ? { ALL_PROXY: process.env.WECRYPTO_SWEDEN_SOCKS }
-      : process.env.WECRYPTO_TOR_SOCKS
-        ? { ALL_PROXY: process.env.WECRYPTO_TOR_SOCKS }
-        : {})
-  };
-
-  if (exePath) {
-    proxyProcess = spawn(exePath, [], {
-      detached: false,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      cwd: proxyDir,
-      env: spawnEnv,
-    });
-  } else {
-    proxyProcess = spawn('cargo', ['run', '--bin', 'we-crypto-proxy'], {
-      detached: false,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      cwd: cargoProjectDir,
-      env: spawnEnv,
-    });
-  }
-  proxyProcess.stdout.on('data', chunk => console.log('[proxy]', chunk.toString().trim()));
-  proxyProcess.stderr?.on('data', chunk => console.warn('[proxy:stderr]', chunk.toString().trim()));
-  proxyProcess.on('error', e => console.error('[proxy] start error:', e.message));
-  proxyProcess.on('exit', (code, signal) => {
-    console.log('[proxy] exited, code', code, 'signal', signal || 'none');
-    proxyProcess = null;
-    if (proxyManualStop) return;
-
-    // Auto-restart with capped exponential backoff to keep feeds alive.
-    const delayMs = Math.min(1000 * Math.pow(2, proxyRestartAttempts), 30000);
-    proxyRestartAttempts = Math.min(proxyRestartAttempts + 1, 10);
-    if (proxyRestartTimer) clearTimeout(proxyRestartTimer);
-    proxyRestartTimer = setTimeout(async () => {
-      try {
-        console.warn(`[proxy] restarting after unexpected exit (attempt ${proxyRestartAttempts}, delay ${delayMs}ms)`);
-        await startProxy();
-        await waitForProxy(5000, 150);
-      } catch (e) {
-        console.error('[proxy] restart failed:', e?.message || e);
-      }
-    }, delayMs);
-  });
-  proxyRestartAttempts = 0;
-  console.log(`[proxy] started on port ${chosenPort} — pid ${proxyProcess.pid}`);
+  global.__WECRYPTO_PROXY_PORT__ = proxyPort;
+  console.log(`[proxy] starting JS SOCKS5 proxy on port ${chosenPort}`);
+  await startJsProxyFallback(chosenPort);
 }
 
 function stopProxy() {
@@ -1922,6 +1949,10 @@ function stopProxy() {
   if (proxyRestartTimer) {
     clearTimeout(proxyRestartTimer);
     proxyRestartTimer = null;
+  }
+  if (proxyForwardsCheckTimer) {
+    clearTimeout(proxyForwardsCheckTimer);
+    proxyForwardsCheckTimer = null;
   }
   if (proxyProcess && !proxyProcess.killed) {
     try { proxyProcess.kill(); } catch (_) { }
@@ -2027,6 +2058,7 @@ function waitForProxy(maxMs = 5000, pollMs = 150) {
         res.on('end', () => {
           if (res.statusCode === 200 && body.trim() === 'OK') {
             proxyPort = port;           // lock in the responsive port
+            global.__WECRYPTO_PROXY_PORT__ = proxyPort;
             proxyHealthy = true;
             resolve();
           } else {
@@ -4049,6 +4081,7 @@ app.whenReady().then(async () => {
   Menu.setApplicationMenu(null);
   await waitForProxy();   // give proxy ~3s to bind before renderer fires fetchAll
   await ensureProxyForwards();
+  scheduleProxyForwardsCheck(); // keep re-checking so a mid-session upstream flap self-heals
 
   // Start web service (HTTPS)
   webServiceHealth = startWebService() || webServiceHealth;

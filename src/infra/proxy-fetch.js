@@ -23,49 +23,42 @@
 (function () {
   'use strict';
 
-  const PORT_CASCADE = [8080, 3010, 3011, 3012, 3013, 3014, 3015, 3016, 3017, 3018, 3019, 3020];
+  const PORT_CASCADE = [3010, 3011, 3012, 3013, 3014, 3015, 3016, 3017, 3018, 3019, 3020];
 
-  // Start in direct mode; enable proxy only after positive health discovery.
-  let PROXY_ORIGIN = null;
-  let proxyReady = false;
+  // Initialize PROXY_ORIGIN immediately so early fetches are never sent unproxied.
+  let PROXY_ORIGIN = (typeof window !== 'undefined' && window.__PROXY_PORT__)
+    ? `http://127.0.0.1:${window.__PROXY_PORT__}`
+    : 'http://127.0.0.1:3010';
+  let proxyReady = true;
 
   const IS_ELECTRON = window.location.protocol === 'file:';
 
-  // ── Bucket A: Cloudflare Bot Mgmt / Geo-blocked — always needs the proxy ──────────────
+  // ── Bucket A: Cloudflare Bot Mgmt & Geo-restricted APIs — always proxy ─────
   const CF_PROTECTED = new Set([
-    'fapi.binance.com',
     'api.binance.com',
+    'fapi.binance.com',
     'data-api.binance.vision',
     'api.bybit.com',
     'api.bytick.com',
+    'api.kraken.com',
+    'www.kraken.com',
+    'api.hyperliquid.xyz',
+    'api.bitstamp.net',
+    'www.bitstamp.net',
     'www.okx.com',
+    'api.okx.com',
     'api-pub.bitfinex.com',
     'api.kucoin.com',
     'api.mexc.com',
     'api.crypto.com',
     'api.bitvavo.com',
     'api.upbit.com',
-    'api.bitget.com',
-    'open-api.bingx.com',
-    'api.whitebit.com',
-    'whitebit.com',
-    'www.coinw.com',
-    'ourbit.com',
-    'www.lbank.com',
-    'www.bitstamp.net',
-    'api.bitso.com',
-    'www.bullish.com',
-    'www.weex.com',
   ]);
 
   // ── Bucket B: rate-limited public APIs — proxy for headroom ─────────────
   const RATE_LIMITED = new Set([
-    'api.coingecko.com',
-    'pro-api.coingecko.com',
     'api.dexscreener.com',
     'api.blockchair.com',
-    'api.blockcypher.com',
-    'chain.so',
     'hypurrscan.io',
     'api.etherscan.io',
     'api.bscscan.com',
@@ -73,26 +66,28 @@
     'fx-api.gateio.ws',
   ]);
 
-  // ── Bucket C: open / first-party APIs — direct ok in Electron ───────────
-  // (still proxied in browser so the CORS bouncer doesn't fire)
+  // ── Bucket C: open / first-party APIs ──────────────────────────────────
 
   // hostname → proxy exchange prefix (config.toml keys)
   const HOST_MAP = {
     'api.binance.us': 'binance-us',
     'api.binance.com': 'binance',
-    'data-api.binance.vision': 'binance-data',
+    'data-api.binance.vision': 'binance',
     'fapi.binance.com': 'binance-f',
     'api.coingecko.com': 'coingecko',
     'pro-api.coingecko.com': 'coingecko-pro',
     'api.coinbase.com': 'coinbase',
     'api.exchange.coinbase.com': 'coinbase-ex',
     'api.kraken.com': 'kraken',
+    'www.kraken.com': 'kraken',
     'api.bybit.com': 'bybit',
     'api.bytick.com': 'bybit',   // EU mirror — same proxy route
     'www.okx.com': 'okx',
+    'api.okx.com': 'okx',
     'gamma-api.polymarket.com': 'polymarket',
     'clob.polymarket.com': 'polymarket-clob',
     'data-api.polymarket.com': 'polymarket-data',
+    'api.perpetuals.polymarket.com': 'polymarket-perps',
     'api-pub.bitfinex.com': 'bitfinex',
     'api.kucoin.com': 'kucoin',
     'api.mexc.com': 'mexc',
@@ -110,7 +105,6 @@
     'xrplcluster.com': 'xrpl',
     'api.mainnet-beta.solana.com': 'solana',
     'api.crypto.com': 'crypto-com',
-    'chain.so': 'chainso',
     'api.upbit.com': 'upbit',
     'api.bitget.com': 'bitget',
     'open-api.bingx.com': 'bingx',
@@ -121,19 +115,21 @@
     'ourbit.com': 'ourbit',
     'www.lbank.com': 'lbank',
     'www.bitstamp.net': 'bitstamp',
+    'api.bitstamp.net': 'bitstamp',
     'api.bitso.com': 'bitso',
     'www.bullish.com': 'bullish',
     'www.weex.com': 'weex',
-    // gate NOT in HOST_MAP — running proxy binary may lack /gate route;
-    // generic /proxy?url= works with current binary (verified 200).
   };
 
   const _origFetch = window.fetch.bind(window);
   const EXTERNAL = /^https?:\/\//;
 
+  // Explicit direct bypass for AI/LLM endpoints so they always use native source IP
+  const IGNORE_DOMAINS = /localhost|127\.0\.0\.1|asi1\.ai|fetch-ai\.com|openai\.com|anthropic\.com|x\.ai|deepseek\.com|timeapi\.io|polymarket\.com/i;
+
   function needsProxy(hostname) {
-    if (!IS_ELECTRON) return true;           // browser: CORS bouncer is live → proxy everything
-    return CF_PROTECTED.has(hostname) || RATE_LIMITED.has(hostname);
+    if (IGNORE_DOMAINS.test(hostname)) return false;
+    return true; // All exchange / market endpoints MUST route through local proxy
   }
 
   function rewrite(url) {
@@ -157,7 +153,6 @@
     }
   }
 
-  const IGNORE_DOMAINS = /timeapi\.io|kalshi\.com|polymarket\.com/i;
   let _nodeFetch = null;
   try {
     if (typeof require !== 'undefined') {

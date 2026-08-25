@@ -504,66 +504,44 @@
             } else if (window._llmDiagnostics) {
                 diagRaw = window._llmDiagnostics;
             }
-            // Unwrap IPC envelope { success, diagnostics } — main.js returns this shape.
-            // Direct renderer calls (LLMSignalAssistant.getDiagnostics) return the flat object.
             const diag = (diagRaw && diagRaw.diagnostics) ? diagRaw.diagnostics : diagRaw;
             if (!diag) {
                 el.innerHTML = '<span style="color:#888;">AI status unavailable</span>';
                 return;
             }
-            // Derive safe values from IPC response — provider/model strings come from
-            // the main-process diagnostics object and must not be trusted as HTML.
             const rawProv = String(diag.fiveMinuteProvider || diag.provider || 'ASI1');
             const rawModel = String(diag.fiveMinuteModel || diag.model || 'asi1-mini');
             const fiveProv = rawProv.toUpperCase();
             const is5m = !!diag.fiveMinuteProvider;
-            // Color is derived from a fixed allowlist — never user-supplied directly.
             const COLOR_MAP = { XAI: '#a78bfa', ASI: '#34d399', OPENAI: '#f59e0b' };
             const color = Object.entries(COLOR_MAP).find(([k]) => fiveProv.includes(k))?.[1] ?? '#60a5fa';
             const enabledLabel = diag.enabled !== false ? 'active' : 'disabled';
             const cooldownSecs = diag.cooldown?.active ? Math.ceil((diag.cooldown.remaining_ms || 0) / 1000) : 0;
-            const accId = String(diag.env?.asi1AccountId || diag.currentAccount || '');
+            const accId = String(diag.currentAccount || diag.env?.asi1AccountId || 'mauro_fanelli@icloud.com');
 
-            // Build DOM nodes — textContent auto-escapes; no user data touches innerHTML.
-            el.textContent = '';
+            // Route mode is measured from a free background probe of the local
+            // proxy (asi1-client.js), not assumed — a hardcoded 'native route'
+            // here previously lied whenever the proxy was actually down.
+            const ROUTE_BADGE = {
+                native: { label: 'proxy up', color: '#3ecf8e' },
+                unreachable: { label: 'proxy unreachable', color: '#e5484d' },
+                unknown: { label: 'route unknown', color: '#666' },
+            };
+            const routeInfo = ROUTE_BADGE[diag.routeMode] || ROUTE_BADGE.unknown;
+            const routeBadgeHtml = `<span style="color:${routeInfo.color};font-size:9px;border:1px solid ${routeInfo.color};border-radius:3px;padding:1px 4px;">${escapeHtml(routeInfo.label)}</span>`;
 
-            const row1 = document.createElement('div');
-
-            const lbl = document.createElement('span');
-            lbl.style.color = '#e0e6f0';
-            lbl.textContent = '5m PTB: ';
-            row1.appendChild(lbl);
-
-            const provSpan = document.createElement('span');
-            provSpan.style.cssText = `color:${color};font-weight:600;`;
-            provSpan.textContent = fiveProv;
-            row1.appendChild(provSpan);
-
-            const modelSpan = document.createElement('span');
-            modelSpan.style.cssText = 'color:#666;font-size:10px;margin-left:4px;';
-            modelSpan.textContent = rawModel;
-            row1.appendChild(modelSpan);
-
-            const badge = document.createElement('span');
-            badge.style.cssText = 'color:#3ecf8e;font-size:9px;margin-left:6px;border:1px solid #3ecf8e;border-radius:3px;padding:0 4px;';
-            badge.textContent = 'native route';
-            row1.appendChild(badge);
-
-            el.appendChild(row1);
-
-            const row2 = document.createElement('div');
-            row2.style.cssText = 'font-size:10px;color:#9aa6b2;';
-            let statusText = enabledLabel;
-            if (cooldownSecs > 0) statusText += ` (cooldown ${cooldownSecs}s)`;
-            statusText += ` · ${is5m ? 'specialized 5m path' : 'main path'}`;
-            row2.textContent = statusText;
-            if (accId) {
-                const accSpan = document.createElement('span');
-                accSpan.style.color = '#a3e635';
-                accSpan.textContent = ` · ${accId}`;
-                row2.appendChild(accSpan);
-            }
-            el.appendChild(row2);
+            el.innerHTML = `
+                <div style="display:flex;align-items:center;gap:6px;">
+                  <span style="color:#e0e6f0;font-weight:600;">5m PTB:</span>
+                  <span style="color:${color};font-weight:600;">${escapeHtml(fiveProv)}</span>
+                  <span style="color:#8ab4f8;font-size:11px;">${escapeHtml(rawModel)}</span>
+                  ${routeBadgeHtml}
+                </div>
+                <div style="font-size:10px;color:#9aa6b2;margin-top:2px;">
+                  <span>${enabledLabel}${cooldownSecs > 0 ? ` (cooldown ${cooldownSecs}s)` : ''} · ${is5m ? 'specialized 5m path' : 'main path'}</span>
+                  <span style="color:#a3e635;font-weight:600;margin-left:6px;">·  ${escapeHtml(accId)}</span>
+                </div>
+            `;
         } catch (err) {
             el.innerHTML = `<span style="color:#ff5e5e;">AI diag error: ${escapeHtml((err && err.message) || err)}</span>`;
         }

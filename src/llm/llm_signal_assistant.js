@@ -233,6 +233,10 @@ class LLMSignalAssistant {
     this.queryHistory = [];             // rolling query log across all LLM providers
     this.queryStatsByProvider = {};     // per-provider stats (calls, latency, errors)
     this.queryStatsByModel = {};        // per-model stats (calls, latency, errors)
+    // Circuit breaker: provider -> { until, reason }. ASI1 handles its own
+    // multi-key/multi-model rotation internally (see asi1-client.js). TokenMix
+    // uses this directly for 402/credit-exhaustion cooldowns (see
+    // _isTokenmixInCooldown / _markTokenmixCooldown below).
     this._providerCooldowns = {};
     this._tokenmixCreditExhausted = false;
 
@@ -1484,14 +1488,17 @@ Use this recall only as context, and prioritize current market snapshot data if 
     const lastProvider = this._lastProvider || this.provider || null;
     const lastModel = this._lastModel || null;
     const asi1Diag = (() => { try { return Asi1Client.getDiagnostics(); } catch (_) { return {}; } })();
-    const currentAccountId = asi1Diag.currentAccountId || (Asi1Client.ASI1_ACCOUNTS?.[0]?.id) || null;
+    const currentAccount = asi1Diag.currentAccount || 'mauro_fanelli@icloud.com';
+    const currentAccountId = asi1Diag.currentAccountId || 'icloud';
     return {
       enabled: this.enabled,
       provider: lastProvider || this.provider,
       lastProvider,
       lastModel,
-      currentAccount: currentAccountId,
-      routeMode: 'native', // LLM endpoints bypass Sweden SOCKS5 — direct Ethernet
+      currentAccount,
+      currentAccountId,
+      routeMode: asi1Diag.routeMode || 'unknown',
+      lastLatencyMs: asi1Diag.lastLatencyMs ?? null,
       api_url: this.enabled ? "https://api.asi1.ai/v1" : "disabled",
       model: this.enabled ? (lastModel || "asi1-ultra") : "disabled",
       // ASI1-only: pre-contract 15m/60m uses the deep/ultra tier, 5m PTB uses mini/fast.

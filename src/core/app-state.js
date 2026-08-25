@@ -130,6 +130,8 @@ const ORCH_LOG_STORE = 'beta1_orch_log';
 
 const MARKET_TRAIL_STORE = 'beta1_kalshi_2m_trail';
 
+const SCORECARD_LOG_STORE = 'beta1_scorecard_log';
+
 const LOG_CAP = 250;
 
 const LOG_BACKUP_COOLDOWN_MS = 15000;
@@ -172,6 +174,17 @@ function saveMarketLog() {
 function saveLastPred() { try { localStorage.setItem(LAST_PRED_STORE, JSON.stringify(window._lastPrediction)); } catch (e) { } }
 
 function saveLastMarket() { try { localStorage.setItem(LAST_MARKET_STORE, JSON.stringify(window._lastMarketSnapshot)); } catch (e) { } }
+
+// Settlement scorecard log — populated exclusively from Polymarket settlement
+// data (historical-settlement-fetcher.js; Kalshi network I/O is permanently
+// disabled), despite the app's earlier Kalshi-era naming.
+function saveScorecardLog() {
+    try {
+      window._scorecardLog = capArray(window._scorecardLog || []);
+      localStorage.setItem(SCORECARD_LOG_STORE, JSON.stringify(window._scorecardLog));
+      scheduleLogBackup();
+    } catch (e) { }
+  }
 
 function saveKalshiErrors() {
     try {
@@ -335,6 +348,7 @@ window.savePredLog = savePredLog;
 window.saveMarketLog = saveMarketLog;
 window.saveLastPred = saveLastPred;
 window.saveLastMarket = saveLastMarket;
+window.saveScorecardLog = saveScorecardLog;
 window.saveKalshiErrors = saveKalshiErrors;
 window.saveOrchLog = saveOrchLog;
 window.saveMarketTrail = saveMarketTrail;

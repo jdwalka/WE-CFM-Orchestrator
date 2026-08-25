@@ -142,11 +142,14 @@
       }
     }
     // Try CORS proxy fallback if running in browser
+    const proxyPort = (typeof window !== 'undefined' && window.__PROXY_PORT__) || 3010;
     const proxyUrls = [];
     if (url.startsWith('https://gamma-api.polymarket.com/')) {
-      proxyUrls.push(url.replace('https://gamma-api.polymarket.com/', 'http://localhost:8080/gamma/'));
+      proxyUrls.push(url.replace('https://gamma-api.polymarket.com/', `http://127.0.0.1:${proxyPort}/polymarket/`));
+      proxyUrls.push(url.replace('https://gamma-api.polymarket.com/', `http://127.0.0.1:${proxyPort}/gamma/`));
     } else if (url.startsWith('https://clob.polymarket.com/')) {
-      proxyUrls.push(url.replace('https://clob.polymarket.com/', 'http://localhost:8080/clob/'));
+      proxyUrls.push(url.replace('https://clob.polymarket.com/', `http://127.0.0.1:${proxyPort}/polymarket-clob/`));
+      proxyUrls.push(url.replace('https://clob.polymarket.com/', `http://127.0.0.1:${proxyPort}/clob/`));
     }
     for (const pUrl of proxyUrls) {
       try {
@@ -192,11 +195,14 @@
       }
     }
     // Try CORS proxy fallback if running in browser
+    const proxyPort = (typeof window !== 'undefined' && window.__PROXY_PORT__) || 3010;
     const proxyUrls = [];
     if (url.startsWith('https://gamma-api.polymarket.com/')) {
-      proxyUrls.push(url.replace('https://gamma-api.polymarket.com/', 'http://localhost:8080/gamma/'));
+      proxyUrls.push(url.replace('https://gamma-api.polymarket.com/', `http://127.0.0.1:${proxyPort}/polymarket/`));
+      proxyUrls.push(url.replace('https://gamma-api.polymarket.com/', `http://127.0.0.1:${proxyPort}/gamma/`));
     } else if (url.startsWith('https://clob.polymarket.com/')) {
-      proxyUrls.push(url.replace('https://clob.polymarket.com/', 'http://localhost:8080/clob/'));
+      proxyUrls.push(url.replace('https://clob.polymarket.com/', `http://127.0.0.1:${proxyPort}/polymarket-clob/`));
+      proxyUrls.push(url.replace('https://clob.polymarket.com/', `http://127.0.0.1:${proxyPort}/clob/`));
     }
     for (const pUrl of proxyUrls) {
       try {
