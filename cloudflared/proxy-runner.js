@@ -28,113 +28,228 @@ const socksAgent = new SocksProxyAgent(`socks5://127.0.0.1:${SOCKS_PORT}`, {
   maxSockets: 8,
 });
 
-// 3. 2.5s Micro-Cache
+// 3. 2.5s Micro-Cache & In-Flight Coalescing
 const cache = new Map();
 const inFlight = new Map();
 const TTL_MS = 2500;
 
+const PREFIX_MAP = {
+  'binance': 'https://api.binance.com',
+  'binance-f': 'https://fapi.binance.com',
+  'binance-us': 'https://api.binance.us',
+  'binance-data': 'https://data-api.binance.vision',
+  'coinbase': 'https://api.coinbase.com',
+  'coinbase-ex': 'https://api.exchange.coinbase.com',
+  'kraken': 'https://api.kraken.com',
+  'gemini': 'https://api.gemini.com',
+  'bitstamp': 'https://www.bitstamp.net',
+  'bybit': 'https://api.bybit.com',
+  'bytick': 'https://api.bytick.com',
+  'okx': 'https://www.okx.com',
+  'crypto-com': 'https://api.crypto.com',
+  'crypto': 'https://api.crypto.com',
+  'polymarket': 'https://gamma-api.polymarket.com',
+  'polymarket-clob': 'https://clob.polymarket.com',
+  'polymarket-data': 'https://data-api.polymarket.com',
+  'polymarket-perps': 'https://api.perpetuals.polymarket.com',
+  'mempool': 'https://mempool.space',
+  'etherscan': 'https://api.etherscan.io',
+  'bscscan': 'https://api.bscscan.com',
+  'polygonscan': 'https://api.polygonscan.com',
+  'solana': 'https://api.mainnet-beta.solana.com',
+  'dexscreener': 'https://api.dexscreener.com',
+  'coingecko': 'https://api.coingecko.com',
+  'coingecko-pro': 'https://pro-api.coingecko.com',
+  'kucoin': 'https://api.kucoin.com',
+  'mexc': 'https://api.mexc.com',
+  'bitfinex': 'https://api-pub.bitfinex.com',
+  'hyperliquid': 'https://api.hyperliquid.xyz',
+  'deribit': 'https://www.deribit.com',
+  'bitvavo': 'https://api.bitvavo.com',
+};
+
 const writeCors = (res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', '*');
 };
 
-const server = http.createServer((req, res) => {
-  writeCors(res);
-  if (req.method === 'OPTIONS') { res.statusCode = 204; return res.end(); }
+const readBody = (req) => new Promise(resolve => {
+  const chunks = [];
+  req.on('data', chunk => chunks.push(chunk));
+  req.on('end', () => resolve(Buffer.concat(chunks)));
+  req.on('error', () => resolve(Buffer.alloc(0)));
+});
 
-  const u = new URL(req.url || '/', `http://127.0.0.1:${HTTP_PORT}`);
-  if (u.pathname === '/health') { res.statusCode = 200; return res.end('OK'); }
+function isSocksTarget(target) {
+  const t = String(target).toLowerCase();
+  return t.includes('binance') || t.includes('bybit') || t.includes('okx') || 
+         t.includes('kucoin') || t.includes('mexc') || t.includes('bitfinex') || 
+         t.includes('hyperliquid') || t.includes('deribit') || t.includes('bitvavo') ||
+         t.includes('bitstamp') || t.includes('gate');
+}
 
-  let target = null;
-  if (u.pathname.startsWith('/binance-f/')) {
-    target = `https://fapi.binance.com/${u.pathname.replace(/^\/binance-f\//, '')}${u.search}`;
-  } else if (u.pathname.startsWith('/binance/')) {
-    target = `https://api.binance.com/${u.pathname.replace(/^\/binance\//, '')}${u.search}`;
-  } else if (u.pathname.startsWith('/bybit/')) {
-    target = `https://api.bybit.com/${u.pathname.replace(/^\/bybit\//, '')}${u.search}`;
-  } else if (u.pathname.startsWith('/okx/')) {
-    target = `https://www.okx.com/${u.pathname.replace(/^\/okx\//, '')}${u.search}`;
-  } else if (u.pathname.startsWith('/crypto-com/') || u.pathname.startsWith('/crypto/')) {
-    target = `https://api.crypto.com/${u.pathname.replace(/^\/(crypto-com|crypto)\//, '')}${u.search}`;
-  } else if (u.pathname.startsWith('/polymarket/')) {
-    target = `https://gamma-api.polymarket.com/${u.pathname.replace(/^\/polymarket\//, '')}${u.search}`;
-  } else if (u.pathname.startsWith('/polymarket-clob/')) {
-    target = `https://clob.polymarket.com/${u.pathname.replace(/^\/polymarket-clob\//, '')}${u.search}`;
-  } else if (u.pathname.startsWith('/polymarket-data/')) {
-    target = `https://data-api.polymarket.com/${u.pathname.replace(/^\/polymarket-data\//, '')}${u.search}`;
-  } else if (u.pathname.startsWith('/mempool/')) {
-    target = `https://mempool.space/${u.pathname.replace(/^\/mempool\//, '')}${u.search}`;
-  } else {
-    res.statusCode = 404;
-    return res.end('Not Routed');
+const forward = async (targetUrl, req, res) => {
+  const method = String(req.method || 'GET').toUpperCase();
+  const isGet = method === 'GET' || method === 'HEAD';
+
+  // 1. Cache HIT check for GET
+  if (isGet) {
+    const now = Date.now();
+    const cached = cache.get(targetUrl);
+    if (cached && (now - cached.ts) < TTL_MS) {
+      res.statusCode = 200;
+      res.setHeader('Content-Type', cached.contentType || 'application/json');
+      res.setHeader('X-Cache', 'HIT');
+      return res.end(cached.body);
+    }
+
+    if (inFlight.has(targetUrl)) {
+      inFlight.get(targetUrl).then(data => {
+        res.statusCode = data.statusCode;
+        res.setHeader('Content-Type', data.contentType || 'application/json');
+        res.setHeader('X-Cache', 'IN-FLIGHT');
+        res.end(data.body);
+      }).catch(() => {
+        res.statusCode = 502;
+        res.end(JSON.stringify({ error: 'upstream-failed' }));
+      });
+      return;
+    }
   }
 
-  const now = Date.now();
-  const cached = cache.get(target);
-  if (cached && (now - cached.ts) < TTL_MS) {
-    res.statusCode = 200;
-    res.setHeader('Content-Type', 'application/json');
-    res.setHeader('X-Cache', 'HIT');
-    return res.end(cached.body);
-  }
+  const parsed = new URL(targetUrl);
+  const useSocks = isSocksTarget(targetUrl);
+  const transport = parsed.protocol === 'https:' ? https : http;
 
-  if (inFlight.has(target)) {
-    inFlight.get(target).then(data => {
+  const outgoingHeaders = {
+    'host': parsed.hostname,
+    'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
+    'accept': req.headers['accept'] || '*/*',
+    'accept-language': 'en-US,en;q=0.9',
+  };
+  if (req.headers['content-type']) outgoingHeaders['content-type'] = req.headers['content-type'];
+  if (req.headers['authorization']) outgoingHeaders['authorization'] = req.headers['authorization'];
+  if (req.headers['x-mbx-apikey']) outgoingHeaders['x-mbx-apikey'] = req.headers['x-mbx-apikey'];
+  if (req.headers['x-api-key']) outgoingHeaders['x-api-key'] = req.headers['x-api-key'];
+
+  if (isGet) {
+    const promise = new Promise((resolve, reject) => {
+      const outReq = transport.request({
+        host: parsed.hostname,
+        hostname: parsed.hostname,
+        servername: parsed.hostname,
+        port: parsed.port || (parsed.protocol === 'https:' ? 443 : 80),
+        path: parsed.pathname + parsed.search,
+        method: 'GET',
+        agent: useSocks ? socksAgent : undefined,
+        headers: outgoingHeaders,
+        timeout: 8000
+      }, (upRes) => {
+        const chunks = [];
+        upRes.on('data', c => chunks.push(c));
+        upRes.on('end', () => {
+          const body = Buffer.concat(chunks);
+          const contentType = upRes.headers['content-type'] || 'application/json';
+          if (upRes.statusCode === 200) {
+            cache.set(targetUrl, { body, contentType, ts: Date.now() });
+          }
+          resolve({ statusCode: upRes.statusCode, contentType, body });
+        });
+      });
+      outReq.on('error', reject);
+      outReq.on('timeout', () => outReq.destroy(new Error('upstream-timeout')));
+      outReq.end();
+    }).finally(() => {
+      inFlight.delete(targetUrl);
+    });
+
+    inFlight.set(targetUrl, promise);
+
+    promise.then(data => {
       res.statusCode = data.statusCode;
-      res.setHeader('Content-Type', 'application/json');
-      res.setHeader('X-Cache', 'IN-FLIGHT');
+      res.setHeader('Content-Type', data.contentType);
       res.end(data.body);
-    }).catch(() => {
+    }).catch(err => {
       res.statusCode = 502;
-      res.end(JSON.stringify({ error: 'upstream-failed' }));
+      res.end(JSON.stringify({ error: 'upstream-failed', message: err?.message || 'unknown' }));
     });
     return;
   }
 
-  const parsed = new URL(target);
-  const isSocks = target.includes('binance') || target.includes('bybit') || target.includes('okx');
+  // Handle POST / PUT / DELETE
+  const body = await readBody(req);
+  if (body && body.length) outgoingHeaders['content-length'] = body.length;
 
-  const promise = new Promise((resolve, reject) => {
-    const outReq = https.request({
+  try {
+    const outReq = transport.request({
       host: parsed.hostname,
       hostname: parsed.hostname,
       servername: parsed.hostname,
-      port: 443,
+      port: parsed.port || (parsed.protocol === 'https:' ? 443 : 80),
       path: parsed.pathname + parsed.search,
-      method: 'GET',
-      agent: isSocks ? socksAgent : undefined,
-      headers: { 'host': parsed.hostname, 'user-agent': 'Mozilla/5.0', 'accept': '*/*' },
-      timeout: 6000
+      method,
+      agent: useSocks ? socksAgent : undefined,
+      headers: outgoingHeaders,
+      timeout: 10000
     }, (upRes) => {
-      const chunks = [];
-      upRes.on('data', c => chunks.push(c));
-      upRes.on('end', () => {
-        const body = Buffer.concat(chunks);
-        if (upRes.statusCode === 200) {
-          cache.set(target, { body, ts: Date.now() });
-        }
-        resolve({ statusCode: upRes.statusCode, body });
-      });
+      res.statusCode = upRes.statusCode;
+      if (upRes.headers['content-type']) res.setHeader('Content-Type', upRes.headers['content-type']);
+      upRes.pipe(res);
     });
-    outReq.on('error', reject);
+
+    outReq.on('error', (err) => {
+      res.statusCode = 502;
+      res.end(JSON.stringify({ error: 'upstream-failed', message: err?.message || 'unknown' }));
+    });
+
+    if (body && body.length > 0) outReq.write(body);
     outReq.end();
-  }).finally(() => {
-    inFlight.delete(target);
-  });
-
-  inFlight.set(target, promise);
-
-  promise.then(data => {
-    res.statusCode = data.statusCode;
-    res.setHeader('Content-Type', 'application/json');
-    res.end(data.body);
-  }).catch(() => {
+  } catch (err) {
     res.statusCode = 502;
-    res.end(JSON.stringify({ error: 'upstream-failed' }));
-  });
+    res.end(JSON.stringify({ error: 'upstream-failed', message: err?.message || 'unknown' }));
+  }
+};
+
+const server = http.createServer(async (req, res) => {
+  writeCors(res);
+  if (req.method === 'OPTIONS') {
+    res.statusCode = 204;
+    return res.end();
+  }
+
+  const u = new URL(req.url || '/', `http://127.0.0.1:${HTTP_PORT}`);
+  const p = u.pathname;
+
+  if (p === '/health') {
+    res.statusCode = 200;
+    res.setHeader('Content-Type', 'text/plain');
+    return res.end('OK');
+  }
+
+  if (p === '/proxy') {
+    const target = u.searchParams.get('url');
+    if (!target) {
+      res.statusCode = 400;
+      return res.end('Missing ?url=');
+    }
+    return forward(target, req, res);
+  }
+
+  const parts = p.replace(/^\//, '').split('/');
+  const prefix = parts.shift();
+  const rest = parts.join('/');
+
+  const base = PREFIX_MAP[prefix];
+  if (!base) {
+    res.statusCode = 404;
+    return res.end(`Unknown proxy prefix: ${prefix}`);
+  }
+
+  const targetUrl = `${base}/${rest}${u.search}`;
+  return forward(targetUrl, req, res);
 });
 
 server.listen(HTTP_PORT, '127.0.0.1', () => {
-  console.log(`[proxy-runner] Lean Tier-1 Proxy Live on http://127.0.0.1:${HTTP_PORT}`);
+  console.log(`[proxy-runner] Full Tier-1 Proxy Live on http://127.0.0.1:${HTTP_PORT}`);
 });
