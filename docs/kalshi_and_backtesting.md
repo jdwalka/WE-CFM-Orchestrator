@@ -1,6 +1,6 @@
 # Polymarket-Chainlink TWAP-settlement Markets & Backtesting
 
-WE-CRYPTO validates its AI-generated signals by mapping them directly against regulated prediction markets like Kalshi.
+WE-CRYPTO validates its AI-generated signals by mapping them directly against regulated prediction markets like Polymarket.
 
 ## Contract Cache Discovery
 
