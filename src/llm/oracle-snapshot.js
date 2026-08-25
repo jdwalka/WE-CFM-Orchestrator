@@ -118,6 +118,24 @@
       }
     } catch (_) { /* */ }
 
+    // 5) PredictionEngine live spot price
+    try {
+      const pred = window.PredictionEngine?.get?.(key) || window._predictions?.[key];
+      const p = num(pred?.price || pred?.currentPrice);
+      if (p != null && p > 0) {
+        return { price: p, source: 'prediction-engine', ts: Date.now() };
+      }
+    } catch (_) { /* */ }
+
+    // 6) Candle cache last price
+    try {
+      const cache = window.candleCache?.[key];
+      const p = num(cache?.ticker?.usd || cache?.candles?.[cache?.candles?.length - 1]?.c);
+      if (p != null && p > 0) {
+        return { price: p, source: 'candle-cache', ts: Date.now() };
+      }
+    } catch (_) { /* */ }
+
     return null;
   }
 

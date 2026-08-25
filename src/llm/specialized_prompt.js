@@ -712,8 +712,11 @@ function resolvePolymarketPtb(snapshot) {
 
 function formatOracleStrictBlock(snapshot) {
   const { ptb, source, slug, pending, coin, decimals, display } = resolvePolymarketPtb(snapshot);
-  const coinKey = coin || _coinFromSnapshot(snapshot, slug);
-  const spotRaw = _numPtb(snapshot.currentPrice ?? snapshot.price ?? snapshot.polymarketOracle?.pythSpot);
+  const spotRaw = _numPtb(
+    snapshot.currentPrice ?? snapshot.price ?? snapshot.polymarketOracle?.pythSpot
+    ?? snapshot.poly5m?.spot ?? snapshot.poly15m?.spot ?? snapshot.activeContract?.spot
+    ?? snapshot.active?.spot ?? snapshot.market?.price ?? snapshot.market?.currentPrice
+  );
   const spot = spotRaw != null ? roundPriceForCoin(coinKey, spotRaw) : null;
   const spotDisp = spotRaw != null ? formatUsdForCoin(coinKey, spotRaw) : null;
   const spotSrc = snapshot.priceSource || snapshot.polymarketOracle?.pythSource || snapshot.spotSource || 'pyth';
