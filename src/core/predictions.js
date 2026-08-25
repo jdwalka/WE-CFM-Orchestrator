@@ -60,7 +60,7 @@
   const BFNX_SYMS = { BTC: 'tBTCUSD', ETH: 'tETHUSD', SOL: 'tSOLUSD', XRP: 'tXRPUSD', DOGE: 'tDOGEUSD' };
   const CDC_TRANSIENT_STATUS = new Set([429, 502, 503, 504]);
   let SHORT_HORIZON_MINUTES = [1, 5, 10, 15];
-  let DEFAULT_SHORT_HORIZON_MIN = 15;  // Primary target: next 15-min candle session (Kalshi contracts)
+  let DEFAULT_SHORT_HORIZON_MIN = 15;  // Primary target: next 15-min candle session (Polymarket contracts)
   const STATIC_HORIZONS = [1, 5, 10, 15];
 
   const {
@@ -147,7 +147,7 @@
 
   // ── Backtest localStorage cache (cold-start / refresh acceleration) ───────
   // Bump cache key to force recomputation after h1/h5 horizon-candle fix + 5m PTB anchor.
-  const BT_CACHE_KEY = 'beta1_bt_cache_v2';
+  const BT_CACHE_KEY = 'poly_twap_ptb_bt_cache_v3';
   const BT_CACHE_TTL_MS = 4 * 60 * 60 * 1000; // 4 hours
 
   function saveBtCache() {
@@ -495,7 +495,7 @@
   // ── Live-path performance profile (Canada node / 24-7 Electron) ──────────
   // Walk-forward was 4 horizons × 250 steps × buildSignalModel(400 bars) →
   // main-thread freezes and 25s prediction timeouts. Keep signal quality,
-  // cut redundant history that doesn't improve 5m/15m Kalshi decisions.
+  // cut redundant history that doesn't improve 5m/15m Polymarket decisions.
   const PERF = {
     candle1mLimit: 120,          // was 180
     candle5mLimit: 150,          // was 300
@@ -929,49 +929,42 @@
     return sma;
   }
 
-  // ── RTI (Real-Time Index) Aggregation ────────────────────────────────────────
-  // Aggregates 1m candles into coarser timeframes (5m, 10m, 15m) using weighted averaging.
-  // Recent bars weighted higher to capture intra-candle market direction.
-  // Formula: rtiClose = sum(close[i] * (i+1) / barCount) / sum(1..barCount)
-  function aggregateToRTI(candles1m, barSize = 5) {
+  // ── Chainlink TWAP / Time-Weighted Aggregation ──────────────────────────────
+  // Aggregates 1m candles into coarser timeframes (5m, 10m, 15m) using time-weighted averaging
+  // aligned to Chainlink 60s/30s TWAP benchmark standards.
+  function aggregateToTWAP(candles1m, barSize = 5) {
     if (!candles1m || candles1m.length === 0) return [];
 
-    const rtiCandles = [];
+    const twapCandles = [];
     for (let i = 0; i < candles1m.length; i += barSize) {
       const slice = candles1m.slice(i, i + barSize);
       if (slice.length === 0) continue;
 
       const barsNeeded = slice.length;
-      const weightSum = (barsNeeded * (barsNeeded + 1)) / 2;
+      const twapClose = slice.reduce((sum, c) => sum + c.c, 0) / barsNeeded;
 
-      // RTI close: weighted average (newer bars = higher weight)
-      const rtiClose = slice.reduce((sum, c, j) => {
-        const weight = (j + 1) / barsNeeded;
-        return sum + c.c * weight;
-      }, 0) / weightSum;
-
-      // OHLCV aggregated normally (except close is RTI-weighted)
-      const rtiBar = {
+      // OHLCV aggregated with TWAP close
+      const twapBar = {
         t: slice[0].t,
         o: slice[0].o,
         h: Math.max(...slice.map(c => c.h)),
         l: Math.min(...slice.map(c => c.l)),
-        c: rtiClose,  // RTI-weighted close
+        c: twapClose,  // Chainlink TWAP close
         v: slice.reduce((sum, c) => sum + (c.v || 0), 0),
       };
 
-      rtiCandles.push(rtiBar);
+      twapCandles.push(twapBar);
     }
 
-    return rtiCandles;
+    return twapCandles;
   }
+  const aggregateToRTI = aggregateToTWAP; // compat alias
 
-  // Helper: Decide whether to use 1m RTI aggregation or standard 5m candles
-  function shouldUseRTIAggregation(horizonMin, candles1mAvailable) {
-    // Use RTI for short horizons (1-5m) when 1m candles available
-    // Reverts to standard 5m for 10m+ or if 1m data unavailable
+  // Helper: Decide whether to use 1m TWAP aggregation or standard 5m candles
+  function shouldUseTWAPAggregation(horizonMin, candles1mAvailable) {
     return horizonMin <= 5 && candles1mAvailable && candles1mAvailable.length >= 30;
   }
+  const shouldUseRTIAggregation = shouldUseTWAPAggregation; // compat alias
 
   // ── Hull Moving Average ────────────────────────────────────────────────────
   // WMA helper (linearly weighted, most-recent bars get highest weight).
@@ -1603,10 +1596,11 @@
       && !structureVeto
       && !persistenceVeto;
     const direction = isActive ? (observation.score > 0 ? 1 : -1) : 0;
+    const signedReturn = direction === 0 ? 0 : (observation.isWin != null ? (observation.isWin ? Math.abs(observation.returnPct) : -Math.abs(observation.returnPct)) : observation.returnPct);
     return {
       ...observation,
       direction,
-      signedReturn: direction === 0 ? 0 : observation.returnPct * direction,
+      signedReturn,
       bucket: direction === 0 ? 'neutral' : scoreBucket(observation.absScore),
       appliedThreshold: filter.entryThreshold,
       appliedAgreement: filter.minAgreement,
@@ -4781,6 +4775,7 @@
           idx,
           ...applyBacktestFilter({
             idx,
+            isWin,
             score: ptbScore,
             absScore: Math.abs(ptbScore),
             signal: model.signal,
@@ -4932,6 +4927,7 @@
 
         const rawObservation = {
           idx,
+          isWin,
           score: ptbScore,
           absScore: Math.abs(ptbScore),
           signal: model.signal,
@@ -5187,11 +5183,17 @@
       samples.push({ source, price: px, ts: sampleTs, ageMs, weight });
     };
 
+    const rtds = window.PredictionMarkets?.getFreshRtdsTwap?.(sym, 15_000);
+    push('rtds-twap', rtds?.price, rtds?.obsTs, 15_000, 1.25);
+
+    const microTwap = window.Microstructure?.getTwap?.(sym, 30_000);
+    push('micro-twap', microTwap, now, 15_000, 1.10);
+
     const rti = window._rtiPrices?.[sym];
-    push('rti', rti?.price, rti?.ts, 15_000, 1.0);
+    push('twap-stream', rti?.price, rti?.ts, 15_000, 0.90);
 
     const ticker = coin?.instrument ? window._appTickers?.[coin.instrument] : null;
-    push('ticker', ticker?.last, ticker?.timestamp || ticker?.ts, 15_000, 0.9);
+    push('ticker', ticker?.last, ticker?.timestamp || ticker?.ts, 15_000, 0.80);
 
     const pythEntry = window._pythPrices?.[sym];
     const pythPrice = normalizePythPrice(pythEntry);
@@ -6113,15 +6115,15 @@
         const ptbScore = clamp((pUp - 0.5) * 2.0, -1, 1);
         // Hard veto: don't "flip UP" when already below/at PTB without live up-tape.
         // Lagging bull composites after multi-green runs are completely eliminated.
-        const falseUp = normalizedScore > 0.04 && (
+        const falseUp = (normalizedScore > 0.02 || ptbScore < 0) && (
           (gapFrac < 0 && liveDir <= 0) ||
-          (gapFrac < 0 && remainingFrac < 0.22) ||
+          (gapFrac < 0 && remainingFrac < 0.25) ||
           (gapFrac < 0.00020 && liveDir < 0 && remainingFrac < 0.60) ||
           (gapFrac < 0 && modelYesPct < 55) ||
           (modelYesPct <= 45 && liveDir <= 0)
         );
         // Hard veto: don't "flip DOWN" when firmly above PTB with upward tape
-        const falseDown = normalizedScore < -0.04 && (
+        const falseDown = (normalizedScore < -0.02 || ptbScore > 0) && (
           (gapFrac > 0.00035 && liveDir >= 0 && remainingFrac < 0.45) ||
           (modelYesPct >= 58 && liveDir > 0)
         );
@@ -6129,17 +6131,22 @@
         const before = normalizedScore;
         if (falseUp) {
           // Hard veto: force firmly negative on downward divergence below PTB
-          normalizedScore = clamp(Math.min(-0.16, ptbScore), -1, -0.06);
+          normalizedScore = clamp(Math.min(-0.16, ptbScore < 0 ? ptbScore : -0.16), -1, -0.06);
           normalizedConfidence = Math.round(clamp(normalizedConfidence * 0.70, 45, 95));
           resolvedRouterAction = always ? 'trade' : 'stand-aside';
         } else if (falseDown) {
           // Hard veto: force firmly positive on upward divergence above PTB
-          normalizedScore = clamp(Math.max(0.16, ptbScore), 0.06, 1);
+          normalizedScore = clamp(Math.max(0.16, ptbScore > 0 ? ptbScore : 0.16), 0.06, 1);
           normalizedConfidence = Math.round(clamp(normalizedConfidence * 0.70, 45, 95));
           resolvedRouterAction = always ? 'trade' : 'stand-aside';
         } else {
           normalizedScore = clamp(normalizedScore * (1 - blend) + ptbScore * blend, -1, 1);
-          if (always && Math.abs(normalizedScore) < 0.04) {
+          // Strict clamp: if price is below PTB with down drift, score MUST NOT be positive
+          if (gap < 0 && liveDir <= 0 && normalizedScore > 0) {
+            normalizedScore = clamp(Math.min(-0.16, ptbScore), -1, -0.06);
+          } else if (gap > 0 && liveDir >= 0 && normalizedScore < 0) {
+            normalizedScore = clamp(Math.max(0.16, ptbScore), 0.06, 1);
+          } else if (always && Math.abs(normalizedScore) < 0.04) {
             normalizedScore = Math.sign(ptbScore || normalizedScore || 1) * 0.08;
           }
           if (always) resolvedRouterAction = 'trade';
@@ -6763,7 +6770,7 @@
       if (predictionRunPromise) return predictionRunPromise;
 
       // -------------------------------------------------------------
-      // KALSHI 15M DYNAMIC TIMING (Sync with :00, :15, :30, :45 clock boundaries)
+      // POLYMARKET 15M DYNAMIC TIMING (Sync with :00, :15, :30, :45 clock boundaries)
       // -------------------------------------------------------------
       const dynBoundary = getPolymarketNextBoundaryMinutes();
       DEFAULT_SHORT_HORIZON_MIN = dynBoundary;

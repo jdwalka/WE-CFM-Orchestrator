@@ -98,7 +98,7 @@
     return res.json();
   }
 
-  // ── Spot-Centered Range Synthesizer (for misaligned Kalshi API strikes) ──
+  // ── Spot-Centered Range Synthesizer (for Polymarket bracket & strike ranges) ──
   function getStepSize(sym, refPrice) {
     if (sym === 'BTC' || refPrice >= 20000) return 100;
     if (sym === 'ETH' || (refPrice >= 1000 && refPrice < 20000)) return 10;

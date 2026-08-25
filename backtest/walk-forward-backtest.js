@@ -841,7 +841,7 @@ function evaluateSet(signals, entryThreshold, minAgreement, maxThreshold) {
   const active = signals.filter(s => passesFilter(s, entryThreshold, minAgreement, maxThreshold));
   const total  = signals.length;
   if (!active.length) return { winRate: 0, coverage: 0, profitFactor: 0, wins: 0, losses: 0, count: 0 };
-  const signedReturns = active.map(s => s.returnPct * (s.score > 0 ? 1 : -1));
+  const signedReturns = active.map(s => s.returnPct);
   const wins   = signedReturns.filter(r => r > 0).length;
   const losses = signedReturns.filter(r => r < 0).length;
   const grossW = signedReturns.filter(r => r > 0).reduce((a, b) => a + b, 0);
@@ -947,7 +947,7 @@ async function runWalkForwardForCoin(sym, candles) {
         const sess = getSession(s.t);
         if (!sessions[sess]) sessions[sess] = { w: 0, t: 0 };
         sessions[sess].t++;
-        if (s.returnPct * (s.score > 0 ? 1 : -1) > 0) sessions[sess].w++;
+        if (s.returnPct > 0) sessions[sess].w++;
       });
 
       folds.push({

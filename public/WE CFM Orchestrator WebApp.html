@@ -2577,10 +2577,11 @@ const PREDICTION_COINS = [
   function applyBacktestFilter(observation, filter) {
     const isActive = observation.absScore >= filter.entryThreshold && observation.agreement >= filter.minAgreement;
     const direction = isActive ? (observation.score > 0 ? 1 : -1) : 0;
+    const signedReturn = direction === 0 ? 0 : (observation.isWin != null ? (observation.isWin ? Math.abs(observation.returnPct) : -Math.abs(observation.returnPct)) : observation.returnPct);
     return {
       ...observation,
       direction,
-      signedReturn: direction === 0 ? 0 : observation.returnPct * direction,
+      signedReturn,
       bucket: direction === 0 ? 'neutral' : scoreBucket(observation.absScore),
       appliedThreshold: filter.entryThreshold,
       appliedAgreement: filter.minAgreement,
@@ -3105,6 +3106,7 @@ const PREDICTION_COINS = [
           idx,
           ...applyBacktestFilter({
             idx,
+            isWin,
             score: ptbScore,
             absScore: Math.abs(ptbScore),
             signal: model.signal,

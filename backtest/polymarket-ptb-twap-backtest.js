@@ -300,13 +300,44 @@ function fetchChainlinkCandles(sym, interval, endTime = null) {
   });
 }
 
+function httpGet(url) {
+  return new Promise((resolve, reject) => {
+    https.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' } }, (res) => {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) { resolve(httpGet(res.headers.location)); return; }
+      let data = '';
+      res.on('data', d => data += d);
+      res.on('end', () => resolve({ status: res.statusCode, body: data }));
+    }).on('error', reject);
+  });
+}
+
+async function fetchBinanceUSCandles(binSym, interval = '5m', limit = 1000) {
+  try {
+    const url = `https://api.binance.us/api/v3/klines?symbol=${binSym}&interval=${interval}&limit=${Math.min(1000, limit)}`;
+    const { status, body } = await httpGet(url);
+    if (status === 200) {
+      const rows = JSON.parse(body);
+      return rows.map(r => ({ t: Number(r[0]), o: parseFloat(r[1]), h: parseFloat(r[2]), l: parseFloat(r[3]), c: parseFloat(r[4]), v: parseFloat(r[5]) }));
+    }
+  } catch (_) {}
+  try {
+    const url = `https://api.binance.com/api/v3/klines?symbol=${binSym}&interval=${interval}&limit=${Math.min(1000, limit)}`;
+    const { status, body } = await httpGet(url);
+    if (status === 200) {
+      const rows = JSON.parse(body);
+      return rows.map(r => ({ t: Number(r[0]), o: parseFloat(r[1]), h: parseFloat(r[2]), l: parseFloat(r[3]), c: parseFloat(r[4]), v: parseFloat(r[5]) }));
+    }
+  } catch (_) {}
+  return [];
+}
+
 // Fetch historical candles with pagination
 async function fetchHistoricalChainlinkCandles(sym, interval, totalCandlesDesired) {
   const allCandles = [];
   let endTime = Date.now();
   const seenTimes = new Set();
 
-  while (allCandles.length < totalCandlesDesired) {
+  for (let attempt = 0; attempt < 5 && allCandles.length < totalCandlesDesired; attempt++) {
     try {
       const batch = await fetchChainlinkCandles(sym, interval, endTime);
       if (!batch || batch.length === 0) break;
@@ -322,10 +353,17 @@ async function fetchHistoricalChainlinkCandles(sym, interval, totalCandlesDesire
       const earliest = Math.min(...batch.map(c => c.time));
       endTime = earliest * 1000 - 1000;
 
-      await new Promise(r => setTimeout(r, 250));
+      await new Promise(r => setTimeout(r, 100));
     } catch (err) {
-      console.warn(`[ChainlinkFetcher] Warning fetching ${sym} ${interval}: ${err.message}`);
       break;
+    }
+  }
+
+  if (allCandles.length < 50) {
+    const cfg = COIN_CONFIGS[sym];
+    if (cfg?.binSym) {
+      const fallback = await fetchBinanceUSCandles(cfg.binSym, interval, totalCandlesDesired);
+      if (fallback.length) return fallback;
     }
   }
 

@@ -103,23 +103,25 @@
     saveAudit();
   }
 
-  function getRtiDiagnostics(sym, closeTimeMs = null) {
+  function getChainlinkTwapDiagnostics(sym, closeTimeMs = null) {
+    const twap30 = window.PredictionMarkets?.getFreshRtdsTwap?.(sym, 30_000) ?? null;
+    const micro30 = window.Microstructure?.getTwap?.(sym, 30_000) ?? null;
+    const micro60 = window.Microstructure?.getTwap?.(sym, 60_000) ?? null;
     const r = window._rtiPrices?.[sym];
-    if (!r) return null;
+    const price = twap30?.price ?? micro30 ?? micro60 ?? r?.price ?? null;
     const now = Date.now();
+    const ts = twap30?.obsTs ?? r?.ts ?? now;
     return {
-      price: r.price ?? null,
-      openAvg: r.openAvg ?? null,
-      closeAvg: r.closeAvg ?? null,
-      delta: r.delta ?? null,
-      deltaDir: r.deltaDir ?? null,
-      stale: !!r.stale,
-      sampleTs: r.ts ?? null,
-      sampleAgeSec: Number.isFinite(r.ts) ? Math.round((now - r.ts) / 1000) : null,
-      closeLagSec: Number.isFinite(closeTimeMs) && Number.isFinite(r.ts) ? Math.round((r.ts - closeTimeMs) / 1000) : null,
-      meta: r.meta ?? null,
+      price,
+      twap30s: twap30?.price ?? micro30 ?? null,
+      twap60s: micro60 ?? null,
+      sampleTs: ts,
+      sampleAgeSec: Number.isFinite(ts) ? Math.round((now - ts) / 1000) : null,
+      closeLagSec: Number.isFinite(closeTimeMs) && Number.isFinite(ts) ? Math.round((ts - closeTimeMs) / 1000) : null,
+      source: twap30 ? 'polymarket-rtds-twap30' : (micro30 ? 'microstructure-twap30' : (r ? 'chainlink-twap' : 'none')),
     };
   }
+  const getRtiDiagnostics = getChainlinkTwapDiagnostics;
 
   // ── Fetch helpers ────────────────────────────────────────────────
   function fetchWithTimeout(url, ms = 7000) {

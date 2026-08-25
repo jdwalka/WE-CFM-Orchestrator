@@ -1190,7 +1190,7 @@
       var transport = window.NetworkHealth && window.NetworkHealth.getTransport
         ? window.NetworkHealth.getTransport()
         : null;
-      transportMode = (pmMarket && pmMarket._liveTransport) || transport?.preferred?.kalshi || null;
+      transportMode = (pmMarket && pmMarket._liveTransport) || transport?.preferred?.polymarket || transport?.preferred?.poly || null;
     } catch (_) {}
     var schedulerCooldownRemainingMs = 0;
     var schedulerCircuitRemainingMs = 0;
@@ -1198,10 +1198,10 @@
       var schedulerProviders = window._signalScheduler && window._signalScheduler.getHealthStatus
         ? window._signalScheduler.getHealthStatus().providers
         : null;
-      var kalshiScheduler = schedulerProviders && schedulerProviders.kalshi ? schedulerProviders.kalshi : null;
-      if (kalshiScheduler) {
-        schedulerCooldownRemainingMs = Math.max(0, (Number(kalshiScheduler.cooldownUntil) || 0) - nowMs);
-        schedulerCircuitRemainingMs = Math.max(0, (Number(kalshiScheduler.circuitUntil) || 0) - nowMs);
+      var polyScheduler = schedulerProviders && (schedulerProviders.polymarket || schedulerProviders.poly || schedulerProviders.kalshi) ? (schedulerProviders.polymarket || schedulerProviders.poly || schedulerProviders.kalshi) : null;
+      if (polyScheduler) {
+        schedulerCooldownRemainingMs = Math.max(0, (Number(polyScheduler.cooldownUntil) || 0) - nowMs);
+        schedulerCircuitRemainingMs = Math.max(0, (Number(polyScheduler.circuitUntil) || 0) - nowMs);
       }
     } catch (_) {}
     var is15mTicker = !pmMarket || !pmMarket.ticker || /15M/i.test(String(pmMarket.ticker));
@@ -1426,7 +1426,7 @@
     if (!direction || direction === 'FLAT') {
       if (polymarketYesPrice != null) {
         direction = polymarketYesPrice >= 0.5 ? dirs.yesDir : dirs.noDir;
-        alignment = alignment || 'KALSHI_FORCE';
+        alignment = alignment || 'POLYMARKET_FORCE';
       } else if (Number.isFinite(modelScore) && modelScore !== 0) {
         direction = modelScore >= 0 ? 'UP' : 'DOWN';
         alignment = alignment || 'MODEL_FORCE';
@@ -1883,10 +1883,11 @@
           result.humanReason = result.humanReason + ' · ' + orbitalHint;
         }
 
-        // Build optional Kalshi V2 payload preview (gated by env; default dry-run).
+        // Build optional Polymarket CLOB / execution payload preview (gated by env; default dry-run).
         try {
-          if (orbital.action === 'EXECUTE_COUNTER_TRADE' && window.KalshiV2Mapper) {
-            var payload = window.KalshiV2Mapper.buildOrderPayload({
+          if (orbital.action === 'EXECUTE_COUNTER_TRADE' && (window.PolymarketClobMapper || window.KalshiV2Mapper)) {
+            var mapper = window.PolymarketClobMapper || window.KalshiV2Mapper;
+            var payload = mapper.buildOrderPayload({
               ticker: result.contractTicker,
               pDelta: orbital.pDelta,
               count: Number.isFinite(result.contractQty) ? result.contractQty : 1,
@@ -1894,7 +1895,7 @@
             });
             if (payload) {
               result.orbitalOrderPayload = payload;
-              result.orbitalSubmitEnabled = !!window.KalshiV2Mapper.isSubmitEnabled();
+              result.orbitalSubmitEnabled = !!(typeof mapper.isSubmitEnabled === 'function' ? mapper.isSubmitEnabled() : false);
             }
           }
         } catch (mapErr) {
