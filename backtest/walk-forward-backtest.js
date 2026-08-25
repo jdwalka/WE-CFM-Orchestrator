@@ -512,8 +512,15 @@ function summarizeAgreement(signalMap) {
 function scoreBucket(absScore) {
   if (absScore >= 0.4) return 'strong';
   if (absScore >= 0.25) return 'moderate';
-  if (absScore >= 0.1) return 'light';
   return 'neutral';
+}
+
+function normalCDF(z) {
+  const t = 1 / (1 + 0.2316419 * Math.abs(z));
+  const poly = t * (0.319381530 + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429))));
+  const pdf = Math.exp(-0.5 * z * z) / Math.sqrt(2 * Math.PI);
+  const p = 1 - pdf * poly;
+  return z >= 0 ? p : 1 - p;
 }
 
 // ── Main signal model (verbatim from backtest-runner.js) ─────────
@@ -780,11 +787,29 @@ function precomputeAllSignals(candles, sym, horizonMin) {
     const windowCandles = candles.slice(Math.max(0, idx - LIVE_WINDOW + 1), idx + 1);
     const model = buildSignalModel(windowCandles, sym);
     if (!model) continue;
-    const entry = candles[idx].c, exit = candles[idx + horizonBars].c;
-    const returnPct = entry > 0 ? ((exit - entry) / entry) * 100 : 0;
+    const entry = candles[idx].c;
+    const ptb = candles[idx].o || entry;
+    const exit = candles[idx + horizonBars].c;
+
+    const atrDollar = entry * (model.atrPct ? (model.atrPct / 100) : 0.0035);
+    const remainingFrac = 0.60;
+    const expectedMove = model.score * atrDollar * 0.40 * remainingFrac;
+    const meanFinal = entry + expectedMove;
+    const sigma = Math.max(entry * 0.0015, atrDollar * Math.sqrt(remainingFrac));
+    const z = (meanFinal - ptb) / (sigma || 1);
+    let pUp = normalCDF(z);
+
+    const actualSettleUp = exit >= ptb;
+    const modelCallUp = pUp >= 0.50;
+    const isWin = (modelCallUp === actualSettleUp);
+    const payoffPct = isWin ? 1.0 : -1.0;
+    const rawReturn = payoffPct * (Math.abs((exit - ptb) / (ptb || 1)) * 100 + 0.5);
+    const returnPct = clamp(rawReturn, -25, 25);
+    const ptbScore = clamp((pUp - 0.5) * 2.0, -1, 1);
+
     signals.push({
       barIdx: idx,
-      absScore: model.absScore, score: model.score, coreScore: model.coreScore,
+      absScore: Math.abs(ptbScore), score: ptbScore, coreScore: ptbScore,
       agreement: model.agreement, conflict: model.conflict,
       structureZone: model.structureZone, structureBias: model.structureBias,
       persistenceScore: model.persistenceScore || 0,

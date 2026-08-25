@@ -4756,24 +4756,43 @@
         if (!model) continue;
 
         const entry = windowCandles[windowCandles.length - 1].c;
+        const ptb = windowCandles[windowCandles.length - 1].o || entry;
         const exit = candles[idx + horizonBars].c;
-        const returnPct = entry > 0 ? ((exit - entry) / entry) * 100 : 0;
+
+        const atrPctRaw = Number(model.volatility?.atrPct);
+        const atrPct = (Number.isFinite(atrPctRaw) && atrPctRaw > 0) ? (atrPctRaw / 100) : 0.0035;
+        const atrDollar = entry * atrPct;
+        const remainingFrac = 0.60;
+        const expectedMove = model.score * atrDollar * 0.40 * remainingFrac;
+        const meanFinal = entry + expectedMove;
+        const sigma = Math.max(entry * 0.0015, atrDollar * Math.sqrt(remainingFrac));
+        const z = (meanFinal - ptb) / (sigma || 1);
+        let pUp = normalCDF(z);
+
+        const actualSettleUp = exit >= ptb;
+        const modelCallUp = pUp >= 0.50;
+        const isWin = (modelCallUp === actualSettleUp);
+        const payoffPct = isWin ? 1.0 : -1.0;
+        const rawReturn = payoffPct * (Math.abs((exit - ptb) / (ptb || 1)) * 100 + 0.5);
+        const returnPct = clamp(rawReturn, -25, 25);
+        const ptbScore = clamp((pUp - 0.5) * 2.0, -1, 1);
+
         observations.push({
           idx,
           ...applyBacktestFilter({
             idx,
-            score: model.score,
-            absScore: Math.abs(model.score),
+            score: ptbScore,
+            absScore: Math.abs(ptbScore),
             signal: model.signal,
             agreement: model.diagnostics?.agreement ?? 0.5,
             conflict: model.diagnostics?.conflict ?? 0,
-            coreScore: model.diagnostics?.coreScore ?? model.score,
+            coreScore: ptbScore,
             persistenceScore: model.diagnostics?.persistenceScore ?? 0,
             structureBias: model.diagnostics?.structureBias ?? 0,
             structureZone: model.diagnostics?.structureZone ?? 'middle',
             regime: classifyMarketRegime(model),
             returnPct,
-            bucket: scoreBucket(Math.abs(model.score)),
+            bucket: scoreBucket(Math.abs(ptbScore)),
           }, filter),
           calibrationSample: 0,
           regimeAware: false,
@@ -4883,25 +4902,48 @@
         if (!model) continue;
 
         const entry = windowCandles[windowCandles.length - 1].c;
+        const ptb = windowCandles[windowCandles.length - 1].o || entry;
         const exit = candles[idx + horizonBars].c;
-        // Guard against bad-data candles (e.g. near-zero close from one exchange
-        // not corrected by pooling median) — cap at ±25% which covers any real move
-        const rawReturn = entry > 0 ? ((exit - entry) / entry) * 100 : 0;
+
+        // PTB CDF probability & intrawindow expected move (matching live predictions.js)
+        const atrPctRaw = Number(model.volatility?.atrPct);
+        const atrPct = (Number.isFinite(atrPctRaw) && atrPctRaw > 0) ? (atrPctRaw / 100) : 0.0035;
+        const atrDollar = entry * atrPct;
+        const remainingFrac = 0.60;
+        const expectedMove = model.score * atrDollar * 0.40 * remainingFrac;
+        const meanFinal = entry + expectedMove;
+        const sigma = Math.max(entry * 0.0015, atrDollar * Math.sqrt(remainingFrac));
+        const z = (meanFinal - ptb) / (sigma || 1);
+        let pUp = normalCDF(z);
+
+        const gap = entry - ptb;
+        if (gap < 0 && model.score <= 0 && pUp > 0.45) pUp = Math.min(pUp, 0.40);
+        if (gap > 0 && model.score >= 0 && pUp < 0.55) pUp = Math.max(pUp, 0.60);
+
+        // In Polymarket binary contract terms:
+        // Settlement is: exit (Chainlink settlement TWAP) >= PTB ? UP : DOWN
+        const actualSettleUp = exit >= ptb;
+        const modelCallUp = pUp >= 0.50;
+        const isWin = (modelCallUp === actualSettleUp);
+        const payoffPct = isWin ? 1.0 : -1.0;
+        const rawReturn = payoffPct * (Math.abs((exit - ptb) / (ptb || 1)) * 100 + 0.5);
         const returnPct = clamp(rawReturn, -25, 25);
+        const ptbScore = clamp((pUp - 0.5) * 2.0, -1, 1);
+
         const rawObservation = {
           idx,
-          score: model.score,
-          absScore: Math.abs(model.score),
+          score: ptbScore,
+          absScore: Math.abs(ptbScore),
           signal: model.signal,
           agreement: model.diagnostics?.agreement ?? 0.5,
           conflict: model.diagnostics?.conflict ?? 0,
-          coreScore: model.diagnostics?.coreScore ?? model.score,
+          coreScore: ptbScore,
           persistenceScore: model.diagnostics?.persistenceScore ?? 0,
           structureBias: model.diagnostics?.structureBias ?? 0,
           structureZone: model.diagnostics?.structureZone ?? 'middle',
           regime: classifyMarketRegime(model),
           returnPct,
-          bucket: scoreBucket(Math.abs(model.score)),
+          bucket: scoreBucket(Math.abs(ptbScore)),
         };
         const calibration = history.length >= BACKTEST_MIN_TRAIN_OBS
           ? calibrateBacktestFilter(history, rawObservation.regime, horizonMin, horizonBars)
