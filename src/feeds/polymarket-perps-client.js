@@ -11,7 +11,6 @@
 
   const PERPS_HTTP_URL = 'https://api.perpetuals.polymarket.com';
   const PERPS_WS_URL   = 'wss://ws.perpetuals.polymarket.com/v1/ws';
-  const PROXY_PERPS_URL = 'http://127.0.0.1:8080/polymarket-perps';
 
   // Perps auth (if required) must come from Electron IPC — never hardcode.
   const CREDENTIALS = {
@@ -48,11 +47,6 @@
     };
     // Optional address-only context (never secrets)
     if (CREDENTIALS.address) headers['POLY_ADDRESS'] = CREDENTIALS.address;
-
-    try {
-      const res = await fetch(`${PROXY_PERPS_URL}${path}`, { ...options, headers });
-      if (res.ok) return await res.json();
-    } catch (_) {}
 
     const res = await fetch(`${PERPS_HTTP_URL}${path}`, { ...options, headers });
     if (!res.ok) throw new Error(`Perps API HTTP ${res.status}: ${res.statusText}`);

@@ -55,6 +55,14 @@ const server = http.createServer((req, res) => {
     target = `https://api.bybit.com/${u.pathname.replace(/^\/bybit\//, '')}${u.search}`;
   } else if (u.pathname.startsWith('/okx/')) {
     target = `https://www.okx.com/${u.pathname.replace(/^\/okx\//, '')}${u.search}`;
+  } else if (u.pathname.startsWith('/crypto-com/') || u.pathname.startsWith('/crypto/')) {
+    target = `https://api.crypto.com/${u.pathname.replace(/^\/(crypto-com|crypto)\//, '')}${u.search}`;
+  } else if (u.pathname.startsWith('/polymarket/')) {
+    target = `https://gamma-api.polymarket.com/${u.pathname.replace(/^\/polymarket\//, '')}${u.search}`;
+  } else if (u.pathname.startsWith('/polymarket-clob/')) {
+    target = `https://clob.polymarket.com/${u.pathname.replace(/^\/polymarket-clob\//, '')}${u.search}`;
+  } else if (u.pathname.startsWith('/polymarket-data/')) {
+    target = `https://data-api.polymarket.com/${u.pathname.replace(/^\/polymarket-data\//, '')}${u.search}`;
   } else {
     res.statusCode = 404;
     return res.end('Not Routed');
@@ -83,6 +91,8 @@ const server = http.createServer((req, res) => {
   }
 
   const parsed = new URL(target);
+  const isSocks = target.includes('binance') || target.includes('bybit') || target.includes('okx');
+
   const promise = new Promise((resolve, reject) => {
     const outReq = https.request({
       host: parsed.hostname,
@@ -91,7 +101,7 @@ const server = http.createServer((req, res) => {
       port: 443,
       path: parsed.pathname + parsed.search,
       method: 'GET',
-      agent: socksAgent,
+      agent: isSocks ? socksAgent : undefined,
       headers: { 'host': parsed.hostname, 'user-agent': 'Mozilla/5.0', 'accept': '*/*' },
       timeout: 6000
     }, (upRes) => {

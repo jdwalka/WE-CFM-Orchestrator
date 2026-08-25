@@ -15,9 +15,9 @@
   const BRIDGE_BASE_URL  = 'https://bridge.polymarket.com';
   const POLYGON_RPC_URL  = 'https://polygon-rpc.com';
 
-  // Docker Nginx Proxy URLs (CORS bypass for browser/Electron)
-  const PROXY_ORIGIN     = 'http://127.0.0.1:8080';
-  const PROXY_GAMMA_URL   = `${PROXY_ORIGIN}/gamma`;
+  // Local Proxy URLs (CORS bypass fallback for browser/Electron)
+  const PROXY_ORIGIN     = (typeof window !== 'undefined' && window.__PROXY_PORT__) ? `http://127.0.0.1:${window.__PROXY_PORT__}` : 'http://127.0.0.1:3010';
+  const PROXY_GAMMA_URL   = `${PROXY_ORIGIN}/polymarket`;
   const PROXY_CLOB_URL    = `${PROXY_ORIGIN}/polymarket-clob`;
   const PROXY_DATA_URL    = `${PROXY_ORIGIN}/polymarket-data`;
   const PROXY_RELAYER_URL = `${PROXY_ORIGIN}/polymarket-relayer`;
