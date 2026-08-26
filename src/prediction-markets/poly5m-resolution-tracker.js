@@ -58,9 +58,15 @@
     const direction = String(prediction.direction || '').toUpperCase();
     if (direction !== 'UP' && direction !== 'DOWN') return; // no real call to grade
 
+    const llmDirection = (prediction.llmDirection === 'UP' || prediction.llmDirection === 'DOWN')
+      ? prediction.llmDirection
+      : null;
+
     _pending[slug] = {
       sym,
       slug,
+      llmDirection,
+      llmConfidence: llmDirection && Number.isFinite(prediction.llmConfidence) ? prediction.llmConfidence : null,
       windowStart,
       windowEnd: windowStart + (Number.isFinite(windowSec) ? windowSec : 300),
       predictedDirection: direction,
@@ -124,6 +130,8 @@
         settleClose,
         actualDirection,
         correct,
+        llmDirection: entry.llmDirection,
+        llmCorrect: entry.llmDirection ? (entry.llmDirection === actualDirection) : null,
       };
 
       window._5mResolutionLog.push(resolved);
@@ -152,6 +160,22 @@
           confidence: confPct,
         });
       } catch (_) { /* scoring feedback must never break resolution logging */ }
+
+      // LLM grading: 'llm' IS a real COMPOSITE_WEIGHTS/signalVector key (see
+      // predictions.js), so this directly drives applyOnlineWeightOverlay's
+      // mult for it -- unlike 'ptbAnchor' above, this one actually reaches
+      // the composite score, not just an observability stat.
+      if (entry.llmDirection === 'UP' || entry.llmDirection === 'DOWN') {
+        try {
+          window.PredictionEngine?.recordOnlineSignalOutcome?.({
+            sym: entry.sym,
+            signalKey: 'llm',
+            predictedSign: entry.llmDirection,
+            outcomeSign: actualDirection,
+            confidence: Number.isFinite(entry.llmConfidence) ? entry.llmConfidence * 100 : 50,
+          });
+        } catch (_) { /* scoring feedback must never break resolution logging */ }
+      }
 
       try {
         window.dispatchEvent(new CustomEvent('poly5m:resolved', { detail: resolved }));
@@ -189,6 +213,23 @@
         : window._5mResolutionLog;
       const recent = rows.slice(-lookback);
       const wins = recent.filter((e) => e.correct).length;
+      return {
+        samples: recent.length,
+        wins,
+        losses: recent.length - wins,
+        winRate: recent.length ? wins / recent.length : null,
+      };
+    },
+    // Same shape as getStats(), scoped to resolved rows that actually carried
+    // a graded LLM call -- i.e. the real, leak-free track record behind the
+    // 'llm' signalVector key's applyOnlineWeightOverlay mult.
+    getLlmStats(sym, lookback = 200) {
+      const base = sym
+        ? window._5mResolutionLog.filter((e) => e.sym === sym)
+        : window._5mResolutionLog;
+      const rows = base.filter((e) => e.llmDirection === 'UP' || e.llmDirection === 'DOWN');
+      const recent = rows.slice(-lookback);
+      const wins = recent.filter((e) => e.llmCorrect).length;
       return {
         samples: recent.length,
         wins,

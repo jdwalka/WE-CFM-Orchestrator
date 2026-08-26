@@ -256,7 +256,6 @@
     // Build regime target vector
     let regimeTarget = { ...merged };
     // Apply regime multipliers
-    const regimeTarget = { ...merged };
     for (const [k, mult] of Object.entries(regimeMults)) {
       if (regimeTarget[k] !== undefined) {
         regimeTarget[k] *= mult;
@@ -269,11 +268,7 @@
       regimeTarget = slerp(regimeTarget, sniperVector, 0.45);
     }
 
-    // SLERP interpolation across hypersphere
-    let slerped = slerp(merged, regimeTarget, t);
-
-    // DARE Pruning
-    // Perform SLERP interpolation to avoid linear collapse
+    // SLERP interpolation across hypersphere (DARE pruning avoids linear collapse)
     let slerped = slerp(merged, regimeTarget, t);
 
     // Apply DARE pruning if accuracy statistics are provided
@@ -307,11 +302,6 @@
     normalizeL1,
     recordMergeDiagnostics,
     getMergeDiagnostics,
-  window.PredictionWeightMergeKit = {
-    slerp,
-    darePruneAndRescale,
-    mergeModelWeights,
-    normalizeL1,
   };
 
   if (typeof module !== 'undefined' && module.exports) {

@@ -606,12 +606,23 @@ function renderMarkets5M() {
         if (slugMatch) {
           const windowSec = slugMatch[1] === '15m' ? 900 : 300;
           const windowStart = Number(slugMatch[2]);
+          // Capture the LLM's call *now*, at record time, alongside the quant
+          // call -- so it grades against the same settlement outcome later
+          // without ever needing to re-read a possibly-since-updated verdict.
+          const llmVerdict = window._predictions?.[sym]?.llm;
+          const llmFresh = !!llmVerdict && Number.isFinite(llmVerdict.ts) && (Date.now() - llmVerdict.ts) < 6 * 60_000;
+          const llmDirection = (llmFresh && !llmVerdict.nullified && (llmVerdict.call === 'UP' || llmVerdict.call === 'DOWN'))
+            ? llmVerdict.call
+            : null;
+          const llmConfidence = llmDirection ? Math.min(1, Math.max(0, Number(llmVerdict.confidence || 0) / 100)) : null;
           window.Poly5MResolutionTracker?.recordPending5mPrediction(sym, p5.slug, windowStart, windowSec, {
             direction: modelOdds >= 0.5 ? 'UP' : 'DOWN',
             confidence: Math.abs(modelOdds - 0.5) * 2,
             modelYesPct: modelOdds,
             ptbAnchored,
             ptbOpen: Number.isFinite(ptbNum) && ptbNum > 0 ? ptbNum : null,
+            llmDirection,
+            llmConfidence,
           });
         }
       }

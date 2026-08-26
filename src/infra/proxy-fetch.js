@@ -30,8 +30,6 @@
     ? `http://127.0.0.1:${window.__PROXY_PORT__}`
     : null;
   let proxyReady = !!PROXY_ORIGIN;
-    : 'http://127.0.0.1:3010';
-  let proxyReady = true;
 
   const IS_ELECTRON = window.location.protocol === 'file:';
 

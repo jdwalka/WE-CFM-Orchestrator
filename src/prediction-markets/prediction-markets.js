@@ -1756,8 +1756,6 @@
     'gamma-market',
     'gamma-event-metadata',
     'gamma-price-to-beat',
-    'polymarket-rtds-twap30',
-    'polymarket-rtds-twap',
     'chainlink-open-fallback',
   ]);
   // Sources allowed on market objects for *display* only (never immutable lock / AI PTB)
@@ -2275,13 +2273,16 @@
           console.warn(`[Poly5M-PTB] Polymarket openPrice lookup failed for ${slug}:`, e?.message || e);
         }
 
-        // TERTIARY ZERO-DELAY FALLBACK: Active RTDS / Chainlink TWAP stream snapshot
-        const rtdsFallback = _getFreshRtdsTwap(sym, 30_000);
-        const fallbackPrice = toPositiveFiniteNumber(rtdsFallback?.price);
-        if (fallbackPrice != null && fallbackPrice > 0) {
-          const locked = _lockPolymarketPriceToBeat(slug, fallbackPrice, 'polymarket-rtds-twap');
-          _poly5mPriceToBeatCache[slug] = { value: locked?.price ?? fallbackPrice, fetchedAt: Date.now() };
-          return locked?.price ?? fallbackPrice;
+        // TERTIARY FALLBACK: Only at the exact open boundary (<= 15 seconds into window)
+        const secondsSinceStart = (Date.now() / 1000) - startSec;
+        if (secondsSinceStart >= 0 && secondsSinceStart <= 15) {
+          const rtdsFallback = _getFreshRtdsTwap(sym, 15_000);
+          const fallbackPrice = toPositiveFiniteNumber(rtdsFallback?.price);
+          if (fallbackPrice != null && fallbackPrice > 0) {
+            const locked = _lockPolymarketPriceToBeat(slug, fallbackPrice, 'chainlink-open-fallback');
+            _poly5mPriceToBeatCache[slug] = { value: locked?.price ?? fallbackPrice, fetchedAt: Date.now() };
+            return locked?.price ?? fallbackPrice;
+          }
         }
       }
     }
@@ -2404,11 +2405,12 @@
           chainlinkCurrentPriceTs = toPositiveFiniteNumber(rtds?.currentPriceTs);
         }
 
-        // 3. Zero-delay fallback at active window boundary (:00)
+        // 3. Opening boundary fallback (prioritizes candle openPrice; only accepts current price if <= 15s into window)
+        const secondsIntoWindow = Math.max(0, nowSec - windowTs);
         if (priceToBeatNum == null && (isActiveWindow || ts === windowTs)) {
-          const fallbackCandidate = toPositiveFiniteNumber(chainlinkCurrentPriceNum ?? rtdsTwap?.price ?? cryptoWindow?.openPrice);
-          if (fallbackCandidate != null && fallbackCandidate > 0) {
-            priceToBeatNum = fallbackCandidate;
+          const openCandidate = toPositiveFiniteNumber(cryptoWindow?.openPrice ?? (secondsIntoWindow <= 15 ? chainlinkCurrentPriceNum : null));
+          if (openCandidate != null && openCandidate > 0) {
+            priceToBeatNum = openCandidate;
             priceToBeatSource = 'chainlink-open-fallback';
           }
         }
@@ -2426,13 +2428,6 @@
           }
         }
 
-        const rtdsTwap = _getFreshRtdsTwap(sym, 15_000);
-        let chainlinkCurrentPriceNum = toPositiveFiniteNumber(rtdsTwap?.price ?? cryptoWindow?.closePrice);
-        let chainlinkCurrentPriceTs = toPositiveFiniteNumber(rtdsTwap?.obsTs ?? cryptoWindow?.timestamp);
-        if (chainlinkCurrentPriceNum == null) {
-          chainlinkCurrentPriceNum = toPositiveFiniteNumber(rtds?.currentPriceNum);
-          chainlinkCurrentPriceTs = toPositiveFiniteNumber(rtds?.currentPriceTs);
-        }
         const pythCurrent = await getFreshPythLazerPrice(sym);
         const currentPriceNum = rtdsTwap?.price ?? pythCurrent?.price ?? chainlinkCurrentPriceNum;
         const currentPriceTs = rtdsTwap?.obsTs ?? pythCurrent?.timestamp ?? chainlinkCurrentPriceTs;

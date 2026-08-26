@@ -1,8 +1,23 @@
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+const debugLogFile = path.join(os.homedir(), 'wecrypto_startup.log');
+try {
+  fs.appendFileSync(debugLogFile, `\n\n--- App Start ${new Date().toISOString()} PID ${process.pid} ---\n`);
+} catch (_) { }
+
+process.on('uncaughtException', (err) => {
+  try { fs.appendFileSync(debugLogFile, `[UncaughtException] ${err?.stack || err?.message || err}\n`); } catch (_) { }
+  console.error('[UncaughtException]', err);
+});
+process.on('unhandledRejection', (reason) => {
+  try { fs.appendFileSync(debugLogFile, `[UnhandledRejection] ${reason?.stack || reason}\n`); } catch (_) { }
+  console.error('[UnhandledRejection]', reason);
+});
+
 const { startOrbitalSystem, restartOrbitalSystem, shutdownOrbitalSystem, getOrbitalStatus } = require('../src/infra/orbital-startup-orchestrator');
 const { createHzTracker } = require('../src/infra/resonance-filter');
 const { app, BrowserWindow, Menu, shell, ipcMain } = require('electron');
-const path = require('path');
-const fs = require('fs');
 const fsp = fs.promises;
 const { spawn } = require('child_process');
 const { normalizeCoinbaseJwtUri } = require('../src/infra/coinbase-jwt-utils');

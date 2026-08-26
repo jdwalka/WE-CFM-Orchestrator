@@ -717,13 +717,13 @@ function formatOracleStrictBlock(snapshot) {
     ?? snapshot.poly5m?.spot ?? snapshot.poly15m?.spot ?? snapshot.activeContract?.spot
     ?? snapshot.active?.spot ?? snapshot.market?.price ?? snapshot.market?.currentPrice
   );
-  const spot = spotRaw != null ? roundPriceForCoin(coinKey, spotRaw) : null;
-  const spotDisp = spotRaw != null ? formatUsdForCoin(coinKey, spotRaw) : null;
+  const spot = spotRaw != null ? roundPriceForCoin(coin, spotRaw) : null;
+  const spotDisp = spotRaw != null ? formatUsdForCoin(coin, spotRaw) : null;
   const spotSrc = snapshot.priceSource || snapshot.polymarketOracle?.pythSource || snapshot.spotSource || 'pyth';
   const delta = ptb != null && spot != null ? spot - ptb : null;
   const path = delta == null ? 'n/a' : (Math.abs(delta / ptb) < 0.00005 ? 'FLAT' : (delta > 0 ? 'UP' : 'DOWN'));
   const deltaStr = delta != null
-    ? `${delta >= 0 ? '+' : '-'}${formatUsdForCoin(coinKey, Math.abs(delta)).slice(1)}`
+    ? `${delta >= 0 ? '+' : '-'}${formatUsdForCoin(coin, Math.abs(delta)).slice(1)}`
     : 'n/a';
   const om = snapshot.orbitalMomentum || snapshot.polymarketOracle?.orbitalMomentum || null;
   const orbitalLine = om
@@ -737,7 +737,7 @@ function formatOracleStrictBlock(snapshot) {
 Policy: PTB = Polymarket contract price-to-beat ONLY (Gamma / event page / chainlink-candles).
 Spot = Pyth only for path. Do NOT use Coinbase/Binance/RTI/Gecko as PTB or as a PTB substitute.
 Slug: ${slug || 'n/a'}
-Coin: ${coinKey || 'n/a'} (quote USD to ${decimals} decimal places — no float trails)
+Coin: ${coin || 'n/a'} (quote USD to ${decimals} decimal places — no float trails)
 Polymarket PTB: ${display || (pending ? 'PENDING (not published yet — do not invent a PTB)' : 'n/a')}
 PTB source: ${source || (pending ? 'waiting-for-polymarket' : 'n/a')}
 Pyth spot: ${spotDisp || 'n/a'} (${spotSrc})

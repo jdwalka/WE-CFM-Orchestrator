@@ -79,6 +79,8 @@
       "src/**",
       "electron/**",
       "assets/**",
+      "proxy.pac",
+      "cloudflared/**",
       "settlement-retune.js",
       "package.json"
     ],
@@ -111,10 +113,13 @@
     },
     "nsis": {
       "oneClick": false,
+      "perMachine": true,
+      "allowElevation": true,
       "allowToChangeInstallationDirectory": true,
-      "createDesktopShortcut": true,
+      "createDesktopShortcut": "always",
       "createStartMenuShortcut": true,
-      "shortcutName": "WE--CRYPTO--BETA3",
+      "shortcutName": "WE-CRYPTO-Polymarket",
+      "runAfterFinish": true,
       "artifactName": "WE-CRYPTO-Polymarket-v2.15.6-installer-${arch}.${ext}"
     },
     "portable": {

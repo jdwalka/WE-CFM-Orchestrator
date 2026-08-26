@@ -189,41 +189,41 @@
   // (63–70% WR for BTC/ETH). Weights now reflect empirical reality.
   // ================================================================
   const COMPOSITE_WEIGHTS = {
-     supertrend: 0.1,
-     hma: 0.07,
-     vwma: 0.06,
-     ema: 0.05,
-     sma: 0.03,
-     macd: 0.07,
-     persistence: 0.07,
-     bands: 0.05,
-     keltner: 0.05,
-     williamsR: 0.07,
-     rsi: 0.06,
-     cci: 0.05,
-     stochrsi: 0.04,
-     volume: 0.12,
-     obv: 0.07,
-     cmf: 0.07,
-     mfi: 0.07,
-     structure: 0.1,
-     ichimoku: 0.05,
-     adx: 0.04,
-     fisher: 0.04,
-     book: 0.25,
-     flow: 0.22,
-     toxicity: 0.06,
-     spoof: 0.07,
-     iceberg: 0.08,
-     orderBookImbalance: 0.18,
-     imbalanceVelocity: 0.12,
-     liquidityDepth: 0.08,
-     liquidityVacuum: 0.12,
-     fundingRate: 0.1,
-     mktSentiment: 0.18,
-     fearGreed: 0.12,
-     cmcMacro: 0.08,
-   };
+    supertrend: 0.1,
+    hma: 0.07,
+    vwma: 0.06,
+    ema: 0.05,
+    sma: 0.03,
+    macd: 0.07,
+    persistence: 0.07,
+    bands: 0.05,
+    keltner: 0.05,
+    williamsR: 0.07,
+    rsi: 0.06,
+    cci: 0.05,
+    stochrsi: 0.04,
+    volume: 0.12,
+    obv: 0.07,
+    cmf: 0.07,
+    mfi: 0.07,
+    structure: 0.1,
+    ichimoku: 0.05,
+    adx: 0.04,
+    fisher: 0.04,
+    book: 0.25,
+    flow: 0.22,
+    toxicity: 0.06,
+    spoof: 0.07,
+    iceberg: 0.08,
+    orderBookImbalance: 0.18,
+    imbalanceVelocity: 0.12,
+    liquidityDepth: 0.08,
+    liquidityVacuum: 0.12,
+    fundingRate: 0.1,
+    mktSentiment: 0.18,
+    fearGreed: 0.12,
+    cmcMacro: 0.08,
+  };
 
   const {
     REGIME_WEIGHT_MULTS,
@@ -242,71 +242,71 @@
   // Caps extremes (no bias > 1.6 on tradable coins). XRP/SOL trade-disabled via TRADING_POLICY.
   // Micro book/flow kept modest for live path (not in offline advanced suite).
   const PER_COIN_INDICATOR_BIAS = {
-     BTC: {
-       bands: 1.001,
-       williamsR: 1.001,
-       obv: 1,
-       vwap: 1,
-       hma: 0.9,
-       momentum: 0.6,
-       stochrsi: 1,
-       sma: 0.95,
-       adx: 1,
-       mfi: 1.1,
-       supertrend: 1,
-       ema: 0.899,
-       macd: 0.899,
-       rsi: 0.7,
-     },
-     ETH: {
-       bands: 1.001,
-       williamsR: 1.002,
-       obv: 1,
-       vwap: 1,
-       hma: 0.9,
-       momentum: 0.6,
-       stochrsi: 1,
-       sma: 0.95,
-       adx: 1,
-       mfi: 1.1,
-       supertrend: 1,
-       ema: 0.899,
-       macd: 0.897,
-       rsi: 0.7,
-     },
-     SOL: {
-       bands: 1.001,
-       williamsR: 1.003,
-       obv: 1,
-       vwap: 1,
-       hma: 0.9,
-       momentum: 0.599,
-       stochrsi: 1,
-       sma: 0.95,
-       adx: 1,
-       mfi: 1.1,
-       supertrend: 1,
-       ema: 0.899,
-       macd: 0.897,
-       rsi: 0.7,
-     },
-     XRP: {
-       bands: 1,
-       williamsR: 1.001,
-       obv: 1,
-       vwap: 1,
-       hma: 0.9,
-       momentum: 0.6,
-       stochrsi: 1,
-       sma: 0.95,
-       adx: 1,
-       mfi: 1.1,
-       supertrend: 1,
-       ema: 0.899,
-       macd: 0.898,
-       rsi: 0.7,
-     },
-   };
+    BTC: {
+      bands: 1.001,
+      williamsR: 1.001,
+      obv: 1,
+      vwap: 1,
+      hma: 0.9,
+      momentum: 0.6,
+      stochrsi: 1,
+      sma: 0.95,
+      adx: 1,
+      mfi: 1.1,
+      supertrend: 1,
+      ema: 0.899,
+      macd: 0.899,
+      rsi: 0.7,
+    },
+    ETH: {
+      bands: 1.001,
+      williamsR: 1.002,
+      obv: 1,
+      vwap: 1,
+      hma: 0.9,
+      momentum: 0.6,
+      stochrsi: 1,
+      sma: 0.95,
+      adx: 1,
+      mfi: 1.1,
+      supertrend: 1,
+      ema: 0.899,
+      macd: 0.897,
+      rsi: 0.7,
+    },
+    SOL: {
+      bands: 1.001,
+      williamsR: 1.003,
+      obv: 1,
+      vwap: 1,
+      hma: 0.9,
+      momentum: 0.599,
+      stochrsi: 1,
+      sma: 0.95,
+      adx: 1,
+      mfi: 1.1,
+      supertrend: 1,
+      ema: 0.899,
+      macd: 0.897,
+      rsi: 0.7,
+    },
+    XRP: {
+      bands: 1,
+      williamsR: 1.001,
+      obv: 1,
+      vwap: 1,
+      hma: 0.9,
+      momentum: 0.6,
+      stochrsi: 1,
+      sma: 0.95,
+      adx: 1,
+      mfi: 1.1,
+      supertrend: 1,
+      ema: 0.899,
+      macd: 0.898,
+      rsi: 0.7,
+    },
+  };
 
   // Expose for adaptive retuner (live mutations propagate to next prediction run)
   window.PER_COIN_INDICATOR_BIAS = PER_COIN_INDICATOR_BIAS;
@@ -3123,9 +3123,24 @@
       if (fisherSig < 0) fisherSig = 0;
     }
 
+    // Last known LLM verdict for this coin (async -- carried forward across
+    // ticks by preservePredictionOverlay until a fresher one lands). Zeroed
+    // out if stale (>6min old -- longer than either contract horizon), if
+    // the raw-data truth gate nullified it, or if it never resolved to a
+    // real UP/DOWN call. This is a *signal*, same as any indicator above --
+    // its actual influence comes from applyOnlineWeightOverlay's per-signal
+    // mult once poly5m-resolution-tracker.js has graded enough real calls.
+    const llmVerdict = window._predictions?.[options.sym]?.llm;
+    const llmFreshMs = 6 * 60_000;
+    const llmIsFresh = !!llmVerdict && Number.isFinite(llmVerdict.ts) && (Date.now() - llmVerdict.ts) < llmFreshMs;
+    const llmSig = (llmIsFresh && !llmVerdict.nullified && (llmVerdict.call === 'UP' || llmVerdict.call === 'DOWN'))
+      ? (llmVerdict.call === 'UP' ? 1 : -1) * clamp(Number(llmVerdict.confidence || 0) / 100, 0, 1)
+      : 0;
+
     const signalVector = {
       hma: hmaSig,
       vwma: vmaSig,
+      llm: llmSig,
       rsi: rsiSig,
       ema: emaSig,
       sma: smaSig,
@@ -3247,12 +3262,16 @@
       coinBias = window._h15Tuner.getTunedBias(15, options.sym?.toUpperCase(), baseBias);
     }
 
-    // MergeKit Ensembling: SLERP interpolation across regime matrices + coin biases
+    // MergeKit Ensembling: SLERP interpolation across regime matrices + coin biases.
+    // Base is `adaptiveWeights` (regime mults + per-signal online-learned mult),
+    // NOT the static COMPOSITE_WEIGHTS -- using the static table here silently
+    // discarded every online-learned mult (incl. the LLM signal's, once it has
+    // a track record) any time MergeKit succeeded, which is every tick.
     let effectiveWeights = adaptiveWeights;
     if (typeof window !== 'undefined' && window.PredictionWeightMergeKit?.mergeModelWeights) {
       try {
         effectiveWeights = window.PredictionWeightMergeKit.mergeModelWeights(
-          COMPOSITE_WEIGHTS,
+          adaptiveWeights,
           coinBias,
           window.PredictionRegimeWeights?.REGIME_WEIGHT_MULTS?.[liveRegime.regime] || {},
           { slerpT: 0.35 }
@@ -4448,6 +4467,7 @@
           }
 
           pred.llm = {
+            ts: Date.now(), // freshness gate for the composite-score llm signal (see signalVector.llm)
             regime: String(llmOutput.regime || 'unknown'),
             confidence: effectiveConfPct,
             suggestions: llmOutput.suggestions || {},

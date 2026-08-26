@@ -574,31 +574,6 @@
                 row2.appendChild(accSpan);
             }
             el.appendChild(row2);
-            const accId = String(diag.currentAccount || diag.env?.asi1AccountId || 'mauro_fanelli@icloud.com');
-
-            // Route mode is measured from a free background probe of the local
-            // proxy (asi1-client.js), not assumed — a hardcoded 'native route'
-            // here previously lied whenever the proxy was actually down.
-            const ROUTE_BADGE = {
-                native: { label: 'proxy up', color: '#3ecf8e' },
-                unreachable: { label: 'proxy unreachable', color: '#e5484d' },
-                unknown: { label: 'route unknown', color: '#666' },
-            };
-            const routeInfo = ROUTE_BADGE[diag.routeMode] || ROUTE_BADGE.unknown;
-            const routeBadgeHtml = `<span style="color:${routeInfo.color};font-size:9px;border:1px solid ${routeInfo.color};border-radius:3px;padding:1px 4px;">${escapeHtml(routeInfo.label)}</span>`;
-
-            el.innerHTML = `
-                <div style="display:flex;align-items:center;gap:6px;">
-                  <span style="color:#e0e6f0;font-weight:600;">5m PTB:</span>
-                  <span style="color:${color};font-weight:600;">${escapeHtml(fiveProv)}</span>
-                  <span style="color:#8ab4f8;font-size:11px;">${escapeHtml(rawModel)}</span>
-                  ${routeBadgeHtml}
-                </div>
-                <div style="font-size:10px;color:#9aa6b2;margin-top:2px;">
-                  <span>${enabledLabel}${cooldownSecs > 0 ? ` (cooldown ${cooldownSecs}s)` : ''} · ${is5m ? 'specialized 5m path' : 'main path'}</span>
-                  <span style="color:#a3e635;font-weight:600;margin-left:6px;">·  ${escapeHtml(accId)}</span>
-                </div>
-            `;
         } catch (err) {
             el.innerHTML = `<span style="color:#ff5e5e;">AI diag error: ${escapeHtml((err && err.message) || err)}</span>`;
         }

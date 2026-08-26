@@ -372,7 +372,11 @@ async function fetchHistoricalChainlinkCandles(sym, interval, totalCandlesDesire
   let endTime = Date.now();
   const seenTimes = new Set();
 
-  for (let attempt = 0; attempt < 5 && allCandles.length < totalCandlesDesired; attempt++) {
+  // The Polymarket API hard-caps each page at exactly 30 candles (rejects any
+  // other `limit`), so reaching `totalCandlesDesired` requires paging through
+  // enough 30-candle pages via `endTime` — not a bigger single request.
+  const maxAttempts = Math.ceil(totalCandlesDesired / 30) + 5;
+  for (let attempt = 0; attempt < maxAttempts && allCandles.length < totalCandlesDesired; attempt++) {
     try {
       const batch = await fetchChainlinkCandles(sym, interval, endTime);
       if (!batch || batch.length === 0) break;
@@ -413,6 +417,58 @@ async function fetchHistoricalChainlinkCandles(sym, interval, totalCandlesDesire
   }));
 }
 
+// ── 1-minute Binance klines: genuine early-window price, no look-ahead ────
+// Polymarket's chainlink-candles endpoint has no interval finer than 5m
+// (confirmed: `interval=1m` -> {"error":"Unsupported interval: 1m"}), so it
+// cannot tell us what the price actually was 1-2 minutes into a contract
+// window. Binance 1m klines are used purely as an honest proxy for "what a
+// live trader observing spot could have known at entry time" -- never the
+// window's own close (that IS the settlement value being predicted).
+async function fetchBinance1mRange(binSym, startMs, endMs) {
+  const out = [];
+  let cursor = startMs;
+  const LIMIT = 1000;
+  while (cursor < endMs) {
+    let rows = null;
+    for (const host of ['api.binance.us', 'api.binance.com']) {
+      try {
+        const url = `https://${host}/api/v3/klines?symbol=${binSym}&interval=1m&startTime=${cursor}&endTime=${endMs}&limit=${LIMIT}`;
+        const { status, body } = await httpGet(url);
+        if (status === 200) {
+          const parsed = JSON.parse(body);
+          if (Array.isArray(parsed) && parsed.length) { rows = parsed; break; }
+        }
+      } catch (_) { /* try next host */ }
+    }
+    if (!rows || !rows.length) break;
+    for (const r of rows) out.push({ t: Number(r[0]), c: parseFloat(r[4]) });
+    const lastOpen = Number(rows[rows.length - 1][0]);
+    if (!(lastOpen > cursor)) break; // guard against non-advancing cursor
+    cursor = lastOpen + 60_000;
+    await new Promise(r => setTimeout(r, 120));
+  }
+  return out;
+}
+
+// Index 1m candles by minute-bucket for O(1) "price at time T" lookups.
+function buildMinuteIndex(oneMinCandles) {
+  const map = new Map();
+  for (const c of oneMinCandles) map.set(Math.floor(c.t / 60_000), c.c);
+  return map;
+}
+
+// Nearest known close at or before targetMs (walks back up to 5 minutes to
+// tolerate small gaps in the 1m feed); returns null if genuinely unknown --
+// callers must skip the trade rather than fabricate a price.
+function priceAtOrBefore(minuteMap, targetMs) {
+  let bucket = Math.floor(targetMs / 60_000);
+  for (let back = 0; back <= 5; back++) {
+    const v = minuteMap.get(bucket - back);
+    if (v != null) return v;
+  }
+  return null;
+}
+
 // ── Main Backtest Simulation ──────────────────────────────────────
 async function runPolymarketBacktest() {
   console.log('\n' + '═'.repeat(85));
@@ -441,6 +497,20 @@ async function runPolymarketBacktest() {
       continue;
     }
 
+    const binSym = COIN_CONFIGS[sym]?.binSym;
+    let minuteMap = null;
+    if (binSym) {
+      process.stdout.write(`   ⏳ Fetching 1m Binance prices for genuine early-window entry... `);
+      const rangeStart = candles[0].t;
+      const rangeEnd = candles[candles.length - 1].t + intervalSec * 1000;
+      const oneMin = await fetchBinance1mRange(binSym, rangeStart, rangeEnd);
+      minuteMap = buildMinuteIndex(oneMin);
+      console.log(`Loaded ${oneMin.length} 1m candles.`);
+    } else {
+      console.log(`   ⚠️  No Binance symbol mapped for ${sym} — cannot build a leak-free entry price, skipping.`);
+      continue;
+    }
+
     const trades = [];
     const warmup = 26;
 
@@ -455,9 +525,15 @@ async function runPolymarketBacktest() {
       const model = buildSignalModel(history, sym);
       if (!model) continue;
 
-      // 3. Simulated intrawindow state at trade entry:
-      // At entry (e.g. 40% into the window), price has moved relative to PTB:
-      const entryPrice = ptb + (currentContract.c - ptb) * ENTRY_OFFSET;
+      // 3. Genuine intrawindow state at trade entry (e.g. ~2min into a 5m
+      // window): looked up from real 1m Binance prints at that wall-clock
+      // time -- NEVER derived from currentContract.c (that's the window's
+      // own close, i.e. the settlement value this trade is trying to
+      // predict). If no real print exists that early, skip the trade
+      // rather than fabricate one.
+      const targetMs = currentContract.t + Math.round(ENTRY_OFFSET * intervalSec * 1000);
+      const entryPrice = priceAtOrBefore(minuteMap, targetMs);
+      if (entryPrice == null) continue;
       const gap = entryPrice - ptb;
       const remainingFrac = 1.0 - ENTRY_OFFSET;
 

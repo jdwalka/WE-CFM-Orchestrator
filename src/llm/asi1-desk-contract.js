@@ -187,10 +187,13 @@
 
     let confidence = 0.45;
     if (path) confidence += 0.06;
-    if (Math.abs(deltaBps) >= 4) confidence += 0.03;
-    if (Math.abs(imb) >= 0.1) confidence += 0.03;
-    if (notional >= 1000) confidence += 0.02;
-    if (edge === 'with_crowd') confidence += 0.03;
+    const gh = packet.graviharmonic;
+    if (gh) {
+      if (gh.isEscaped && gh.harmonicCoherence >= 60) confidence += 0.05;
+      if (gh.resonantRegime && gh.resonantRegime.includes('BREAKOUT')) regime = 'breakout_volatility';
+      if (gh.resonantRegime && gh.resonantRegime.includes('DESTRUCTIVE')) confidence -= 0.05;
+      if (gh.bindingStrength === 'HIGH_GRAVITY_CORE') regime = 'mean_reversion';
+    }
     confidence = Math.round(Math.max(0, Math.min(1, confidence)) * 100) / 100;
 
     let call = '—';
@@ -214,13 +217,15 @@
       invalidation = `spot rises above ${ptb} or yesProb exceeds ${(yes + 0.03).toFixed(2)}`;
     }
 
+    const graviTag = gh ? ` [Gravi: ${gh.resonantRegime}, Coherence: ${gh.harmonicCoherence}%, Escape: ${gh.escapeRatio}x]` : '';
+
     let notes;
     if (call === 'UP') {
-      notes = `UP. Spot ${spot} sits ${delta.toFixed(1)} above PTB ${ptb} with ${ttc ?? '?'}s to close. YesProb ${yes.toFixed(2)} and mid ${mid.toFixed(3)} align upward. Depth imbalance ${imb.toFixed(2)} and near-touch notional ${notional} support buying. Edge is modest but directionally consistent. Fade only if spot pierces PTB.`;
+      notes = `UP. Spot ${spot} sits ${delta.toFixed(1)} above PTB ${ptb} with ${ttc ?? '?'}s to close. YesProb ${yes.toFixed(2)} and mid ${mid.toFixed(3)} align upward. Depth imbalance ${imb.toFixed(2)} and near-touch notional ${notional} support buying.${graviTag} Fade only if spot pierces PTB.`;
     } else if (call === 'DOWN') {
-      notes = `DOWN. Spot ${spot} sits ${Math.abs(delta).toFixed(1)} below PTB ${ptb} with ${ttc ?? '?'}s to close. YesProb ${yes.toFixed(2)} and mid ${mid.toFixed(3)} suggest downside. Depth imbalance ${imb.toFixed(2)} and near-touch notional ${notional} support selling. Edge is modest but directionally consistent. Fade only if spot pierces PTB.`;
+      notes = `DOWN. Spot ${spot} sits ${Math.abs(delta).toFixed(1)} below PTB ${ptb} with ${ttc ?? '?'}s to close. YesProb ${yes.toFixed(2)} and mid ${mid.toFixed(3)} suggest downside. Depth imbalance ${imb.toFixed(2)} and near-touch notional ${notional} support selling.${graviTag} Fade only if spot pierces PTB.`;
     } else {
-      notes = `HOLD_FLAT. Spot ${spot} vs PTB ${ptb} shows insufficient edge. YesProb ${yes.toFixed(2)} and mid ${mid.toFixed(3)} offer no clear direction. No legal action with positive EV.`;
+      notes = `HOLD_FLAT. Spot ${spot} vs PTB ${ptb} shows insufficient edge. YesProb ${yes.toFixed(2)} and mid ${mid.toFixed(3)} offer no clear direction.${graviTag} No legal action with positive EV.`;
     }
 
     return {
@@ -310,6 +315,33 @@
       openInterestUsd: num(o.derivativesPositioning?.openInterestUsd),
       derivPressure: num(o.derivativesPositioning?.pressure),
       derivLabel: o.derivativesPositioning?.label || null,
+      graviharmonic: (() => {
+        try {
+          const GraviBox = (typeof window !== 'undefined' && window.GraviharmonicBox)
+            || (typeof require !== 'undefined' ? require('./graviharmonic-box') : null);
+          const sym = String(extras.sym || o.coin || o.sym || '').toUpperCase();
+          const spot = num(o.spot);
+          const ptb = num(o.priceToBeatNum ?? w.priceToBeatNum);
+          const ttc = num(o.secondsToClose ?? w.secondsToClose) || 300;
+          if (GraviBox && typeof GraviBox.computeState === 'function' && spot > 0 && ptb > 0) {
+            const st = GraviBox.computeState(sym, spot, ptb, { timeRemainingSec: ttc });
+            if (st) {
+              return {
+                deltaBps: st.gravitational.deltaBps,
+                escapeRatio: st.gravitational.escapeRatio,
+                isEscaped: st.gravitational.isEscaped,
+                bindingStrength: st.gravitational.bindingStrength,
+                harmonicCoherence: st.harmonic.harmonicCoherenceScore,
+                resonantRegime: st.harmonic.resonantRegime,
+                phaseAlignment: st.harmonic.phaseAlignment,
+                compositeIndex: st.compositeIndex,
+                actionRecommendation: st.actionRecommendation,
+              };
+            }
+          }
+        } catch (_) { }
+        return null;
+      })(),
     };
   }
 

@@ -22,16 +22,6 @@
   const PROXY_DATA_URL    = `${PROXY_ORIGIN}/polymarket-data`;
   const PROXY_RELAYER_URL = `${PROXY_ORIGIN}/polymarket-relayer`;
   const PROXY_BRIDGE_URL  = `${PROXY_ORIGIN}/polymarket-bridge`;
-  // Proxy URLs (CORS bypass for browser/Electron)
-  function getProxyOrigin() {
-    const p = (typeof window !== 'undefined' && window.__PROXY_PORT__) || 3010;
-    return `http://127.0.0.1:${p}`;
-  }
-  const PROXY_GAMMA_URL   = `${getProxyOrigin()}/gamma`;
-  const PROXY_CLOB_URL    = `${getProxyOrigin()}/polymarket-clob`;
-  const PROXY_DATA_URL    = `${getProxyOrigin()}/polymarket-data`;
-  const PROXY_RELAYER_URL = `${getProxyOrigin()}/polymarket-relayer`;
-  const PROXY_BRIDGE_URL  = `${getProxyOrigin()}/polymarket-bridge`;
 
   // Auth secrets live ONLY in Electron main (secrets/POLYMARKET_API.txt) via IPC.
   // Never hardcode keys/secrets in the renderer — public Gamma/Data GETs need none.

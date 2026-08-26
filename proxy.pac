@@ -1,6 +1,10 @@
 function FindProxyForURL(url, host) {
-  if (host.includes('bybit') || host.includes('binance') || host.includes('kalshi') || host.includes('polymarket') || host.includes('coingecko') || host.includes('coinbase')) {
-    return 'SOCKS5 127.0.0.1:9050';
+  var h = host.toLowerCase();
+  if (h === 'localhost' || h === '127.0.0.1') {
+    return 'DIRECT';
+  }
+  if (h.indexOf('bybit') !== -1 || h.indexOf('binance') !== -1 || h.indexOf('kalshi') !== -1 || h.indexOf('polymarket') !== -1 || h.indexOf('coingecko') !== -1 || h.indexOf('coinbase') !== -1) {
+    return 'SOCKS5 127.0.0.1:9050; DIRECT';
   }
   return 'DIRECT';
 }

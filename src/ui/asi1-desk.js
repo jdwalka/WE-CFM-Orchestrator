@@ -512,34 +512,6 @@
         });
       }
 
-      const out = res?.content || res?.output?.suggestions?.notes || res?.output?.ai_wording?.primary_rationale || res?.output?.notes || res?.output?.content || res?.output || res?.error || 'Analysis complete.';
-      const payload = {
-        prompt: `User Query: "${query}"\n\nLive Market Context:\n- Coin: ${packet.sym}\n- Horizon: ${packet.horizon}\n- Live Spot: $${packet.spot}\n- Polymarket PTB: $${packet.priceToBeatNum}\n- Delta vs PTB: ${packet.deltaVsPtb >= 0 ? '+' : ''}$${packet.deltaVsPtb}\n- Live Tape Direction: ${packet.liveDirection}\n- Yes Probability: ${(packet.yesProb * 100).toFixed(1)}%\n- Seconds to Close: ${packet.secondsToClose}s\n- Depth Imbalance: ${(packet.depthImbalance * 100).toFixed(1)}%\n\nPlease answer the user query directly with concise trading intelligence based on these live numbers.`,
-        context: {
-          coin: packet.sym,
-          horizon: packet.horizon === '5m' ? 5 : 15,
-          spot: packet.spot,
-          ptb: packet.priceToBeatNum,
-          model: modelChoice !== 'auto' ? modelChoice : 'asi1-mini',
-          reasoning_effort: effortChoice !== 'auto' ? effortChoice : 'medium',
-          web_search: webSearch,
-        });
-      } catch (_) {
-        // Fallback to general AI inference bridge if chat channel not present
-        res = await invoke('ai:run-inference', {
-          prompt: query,
-          context: {
-            coin: packet.sym,
-            horizon: packet.horizon === '5m' ? 5 : 15,
-            spot: packet.spot,
-            ptb: packet.priceToBeatNum,
-            model: modelChoice !== 'auto' ? modelChoice : 'asi1-mini',
-            reasoning_effort: effortChoice !== 'auto' ? effortChoice : 'medium',
-            web_search: webSearch,
-          }
-        });
-      }
-
       const rawOut = res?.content || res?.output?.suggestions?.notes || res?.output?.ai_wording?.primary_rationale || res?.output?.notes || res?.output?.content || res?.output || res?.error || 'Analysis complete.';
       const cleanOut = typeof rawOut === 'object' ? JSON.stringify(rawOut, null, 2) : String(rawOut);
       if (answerEl) {
@@ -547,7 +519,6 @@
         const titleDiv = document.createElement('div');
         titleDiv.style.cssText = 'color:#00e676;font-weight:700;margin-bottom:4px';
         titleDiv.textContent = `ASI1 Intelligence (${res?.model || modelChoice}):`;
-        titleDiv.textContent = 'ASI1 Intelligence:';
 
         const bodyDiv = document.createElement('div');
         bodyDiv.style.cssText = 'color:#e6e8eb;font-size:11px;white-space:pre-wrap';

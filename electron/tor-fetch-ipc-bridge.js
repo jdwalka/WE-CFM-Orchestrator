@@ -18,30 +18,55 @@ const torAgent9050 = new SocksProxyAgent('socks5://127.0.0.1:9050');
 const torAgent9150 = new SocksProxyAgent('socks5://127.0.0.1:9150');
 
 ipcMain.handle('ipc:fetch', async (event, url, opts = {}) => {
+  const isOnion = /\.onion/i.test(url);
+  const wantTor = (isOnion || opts.useTor === true) && opts.useTor !== false;
+
+  const prepareHeaders = () => ({
+    Accept: 'application/json',
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    ...(opts.headers || {}),
+  });
+
+  const getBody = () => {
+    if (opts.body == null) return undefined;
+    return typeof opts.body === 'string' ? opts.body : JSON.stringify(opts.body);
+  };
+
+  // Try Tor first ONLY if explicitly requested or for .onion domains
+  if (wantTor) {
+    try {
+      const fetchOpts = {
+        method: opts.method || 'GET',
+        headers: prepareHeaders(),
+        body: getBody(),
+        agent: opts.torPort === 9150 ? torAgent9150 : torAgent9050,
+        timeout: opts.timeout || 6000,
+      };
+      const res = await fetch2(url, fetchOpts);
+      const text = await res.text();
+      return { ok: res.ok, status: res.status, text };
+    } catch (torErr) {
+      if (isOnion) {
+        console.error(`[IPC Fetch] Tor error for .onion ${url}:`, torErr.message);
+        return { ok: false, status: 0, error: `Tor required for onion: ${torErr.message}` };
+      }
+      console.debug(`[IPC Fetch] Tor offline (${torErr.message}), falling back to direct fetch: ${url}`);
+    }
+  }
+
+  // Direct HTTPS fetch (fast & reliable)
   try {
-    const isBlockchain = /mempool\.space|blockchair\.com|etherscan\.io|blockscout\.com|xrplcluster\.com|alchemy\.com/.test(url);
-    const useTor = isBlockchain || /\.onion/i.test(url) || opts.useTor === true;
-
-    // We use node-fetch to pass the SOCKS5 agent
-    const fetchFn = useTor ? fetch2 : fetch;
-
     const fetchOpts = {
       method: opts.method || 'GET',
-      headers: { Accept: 'application/json', ...(opts.headers || {}) },
+      headers: prepareHeaders(),
+      body: getBody(),
+      signal: AbortSignal.timeout(opts.timeout || 10000),
     };
-
-    if (useTor) {
-      console.log(`[IPC Fetch] Routing via .TOR (SOCKS5): ${url}`);
-      fetchOpts.agent = opts.torPort === 9150 ? torAgent9150 : torAgent9050;
-    } else {
-      fetchOpts.signal = AbortSignal.timeout(10000);
-    }
-
-    const res = await fetchFn(url, fetchOpts);
+    const res = await fetch(url, fetchOpts);
     const text = await res.text();
     return { ok: res.ok, status: res.status, text };
-  } catch (err) {
-    console.error(`[IPC Fetch] Error fetching ${url}:`, err.message);
-    return { ok: false, status: 0, error: err.message };
+  } catch (directErr) {
+    console.error(`[IPC Fetch] Direct fetch error for ${url}:`, directErr.message);
+    return { ok: false, status: 0, error: directErr.message };
   }
 });

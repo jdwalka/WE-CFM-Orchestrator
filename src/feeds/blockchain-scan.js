@@ -81,10 +81,12 @@
   }
 
   async function _solRpcNodes() {
-    const nodes = [];
-    const alchemyKey = await _getAlchemyKey();
-    nodes.push(`https://solana-mainnet.g.alchemy.com/v2/${alchemyKey}`);
-    nodes.push('https://api.mainnet-beta.solana.com');
+    const nodes = [
+      'https://solana-rpc.publicnode.com',
+      'https://api.mainnet-beta.solana.com',
+      'https://rpc.ankr.com/solana',
+      'https://1rpc.io/solana',
+    ];
     let heliusKey = _readEnvLike('HELIUS_API_KEY');
     if (!heliusKey && window.electron && window.electron.readFile) {
       try {
@@ -92,7 +94,7 @@
         if (txt) heliusKey = txt.split('\n')[0].trim();
       } catch (e) { }
     }
-    if (heliusKey) nodes.push(`https://mainnet.helius-rpc.com/?api-key=${encodeURIComponent(heliusKey)}`);
+    if (heliusKey) nodes.unshift(`https://mainnet.helius-rpc.com/?api-key=${encodeURIComponent(heliusKey)}`);
     return nodes;
   }
 
