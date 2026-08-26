@@ -21,11 +21,20 @@ const socksScript = path.join(__dirname, 'mullvad-standalone-socks.js');
 let socksProc = null;
 
 function startSocks() {
-  socksProc = spawn(process.execPath, [socksScript], {
-    stdio: ['ignore', 'inherit', 'inherit'],
-    env: { ...process.env, MULLVAD_SOCKS_PORT: String(SOCKS_PORT), MULLVAD_TUNNEL_LOCAL_ADDR: TUNNEL_LOCAL_ADDR }
-  });
-  socksProc.on('exit', () => setTimeout(startSocks, 1000));
+  try {
+    socksProc = spawn(process.execPath, [socksScript], {
+      stdio: ['ignore', 'inherit', 'inherit'],
+      env: { ...process.env, MULLVAD_SOCKS_PORT: String(SOCKS_PORT), MULLVAD_TUNNEL_LOCAL_ADDR: TUNNEL_LOCAL_ADDR, ELECTRON_RUN_AS_NODE: '1' }
+    });
+    socksProc.on('error', (err) => {
+      console.warn('[ProxyRunner] SOCKS spawn error (non-fatal):', err.message);
+      socksProc = null;
+    });
+    socksProc.on('exit', () => setTimeout(startSocks, 2000));
+  } catch (err) {
+    console.warn('[ProxyRunner] Failed to start SOCKS:', err.message);
+    socksProc = null;
+  }
 }
 startSocks();
 

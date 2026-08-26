@@ -292,12 +292,22 @@ async function startOrbitalSystem(workspacePath) {
         recordStatusEvent('success', 'Kafka bridge initialized');
 
         // Step 6: Start Orbital Ingestor (s, p, d, f producers → Redpanda)
-        ingestorProcess = startIngestor();
-        recordStatusEvent('success', 'Orbital ingestor started');
+        try {
+            ingestorProcess = startIngestor();
+            recordStatusEvent('success', 'Orbital ingestor started');
+        } catch (ingestErr) {
+            console.error('[OrbitalOrchestrator] Ingestor start failed (non-fatal):', ingestErr.message);
+            recordStatusEvent('warn', 'Orbital ingestor start failed', { error: ingestErr.message });
+        }
 
         // Step 7: Start Matrix Processor (consumer + 15-min barrier → Firebase)
-        await startProcessor();
-        recordStatusEvent('success', 'Orbital processor started');
+        try {
+            await startProcessor();
+            recordStatusEvent('success', 'Orbital processor started');
+        } catch (procErr) {
+            console.warn('[OrbitalOrchestrator] Matrix processor start failed (non-fatal):', procErr.message);
+            recordStatusEvent('warn', 'Orbital processor start failed', { error: procErr.message });
+        }
 
         orchestratorReady = true;
         // Bust the status cache so the next UI poll immediately reflects healthy state
@@ -575,15 +585,24 @@ async function startProxies(workspacePath) {
     if (!wsProxyProcess || wsProxyProcess.killed) {
         const wsProxyScript = path.join(workspacePath, 'src', 'infra', 'ws-proxy-server.js');
         if (fs.existsSync(wsProxyScript)) {
-            wsProxyProcess = spawn(process.execPath, [wsProxyScript], {
-                cwd: workspacePath,
-                env: { ...process.env, WECRYPTO_WS_PROXY_PORT: '3011' },
-                stdio: ['ignore', 'pipe', 'pipe'],
-                windowsHide: true,
-            });
-            wsProxyProcess.stdout.on('data', chunk => console.log('[ws-proxy]', chunk.toString().trim()));
-            wsProxyProcess.stderr.on('data', chunk => console.warn('[ws-proxy:err]', chunk.toString().trim()));
-            wsProxyProcess.on('exit', code => { wsProxyProcess = null; console.log('[ws-proxy] exited', code); });
+            try {
+                wsProxyProcess = spawn(process.execPath, [wsProxyScript], {
+                    cwd: workspacePath,
+                    env: { ...process.env, WECRYPTO_WS_PROXY_PORT: '3011', ELECTRON_RUN_AS_NODE: '1' },
+                    stdio: ['ignore', 'pipe', 'pipe'],
+                    windowsHide: true,
+                });
+                wsProxyProcess.stdout?.on('data', chunk => console.log('[ws-proxy]', chunk.toString().trim()));
+                wsProxyProcess.stderr?.on('data', chunk => console.warn('[ws-proxy:err]', chunk.toString().trim()));
+                wsProxyProcess.on('error', (err) => {
+                    console.warn('[OrbitalOrchestrator] ws-proxy spawn error (non-fatal):', err.message);
+                    wsProxyProcess = null;
+                });
+                wsProxyProcess.on('exit', code => { wsProxyProcess = null; console.log('[ws-proxy] exited', code); });
+            } catch (err) {
+                console.warn('[OrbitalOrchestrator] Failed to start ws-proxy (non-fatal):', err.message);
+                wsProxyProcess = null;
+            }
         } else {
             console.warn('[OrbitalOrchestrator] ws-proxy-server.js not found!');
         }
@@ -650,15 +669,24 @@ binance-data    = "https://data-api.binance.vision"`;
                 console.warn('[OrbitalOrchestrator] could not write config.toml:', e.message);
             }
 
-            httpProxyProcess = spawn(exePath, [], {
-                detached: false,
-                cwd: proxyDir,
-                stdio: ['ignore', 'pipe', 'pipe'],
-                windowsHide: true,
-            });
-            httpProxyProcess.stdout.on('data', chunk => console.log('[http-proxy]', chunk.toString().trim()));
-            httpProxyProcess.stderr.on('data', chunk => console.warn('[http-proxy:err]', chunk.toString().trim()));
-            httpProxyProcess.on('exit', code => { httpProxyProcess = null; console.log('[http-proxy] exited', code); });
+            try {
+                httpProxyProcess = spawn(exePath, [], {
+                    detached: false,
+                    cwd: proxyDir,
+                    stdio: ['ignore', 'pipe', 'pipe'],
+                    windowsHide: true,
+                });
+                httpProxyProcess.stdout?.on('data', chunk => console.log('[http-proxy]', chunk.toString().trim()));
+                httpProxyProcess.stderr?.on('data', chunk => console.warn('[http-proxy:err]', chunk.toString().trim()));
+                httpProxyProcess.on('error', (err) => {
+                    console.warn('[OrbitalOrchestrator] http-proxy spawn error (non-fatal):', err.message);
+                    httpProxyProcess = null;
+                });
+                httpProxyProcess.on('exit', code => { httpProxyProcess = null; console.log('[http-proxy] exited', code); });
+            } catch (err) {
+                console.warn('[OrbitalOrchestrator] Failed to start http-proxy (non-fatal):', err.message);
+                httpProxyProcess = null;
+            }
         } else {
             console.warn('[OrbitalOrchestrator] we-crypto-proxy.exe not found!');
         }
