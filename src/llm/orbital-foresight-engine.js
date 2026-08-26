@@ -188,9 +188,16 @@
    */
   function _fetchFn() {
     if (typeof window !== 'undefined') {
-      // Prefer the Electron IPC bridge so traffic routes through the proxy layer
       if (window.electron && typeof window.electron.ipcFetch === 'function') {
-        return (url, opts) => window.electron.ipcFetch(url, opts);
+        return async (url, opts) => {
+          const r = await window.electron.ipcFetch(url, opts);
+          return {
+            ok: !!r?.ok,
+            status: r?.status || (r?.ok ? 200 : 0),
+            text: async () => r?.text || '',
+            json: async () => (typeof r?.text === 'string' ? JSON.parse(r.text) : (r?.text || {})),
+          };
+        };
       }
       if (typeof window.fetch === 'function') return window.fetch.bind(window);
     }

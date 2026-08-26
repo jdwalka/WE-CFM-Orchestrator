@@ -100,20 +100,24 @@
         headers['x-api-key'] = PYTH_API_KEY;
       }
       
-      const fetchImpl = (typeof window !== 'undefined' && window.electron && typeof window.electron.ipcFetch === 'function')
-        ? ((u, o) => window.electron.ipcFetch(u, o))
-        : fetch;
-
-      const resp = await fetchImpl(url, { signal: ctrl.signal, headers });
-      clearTimeout(timeout);
+      let data = null;
+      if (typeof window !== 'undefined' && window.electron && typeof window.electron.ipcFetch === 'function') {
+        const res = await window.electron.ipcFetch(url, { headers });
+        if (!res || !res.ok) {
+          console.warn(`[PythClient] HTTP ${res?.status} from Hermes API via IPC:`, res?.error);
+          return false;
+        }
+        data = typeof res.text === 'string' ? JSON.parse(res.text) : res.text;
+      } else {
+        const resp = await fetch(url, { signal: ctrl.signal, headers });
+        if (!resp.ok) {
+          console.warn(`[PythClient] HTTP ${resp.status} from Hermes API`);
+          return false;
+        }
+        data = await resp.json();
+      }
       clearTimeout(timeout);
       
-      if (!resp.ok) {
-        console.warn(`[PythClient] HTTP ${resp.status} from Hermes API`);
-        return false;
-      }
-
-      const data = await resp.json();
       if (!data || !Array.isArray(data.parsed)) {
         console.warn(`[PythClient] Unexpected Hermes v2 response structure`);
         return false;

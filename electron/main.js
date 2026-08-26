@@ -2698,6 +2698,19 @@ ipcMain.handle('asi1:desk-chat', async (_event, args = {}) => {
 You are embedded inside the WE|||CRYPTO terminal HUD.
 Provide ultra-concise, authoritative, actionable trading intelligence. Ground all conclusions in the provided live market context (Spot, Polymarket PTB strike, time to close, orderbook depth).`;
 
+    if (!packet.spot || packet.spot <= 0) {
+      try {
+        const orch = require('../src/llm/asi1-credit-orchestrator');
+        if (typeof orch.fetchPythSpotDirect === 'function') {
+          const live = await orch.fetchPythSpotDirect(packet.sym);
+          if (live && live.price > 0) {
+            packet.spot = live.price;
+            if (packet.priceToBeatNum) packet.deltaVsPtb = packet.spot - packet.priceToBeatNum;
+          }
+        }
+      } catch (_) {}
+    }
+
     const userPrompt = `${prompt}\n\nLive Market Context:\n- Coin: ${packet.sym || 'BTC'}\n- Horizon: ${packet.horizon || '5m'}\n- Live Spot: $${packet.spot || 'N/A'}\n- Polymarket PTB Strike: $${packet.priceToBeatNum || 'N/A'}\n- Delta vs PTB: ${packet.deltaVsPtb >= 0 ? '+' : ''}$${packet.deltaVsPtb || 0}\n- Live Tape Direction: ${packet.liveDirection || 'NEUTRAL'}\n- Polymarket Yes Prob: ${((packet.yesProb || 0.5) * 100).toFixed(1)}%\n- Seconds to Expiry: ${packet.secondsToClose || 0}s\n- Depth Imbalance: ${((packet.depthImbalance || 0) * 100).toFixed(1)}%`;
 
     const result = await Asi1Client.chatCompletion(

@@ -149,9 +149,85 @@ function resolveDeskOptions(packet, options, mode) {
   };
 }
 
+const PYTH_FEEDS = {
+  BTC:  '0xe62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43',
+  ETH:  '0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace',
+  SOL:  '0xef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d',
+  XRP:  '0xec5d399846a9209f3fe5881d70aae9268c94339ff9817e8d18ff19fa05eea1c8',
+  DOGE: '0xdcef50dd0a4cd2dcc17e45df1676dcb336a11a61c69df7a0299b0150c672d25c',
+  BNB:  '0x2f95862b045670cd22bee3114c39763a4a08beeb663b145d283c31d7d1101c4f',
+  HYPE: '0x4279e31cc369bbcc2faf022b382b080e32a8e689ff20fbc530d2a603eb6cd98b',
+};
+
+const fs = require('fs');
+const path = require('path');
+
+function readPythProKeyDirect() {
+  if (process.env.PYTH_PRO_API_KEY) return process.env.PYTH_PRO_API_KEY;
+  const paths = [
+    path.join(__dirname, '../../secrets/PYTH_PRO_API_KEY.txt'),
+    path.join(__dirname, '../secrets/PYTH_PRO_API_KEY.txt'),
+    path.join(process.cwd(), 'secrets/PYTH_PRO_API_KEY.txt'),
+  ];
+  for (const p of paths) {
+    try {
+      if (fs.existsSync(p)) {
+        const raw = fs.readFileSync(p, 'utf8').trim();
+        const lines = raw.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+        const k = lines.find(l => !l.startsWith('#') && !l.includes('PYTH_PRO_API_KEY') && l.length > 20) || lines[lines.length - 1];
+        if (k) return k;
+      }
+    } catch (_) {}
+  }
+  return '';
+}
+
+async function fetchPythSpotDirect(coin) {
+  const sym = String(coin || 'BTC').toUpperCase();
+  const feedId = PYTH_FEEDS[sym];
+  if (!feedId) return null;
+  const key = readPythProKeyDirect();
+  const url = `https://hermes.pyth.network/v2/updates/price/latest?ids%5B%5D=${encodeURIComponent(feedId)}`;
+  const headers = { 'Accept': 'application/json' };
+  if (key) headers['Authorization'] = `Bearer ${key}`;
+  try {
+    const resp = await fetch(url, { signal: AbortSignal.timeout(5000), headers });
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    const item = data?.parsed?.[0]?.price;
+    if (item && item.price) {
+      const raw = parseFloat(item.price);
+      const expo = Number(item.expo || 0);
+      const scaled = raw * Math.pow(10, expo);
+      if (Number.isFinite(scaled) && scaled > 0) {
+        return {
+          price: scaled,
+          publishTime: item.publish_time ? item.publish_time * 1000 : Date.now(),
+        };
+      }
+    }
+  } catch (_) {}
+  return null;
+}
+
 async function deskInfer(packet, mode, options = {}) {
   if (mode) setMode(mode);
   const m = getMode();
+
+  // If spot price was missing or zero from renderer, actively hydrate from Pyth
+  if (!packet.spot || packet.spot <= 0) {
+    const livePyth = await fetchPythSpotDirect(packet.sym);
+    if (livePyth && livePyth.price > 0) {
+      packet.spot = livePyth.price;
+      packet.spotSource = 'pyth-hermes-direct';
+      packet.spotAgeSec = Math.max(0, Math.round((Date.now() - livePyth.publishTime) / 1000));
+      if (packet.priceToBeatNum && packet.priceToBeatNum > 0) {
+        packet.deltaVsPtb = packet.spot - packet.priceToBeatNum;
+        packet.liveDirection = packet.deltaVsPtb > 0 ? 'UP' : (packet.deltaVsPtb < 0 ? 'DOWN' : 'FLAT');
+      }
+    }
+  }
+
   const {
     fastPath, model, plannerOn, reasoning_effort, enable_thinking, web_search,
   } = resolveDeskOptions(packet, options, m);
@@ -219,6 +295,7 @@ module.exports = {
   plannerEnabled,
   resolveDeskOptions,
   deskInfer,
+  fetchPythSpotDirect,
   shouldSkipTokenmix,
   markTokenmixExhausted,
   reshapeCascade,
