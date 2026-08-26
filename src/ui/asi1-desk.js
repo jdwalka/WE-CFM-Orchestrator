@@ -114,6 +114,25 @@
         </div>
         <div class="ad-row" style="margin:2px 0"><span class="ad-k">Weight Matrix</span><span class="ad-v" id="adMergeWeights" style="font-size:10px">Adaptive Active</span></div>
       </div>
+
+      <!-- ═══ ORBITAL FORESIGHT ENGINE PANEL ═══ -->
+      <div id="ofe-panel" style="margin:8px 0 4px 0;padding:6px 8px;background:#04060a;border:1px solid #0d2040;border-radius:6px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:5px">
+          <span style="font-size:10px;font-weight:700;color:#00aaff;letter-spacing:.05em">ORBITAL FORESIGHT ENGINE</span>
+          <div style="display:flex;align-items:center;gap:5px">
+            <span id="ofeStatus" style="font-size:9px;padding:1px 5px;border-radius:3px;background:#0d2040;color:#8b929a">OFFLINE</span>
+            <button id="ofeForceScan" type="button" title="Force OSL scan" style="background:transparent;border:1px solid #0d2040;color:#0077cc;font-size:9px;padding:1px 5px;border-radius:3px;cursor:pointer">↺ SCAN</button>
+          </div>
+        </div>
+        <div class="ad-row" style="margin:2px 0"><span class="ad-k" style="font-size:10px">Foresight Vec</span><span class="ad-v" id="ofeVector" style="font-size:10px;color:#8b929a">—</span></div>
+        <div class="ad-row" style="margin:2px 0"><span class="ad-k" style="font-size:10px">Macro Regime</span><span class="ad-v" id="ofeRegime" style="font-size:10px">—</span></div>
+        <div class="ad-row" style="margin:2px 0"><span class="ad-k" style="font-size:10px">Smart Money</span><span class="ad-v" id="ofeSmartMoney" style="font-size:10px">—</span></div>
+        <div class="ad-row" style="margin:2px 0"><span class="ad-k" style="font-size:10px">Sentiment</span><span class="ad-v" id="ofeSentiment" style="font-size:10px">—</span></div>
+        <div class="ad-row" style="margin:2px 0"><span class="ad-k" style="font-size:10px">Scan Age</span><span class="ad-v" id="ofeScanAge" style="font-size:10px">—</span></div>
+        <div id="ofeNarrative" style="display:none;margin-top:5px;padding:5px 6px;background:#020408;border:1px solid #0d2040;border-radius:4px;font-size:10px;line-height:1.4;color:#aabbd0;max-height:60px;overflow-y:auto"></div>
+        <div id="ofeDriftAnchor" style="display:none;margin-top:4px;padding:4px 6px;background:#010305;border-left:2px solid #0055aa;font-size:9px;color:#5588aa;font-style:italic;max-height:40px;overflow-y:auto"></div>
+        <div id="ofeCatalysts" style="display:none;margin-top:4px;font-size:9px;color:#6699bb"></div>
+      </div>
       <div class="ad-row"><span class="ad-k">Asked</span><span class="ad-v" id="adAskedAt">—</span></div>
       <div class="ad-row"><span class="ad-k">Model</span><span class="ad-v" id="adModel">—</span></div>
       <div class="ad-row"><span class="ad-k">Account</span><span class="ad-v" id="adAcct">—</span></div>
@@ -574,10 +593,211 @@
   // click — actual trade-signal inference (ask()) stays manual/on-demand.
   setInterval(refreshStatus, 3000);
 
+  // ───────────────────────────────────────────────────────────────────────
+  //  ORBITAL FORESIGHT ENGINE — HUD wiring
+  // ───────────────────────────────────────────────────────────────────────
+
+  /**
+   * Paint the OFE panel from an OslScanResult or null.
+   * Called by the ofe:scan CustomEvent listener and on force-scan completion.
+   */
+  function paintOfePanel(result) {
+    // Status badge
+    const ofeStatus = document.getElementById('ofeStatus');
+    if (ofeStatus) {
+      if (!result) {
+        ofeStatus.textContent = 'SCANNING…';
+        ofeStatus.style.color = '#ffb74d';
+        ofeStatus.style.background = '#1a1200';
+        return;
+      }
+      const OFE = window.OrbitalForesightEngine;
+      const sym = document.getElementById('adCoin')?.value || 'BTC';
+      const rhc = OFE ? OFE.getRhcStatus(sym) : null;
+      if (rhc && rhc.dead) {
+        ofeStatus.textContent = '⚠ DEAD';
+        ofeStatus.style.color = '#ff5252';
+        ofeStatus.style.background = '#200000';
+      } else if (rhc && rhc.stale) {
+        ofeStatus.textContent = '◈ STALE';
+        ofeStatus.style.color = '#ffb74d';
+        ofeStatus.style.background = '#181000';
+      } else if (rhc && rhc.warn) {
+        ofeStatus.textContent = '◈ WARN';
+        ofeStatus.style.color = '#ffd740';
+        ofeStatus.style.background = '#141000';
+      } else {
+        ofeStatus.textContent = '✓ LIVE';
+        ofeStatus.style.color = '#00e676';
+        ofeStatus.style.background = '#001a0a';
+      }
+    }
+
+    // Foresight Vector
+    const vecEl = document.getElementById('ofeVector');
+    if (vecEl && result) {
+      const vec = String(result.foresightVector || '—').toUpperCase();
+      const conf = result.foresightConfidence != null ? `${(result.foresightConfidence * 100).toFixed(0)}%` : '';
+      vecEl.textContent = conf ? `${vec} (${conf})` : vec;
+      vecEl.style.color = vec === 'UP' ? '#00e676' : vec === 'DOWN' ? '#ff5252' : '#8b929a';
+    }
+
+    // Macro Regime
+    const regEl = document.getElementById('ofeRegime');
+    if (regEl && result) {
+      const regConf = result.regimeConfidence != null ? ` @${(result.regimeConfidence * 100).toFixed(0)}%` : '';
+      regEl.textContent = (result.macroRegime || '—') + regConf;
+      const regColors = { trending: '#00e676', volatile: '#ff9800', ranging: '#7b8cde', unknown: '#8b929a' };
+      regEl.style.color = regColors[result.macroRegime] || '#e6e8eb';
+    }
+
+    // Smart Money
+    const smEl = document.getElementById('ofeSmartMoney');
+    if (smEl && result) {
+      smEl.textContent = result.smartMoneyBias || '—';
+      const smColors = { bullish: '#00e676', bearish: '#ff5252', contested: '#ffb74d', neutral: '#8b929a' };
+      smEl.style.color = smColors[result.smartMoneyBias] || '#e6e8eb';
+    }
+
+    // Sentiment Score
+    const sentEl = document.getElementById('ofeSentiment');
+    if (sentEl && result) {
+      const s = result.sentimentScore;
+      if (s != null) {
+        const pct = (s * 100).toFixed(0);
+        sentEl.textContent = `${s > 0 ? '+' : ''}${pct}`;
+        sentEl.style.color = s >= 0.15 ? '#00e676' : s <= -0.15 ? '#ff5252' : '#ffb74d';
+      } else {
+        sentEl.textContent = '—';
+        sentEl.style.color = '#8b929a';
+      }
+    }
+
+    // Scan Age
+    const ageEl = document.getElementById('ofeScanAge');
+    if (ageEl) {
+      if (result && result.epochMs) {
+        const ageSec = Math.round((Date.now() - result.epochMs) / 1000);
+        ageEl.textContent = ageSec < 60 ? `${ageSec}s ago` : `${Math.round(ageSec / 60)}m ago`;
+      } else {
+        ageEl.textContent = '—';
+      }
+    }
+
+    // Narrative
+    const narEl = document.getElementById('ofeNarrative');
+    if (narEl && result && result.narrativeSummary) {
+      narEl.textContent = result.narrativeSummary;
+      narEl.style.display = 'block';
+    } else if (narEl) {
+      narEl.style.display = 'none';
+    }
+
+    // Drift Anchor
+    const dapEl = document.getElementById('ofeDriftAnchor');
+    if (dapEl && result) {
+      const OFE = window.OrbitalForesightEngine;
+      const sym = document.getElementById('adCoin')?.value || 'BTC';
+      const dap = OFE ? OFE.getDapAnchor(sym) : null;
+      const anchor = dap?.driftAnchor || result.driftAnchor;
+      if (anchor) {
+        dapEl.textContent = `⚓ ${anchor}`;
+        dapEl.style.display = 'block';
+      } else {
+        dapEl.style.display = 'none';
+      }
+    } else if (dapEl) {
+      dapEl.style.display = 'none';
+    }
+
+    // Catalysts
+    const catEl = document.getElementById('ofeCatalysts');
+    if (catEl && result) {
+      const cats = Array.isArray(result.upcomingCatalysts) ? result.upcomingCatalysts.slice(0, 3) : [];
+      if (cats.length) {
+        catEl.textContent = '⚡ ' + cats.join(' · ');
+        catEl.style.display = 'block';
+      } else {
+        catEl.style.display = 'none';
+      }
+    }
+  }
+
+  // Listen for OFE scan events from OrbitalForesightEngine
+  window.addEventListener('ofe:scan', (e) => {
+    const payload = e?.detail || {};
+    if (payload.type === 'osl_scan' && payload.result) {
+      paintOfePanel(payload.result);
+    }
+  });
+
+  // Force-scan button: immediately re-run OSL for current coin
+  const ofeForceScanBtn = document.getElementById('ofeForceScan');
+  if (ofeForceScanBtn) {
+    ofeForceScanBtn.addEventListener('click', async () => {
+      const OFE = window.OrbitalForesightEngine;
+      if (!OFE) return;
+      const sym = document.getElementById('adCoin')?.value || 'BTC';
+      const statusEl = document.getElementById('ofeStatus');
+      if (statusEl) {
+        statusEl.textContent = 'SCANNING…';
+        statusEl.style.color = '#ffb74d';
+        statusEl.style.background = '#1a1200';
+      }
+      paintOfePanel(null); // show scanning state
+      try {
+        const result = await OFE.forceScan(sym, {});
+        if (result) paintOfePanel(result);
+      } catch (_) {
+        if (statusEl) { statusEl.textContent = 'ERR'; statusEl.style.color = '#ff5252'; }
+      }
+    });
+  }
+
+  // Auto-start the OSL scanner when the desk loads (deferred to avoid blocking)
+  setTimeout(() => {
+    try {
+      const OFE = window.OrbitalForesightEngine;
+      if (!OFE || typeof OFE.startOsl !== 'function') return;
+      const sym = document.getElementById('adCoin')?.value || 'BTC';
+      OFE.startOsl({
+        symbols: [sym],
+        horizon: '15m',
+        model: 'asi1-mini',
+        webSearch: true,
+        useAgentverse: true,
+        verbose: false,
+      });
+      // Poll scan age every 30 s to keep the age counter live
+      setInterval(() => {
+        const scan = OFE.getLatestScan(document.getElementById('adCoin')?.value || 'BTC');
+        if (scan) {
+          const ageEl = document.getElementById('ofeScanAge');
+          if (ageEl && scan.epochMs) {
+            const ageSec = Math.round((Date.now() - scan.epochMs) / 1000);
+            ageEl.textContent = ageSec < 60 ? `${ageSec}s ago` : `${Math.round(ageSec / 60)}m ago`;
+          }
+          // Update status freshness
+          const coinNow = document.getElementById('adCoin')?.value || 'BTC';
+          const rhc = OFE.getRhcStatus(coinNow);
+          const statusEl = document.getElementById('ofeStatus');
+          if (statusEl) {
+            if (rhc.stale || rhc.dead) {
+              statusEl.textContent = rhc.dead ? '⚠ DEAD' : '◈ STALE';
+              statusEl.style.color = '#ffb74d';
+              statusEl.style.background = '#181000';
+            }
+          }
+        }
+      }, 30_000);
+    } catch (_) { /* non-fatal: OFE may not be loaded yet */ }
+  }, 2000);
+
   window.Asi1Desk = {
     getMode: () => mode,
     setMode: applyMode,
     ask,
     refresh: refreshStatus,
+    paintOfePanel,
   };
 })();

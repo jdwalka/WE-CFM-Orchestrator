@@ -187,6 +187,8 @@
 
     let confidence = 0.45;
     if (path) confidence += 0.06;
+
+    // ── Graviharmonic modulation ──────────────────────────────────────────
     const gh = packet.graviharmonic;
     if (gh) {
       if (gh.isEscaped && gh.harmonicCoherence >= 60) confidence += 0.05;
@@ -194,6 +196,30 @@
       if (gh.resonantRegime && gh.resonantRegime.includes('DESTRUCTIVE')) confidence -= 0.05;
       if (gh.bindingStrength === 'HIGH_GRAVITY_CORE') regime = 'mean_reversion';
     }
+
+    // ── Orbital Foresight Engine modulation ──────────────────────────────
+    const ofe = packet.foresight;
+    let ofeTag = '';
+    if (ofe && !ofe.scanStale) {
+      const vec = String(ofe.foresightVector || 'neutral').toUpperCase();
+      const ofeConf = typeof ofe.foresightConfidence === 'number' ? ofe.foresightConfidence : 0;
+      if (path && vec === path && ofeConf >= 0.55) confidence += 0.04 * ofeConf;
+      if (path && vec !== 'NEUTRAL' && vec !== path && ofeConf >= 0.6) confidence -= 0.03;
+      if (ofe.macroRegime && ofeConf >= 0.65) {
+        if (ofe.macroRegime === 'volatile') regime = 'breakout_volatility';
+        else if (ofe.macroRegime === 'trending') regime = 'trend_continuation';
+        else if (ofe.macroRegime === 'ranging') regime = 'mean_reversion';
+      }
+      const smb = String(ofe.smartMoneyBias || '').toLowerCase();
+      if (path === 'UP' && smb === 'bullish' && ofeConf >= 0.5) confidence += 0.02;
+      if (path === 'DOWN' && smb === 'bearish' && ofeConf >= 0.5) confidence += 0.02;
+      const ageS = ofe.scanAgeMs != null ? Math.round(ofe.scanAgeMs / 1000) : null;
+      ofeTag = ` [OFE: ${ofe.macroRegime}/${vec}@${(ofeConf * 100).toFixed(0)}%${ageS != null ? ` ${ageS}s ago` : ''}]`;
+    } else if (ofe && ofe.scanStale) {
+      confidence -= 0.02;
+      ofeTag = ' [OFE: STALE]';
+    }
+
     confidence = Math.round(Math.max(0, Math.min(1, confidence)) * 100) / 100;
 
     let call = '—';
@@ -221,11 +247,11 @@
 
     let notes;
     if (call === 'UP') {
-      notes = `UP. Spot ${spot} sits ${delta.toFixed(1)} above PTB ${ptb} with ${ttc ?? '?'}s to close. YesProb ${yes.toFixed(2)} and mid ${mid.toFixed(3)} align upward. Depth imbalance ${imb.toFixed(2)} and near-touch notional ${notional} support buying.${graviTag} Fade only if spot pierces PTB.`;
+      notes = `UP. Spot ${spot} sits ${delta.toFixed(1)} above PTB ${ptb} with ${ttc ?? '?'}s to close. YesProb ${yes.toFixed(2)} and mid ${mid.toFixed(3)} align upward. Depth imbalance ${imb.toFixed(2)} and near-touch notional ${notional} support buying.${graviTag}${ofeTag} Fade only if spot pierces PTB.`;
     } else if (call === 'DOWN') {
-      notes = `DOWN. Spot ${spot} sits ${Math.abs(delta).toFixed(1)} below PTB ${ptb} with ${ttc ?? '?'}s to close. YesProb ${yes.toFixed(2)} and mid ${mid.toFixed(3)} suggest downside. Depth imbalance ${imb.toFixed(2)} and near-touch notional ${notional} support selling.${graviTag} Fade only if spot pierces PTB.`;
+      notes = `DOWN. Spot ${spot} sits ${Math.abs(delta).toFixed(1)} below PTB ${ptb} with ${ttc ?? '?'}s to close. YesProb ${yes.toFixed(2)} and mid ${mid.toFixed(3)} suggest downside. Depth imbalance ${imb.toFixed(2)} and near-touch notional ${notional} support selling.${graviTag}${ofeTag} Fade only if spot pierces PTB.`;
     } else {
-      notes = `HOLD_FLAT. Spot ${spot} vs PTB ${ptb} shows insufficient edge. YesProb ${yes.toFixed(2)} and mid ${mid.toFixed(3)} offer no clear direction.${graviTag} No legal action with positive EV.`;
+      notes = `HOLD_FLAT. Spot ${spot} vs PTB ${ptb} shows insufficient edge. YesProb ${yes.toFixed(2)} and mid ${mid.toFixed(3)} offer no clear direction.${graviTag}${ofeTag} No legal action with positive EV.`;
     }
 
     return {
@@ -336,6 +362,35 @@
                 phaseAlignment: st.harmonic.phaseAlignment,
                 compositeIndex: st.compositeIndex,
                 actionRecommendation: st.actionRecommendation,
+              };
+            }
+          }
+        } catch (_) { }
+        return null;
+      })(),
+      foresight: (() => {
+        try {
+          const OFE = (typeof window !== 'undefined' && window.OrbitalForesightEngine)
+            || (typeof require !== 'undefined' ? require('./orbital-foresight-engine') : null);
+          const sym = String(extras.sym || o.coin || o.sym || '').toUpperCase();
+          if (OFE && typeof OFE.getLatestScan === 'function') {
+            const scan = OFE.getLatestScan(sym);
+            const rhc  = OFE.getRhcStatus(sym);
+            const dap  = OFE.getDapAnchor(sym);
+            if (scan) {
+              return {
+                macroRegime:         scan.macroRegime || 'unknown',
+                regimeConfidence:    scan.regimeConfidence ?? null,
+                foresightVector:     scan.foresightVector || 'neutral',
+                foresightConfidence: scan.foresightConfidence ?? null,
+                smartMoneyBias:      scan.smartMoneyBias || 'neutral',
+                sentimentScore:      scan.sentimentScore ?? null,
+                upcomingCatalysts:   Array.isArray(scan.upcomingCatalysts) ? scan.upcomingCatalysts.slice(0, 3) : [],
+                keyRiskEvents:       Array.isArray(scan.keyRiskEvents) ? scan.keyRiskEvents.slice(0, 2) : [],
+                driftAnchor:         dap?.driftAnchor || scan.driftAnchor || null,
+                scanAgeMs:           rhc.ageMs,
+                scanFresh:           rhc.fresh,
+                scanStale:           rhc.stale || rhc.dead,
               };
             }
           }
