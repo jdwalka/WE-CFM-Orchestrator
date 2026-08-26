@@ -14,28 +14,38 @@
   const PYTH_HERMES = 'https://hermes.pyth.network/api/latest_price_feeds';
   // Support new Pyth key from secrets/PYTH_NEW_API wired via public env or resolveRuntimeKey
   let PYTH_API_KEY = '';
-  try {
-    if (typeof window !== 'undefined') {
-      PYTH_API_KEY = window.resolveRuntimeKey
-        ? (window.resolveRuntimeKey('PYTH_API') || window.resolveRuntimeKey('PYTH_NEW') || window.resolveRuntimeKey('PYTH_NEW_API') || window.resolveRuntimeKey('PYTH_API_KEY') || window.resolveRuntimeKey('PYTH_LAZER_TOKEN') || window.resolveRuntimeKey('LAZER_TOKEN'))
-        : '';
-      if (!PYTH_API_KEY && window.__env) {
-        PYTH_API_KEY = window.__env.PYTH_API || window.__env.PYTH_NEW || window.__env.PYTH_NEW_API || window.__env.PYTH_API_KEY || window.__env.PYTH_LAZER_TOKEN || window.__env.LAZER_TOKEN || '';
+  function resolvePythKey() {
+    try {
+      if (typeof window !== 'undefined') {
+        const k = (window.resolveRuntimeKey && (
+          window.resolveRuntimeKey('PYTH_PRO_API_KEY') ||
+          window.resolveRuntimeKey('PYTH_PRO') ||
+          window.resolveRuntimeKey('PYTH_API') ||
+          window.resolveRuntimeKey('PYTH_NEW') ||
+          window.resolveRuntimeKey('PYTH_NEW_API') ||
+          window.resolveRuntimeKey('PYTH_API_KEY')
+        )) || (window.__env && (
+          window.__env.PYTH_PRO_API_KEY ||
+          window.__env.PYTH_PRO ||
+          window.__env.PYTH_API ||
+          window.__env.PYTH_NEW ||
+          window.__env.PYTH_NEW_API ||
+          window.__env.PYTH_API_KEY
+        )) || (window.__wecrypto_env && (
+          window.__wecrypto_env.PYTH_PRO_API_KEY ||
+          window.__wecrypto_env.PYTH_PRO ||
+          window.__wecrypto_env.PYTH_API ||
+          window.__wecrypto_env.PYTH_NEW
+        ));
+        if (k) return k;
       }
-      if (!PYTH_API_KEY && window.electron && typeof window.electron.getPublicEnv === 'function') {
-        window.electron.getPublicEnv().then(cfg => {
-          if (cfg && (cfg.PYTH_API || cfg.PYTH_NEW || cfg.PYTH_NEW_API || cfg.PYTH_API_KEY)) {
-            PYTH_API_KEY = cfg.PYTH_API || cfg.PYTH_NEW || cfg.PYTH_NEW_API || cfg.PYTH_API_KEY || cfg.PYTH_LAZER_TOKEN || cfg.LAZER_TOKEN || PYTH_API_KEY;
-          }
-        }).catch(() => {});
+      if (typeof process !== 'undefined' && process.env) {
+        return process.env.PYTH_PRO_API_KEY || process.env.PYTH_PRO || process.env.PYTH_API || process.env.PYTH_NEW || process.env.PYTH_NEW_API || process.env.PYTH_API_KEY || '';
       }
-      if (!PYTH_API_KEY) {
-        PYTH_API_KEY = (typeof process !== 'undefined' && process.env)
-          ? (process.env.PYTH_API || process.env.PYTH_NEW || process.env.PYTH_NEW_API || process.env.PYTH_API_KEY || '')
-          : '';
-      }
-    }
-  } catch (_) { }
+    } catch (_) {}
+    return '';
+  }
+  PYTH_API_KEY = resolvePythKey();
 
   const PYTH_FEEDS = {
     BTC:  '0xe62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43',
@@ -71,6 +81,8 @@
 
   async function fetchPythPrices() {
     try {
+      if (!PYTH_API_KEY) PYTH_API_KEY = resolvePythKey();
+
       const ctrl = new AbortController();
       const timeout = setTimeout(() => {
         try {
@@ -81,14 +93,19 @@
       }, 7000);
 
       const feedIds = Object.values(PYTH_FEEDS);
-      let url = `${PYTH_HERMES_V2}?${feedIds.map(id => 'ids[]=' + encodeURIComponent(id)).join('&')}`;
-      const headers = {};
+      const url = `${PYTH_HERMES_V2}?${feedIds.map(id => 'ids[]=' + encodeURIComponent(id)).join('&')}`;
+      const headers = { 'Accept': 'application/json' };
       if (PYTH_API_KEY) {
-        url += '&api_key=' + encodeURIComponent(PYTH_API_KEY);
+        headers['Authorization'] = `Bearer ${PYTH_API_KEY}`;
         headers['x-api-key'] = PYTH_API_KEY;
       }
       
-      const resp = await fetch(url, { signal: ctrl.signal, headers: Object.keys(headers).length ? headers : undefined });
+      const fetchImpl = (typeof window !== 'undefined' && window.electron && typeof window.electron.ipcFetch === 'function')
+        ? ((u, o) => window.electron.ipcFetch(u, o))
+        : fetch;
+
+      const resp = await fetchImpl(url, { signal: ctrl.signal, headers });
+      clearTimeout(timeout);
       clearTimeout(timeout);
       
       if (!resp.ok) {
@@ -203,5 +220,10 @@
   // Alias — oracle-snapshot.js / grok-range-overlay.js look for window.PythBrowser first.
   window.PythBrowser = window.PythClient;
 
-  console.log(`[PythClient] ✓ Module initialized`);
+  // Auto-start polling on module load immediately
+  try {
+    startPolling();
+  } catch (_) {}
+
+  console.log(`[PythClient] ✓ Module initialized (auto-polling active)`);
 })();

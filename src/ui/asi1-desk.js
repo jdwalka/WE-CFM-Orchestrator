@@ -338,16 +338,26 @@
     const pred = (typeof window !== 'undefined' && (window.PredictionEngine?.get?.(coin) || window._predictions?.[coin])) || {};
     const cache = (typeof window !== 'undefined' && window.candleCache?.[coin]) || {};
 
-    const rawSpot = Number(pkt.spot || window.PythBrowser?.getPrice?.(coin) || pred.price || pred.currentPrice || cache.ticker?.usd || cache.candles?.[cache.candles.length - 1]?.c || 0);
+    const pythPrice = Number(window.PythBrowser?.getPrice?.(coin) || window._pythPrices?.[coin] || 0);
+    const rawSpot = Number(pkt.spot || (pythPrice > 0 ? pythPrice : 0) || pred.price || pred.currentPrice || cache.ticker?.usd || cache.candles?.[cache.candles.length - 1]?.c || 0);
     const rawPtb = Number(pkt.priceToBeatNum || poly.priceToBeatNum || poly.targetPriceNum || 0);
-    const spot = Number.isFinite(rawSpot) && rawSpot > 0 ? rawSpot : (Number(pred.price) || 0);
-    const ptb = Number.isFinite(rawPtb) && rawPtb > 0 ? rawPtb : spot;
+    const spot = Number.isFinite(rawSpot) && rawSpot > 0 ? rawSpot : null;
+    const ptb = Number.isFinite(rawPtb) && rawPtb > 0 ? rawPtb : null;
     const yesProb = Number.isFinite(Number(pkt.yesProb)) ? Number(pkt.yesProb) : (Number.isFinite(Number(poly.probability)) ? Number(poly.probability) : 0.50);
     const mid = Number.isFinite(Number(pkt.mid)) ? Number(pkt.mid) : (Number.isFinite(Number(poly.mid)) ? Number(poly.mid) : yesProb);
     const ttc = Number.isFinite(Number(pkt.secondsToClose)) ? Number(pkt.secondsToClose) : (Number.isFinite(Number(poly.secondsToClose)) ? Number(poly.secondsToClose) : 180);
 
-    const delta = (spot > 0 && ptb > 0) ? (spot - ptb) : 0;
+    const delta = (spot != null && ptb != null) ? (spot - ptb) : 0;
     const pathDir = delta > 0 ? 'UP' : delta < 0 ? 'DOWN' : 'FLAT';
+
+    // Compute spotAgeSec only if we have a valid timestamp in ms (> 2020)
+    let spotAgeSec = pkt.spotAgeSec;
+    if (spotAgeSec == null && window._pythPythMetadata?.[coin]?.publishTime) {
+      const pubMs = Number(window._pythPythMetadata[coin].publishTime);
+      if (pubMs > 1_577_836_800_000) {
+        spotAgeSec = Math.max(0, Math.round((Date.now() - pubMs) / 1000));
+      }
+    }
 
     return {
       ...(Desk?.SAMPLE_PACKET || {}),
@@ -355,6 +365,8 @@
       sym: coin,
       horizon,
       spot,
+      spotSource: pkt.spotSource || (pythPrice > 0 ? 'pyth-browser' : 'pyth'),
+      spotAgeSec: spotAgeSec ?? null,
       priceToBeatNum: ptb,
       yesProb,
       mid,

@@ -161,8 +161,8 @@
     const ttc = num(packet.secondsToClose);
     const live = String(packet.liveDirection || packet.pathDir || '').toUpperCase();
 
-    if (spot == null || ptb == null || yes == null || mid == null) {
-      return holdContract(m, ['Missing required fields (spot, priceToBeatNum, yesProb, mid)']);
+    if (spot == null || spot <= 0 || ptb == null || ptb <= 0 || yes == null || mid == null) {
+      return holdContract(m, ['Missing required fields (spot, priceToBeatNum, yesProb, mid)'], 'HOLD_FLAT. Missing or invalid spot / PTB from oracle feeds.');
     }
 
     const delta = spot - ptb;
@@ -310,12 +310,19 @@
     const o = oracle || {};
     const w = o.active || {};
     const spotTs = num(o.spotTs);
-    const spotAgeSec = spotTs != null ? Math.max(0, Math.round((Date.now() - spotTs) / 1000)) : null;
+    // Guard: spotTs must be a realistic unix-ms timestamp (after 2020-01-01).
+    // If spotTs=0 or very small, Date.now()-spotTs blows up to ~56 years stale.
+    const MIN_VALID_SPOT_TS = 1_577_836_800_000; // 2020-01-01 UTC in ms
+    const spotAgeSec = (spotTs != null && spotTs >= MIN_VALID_SPOT_TS)
+      ? Math.max(0, Math.round((Date.now() - spotTs) / 1000))
+      : null;
+    const rawSpot = num(o.spot);
     return {
       sym: String(extras.sym || o.coin || o.sym || '').toUpperCase(),
       horizon: String(extras.horizon || o.horizon || w.horizon || '15m'),
       slug: o.slug || w.slug || null,
-      spot: num(o.spot),
+      // spot=0 is invalid (same as missing) — treat as null so inferLocal() HOLD_FLATs correctly.
+      spot: (rawSpot != null && rawSpot > 0) ? rawSpot : null,
       spotSource: o.spotSource || 'pyth',
       spotAgeSec,
       priceToBeatNum: num(o.priceToBeatNum ?? w.priceToBeatNum),
