@@ -2377,7 +2377,21 @@
           priceToBeatSource = existingLock.source;
         }
 
-        // 1. Direct Gamma metadata (zero delay)
+        const isImmediateNext = ts === windowTs + 300;
+        const shouldResolvePTB = !isFuture || isImmediateNext;
+
+        // 0. CANONICAL CONTRACT BENCHMARK: Polymarket Chainlink 60s TWAP Candle Open (Absolute Truth)
+        if (priceToBeatNum == null && shouldResolvePTB) {
+          try {
+            const candleStrike = await fetchPolymarketChainlinkCandleOpen(sym, '5m', ts, POLY_TWAP_LOOKBACK_SEC, false);
+            if (candleStrike != null && candleStrike > 0) {
+              priceToBeatNum = candleStrike;
+              priceToBeatSource = PRIMARY_LOCK_SOURCE;
+            }
+          } catch (_) {}
+        }
+
+        // 1. Direct Gamma metadata (if candles not available)
         if (priceToBeatNum == null) {
           if (Number.isFinite(m.priceToBeat) && m.priceToBeat > 0) {
             priceToBeatNum = m.priceToBeat;
@@ -2396,9 +2410,6 @@
           fetchPolymarketCryptoWindowPrice(sym, startMs).catch(() => null),
           fetchPolymarketRtdsSnapshot(sym, startMs).catch(() => null),
         ]);
-
-        const isImmediateNext = ts === windowTs + 300;
-        const shouldResolvePTB = !isFuture || isImmediateNext;
 
         // 2. Event page / candle fetch
         if (shouldResolvePTB && priceToBeatNum == null) {
@@ -2419,10 +2430,9 @@
           chainlinkCurrentPriceTs = toPositiveFiniteNumber(rtds?.currentPriceTs);
         }
 
-        // 3. Opening boundary fallback (prioritizes candle openPrice; only accepts current price if <= 15s into window)
-        const secondsIntoWindow = Math.max(0, nowSec - windowTs);
+        // 3. Opening boundary fallback strictly from candle openPrice (NEVER inject fluctuating spot/current price)
         if (priceToBeatNum == null && (isActiveWindow || ts === windowTs)) {
-          const openCandidate = toPositiveFiniteNumber(cryptoWindow?.openPrice ?? (secondsIntoWindow <= 15 ? chainlinkCurrentPriceNum : null));
+          const openCandidate = toPositiveFiniteNumber(cryptoWindow?.openPrice);
           if (openCandidate != null && openCandidate > 0) {
             priceToBeatNum = openCandidate;
             priceToBeatSource = 'chainlink-open-fallback';
