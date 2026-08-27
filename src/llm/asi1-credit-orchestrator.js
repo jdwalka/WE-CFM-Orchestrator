@@ -213,12 +213,21 @@ async function fetchPythSpotDirect(coin) {
 async function fetchPolymarketPtbDirect(sym, horizon = '5m') {
   try {
     const symbol = String(sym || 'BTC').toUpperCase();
-    const intervalSec = horizon === '15m' ? 900 : 300;
+    const h = String(horizon || '5m').toLowerCase().replace(/\s+/g, '');
+    let intervalSec = 300;
+    let normHorizon = '5m';
+    if (h === '15m' || h === '15' || h === 'h15') {
+      intervalSec = 900;
+      normHorizon = '15m';
+    } else if (h === '60m' || h === '1h' || h === 'hourly' || h === '60' || h === 'h60') {
+      intervalSec = 3600;
+      normHorizon = '60m';
+    }
     const nowSec = Math.floor(Date.now() / 1000);
     const boundarySec = nowSec - (nowSec % intervalSec);
     const prefixMap = { BTC: 'btc', ETH: 'eth', SOL: 'sol', XRP: 'xrp', DOGE: 'doge', BNB: 'bnb', HYPE: 'hype' };
     const prefix = prefixMap[symbol] || symbol.toLowerCase();
-    const slug = `${prefix}-updown-${horizon}-${boundarySec}`;
+    const slug = `${prefix}-updown-${normHorizon}-${boundarySec}`;
 
     // 1. Direct Polymarket Gamma market contract metadata
     try {

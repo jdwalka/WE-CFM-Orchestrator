@@ -66,6 +66,7 @@ const PREFIX_MAP = {
   'crypto-com': 'https://api.crypto.com',
   'crypto': 'https://api.crypto.com',
   'polymarket': 'https://gamma-api.polymarket.com',
+  'polymarket-geo': 'https://polymarket.com/api',
   'polymarket-clob': 'https://clob.polymarket.com',
   'polymarket-data': 'https://data-api.polymarket.com',
   'polymarket-perps': 'https://api.perpetuals.polymarket.com',
