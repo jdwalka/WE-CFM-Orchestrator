@@ -1,0 +1,14 @@
+version: '1'
+rule_settings:
+  enable:
+    - default
+review:
+  enable: true
+  auto_review: true
+  auto_review_draft: true
+  request_changes_workflow: true
+  review_comment: true
+ignore:
+  - '**/node_modules/**'
+  - '**/dist/**'
+  - '**/target/**'
