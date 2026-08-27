@@ -1740,10 +1740,9 @@
   // window). Locking now requires two independent reads, spaced
   // PTB_CONFIRM_MIN_GAP_MS apart, that agree within PTB_CONFIRM_TOLERANCE. See
   // _lockPolymarketPriceToBeat. Purge v11 locks, which could still lock on one read.
-  // v14: Zero-delay PTB fallback and immediate locking for all Polymarket-native
-  // sources (Gamma metadata, Chainlink open candle, RTDS TWAP stream, and event page).
-  // Eliminates 30-45s latency at window open and purges stale v13 locks.
-  const POLY5M_PTB_LOCK_VERSION = 14;
+  // v15: Disallow pre-boundary premature locking; allow fallback locks to upgrade
+  // immediately when canonical polymarket-chainlink-candles arrives; bump version to purge stale locks.
+  const POLY5M_PTB_LOCK_VERSION = 15;
   // Primary settled-TWAP contract endpoint
   const PRIMARY_LOCK_SOURCE = 'polymarket-chainlink-candles';
   const PTB_CONFIRM_MIN_GAP_MS = 1_000;
@@ -1800,14 +1799,19 @@
 
   /**
    * Propose a PTB reading for `slug`. Locks immediately for any trusted
-   * Polymarket source with zero latency.
+   * Polymarket source with zero latency. Allows upgrading to canonical
+   * polymarket-chainlink-candles if previously set by an earlier fallback.
    */
   function _lockPolymarketPriceToBeat(slug, value, source) {
     const price = toPositiveFiniteNumber(value);
     if (!slug || price == null || !POLY5M_PTB_TRUSTED_SOURCES.has(source)) return null;
     const existing = _poly5mPriceToBeatLocks.get(slug);
     if (existing) {
-      return existing;
+      if (existing.source !== PRIMARY_LOCK_SOURCE && source === PRIMARY_LOCK_SOURCE) {
+        console.info(`[Poly5M-PTB] Upgrading lock for ${slug}: $${existing.price} (${existing.source}) → $${price} (${source})`);
+      } else {
+        return existing;
+      }
     }
 
     const now = Date.now();
@@ -2242,7 +2246,7 @@
   async function fetchPolymarketPriceToBeat(slug) {
     if (!slug) return null;
     const existingLock = _getPolymarketPriceToBeatLock(slug);
-    if (existingLock) return existingLock.price; // already confirmed -- no need to keep fetching
+    if (existingLock && existingLock.source === PRIMARY_LOCK_SOURCE) return existingLock.price;
 
     const cached = _poly5mPriceToBeatCache[slug];
     if (cached && Date.now() - cached.fetchedAt < PTB_SCRAPE_RETRY_MS && cached.value != null) return cached.value;
@@ -3135,25 +3139,19 @@ function polymarketSentiment(markets, sym) {
         const nowSec = Math.floor(nowMs / 1000);
         const secInPeriod = nowSec % 300;
 
-        // 1. Pre-fetch trigger: 30 seconds before the 5-minute boundary
+        // 1. Pre-fetch trigger: 30 seconds before the 5-minute boundary (pre-warm candidates only; NEVER lock PTB before boundary opens)
         if (secInPeriod >= 270 && !prefetchTriggered) {
           prefetchTriggered = true;
           const currentBoundary = nowSec - secInPeriod;
           const nextBoundary = currentBoundary + 300;
-          console.info(`[BoundaryClock] ⏱ 30s to 5m boundary (${nextBoundary}). Pre-fetching & locking canonical PTB for upcoming contracts.`);
+          console.info(`[BoundaryClock] ⏱ 30s to 5m boundary (${nextBoundary}). Pre-warming candidate structure for upcoming contracts.`);
           Object.keys(POLY_5M_COIN_SLUGS).forEach(async (sym) => {
             try {
               const prefix = POLY_5M_COIN_SLUGS[sym];
               const nextSlug = `${prefix}-updown-5m-${nextBoundary}`;
-              const scraped = await fetchPolymarketPriceToBeat(nextSlug).catch(() => null);
-              if (Number.isFinite(scraped) && scraped > 0) {
-                _lockPolymarketPriceToBeat(nextSlug, scraped, 'polymarket-event-page');
-                console.info(`[BoundaryClock] 🎯 Pre-locked canonical PTB for upcoming ${sym} (${nextSlug}): $${scraped}`);
-              }
               await fetchPolymarket5MMarketCandidate(sym, nextSlug).catch(() => null);
             } catch (_) {}
           });
-          fetchAll().catch(() => {});
         }
 
         // Reset prefetch trigger when we are in a new period
