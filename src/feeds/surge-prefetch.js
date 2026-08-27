@@ -280,11 +280,13 @@
     try {
       const coin = window.PredictionMarkets?.getCoin?.(key);
       const p15 = coin?.poly15m;
-      if (p15) {
-        if (!(ctx.ptb > 0)) ctx.ptb = Number(p15.priceToBeatNum);
-        if (ctx.bookImb == null) ctx.bookImb = Number(p15.depthImbalance);
-        if (ctx.yesProb == null) ctx.yesProb = Number(p15.yesProb ?? p15.probability);
-        if (ctx.secondsToClose == null) ctx.secondsToClose = Number(p15.secondsToClose);
+      const p5 = coin?.poly5m;
+      const poly = p15 || p5;
+      if (poly) {
+        if (!(ctx.ptb > 0)) ctx.ptb = Number(p15?.priceToBeatNum ?? p5?.priceToBeatNum ?? p15?.targetPriceNum ?? p5?.targetPriceNum);
+        if (ctx.bookImb == null) ctx.bookImb = Number(poly.depthImbalance);
+        if (ctx.yesProb == null) ctx.yesProb = Number(poly.yesProb ?? poly.probability);
+        if (ctx.secondsToClose == null) ctx.secondsToClose = Number(poly.secondsToClose);
       }
     } catch (_) { /* */ }
 

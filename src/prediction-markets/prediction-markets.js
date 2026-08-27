@@ -1834,7 +1834,7 @@
       const stored = JSON.parse(localStorage.getItem(storageKey) || 'null');
       const price = toPositiveFiniteNumber(stored?.price);
       if (stored?.version !== POLY5M_PTB_LOCK_VERSION || price == null || !POLY5M_PTB_TRUSTED_SOURCES.has(stored?.source)) {
-        localStorage.removeItem(storageKey);
+        try { localStorage?.removeItem?.(storageKey); } catch (_) {}
         return null;
       }
       const lock = Object.freeze({
@@ -2213,9 +2213,19 @@
 
   async function fetchPolymarketChainlinkCandleOpen(sym, horizonTag, boundarySec, lookbackSec = POLY_TWAP_LOOKBACK_SEC, forceRefresh = false) {
     const interval = horizonTag === '15m' ? '15m' : '5m';
+    const intervalSec = horizonTag === '15m' ? 900 : 300;
     const candles = await _fetchChainlinkCandlesCached(sym, interval, lookbackSec, forceRefresh);
     const candle = Array.isArray(candles) ? candles.find(c => c.time === boundarySec) : null;
-    return toPositiveFiniteNumber(candle?.open);
+    const openVal = toPositiveFiniteNumber(candle?.open);
+    if (openVal != null && openVal > 0) return openVal;
+
+    // TWAP continuity: the opening strike of boundarySec is mathematically identical
+    // to the close price of the preceding candle (time === boundarySec - intervalSec)
+    const prevCandle = Array.isArray(candles) ? candles.find(c => c.time === boundarySec - intervalSec) : null;
+    const prevClose = toPositiveFiniteNumber(prevCandle?.close);
+    if (prevClose != null && prevClose > 0) return prevClose;
+
+    return null;
   }
 
   // Exposed for the (planned) Polymarket 5m resolution tracker to read a

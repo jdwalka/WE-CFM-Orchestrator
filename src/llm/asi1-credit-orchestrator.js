@@ -210,6 +210,35 @@ async function fetchPythSpotDirect(coin) {
   return null;
 }
 
+async function fetchPolymarketPtbDirect(sym, horizon = '5m') {
+  try {
+    const symbol = String(sym || 'BTC').toUpperCase();
+    const interval = horizon === '15m' ? '15m' : '5m';
+    const intervalSec = horizon === '15m' ? 900 : 300;
+    const nowSec = Math.floor(Date.now() / 1000);
+    const boundarySec = nowSec - (nowSec % intervalSec);
+    const url = `https://polymarket.com/api/chainlink-candles?symbol=${encodeURIComponent(symbol)}&interval=${interval}&limit=30&endTime=${Date.now()}&twapEnabled=true&twapLookbackSeconds=60`;
+    const resp = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151 Safari/537.36',
+        'Accept': 'application/json',
+      }
+    });
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    const candles = Array.isArray(data?.candles) ? data.candles : [];
+    const candle = candles.find(c => c.time === boundarySec);
+    if (candle && Number.isFinite(candle.open) && candle.open > 0) {
+      return candle.open;
+    }
+    const prevCandle = candles.find(c => c.time === boundarySec - intervalSec);
+    if (prevCandle && Number.isFinite(prevCandle.close) && prevCandle.close > 0) {
+      return prevCandle.close;
+    }
+  } catch (_) {}
+  return null;
+}
+
 async function deskInfer(packet, mode, options = {}) {
   if (mode) setMode(mode);
   const m = getMode();
@@ -221,11 +250,22 @@ async function deskInfer(packet, mode, options = {}) {
       packet.spot = livePyth.price;
       packet.spotSource = 'pyth-hermes-direct';
       packet.spotAgeSec = Math.max(0, Math.round((Date.now() - livePyth.publishTime) / 1000));
-      if (packet.priceToBeatNum && packet.priceToBeatNum > 0) {
-        packet.deltaVsPtb = packet.spot - packet.priceToBeatNum;
-        packet.liveDirection = packet.deltaVsPtb > 0 ? 'UP' : (packet.deltaVsPtb < 0 ? 'DOWN' : 'FLAT');
-      }
     }
+  }
+
+  // If PTB is missing or zero, actively hydrate from Polymarket chainlink candles
+  if (!packet.priceToBeatNum || packet.priceToBeatNum <= 0) {
+    const directPtb = await fetchPolymarketPtbDirect(packet.sym, packet.horizon);
+    if (directPtb && directPtb > 0) {
+      packet.priceToBeatNum = directPtb;
+      packet.priceToBeatSource = 'polymarket-chainlink-candles-direct';
+    }
+  }
+
+  // Ensure deltaVsPtb and liveDirection are precisely computed if both spot and PTB exist
+  if (packet.spot && packet.spot > 0 && packet.priceToBeatNum && packet.priceToBeatNum > 0) {
+    packet.deltaVsPtb = packet.spot - packet.priceToBeatNum;
+    packet.liveDirection = packet.deltaVsPtb > 0 ? 'UP' : (packet.deltaVsPtb < 0 ? 'DOWN' : 'FLAT');
   }
 
   const {
@@ -296,6 +336,7 @@ module.exports = {
   resolveDeskOptions,
   deskInfer,
   fetchPythSpotDirect,
+  fetchPolymarketPtbDirect,
   shouldSkipTokenmix,
   markTokenmixExhausted,
   reshapeCascade,
