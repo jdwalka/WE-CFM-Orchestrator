@@ -147,9 +147,16 @@
     if (url.startsWith('https://gamma-api.polymarket.com/')) {
       proxyUrls.push(url.replace('https://gamma-api.polymarket.com/', `http://127.0.0.1:${proxyPort}/polymarket/`));
       proxyUrls.push(url.replace('https://gamma-api.polymarket.com/', `http://127.0.0.1:${proxyPort}/gamma/`));
+      proxyUrls.push(`http://127.0.0.1:${proxyPort}/proxy?url=${encodeURIComponent(url)}`);
     } else if (url.startsWith('https://clob.polymarket.com/')) {
       proxyUrls.push(url.replace('https://clob.polymarket.com/', `http://127.0.0.1:${proxyPort}/polymarket-clob/`));
       proxyUrls.push(url.replace('https://clob.polymarket.com/', `http://127.0.0.1:${proxyPort}/clob/`));
+      proxyUrls.push(`http://127.0.0.1:${proxyPort}/proxy?url=${encodeURIComponent(url)}`);
+    } else if (url.startsWith('https://data-api.polymarket.com/')) {
+      proxyUrls.push(url.replace('https://data-api.polymarket.com/', `http://127.0.0.1:${proxyPort}/polymarket-data/`));
+      proxyUrls.push(`http://127.0.0.1:${proxyPort}/proxy?url=${encodeURIComponent(url)}`);
+    } else if (url.startsWith('https://polymarket.com/')) {
+      proxyUrls.push(`http://127.0.0.1:${proxyPort}/proxy?url=${encodeURIComponent(url)}`);
     }
     for (const pUrl of proxyUrls) {
       try {
@@ -200,9 +207,16 @@
     if (url.startsWith('https://gamma-api.polymarket.com/')) {
       proxyUrls.push(url.replace('https://gamma-api.polymarket.com/', `http://127.0.0.1:${proxyPort}/polymarket/`));
       proxyUrls.push(url.replace('https://gamma-api.polymarket.com/', `http://127.0.0.1:${proxyPort}/gamma/`));
+      proxyUrls.push(`http://127.0.0.1:${proxyPort}/proxy?url=${encodeURIComponent(url)}`);
     } else if (url.startsWith('https://clob.polymarket.com/')) {
       proxyUrls.push(url.replace('https://clob.polymarket.com/', `http://127.0.0.1:${proxyPort}/polymarket-clob/`));
       proxyUrls.push(url.replace('https://clob.polymarket.com/', `http://127.0.0.1:${proxyPort}/clob/`));
+      proxyUrls.push(`http://127.0.0.1:${proxyPort}/proxy?url=${encodeURIComponent(url)}`);
+    } else if (url.startsWith('https://data-api.polymarket.com/')) {
+      proxyUrls.push(url.replace('https://data-api.polymarket.com/', `http://127.0.0.1:${proxyPort}/polymarket-data/`));
+      proxyUrls.push(`http://127.0.0.1:${proxyPort}/proxy?url=${encodeURIComponent(url)}`);
+    } else if (url.startsWith('https://polymarket.com/')) {
+      proxyUrls.push(`http://127.0.0.1:${proxyPort}/proxy?url=${encodeURIComponent(url)}`);
     }
     for (const pUrl of proxyUrls) {
       try {
@@ -1330,23 +1344,46 @@
     const markets = Array.isArray(event.markets) ? event.markets : [];
     let market = markets.find(m => (m?.slug || m?.market_slug) === expectedSlug && _isTradablePoly5M(m));
     if (!market) return null;
+    const clobTokenIds = _polyClobTokenIds(market);
+    const eventMetadata = event.eventMetadata || event.event_metadata || null;
+    const directPriceToBeat = toPositiveFiniteNumber(
+      eventMetadata?.priceToBeat
+      ?? eventMetadata?.price_to_beat
+      ?? market.priceToBeat
+      ?? market.price_to_beat
+      ?? market.targetPrice
+      ?? market.target_price
+    );
     return {
       ...market,
       slug: market.slug || market.market_slug || event.slug || expectedSlug,
       question: market.question || event.title,
       endDate: market.endDate || market.endDateIso || event.endDate || event.end_date || null,
       eventStartTime: market.eventStartTime || event.startTime || event.startDate || null,
+      conditionId: market.conditionId || market.condition_id || null,
+      questionID: market.questionID || market.question_id || null,
+      clobTokenIds: clobTokenIds.length ? JSON.stringify(clobTokenIds) : (market.clobTokenIds || null),
+      yesTokenId: clobTokenIds[_polyOutcomeIndex(market, 'up', 0)] || clobTokenIds[0] || null,
+      noTokenId: clobTokenIds[_polyOutcomeIndex(market, 'down', 1)] || clobTokenIds[1] || null,
+      marketId: market.id || null,
+      eventId: event.id || null,
+      eventMetadata,
+      priceToBeat: directPriceToBeat,
+      priceToBeatNum: directPriceToBeat,
+      price_to_beat: directPriceToBeat,
       events: market.events || [{
         id: event.id,
         slug: event.slug,
         title: event.title,
         startTime: event.startTime || event.startDate || null,
         endDate: event.endDate || null,
+        eventMetadata,
       }],
       _eventFallback: {
         id: event.id,
         slug: event.slug,
         title: event.title,
+        eventMetadata,
       },
     };
   }
@@ -1706,61 +1743,28 @@
   let _poly5mEventScanCache = { fetchedAt: 0, events: [], source: '', error: '' };
   let _poly5mClobSnapshotCache = {};
   // CLOB market WS lives in window.PolymarketWS — see fetchPolymarketClobMarketSnapshot.
-  // Rotate whenever PTB validation semantics change so a previously accepted
-  // benchmark cannot survive in localStorage and poison later sessions.
-  // v6: dropped all live-price proxies (boundary snapshot / RTDS / crypto-price).
-  // polycool.app is the source of truth — only the canonical Polymarket
-  // priceToBeat (event page or gamma metadata) may ever be displayed as the PTB.
-  // A live Chainlink/Pyth price sampled near window-open is NOT the contract PTB
-  // and must never be substituted (that produced the "averaged" mismatch vs polycool).
-  // v7: added the official Polymarket crypto-price microservice as a trusted source
-  // (openPrice exact, prevClose provisional) and allowed an exact openPrice to upgrade
-  // a provisional lock exactly once.
-  // v8: REMOVED the crypto-price microservice. Measured against live windows it is
-  // hourly-bucketed, not 5-minute: every 03:xx window returns the 03:00 open
-  // (64820.01), every 02:xx returns 64861.46, changing only at the top of the hour.
-  // That made the PTB correct for 1 window in 12 and up to ~$50 wrong for the rest
-  // (observed: locked 64788.80 against an actual PTB of 64756).
-  // These markets settle on the Chainlink BTC/USD TWAP-30s stream, which no spot or
-  // OHLC feed reproduces, so an approximate source is worse than none: a wrong PTB
-  // shown as [exact-contract] is actively traded on. Rotating the version also purges
-  // the bad values already persisted in localStorage under the v7 key.
-  // v9: trusted rtds-twap30 (boundary open proxy). Still not Polymarket's published
-  // "Price to Beat" — AI/UI could quote a wrong number until event-page/candles arrived,
-  // and the immutable lock blocked the real PTB for the whole window.
-  // v10: ONLY Polymarket-published contract PTB may lock. RTDS TWAP / title / generic
-  // field guesses may display as provisional but never lock and never go to AI as PTB.
-  // v11: 5m/15m contracts now settle on Chainlink TWAP-60 (cryptoMarketConfig
-  // twapLookbackSeconds=60). Purge v10 locks that used the 30s candle open.
-  // v12: a single scrape from any one trusted source -- including Gamma's own
-  // `priceToBeat` market-list field, which has been observed publishing before
-  // the 60s TWAP window has actually settled -- is no longer enough to lock a
-  // number for the whole contract (observed: BTC locked ~$50 off, ETH ~$1 off,
-  // drifting wider as spot moved away from the wrong anchor for the rest of the
-  // window). Locking now requires two independent reads, spaced
-  // PTB_CONFIRM_MIN_GAP_MS apart, that agree within PTB_CONFIRM_TOLERANCE. See
-  // _lockPolymarketPriceToBeat. Purge v11 locks, which could still lock on one read.
-  // v15: Disallow pre-boundary premature locking; allow fallback locks to upgrade
-  // immediately when canonical polymarket-chainlink-candles arrives; bump version to purge stale locks.
-  const POLY5M_PTB_LOCK_VERSION = 15;
+  // Polymarket 5m and 15m Up/Down contracts settle exclusively on Chainlink TWAP-60
+  // (cryptoMarketConfig.twapLookbackSeconds = 60).
+  // The contract Price-To-Beat (PTB) is an immutable variable sourced strictly from
+  // Polymarket's published contract (event page or Gamma market metadata).
+  // Zero external feeds, zero candles, and zero synthetic approximations are ever used.
+  const POLY5M_PTB_LOCK_VERSION = 17;
   // Primary settled-TWAP contract endpoint
-  const PRIMARY_LOCK_SOURCE = 'polymarket-chainlink-candles';
+  const PRIMARY_LOCK_SOURCE = 'polymarket-contract';
   const PTB_CONFIRM_MIN_GAP_MS = 1_000;
   const PTB_CONFIRM_TOLERANCE = 0.01;
   const _pendingPtbReads = new Map();
   const PTB_CONFIRM_MAX_READS = 6;
   const POLY5M_PTB_TRUSTED_SOURCES = new Set([
+    'polymarket-contract',
     'polymarket-event-page',
     'polymarket-chainlink-candles',
     'gamma-market',
-    'gamma-event-metadata',
-    'gamma-price-to-beat',
-    'chainlink-open-fallback',
+    'gamma-market-metadata',
   ]);
   // Sources allowed on market objects for *display* only (never immutable lock / AI PTB)
   const POLY5M_PTB_PROVISIONAL_SOURCES = new Set([
     'polymarket-title',
-    'gamma-market-metadata',
     'gamma-market-field',
     'provisional',
   ]);
@@ -2246,78 +2250,30 @@
   async function fetchPolymarketPriceToBeat(slug) {
     if (!slug) return null;
     const existingLock = _getPolymarketPriceToBeatLock(slug);
-    if (existingLock && existingLock.source === PRIMARY_LOCK_SOURCE) return existingLock.price;
+    if (existingLock) return existingLock.price;
 
     const cached = _poly5mPriceToBeatCache[slug];
     if (cached && Date.now() - cached.fetchedAt < PTB_SCRAPE_RETRY_MS && cached.value != null) return cached.value;
 
-    const slugMatch = slug.match(/^([a-z0-9-]+)-updown-(5m|15m)-(\d+)$/i);
-    if (slugMatch) {
-      const symMap = { btc: 'BTC', eth: 'ETH', sol: 'SOL', xrp: 'XRP', doge: 'DOGE', hype: 'HYPE', bnb: 'BNB' };
-      const sym = symMap[slugMatch[1].toLowerCase()];
-      const horizonTag = slugMatch[2].toLowerCase();
-      const startSec = Number(slugMatch[3]);
-      if (sym && Number.isFinite(startSec)) {
-        // PRIMARY: chainlink-candles REST endpoint
-        try {
-          const candleOpen = await fetchPolymarketChainlinkCandleOpen(sym, horizonTag, startSec, POLY_TWAP_LOOKBACK_SEC, false);
-          if (candleOpen != null && candleOpen > 0) {
-            const locked = _lockPolymarketPriceToBeat(slug, candleOpen, 'polymarket-chainlink-candles');
-            _poly5mPriceToBeatCache[slug] = { value: locked?.price ?? candleOpen, fetchedAt: Date.now() };
-            return locked?.price ?? candleOpen;
-          }
-        } catch (_) {}
-
-        // SECONDARY: Polymarket event page dehydrated state
-        try {
-          const html = await textFetch(`https://polymarket.com/event/${encodeURIComponent(slug)}`, {
-            headers: {
-              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151 Safari/537.36',
-              'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-              'Accept-Language': 'en-US,en;q=0.9',
-            },
-          });
-          const pmOpen = toPositiveFiniteNumber(_parsePolymarketPriceToBeat(html, slug));
-          if (pmOpen != null && pmOpen > 0) {
-            const locked = _lockPolymarketPriceToBeat(slug, pmOpen, 'polymarket-event-page');
-            _poly5mPriceToBeatCache[slug] = { value: locked?.price ?? pmOpen, fetchedAt: Date.now() };
-            return locked?.price ?? pmOpen;
-          }
-        } catch (e) {
-          console.warn(`[Poly5M-PTB] Polymarket openPrice lookup failed for ${slug}:`, e?.message || e);
-        }
-
-        // TERTIARY FALLBACK: Only at the exact open boundary (<= 15 seconds into window)
-        const secondsSinceStart = (Date.now() / 1000) - startSec;
-        if (secondsSinceStart >= 0 && secondsSinceStart <= 15) {
-          const rtdsFallback = _getFreshRtdsTwap(sym, 15_000);
-          const fallbackPrice = toPositiveFiniteNumber(rtdsFallback?.price);
-          if (fallbackPrice != null && fallbackPrice > 0) {
-            const locked = _lockPolymarketPriceToBeat(slug, fallbackPrice, 'chainlink-open-fallback');
-            _poly5mPriceToBeatCache[slug] = { value: locked?.price ?? fallbackPrice, fetchedAt: Date.now() };
-            return locked?.price ?? fallbackPrice;
-          }
-        }
-      }
-    }
-
+    // Sourced solely from Polymarket contract event page
     try {
       const html = await textFetch(`https://polymarket.com/event/${encodeURIComponent(slug)}`, {
         headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151 Safari/537.36',
           'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
           'Accept-Language': 'en-US,en;q=0.9',
-        }
+        },
       });
-      const value = _parsePolymarketPriceToBeat(html, slug);
-      if (value != null && value > 0) {
-        const locked = _lockPolymarketPriceToBeat(slug, value, 'polymarket-event-page');
-        _poly5mPriceToBeatCache[slug] = { value: locked?.price ?? value, fetchedAt: Date.now() };
-        return locked?.price ?? value;
+      const pmOpen = toPositiveFiniteNumber(_parsePolymarketPriceToBeat(html, slug));
+      if (pmOpen != null && pmOpen > 0) {
+        const locked = _lockPolymarketPriceToBeat(slug, pmOpen, 'polymarket-contract');
+        _poly5mPriceToBeatCache[slug] = { value: locked?.price ?? pmOpen, fetchedAt: Date.now() };
+        return locked?.price ?? pmOpen;
       }
-    } catch (err) {
-      console.warn(`[PredictionMarkets] Poly5M price-to-beat fetch failed for ${slug}:`, err?.message || err);
+    } catch (e) {
+      console.warn(`[Poly5M-PTB] Polymarket contract open lookup failed for ${slug}:`, e?.message || e);
     }
+
     return null;
   }
 
@@ -2380,62 +2336,37 @@
         const isImmediateNext = ts === windowTs + 300;
         const shouldResolvePTB = !isFuture || isImmediateNext;
 
-        // 0. CANONICAL CONTRACT BENCHMARK: Polymarket Chainlink 60s TWAP Candle Open (Absolute Truth)
+        // 1. Direct Polymarket Contract Benchmark posted on Polygon / Polymarket metadata
         if (priceToBeatNum == null && shouldResolvePTB) {
-          try {
-            const candleStrike = await fetchPolymarketChainlinkCandleOpen(sym, '5m', ts, POLY_TWAP_LOOKBACK_SEC, false);
-            if (candleStrike != null && candleStrike > 0) {
-              priceToBeatNum = candleStrike;
-              priceToBeatSource = PRIMARY_LOCK_SOURCE;
-            }
-          } catch (_) {}
-        }
-
-        // 1. Direct Gamma metadata (if candles not available)
-        if (priceToBeatNum == null) {
-          if (Number.isFinite(m.priceToBeat) && m.priceToBeat > 0) {
-            priceToBeatNum = m.priceToBeat;
+          const directContractStrike = toPositiveFiniteNumber(
+            m.eventMetadata?.priceToBeat
+            ?? m.eventMetadata?.price_to_beat
+            ?? m.priceToBeat
+            ?? m.price_to_beat
+            ?? m.targetPrice
+            ?? m.target_price
+            ?? m.strikePrice
+          );
+          if (directContractStrike != null && directContractStrike > 0) {
+            priceToBeatNum = directContractStrike;
             priceToBeatSource = 'gamma-market';
-          } else if (m.eventMetadata && Number.isFinite(m.eventMetadata.priceToBeat)) {
-            priceToBeatNum = m.eventMetadata.priceToBeat;
-            priceToBeatSource = 'gamma-event-metadata';
-          } else if (m.price_to_beat && Number.isFinite(m.price_to_beat)) {
-            priceToBeatNum = m.price_to_beat;
-            priceToBeatSource = 'gamma-price-to-beat';
           }
         }
 
-        const startMs = startDate ? new Date(startDate).getTime() : ts * 1000;
-        const [cryptoWindow, rtds] = await Promise.all([
-          fetchPolymarketCryptoWindowPrice(sym, startMs).catch(() => null),
-          fetchPolymarketRtdsSnapshot(sym, startMs).catch(() => null),
-        ]);
-
-        // 2. Event page / candle fetch
-        if (shouldResolvePTB && priceToBeatNum == null) {
-          try {
-            const scraped = await fetchPolymarketPriceToBeat(slug) || await fetchPolymarketPriceToBeat(marketSlug);
-            if (Number.isFinite(scraped) && scraped > 0) {
-              priceToBeatNum = scraped;
-              priceToBeatSource = 'polymarket-event-page';
-            }
-          } catch (_) {}
-        }
-
-        const rtdsTwap = _getFreshRtdsTwap(sym, 15_000);
-        let chainlinkCurrentPriceNum = toPositiveFiniteNumber(rtdsTwap?.price ?? cryptoWindow?.closePrice);
-        let chainlinkCurrentPriceTs = toPositiveFiniteNumber(rtdsTwap?.obsTs ?? cryptoWindow?.timestamp);
-        if (chainlinkCurrentPriceNum == null) {
-          chainlinkCurrentPriceNum = toPositiveFiniteNumber(rtds?.currentPriceNum);
-          chainlinkCurrentPriceTs = toPositiveFiniteNumber(rtds?.currentPriceTs);
-        }
-
-        // 3. Opening boundary fallback strictly from candle openPrice (NEVER inject fluctuating spot/current price)
-        if (priceToBeatNum == null && (isActiveWindow || ts === windowTs)) {
-          const openCandidate = toPositiveFiniteNumber(cryptoWindow?.openPrice);
-          if (openCandidate != null && openCandidate > 0) {
-            priceToBeatNum = openCandidate;
-            priceToBeatSource = 'chainlink-open-fallback';
+        // 2. Fetch directly from Polymarket contract event page / API
+        if (priceToBeatNum == null && shouldResolvePTB) {
+          const maxRetries = (isActiveWindow && (nowSec - windowTs <= 30)) ? 4 : 1;
+          for (let attempt = 0; attempt < maxRetries; attempt++) {
+            try {
+              const scraped = await fetchPolymarketPriceToBeat(slug) || await fetchPolymarketPriceToBeat(marketSlug);
+              if (Number.isFinite(scraped) && scraped > 0) {
+                priceToBeatNum = scraped;
+                priceToBeatSource = 'polymarket-event-page';
+                break;
+              }
+            } catch (_) {}
+            if (priceToBeatNum != null || !isActiveWindow || (nowSec - windowTs > 30)) break;
+            await new Promise(r => setTimeout(r, 600));
           }
         }
 
@@ -2452,35 +2383,24 @@
           }
         }
 
+        // Real-time data is Pyth only (There are no other feeds)
         const pythCurrent = await getFreshPythLazerPrice(sym);
-        const currentPriceNum = rtdsTwap?.price ?? pythCurrent?.price ?? chainlinkCurrentPriceNum;
-        const currentPriceTs = rtdsTwap?.obsTs ?? pythCurrent?.timestamp ?? chainlinkCurrentPriceTs;
-        const currentPriceSource = rtdsTwap ? 'polymarket-rtds-twap30' : (pythCurrent?.source || 'polymarket-chainlink');
+        const pythPriceNum = pythCurrent?.price ?? toPositiveFiniteNumber(typeof window !== 'undefined' && (window.PythBrowser?.getPrice?.(sym) || window._pythPrices?.[sym]));
+        const currentPriceNum = pythPriceNum ?? null;
+        const currentPriceTs = pythCurrent?.timestamp ?? (typeof window !== 'undefined' && window._pythPythMetadata?.[sym]?.publishTime) ?? Date.now();
+        const currentPriceSource = 'pyth';
 
-        // PTB comes exclusively from Polymarket's canonical Chainlink contract benchmark (polymarket-event-page).
-        // Never inject Pyth spot proxies for PTB to guarantee zero mid-contract changes.
-
+        // PTB comes exclusively from Polymarket's canonical Chainlink contract benchmark.
         // A five-minute contract is unavailable until its benchmark exists.
         if (priceToBeatNum == null && !isFuture && ts !== windowTs) return null;
 
         if (ts === windowTs || isImmediateNext || priceToBeatNum != null) {
-          // Every accepted source is now a Polymarket-published contract value, so
-          // anything that locks is exact by definition. Nothing else may lock.
           const ptbFidelity = priceToBeatNum == null ? 'pending' : 'exact-contract';
           console.log(`[Poly5M-PTB] ${sym} ${marketSlug} → $${priceToBeatNum ?? 'pending'} (source: ${priceToBeatSource ?? 'waiting-for-open'}) [${ptbFidelity}]`);
         }
 
-        const oracleBasisNum = pythCurrent && chainlinkCurrentPriceNum != null
-          ? pythCurrent.price - chainlinkCurrentPriceNum
-          : null;
-        const currentPriceJustification = pythCurrent
-          ? 'Pyth Lazer real-time price compared with Polymarket Chainlink opening PTB; settlement remains Chainlink.'
-          : 'Polymarket Chainlink current price fallback; Pyth Lazer was unavailable or stale.';
+        const currentPriceJustification = 'Pyth real-time spot price compared with Polymarket contract opening PTB.';
 
-        // Re-lock if we got a good PTB from Polymarket sources for this window.
-        // PTB for the exact contract must come from the slug's Polymarket page (scrape = truth)
-        // or a value locked at the precise open time of the window (boundary clock snapshot).
-        // Never inject a live price observed later in the window.
         if (priceToBeatNum != null && !isFuture) {
           const locked = _lockPolymarketPriceToBeat(marketSlug, priceToBeatNum, priceToBeatSource);
           if (locked) {
@@ -2496,11 +2416,25 @@
         const liveDirection = hasLiveComparison
           ? (priceDeltaNum >= 0 ? 'UP' : 'DOWN')
           : null;
+
+        const cachedCandle = _getCachedChainlinkCandle(sym, '5m', ts, POLY_TWAP_LOOKBACK_SEC);
+        const chainlinkCurrentPriceNum = toPositiveFiniteNumber(cachedCandle?.close);
+        const chainlinkCurrentPriceTs = cachedCandle?.time ? cachedCandle.time * 1000 : null;
+        const oracleBasisNum = (pythCurrent && chainlinkCurrentPriceNum != null) ? pythCurrent.price - chainlinkCurrentPriceNum : null;
+
         const hasSettlementComparison = chainlinkCurrentPriceNum != null && Number.isFinite(priceToBeatNum) && priceToBeatNum > 0;
         const settlementPriceDeltaNum = hasSettlementComparison ? chainlinkCurrentPriceNum - priceToBeatNum : null;
         const settlementLiveDirection = hasSettlementComparison
           ? (settlementPriceDeltaNum >= 0 ? 'UP' : 'DOWN')
           : null;
+
+        const clobTokenIds = _polyClobTokenIds(m);
+        const conditionId = m.conditionId || m.condition_id || null;
+        const questionID = m.questionID || m.question_id || null;
+        const yesTokenId = m.yesTokenId || clobTokenIds[_polyOutcomeIndex(m, 'up', 0)] || clobTokenIds[0] || null;
+        const noTokenId = m.noTokenId || clobTokenIds[_polyOutcomeIndex(m, 'down', 1)] || clobTokenIds[1] || null;
+        const marketId = m.marketId || m.id || null;
+        const eventId = m.eventId || m.events?.[0]?.id || m._eventFallback?.id || null;
 
         return {
           ts,
@@ -2512,6 +2446,15 @@
           volume,
           title,
           marketSlug,
+          conditionId,
+          questionID,
+          questionId: questionID,
+          clobTokenIds,
+          yesTokenId,
+          noTokenId,
+          marketId,
+          eventId,
+          eventMetadata: m.eventMetadata || null,
           endDate,
           startDate,
           priceToBeat,
@@ -2563,8 +2506,19 @@
       vol24h: r.volume,
       endDate: r.endDate,
       slug: r.marketSlug,
+      conditionId: r.conditionId,
+      questionID: r.questionID,
+      questionId: r.questionID,
+      clobTokenIds: r.clobTokenIds,
+      yesTokenId: r.yesTokenId,
+      noTokenId: r.noTokenId,
+      marketId: r.marketId,
+      eventId: r.eventId,
+      eventMetadata: r.eventMetadata,
       targetPrice: r.priceToBeat,
       targetPriceNum: r.priceToBeatNum,
+      priceToBeat: r.priceToBeat,
+      priceToBeatNum: r.priceToBeatNum,
       priceToBeatSource: r.priceToBeatSource,
       currentPriceNum: r.currentPriceNum,
       currentPriceSource: r.currentPriceSource,
@@ -2590,6 +2544,15 @@
       ticker: primary.marketSlug,
       contractSlug: primary.marketSlug,
       contractTicker: primary.marketSlug,
+      conditionId: primary.conditionId,
+      questionID: primary.questionID,
+      questionId: primary.questionID,
+      clobTokenIds: primary.clobTokenIds,
+      yesTokenId: primary.yesTokenId,
+      noTokenId: primary.noTokenId,
+      marketId: primary.marketId,
+      eventId: primary.eventId,
+      eventMetadata: primary.eventMetadata,
       closeTime: primary.endDate,
       endDate: primary.endDate,
       startDate: primary.startDate,
@@ -2979,48 +2942,30 @@ function polymarketSentiment(markets, sym) {
         priceToBeatNum = existingLock.price;
         priceToBeatSource = existingLock.source;
       } else {
-        // 0. CANONICAL CONTRACT BENCHMARK: Polymarket Chainlink 60s TWAP Candle Open (Absolute Truth)
-        try {
-          const candleStrike = await fetchPolymarketChainlinkCandleOpen(sym, '15m', windowTs, POLY_TWAP_LOOKBACK_SEC, false);
-          if (candleStrike != null && candleStrike > 0) {
-            priceToBeatNum = candleStrike;
-            priceToBeatSource = PRIMARY_LOCK_SOURCE;
-          }
-        } catch (_) {}
-
-        // 1. Direct Gamma metadata
-        if (priceToBeatNum == null) {
-          if (Number.isFinite(m.priceToBeat) && m.priceToBeat > 0) {
-            priceToBeatNum = m.priceToBeat;
-            priceToBeatSource = 'gamma-market';
-          } else if (m.eventMetadata && Number.isFinite(m.eventMetadata.priceToBeat)) {
-            priceToBeatNum = m.eventMetadata.priceToBeat;
-            priceToBeatSource = 'gamma-event-metadata';
-          } else if (m.price_to_beat && Number.isFinite(m.price_to_beat)) {
-            priceToBeatNum = m.price_to_beat;
-            priceToBeatSource = 'gamma-price-to-beat';
-          }
+        // 1. Direct Polymarket Contract Benchmark posted on metadata
+        const directContractStrike = toPositiveFiniteNumber(
+          m.eventMetadata?.priceToBeat
+          ?? m.eventMetadata?.price_to_beat
+          ?? m.priceToBeat
+          ?? m.price_to_beat
+          ?? m.targetPrice
+          ?? m.target_price
+          ?? m.strikePrice
+        );
+        if (directContractStrike != null && directContractStrike > 0) {
+          priceToBeatNum = directContractStrike;
+          priceToBeatSource = 'polymarket-contract';
         }
 
-        // 2. Scrape event page
+        // 2. Direct Polymarket contract event page
         if (priceToBeatNum == null) {
           try {
             const scraped = await fetchPolymarketPriceToBeat(marketSlug);
             if (Number.isFinite(scraped) && scraped > 0) {
               priceToBeatNum = scraped;
-              priceToBeatSource = 'polymarket-event-page';
+              priceToBeatSource = 'polymarket-contract';
             }
           } catch (_) {}
-        }
-
-        // 3. Zero-delay fallback from RTDS / live TWAP
-        if (priceToBeatNum == null) {
-          const rtdsFallback = _getFreshRtdsTwap(sym, 30_000);
-          const fallbackPrice = toPositiveFiniteNumber(rtdsFallback?.price);
-          if (fallbackPrice != null && fallbackPrice > 0) {
-            priceToBeatNum = fallbackPrice;
-            priceToBeatSource = 'chainlink-open-fallback';
-          }
         }
 
         if (priceToBeatNum != null) {
@@ -3034,11 +2979,34 @@ function polymarketSentiment(markets, sym) {
 
       console.log(`[Poly15M-PTB] ${sym} ${marketSlug} → $${priceToBeatNum ?? 'pending'} (source: ${priceToBeatSource ?? 'waiting-for-open'})`);
 
+      const clobTokenIds = _polyClobTokenIds(m);
+      const conditionId = m.conditionId || m.condition_id || null;
+      const questionID = m.questionID || m.question_id || null;
+      const yesTokenId = m.yesTokenId || clobTokenIds[_polyOutcomeIndex(m, 'up', 0)] || clobTokenIds[0] || null;
+      const noTokenId = m.noTokenId || clobTokenIds[_polyOutcomeIndex(m, 'down', 1)] || clobTokenIds[1] || null;
+      const marketId = m.marketId || m.id || null;
+      const eventId = m.eventId || m.events?.[0]?.id || m._eventFallback?.id || null;
+      const pythCurrent = await getFreshPythLazerPrice(sym);
+      const pythPriceNum = pythCurrent?.price ?? toPositiveFiniteNumber(typeof window !== 'undefined' && (window.PythBrowser?.getPrice?.(sym) || window._pythPrices?.[sym]));
+      const currentPriceNum = pythPriceNum ?? null;
+      const hasLiveComparison = currentPriceNum != null && Number.isFinite(priceToBeatNum) && priceToBeatNum > 0;
+      const priceDeltaNum = hasLiveComparison ? currentPriceNum - priceToBeatNum : null;
+      const liveDirection = hasLiveComparison ? (priceDeltaNum >= 0 ? 'UP' : 'DOWN') : null;
+
       const data = {
         slug: marketSlug,
         ticker: marketSlug,
         contractSlug: marketSlug,
         contractTicker: marketSlug,
+        conditionId,
+        questionID,
+        questionId: questionID,
+        clobTokenIds,
+        yesTokenId,
+        noTokenId,
+        marketId,
+        eventId,
+        eventMetadata: m.eventMetadata || null,
         title,
         probability: liveUpProb,
         gammaProbability: upProb,
@@ -3048,6 +3016,10 @@ function polymarketSentiment(markets, sym) {
         priceToBeatSource,
         targetPriceNum: priceToBeatNum,
         targetPrice: _formatPolyPriceToBeat(priceToBeatNum, sym),
+        currentPriceNum,
+        currentPrice: _formatPolyPriceToBeat(currentPriceNum, sym),
+        priceDeltaNum,
+        liveDirection,
         startDate,
         closeTime: endDate,
         volume,
@@ -3236,9 +3208,9 @@ function polymarketSentiment(markets, sym) {
                   currentPrice: liveOpenTwap ? _formatPolyPriceToBeat(liveOpenTwap, sym) : null,
                   currentPriceNum: liveOpenTwap || null,
                   currentPriceTs: _rtdsLiveTwap[sym]?.obsTs || Date.now(),
-                  currentPriceSource: liveOpenTwap ? 'polymarket-rtds-twap30' : null,
+                  currentPriceSource: liveOpenTwap ? 'polymarket-rtds-twap60' : null,
                   currentPriceAgeMs: 0,
-                  currentPriceJustification: 'Opening Chainlink 30s TWAP is spot context only. PTB stays pending until Polymarket publishes contract price-to-beat.',
+                  currentPriceJustification: 'Opening Chainlink 60s TWAP is spot context only. PTB stays pending until Polymarket publishes contract price-to-beat.',
                   markets: coin.poly5mMkts.map(m => ({
                     ...m,
                     isFuture: m.ts > currentBoundary
@@ -3356,6 +3328,7 @@ function polymarketSentiment(markets, sym) {
   if (window.__WE_TEST__) {
     window.__PredictionMarketsTestHooks = {
       fetchPolymarket5MBySlug,
+      fetchPolymarketPriceToBeat,
       _coercePolyMarketFromEvent,
       _formatPolyPriceToBeat,
       _isTradablePoly5M,

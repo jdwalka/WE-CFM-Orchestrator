@@ -162,7 +162,18 @@
     const live = String(packet.liveDirection || packet.pathDir || '').toUpperCase();
 
     if (spot == null || spot <= 0 || ptb == null || ptb <= 0 || yes == null || mid == null) {
-      return holdContract(m, ['Missing required fields (spot, priceToBeatNum, yesProb, mid)'], 'HOLD_FLAT. Missing or invalid spot / PTB from oracle feeds.');
+      const missing = [];
+      if (!spot || spot <= 0) missing.push('spot');
+      if (!ptb || ptb <= 0) missing.push('priceToBeatNum (Awaiting immutable Polymarket contract push)');
+      if (yes == null) missing.push('yesProb');
+      if (mid == null) missing.push('mid');
+      return holdContract(
+        m,
+        missing,
+        (!ptb || ptb <= 0)
+          ? 'HOLD_FLAT. Awaiting immutable Polymarket Up/Down contract PTB push.'
+          : 'HOLD_FLAT. Missing required oracle feeds.'
+      );
     }
 
     const delta = spot - ptb;
@@ -187,6 +198,8 @@
 
     let confidence = 0.45;
     if (path) confidence += 0.06;
+    if (Math.abs(deltaBps) >= 3) confidence += 0.06;
+    if (Math.abs(imb) >= 0.1) confidence += 0.05;
 
     // ── Graviharmonic modulation ──────────────────────────────────────────
     const gh = packet.graviharmonic;

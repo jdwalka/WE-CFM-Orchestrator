@@ -213,28 +213,50 @@ async function fetchPythSpotDirect(coin) {
 async function fetchPolymarketPtbDirect(sym, horizon = '5m') {
   try {
     const symbol = String(sym || 'BTC').toUpperCase();
-    const interval = horizon === '15m' ? '15m' : '5m';
     const intervalSec = horizon === '15m' ? 900 : 300;
     const nowSec = Math.floor(Date.now() / 1000);
     const boundarySec = nowSec - (nowSec % intervalSec);
-    const url = `https://polymarket.com/api/chainlink-candles?symbol=${encodeURIComponent(symbol)}&interval=${interval}&limit=30&endTime=${Date.now()}&twapEnabled=true&twapLookbackSeconds=60`;
-    const resp = await fetch(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151 Safari/537.36',
-        'Accept': 'application/json',
+    const prefixMap = { BTC: 'btc', ETH: 'eth', SOL: 'sol', XRP: 'xrp', DOGE: 'doge', BNB: 'bnb', HYPE: 'hype' };
+    const prefix = prefixMap[symbol] || symbol.toLowerCase();
+    const slug = `${prefix}-updown-${horizon}-${boundarySec}`;
+
+    // 1. Direct Polymarket Gamma market contract metadata
+    try {
+      const resp = await fetch(`https://gamma-api.polymarket.com/markets?slug=${encodeURIComponent(slug)}`, {
+        signal: AbortSignal.timeout(4000),
+      });
+      if (resp.ok) {
+        const list = await resp.json();
+        const m = Array.isArray(list) ? list[0] : list;
+        const strike = Number(
+          m?.eventMetadata?.priceToBeat ??
+          m?.eventMetadata?.price_to_beat ??
+          m?.priceToBeat ??
+          m?.price_to_beat ??
+          m?.targetPrice
+        );
+        if (Number.isFinite(strike) && strike > 0) return strike;
       }
-    });
-    if (!resp.ok) return null;
-    const data = await resp.json();
-    const candles = Array.isArray(data?.candles) ? data.candles : [];
-    const candle = candles.find(c => c.time === boundarySec);
-    if (candle && Number.isFinite(candle.open) && candle.open > 0) {
-      return candle.open;
-    }
-    const prevCandle = candles.find(c => c.time === boundarySec - intervalSec);
-    if (prevCandle && Number.isFinite(prevCandle.close) && prevCandle.close > 0) {
-      return prevCandle.close;
-    }
+    } catch (_) {}
+
+    // 2. Direct Polymarket contract event page
+    try {
+      const resp = await fetch(`https://polymarket.com/event/${encodeURIComponent(slug)}`, {
+        signal: AbortSignal.timeout(4000),
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151 Safari/537.36',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        },
+      });
+      if (resp.ok) {
+        const html = await resp.text();
+        const fwd = [...html.matchAll(/\\"openPrice\\":\s*([0-9.]+)/g), ...html.matchAll(/"openPrice":\s*([0-9.]+)/g)];
+        if (fwd.length > 0) {
+          const val = Number(fwd[0][1]);
+          if (Number.isFinite(val) && val > 0) return val;
+        }
+      }
+    } catch (_) {}
   } catch (_) {}
   return null;
 }
@@ -260,6 +282,25 @@ async function deskInfer(packet, mode, options = {}) {
       packet.priceToBeatNum = directPtb;
       packet.priceToBeatSource = 'polymarket-chainlink-candles-direct';
     }
+  }
+
+  // If PTB is still missing, PAUSE AND WAIT: do not fire model inference without immutable Polymarket PTB
+  if (!packet.priceToBeatNum || packet.priceToBeatNum <= 0) {
+    const local = Desk.inferLocal(packet, m);
+    local.notes = 'HOLD_FLAT. Awaiting immutable Polymarket Up/Down contract PTB push.';
+    local.warnings = [...(local.warnings || []), 'Awaiting immutable Polymarket PTB'];
+    local._meta = {
+      model: Desk.selectModel(packet, m),
+      source: 'waiting-for-polymarket-ptb',
+      latency: 0,
+      waitingForPtb: true,
+    };
+    return {
+      ok: true,
+      contract: local,
+      waitingForPtb: true,
+      status: 'waiting_for_polymarket_ptb',
+    };
   }
 
   // Ensure deltaVsPtb and liveDirection are precisely computed if both spot and PTB exist

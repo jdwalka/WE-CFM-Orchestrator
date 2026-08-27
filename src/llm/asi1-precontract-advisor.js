@@ -28,8 +28,8 @@
   const MIN_SECONDS_SINCE_OPEN = Number(window.__ASI1_MIN_SEC_SINCE_OPEN ?? 12); // 5-15s window
   const WINDOW_SECONDS = { '5m': 300, '15m': 900 };
 
-  /** @type {Record<string, object>} key = `${SYM}:5m` | `${SYM}:15m` */
-  const _briefs = {};
+  /** @type {Map<string, object>} key = `${SYM}:5m` | `${SYM}:15m` */
+  const _briefs = new Map();
   let _timer = null;
   let _running = false;
 
@@ -39,7 +39,7 @@
     let n = 0;
     for (const [k, b] of Object.entries(restored)) {
       if (b && b.sym) {
-        _briefs[k] = b;
+        _briefs.set(k, b);
         n++;
       }
     }
@@ -48,7 +48,7 @@
 
   function _persistBriefs() {
     try {
-      window.InferenceStateStore?.saveBriefs?.(_briefs);
+      window.InferenceStateStore?.saveBriefs?.(Object.fromEntries(_briefs.entries()));
     } catch (_) { /* */ }
   }
 
@@ -113,11 +113,6 @@
     const p5 = coin.poly5m || null;
     let m = null;
     let horizon = '15m';
-    // A specific preferHorizon means this window or nothing — never silently
-    // substitute the other horizon (see the matching fix + comment in
-    // oracle-snapshot.js's buildOraclePacket for the failure this caused:
-    // 5m requests coming back tagged '15m' and never populating the 5m
-    // brief slot). Only cross-substitute when no horizon was requested.
     if (preferHorizon === '5m') {
       if (p5?.slug) { m = p5; horizon = '5m'; }
     } else if (preferHorizon === '15m') {
@@ -131,10 +126,13 @@
     }
     if (!m || !m.slug) return null;
 
-    // Spot = Pyth with immediate live prediction/candle fallback so AI is never starved of spot price
+    const symUpper = String(sym).toUpperCase();
+    const pythObj = window._pythPrices && typeof window._pythPrices === 'object' ? window._pythPrices : null;
+    const pythPrice = pythObj && Object.prototype.hasOwnProperty.call(pythObj, symUpper) ? pythObj[symUpper] : null;
+
     const spot = Number(
       window.PythBrowser?.getPrice?.(sym)
-      || window._pythPrices?.[String(sym).toUpperCase()]
+      || pythPrice
       || window.PredictionEngine?.get?.(sym)?.price
       || window.candleCache?.[sym]?.ticker?.usd
       || window.candleCache?.[sym]?.candles?.[window.candleCache?.[sym]?.candles?.length - 1]?.c
@@ -143,7 +141,6 @@
     const rawPtb = Number(m.priceToBeatNum || m.targetPriceNum || 0);
     const ptbSource = m.priceToBeatSource || m.ptbSource || null;
     const ptbOk = Number.isFinite(rawPtb) && rawPtb > 0 && isCanonicalPtbSource(ptbSource);
-    // Coin decimals: BTC/SOL=2, XRP=4, DOGE=6 — never pass float trails to AI
     const roundPtb = (n) => {
       if (!Number.isFinite(n) || n <= 0) return null;
       const d = /^DOGE$/i.test(sym) ? 6 : /^XRP$/i.test(sym) ? 4 : 2;
@@ -206,14 +203,12 @@
   function buildSnapshot(sym, ctx) {
     const pack = resolvePredPack(sym);
 
-    // Prefer full oracle packet for LLM (includes strict PTB + Pyth)
     try {
       if (window.OracleSnapshot?.buildLlmSnapshot) {
         const snap = window.OracleSnapshot.buildLlmSnapshot(sym, ctx.horizon, { pred: pack });
         snap.preContract = true;
         snap.preferAsi1 = true;
         snap.rangePrediction = true;
-        // Force horizon to the market we actually selected
         if (ctx.horizon === '5m') {
           snap.horizon = '5m';
           snap.horizonMinutes = 5;
@@ -224,7 +219,6 @@
           snap.horizonMinutes = 15;
           snap.rangeHorizonMinutes = 15;
         }
-        // Overlay live CLOB fields from ctx
         const block = {
           slug: ctx.slug,
           live: true,
@@ -325,10 +319,10 @@
   function resolvePredPack(sym) {
     let pred = null;
     try {
+      const predStore = window.predictions || window._predictions || null;
       pred = window.PredictionEngine?.get?.(sym)
         || window.PredictionEngine?.getPrediction?.(sym)
-        || window.predictions?.[sym]
-        || window._predictions?.[sym]
+        || (predStore && Object.prototype.hasOwnProperty.call(predStore, sym) ? predStore[sym] : null)
         || null;
     } catch (_) { pred = null; }
     if (!pred) return null;
@@ -340,14 +334,13 @@
       : (Number.isFinite(score)
         ? (score > 0.05 ? 'UP' : score < -0.05 ? 'DOWN' : null)
         : null);
-    // Trim bulky indicator objects to labels the prompt can use
     let indicators = null;
     try {
       const raw = pred.indicators || pred.diagnostics?.components || null;
       if (raw && typeof raw === 'object') {
         indicators = {};
         for (const k of Object.keys(raw).slice(0, 16)) {
-          const row = raw[k];
+          const row = Object.prototype.hasOwnProperty.call(raw, k) ? raw[k] : null;
           if (row && typeof row === 'object') {
             indicators[k] = {
               label: row.label || null,
@@ -373,20 +366,15 @@
     const ctx = buildMarketContext(sym, preferHorizon);
     if (!ctx) return null;
 
+    const key = briefKey(sym, ctx.horizon);
     const maxTtc = ctx.horizon === '5m' ? MAX_TTC_5M : MAX_TTC_15M;
     if (ctx.secondsToClose != null && ctx.secondsToClose < MIN_TTC_FIRE) {
-      return _briefs[briefKey(sym, ctx.horizon)] || null;
+      return _briefs.get(key) || null;
     }
     if (ctx.secondsToClose != null && ctx.secondsToClose > maxTtc) {
-      return _briefs[briefKey(sym, ctx.horizon)] || null;
+      return _briefs.get(key) || null;
     }
-    // Correctness gate, not a timer: verify ctx.slug's own encoded window boundary
-    // matches the boundary Date.now() says is actually current right now. A stale
-    // (already-rolled-over) market context has a real, canonically-sourced PTB —
-    // it's just for a window that no longer exists — so the trusted-source check
-    // in buildMarketContext can't catch this on its own. No time budget: keep
-    // skipping and retrying every cycle for as long as it takes, rather than firing
-    // on a guess. Wrong info is worse than no info.
+
     const windowSec = WINDOW_SECONDS[ctx.horizon];
     if (ctx.slug && windowSec) {
       const slugMatch = ctx.slug.match(/-(\d+)$/);
@@ -399,17 +387,23 @@
           `(slug boundary ${slugBoundary}, expected ${expectedBoundary}) — ` +
           `skipping fire rather than risk a wrong PTB, will retry next cycle`
         );
-        return _briefs[briefKey(sym, ctx.horizon)] || null;
+        return _briefs.get(key) || null;
       }
     }
-    // Belt-and-suspenders: also require a minimum settle time past open even once
-    // the boundary matches, since the PTB lock write can trail the window-open
-    // instant by a second or two.
+
     if (ctx.secondsToClose != null && windowSec) {
       const secondsSinceOpen = windowSec - ctx.secondsToClose;
       if (secondsSinceOpen >= 0 && secondsSinceOpen < MIN_SECONDS_SINCE_OPEN) {
-        return _briefs[briefKey(sym, ctx.horizon)] || null;
+        return _briefs.get(key) || null;
       }
+    }
+
+    // Pause and wait: never fire ASI1 pre-contract advisor until Polymarket has pushed the immutable PTB
+    if (!ctx.priceToBeatNum || ctx.priceToBeatNum <= 0) {
+      console.info(
+        `[ASI1 PreContract] ${sym} ${ctx.horizon} awaiting immutable Polymarket PTB push — pausing fire until contract is published`
+      );
+      return _briefs.get(key) || null;
     }
 
     const invoke = window.electron?.invoke;
@@ -420,7 +414,6 @@
       const res = await invoke('llm:analyzeSnapshot', snapshot);
       if (!res?.success || !res.output) return null;
       const o = res.output;
-      // Client-side float scrub (BTC/SOL 2dp, XRP 4dp) even if main process is stale
       const scrubLocal = (t) => {
         let s = String(t || '');
         s = s.replace(/\$\s*([0-9]{1,3}(?:,[0-9]{3})*|[0-9]+)\.([0-9]{3,})/g, (full, intP, frac) => {
@@ -453,7 +446,6 @@
         market: ctx,
         degraded: !!res.degraded,
       };
-      // Source-of-truth: raw poly PTB/CLOB/book can nullify wrong AI mid-contract
       if (window.InferenceTruthGuard?.gateBrief) {
         const pack = resolvePredPack(sym);
         brief = window.InferenceTruthGuard.gateBrief(brief, {
@@ -462,7 +454,7 @@
           modelScore: pack?.score,
         });
       }
-      _briefs[briefKey(sym, ctx.horizon)] = brief;
+      _briefs.set(key, brief);
       _persistBriefs();
       try {
         window.dispatchEvent(new CustomEvent('asi1:precontract', { detail: brief }));
@@ -483,23 +475,16 @@
   /** Re-apply truth guard on cached briefs without a new LLM call (cheap mid-contract check). */
   function revalidateCached() {
     let changed = false;
-    for (const key of Object.keys(_briefs)) {
-      const brief = _briefs[key];
+    for (const [key, brief] of Array.from(_briefs.entries())) {
       if (!brief?.sym) continue;
 
-      // Purge purely off the clock — not a re-fetched market context. PTB locks
-      // are immutable per-window by design (_lockPolymarketPriceToBeat), so a
-      // brief's own window boundary, once known, never changes; whether it's
-      // expired is just "has now passed boundary + windowSec," nothing more.
-      // This runs even if buildMarketContext is unavailable/stuck, so a wedged
-      // upstream fetch can't keep a stale brief on screen past its own window.
       const windowSec = WINDOW_SECONDS[brief.horizon];
       const slugMatch = String(brief.market?.slug || brief.slug || '').match(/-(\d+)$/);
       const briefBoundary = slugMatch ? Number(slugMatch[1]) : null;
       if (briefBoundary != null && windowSec) {
         const nowSec = Math.floor(Date.now() / 1000);
         if (nowSec >= briefBoundary + windowSec) {
-          delete _briefs[key];
+          _briefs.delete(key);
           changed = true;
           try {
             window.dispatchEvent(new CustomEvent('asi1:precontract', { detail: { sym: brief.sym, horizon: brief.horizon, purged: true } }));
@@ -512,11 +497,9 @@
       const ctx = buildMarketContext(brief.sym, brief.horizon);
       if (!ctx) continue;
 
-      // refresh market snapshot on brief
       brief.market = ctx;
       if (!window.InferenceTruthGuard?.gateBrief) continue;
       const pack = resolvePredPack(brief.sym);
-      // Gate against original AI call so we can flip nullify on/off as path changes
       const rawCall = brief.aiCallOriginal || brief.call;
       const gated = window.InferenceTruthGuard.gateBrief(
         { ...brief, call: rawCall, notes: brief.primaryRationale || brief.notes },
@@ -526,15 +509,16 @@
       const nowNull = !!gated.nullified;
       if (wasNull !== nowNull || brief.call !== gated.call) {
         changed = true;
-        _briefs[key] = { ...gated, primaryRationale: brief.primaryRationale || brief.notes };
+        const updated = { ...gated, primaryRationale: brief.primaryRationale || brief.notes };
+        _briefs.set(key, updated);
         try {
-          window.dispatchEvent(new CustomEvent('asi1:precontract', { detail: _briefs[key] }));
+          window.dispatchEvent(new CustomEvent('asi1:precontract', { detail: updated }));
         } catch (_) { /* */ }
         if (nowNull) {
           console.warn(`[ASI1 PreContract] mid-contract nullify ${brief.sym} ${brief.horizon}: ${gated.truthReason}`);
         }
       } else {
-        _briefs[key] = { ...brief, ...gated, market: ctx };
+        _briefs.set(key, { ...brief, ...gated, market: ctx });
       }
     }
     if (changed) _persistBriefs();
@@ -545,7 +529,6 @@
     if (_running) return;
     _running = true;
     try {
-      // Always re-check raw truth first (instant cut-off if AI goes wrong mid-window)
       revalidateCached();
       for (const sym of COINS) {
         await fireOne(sym, '5m');
@@ -562,11 +545,10 @@
   function get(sym, horizon) {
     const s = String(sym || '').toUpperCase();
     if (horizon === '5m' || horizon === '15m') {
-      return _briefs[briefKey(s, horizon)] || null;
+      return _briefs.get(briefKey(s, horizon)) || null;
     }
-    // Best available: freshest, prefer 15m if both recent
-    const a = _briefs[briefKey(s, '15m')];
-    const b = _briefs[briefKey(s, '5m')];
+    const a = _briefs.get(briefKey(s, '15m'));
+    const b = _briefs.get(briefKey(s, '5m'));
     if (a && b) return (a.ts >= b.ts - 30_000) ? a : b;
     return a || b || null;
   }
@@ -607,13 +589,13 @@
       ">
         <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:4px;">
           <span style="font-size:9px;font-weight:800;letter-spacing:0.06em;color:#a5b4fc;">✨ ${esc(provider)} ${esc(brief.horizon.toUpperCase())}</span>
-          ${call ? `<span style="font-size:11px;font-weight:800;color:${callColor};">CALL ${esc(call)}</span>` : ''}
+          ${call ? `<span style="font-size:11px;font-weight:800;color:${esc(callColor)};">CALL ${esc(call)}</span>` : ''}
           ${brief.aiCallOriginal && brief.nullified ? `<span style="font-size:9px;color:#fca5a5;text-decoration:line-through;">was ${esc(brief.aiCallOriginal)}</span>` : ''}
-          ${confPct ? `<span style="font-size:9px;color:#c7d2fe;">${confPct}%</span>` : ''}
+          ${confPct ? `<span style="font-size:9px;color:#c7d2fe;">${esc(confPct)}%</span>` : ''}
           ${truthBadge}
           ${action ? `<span style="font-size:8px;padding:1px 6px;border-radius:999px;background:rgba(255,193,7,0.12);color:#ffe082;">${esc(action)}</span>` : ''}
           ${sizeHint ? `<span style="font-size:8px;color:var(--color-text-faint);">size:${esc(sizeHint)}</span>` : ''}
-          ${ttc != null ? `<span style="font-size:8px;color:var(--color-text-faint);margin-left:auto;">ttc ${Math.max(0, ttc)}s · ${ageSec}s ago</span>` : ''}
+          ${ttc != null ? `<span style="font-size:8px;color:var(--color-text-faint);margin-left:auto;">ttc ${esc(Math.max(0, ttc))}s · ${esc(ageSec)}s ago</span>` : ''}
         </div>
         <div style="font-size:11px;color:#f1f5f9;line-height:1.45;white-space:pre-wrap;">${esc(notes)}</div>
         ${invalidation ? `<div style="margin-top:4px;font-size:9px;color:#fca5a5;">Invalidation: ${esc(invalidation)}</div>` : ''}
@@ -628,7 +610,6 @@
     setTimeout(() => { tick().catch(() => {}); }, 10_000);
     _timer = setInterval(() => { tick().catch(() => {}); }, REFRESH_MS);
     if (!_revalidateTimer) {
-      // Fast mid-contract revalidation between LLM fires (every 8s)
       _revalidateTimer = setInterval(() => {
         try {
           if (revalidateCached()) {
@@ -657,11 +638,10 @@
     fireOne,
     revalidateCached,
     get,
-    getAll: () => ({ ..._briefs }),
+    getAll: () => Object.fromEntries(_briefs.entries()),
     renderStripHtml,
   };
 
-  // Re-render surfaces when a new brief lands
   window.addEventListener('asi1:precontract', () => {
     try {
       window._markets5mLastRenderTs = 0;

@@ -294,7 +294,7 @@ const net = require('net');
 const NATIVE_ROUTE_LATENCY_THRESHOLD_MS = Number(process.env.ASI1_NATIVE_LATENCY_THRESHOLD_MS || 250);
 const ROUTE_STALE_MS = 5 * 60_000;
 const ROUTE_PROBE_INTERVAL_MS = Number(process.env.ASI1_ROUTE_PROBE_INTERVAL_MS || 30_000);
-const ROUTE_PROBE_TIMEOUT_MS = 5_000;
+const ROUTE_PROBE_TIMEOUT_MS = Number(process.env.ASI1_ROUTE_PROBE_TIMEOUT_MS || 12_000);
 const routeState = {
   lastLatencyMs: null,
   lastMeasuredAt: null,

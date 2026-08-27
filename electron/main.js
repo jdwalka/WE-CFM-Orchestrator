@@ -1695,14 +1695,16 @@ async function startJsProxyFallback(port) {
   const http = require('http');
   const https = require('https');
   let socksAgent = null;
-  try {
-    const { SocksProxyAgent } = require('socks-proxy-agent');
-    socksAgent = new SocksProxyAgent(process.env.WECRYPTO_SWEDEN_SOCKS || 'socks5://127.0.0.1:18090', {
-      keepAlive: true,
-      keepAliveMsecs: 60000,
-      maxSockets: 64,
-    });
-  } catch (_) { }
+  if (process.env.WECRYPTO_SWEDEN_SOCKS) {
+    try {
+      const { SocksProxyAgent } = require('socks-proxy-agent');
+      socksAgent = new SocksProxyAgent(process.env.WECRYPTO_SWEDEN_SOCKS, {
+        keepAlive: true,
+        keepAliveMsecs: 60000,
+        maxSockets: 64,
+      });
+    } catch (_) { }
+  }
 
   if (jsProxyServer && jsProxyServer.listening) {
     return;
@@ -1751,14 +1753,6 @@ async function startJsProxyFallback(port) {
     const body = isGet ? undefined : await readBody(req);
 
     try {
-      const up = await fetch(targetUrl, { method, headers, body, signal: ctrl.signal, redirect: 'follow' });
-      clearTimeout(t);
-      if (!forward._loggedBinanceResult && String(targetUrl).includes('binance')) {
-        forward._loggedBinanceResult = true;
-        // #region agent log
-        fetch('http://127.0.0.1:7629/ingest/9b1c0a9c-43ba-46f7-b483-8aad6ef8128f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8ad9ce'},body:JSON.stringify({sessionId:'8ad9ce',runId:'post-fix',hypothesisId:'F',location:'electron/main.js:js-proxy-forward-result',message:'JS proxy binance upstream response',data:{status:up.status,usesSwedenAgent:!!agent,targetHost:(()=>{try{return new URL(targetUrl).hostname}catch(_){return null}})()},timestamp:Date.now()})}).catch(()=>{});
-        // #endregion
-      }
       const parsedUrl = new URL(targetUrl);
       const isHttps = parsedUrl.protocol === 'https:';
       const transport = isHttps ? https : http;
@@ -2019,7 +2013,8 @@ async function startProxy() {
     // Dev path: electron/ is one level down from root
     path.join(__dirname, '..', proxyBinName),
     path.join(__dirname, '..', 'we-crypto-proxy.exe'), // Windows artifact still recognized on mixed drives
-    // Linux release (cargo build --release)
+    // Release target (cargo build --release)
+    path.join(__dirname, '..', 'proxy', 'target', 'release', proxyBinName),
     path.join(__dirname, '..', 'proxy', 'target', 'release', 'we-crypto-proxy'),
     path.join(__dirname, '..', 'proxy', 'target', 'x86_64-unknown-linux-gnu', 'release', 'we-crypto-proxy'),
     // Build output path: proxy/target/x86_64-pc-windows-gnu/release/we-crypto-proxy.exe
@@ -2713,7 +2708,7 @@ Provide ultra-concise, authoritative, actionable trading intelligence. Ground al
           const ptb = await orch.fetchPolymarketPtbDirect(packet.sym, packet.horizon);
           if (ptb && ptb > 0) {
             packet.priceToBeatNum = ptb;
-            packet.priceToBeatSource = 'polymarket-chainlink-candles-direct';
+            packet.priceToBeatSource = 'polymarket-contract';
           }
         }
       }
@@ -2723,7 +2718,11 @@ Provide ultra-concise, authoritative, actionable trading intelligence. Ground al
       }
     } catch (_) {}
 
-    const userPrompt = `${prompt}\n\nLive Market Context:\n- Coin: ${packet.sym || 'BTC'}\n- Horizon: ${packet.horizon || '5m'}\n- Live Spot: $${packet.spot || 'N/A'}\n- Polymarket PTB Strike: $${packet.priceToBeatNum || 'N/A'}\n- Delta vs PTB: ${packet.deltaVsPtb >= 0 ? '+' : ''}$${packet.deltaVsPtb || 0}\n- Live Tape Direction: ${packet.liveDirection || 'NEUTRAL'}\n- Polymarket Yes Prob: ${((packet.yesProb || 0.5) * 100).toFixed(1)}%\n- Seconds to Expiry: ${packet.secondsToClose || 0}s\n- Depth Imbalance: ${((packet.depthImbalance || 0) * 100).toFixed(1)}%`;
+    const ptbDisplay = packet.priceToBeatNum > 0 ? `$${packet.priceToBeatNum}` : 'Awaiting immutable Polymarket contract push...';
+    const deltaDisplay = packet.priceToBeatNum > 0 ? `${packet.deltaVsPtb >= 0 ? '+' : ''}$${packet.deltaVsPtb || 0}` : 'Pending contract PTB';
+    const tapeDirDisplay = packet.priceToBeatNum > 0 ? (packet.liveDirection || 'NEUTRAL') : 'AWAITING_PTB';
+
+    const userPrompt = `${prompt}\n\nLive Market Context:\n- Coin: ${packet.sym || 'BTC'}\n- Horizon: ${packet.horizon || '5m'}\n- Live Spot: $${packet.spot || 'N/A'}\n- Polymarket PTB Strike: ${ptbDisplay}\n- Delta vs PTB: ${deltaDisplay}\n- Live Tape Direction: ${tapeDirDisplay}\n- Polymarket Yes Prob: ${((packet.yesProb || 0.5) * 100).toFixed(1)}%\n- Seconds to Expiry: ${packet.secondsToClose || 0}s\n- Depth Imbalance: ${((packet.depthImbalance || 0) * 100).toFixed(1)}%`;
 
     const result = await Asi1Client.chatCompletion(
       [

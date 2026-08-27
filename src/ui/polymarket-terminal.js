@@ -169,14 +169,15 @@
     const yesProb = Math.round((poly5m.probability || 0.5) * 100);
     const noProb = 100 - yesProb;
     const fmtUsd = (v) => {
-      const n = Number(v);
-      if (!Number.isFinite(n) || n <= 0) return null;
+      if (typeof v === 'string' && /^\$\s*[0-9]/.test(v)) return v.trim();
+      const raw = typeof v === 'string' ? parseFloat(v.replace(/[^0-9.-]+/g, '')) : Number(v);
+      if (!Number.isFinite(raw) || raw <= 0) return null;
       const d = /^DOGE$/i.test(_activeSymbol) ? 6 : /^XRP$/i.test(_activeSymbol) ? 4 : 2;
-      return '$' + n.toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
+      return '$' + raw.toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
     };
     const targetPrice = poly5m.targetPrice
       || fmtUsd(poly5m.targetPriceNum ?? poly5m.priceToBeatNum)
-      || 'Live PTB';
+      || 'Awaiting Contract Push…';
     const markPrice = fmtUsd(perpTicker.mark_price)
       || fmtUsd(poly5m.currentPriceNum ?? poly5m.currentPrice)
       || '$--';
@@ -282,7 +283,7 @@
           <div style="background:var(--color-surface);border:1px solid var(--color-border);border-radius:8px;padding:14px;">
             <div style="font-size:10px;color:var(--color-text-faint);text-transform:uppercase;letter-spacing:0.05em;">5M Target (PTB)</div>
             <div style="font-size:20px;font-weight:800;color:#00e5ff;margin-top:4px;">${targetPrice}</div>
-            <div style="font-size:11px;color:var(--color-text-muted);margin-top:4px;">Chainlink 30s TWAP Benchmark</div>
+            <div style="font-size:11px;color:var(--color-text-muted);margin-top:4px;">Chainlink 60s TWAP Benchmark</div>
           </div>
 
           <div style="background:var(--color-surface);border:1px solid var(--color-border);border-radius:8px;padding:14px;">

@@ -81,14 +81,23 @@ function marketForSlug(slug, options = {}) {
 
 function createHarness(options = {}) {
   const fetchedUrls = [];
+  const storage = new Map();
+  const mockStorage = {
+    getItem: (k) => (storage.has(k) ? storage.get(k) : null),
+    setItem: (k, v) => storage.set(k, String(v)),
+    removeItem: (k) => storage.delete(k),
+    clear: () => storage.clear(),
+  };
   const window = {
     DataLogger: { logPolymarket() {} },
     dispatchEvent() {},
     addEventListener() {},
+    localStorage: mockStorage,
   };
 
   const context = {
     window,
+    localStorage: mockStorage,
     console,
     URL,
     Date: createFixedDate(FIXED_MS),
@@ -171,7 +180,7 @@ function createHarness(options = {}) {
     );
   });
 
-  await test('ignores a title $ strike so the 5m PTB can come from Polymarket candles', async () => {
+  await test('ignores a title $ strike so the 5m PTB can come from Polymarket contract', async () => {
     const { fetchedUrls, predictionMarkets } = createHarness({
       titlePrices: { btc: 99999.12 },
     });
@@ -183,8 +192,8 @@ function createHarness(options = {}) {
     assert.notStrictEqual(btc.priceToBeatNum, 99999.12);
     assert.notStrictEqual(btc.priceToBeatSource, 'polymarket-title');
     assert(
-      fetchedUrls.some(url => url.startsWith('https://polymarket.com/api/chainlink-candles') && url.includes('twapLookbackSeconds=60')),
-      'missing Gamma PTB should fetch the official 60s TWAP candles'
+      fetchedUrls.some(url => url === `https://polymarket.com/event/btc-updown-5m-${WINDOW_TS}`),
+      'missing Gamma PTB should fetch the official Polymarket contract event page'
     );
   });
 
