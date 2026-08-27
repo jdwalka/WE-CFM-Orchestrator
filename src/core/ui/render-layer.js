@@ -643,8 +643,9 @@ function renderMarkets5M() {
             <span style="font-size:9px;color:var(--color-text-faint);text-transform:uppercase;letter-spacing:0.05em;">Model ${ptbAnchored ? '· This Window' : '· Lean (no PTB yet)'}</span>
             ${edgeLabel ? `<span style="font-size:9px;font-weight:600;color:${edgeColor}">${edgeLabel}</span>` : ''}
           </div>
-          <div style="font-size:11px;color:var(--color-text-faint);margin-top:2px;">
-            PTB <strong style="color:${ptbLabel ? 'var(--color-text)' : 'var(--color-text-faint)'}">${ptbLabel || 'pending'}</strong>
+          <div style="font-size:11px;color:var(--color-text-faint);margin-top:2px;display:flex;justify-content:space-between;align-items:center;">
+            <span>PTB <strong style="color:${ptbLabel ? 'var(--color-text)' : 'var(--color-text-faint)'}">${ptbLabel || 'pending'}</strong></span>
+            ${p5?.slug ? `<span style="font-size:9.5px;font-family:var(--font-mono, monospace);color:var(--color-text-muted);background:var(--color-surface-3);padding:1px 5px;border-radius:3px;">${p5.slug}</span>` : ''}
           </div>
           ${modelOdds == null ? `
             <div style="font-size:9px;color:var(--color-text-faint);margin-top:4px;">Run predictions</div>

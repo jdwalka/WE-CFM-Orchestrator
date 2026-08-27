@@ -2587,6 +2587,9 @@
       volume: primary.volume,
       title: primary.title,
       slug: primary.marketSlug,
+      ticker: primary.marketSlug,
+      contractSlug: primary.marketSlug,
+      contractTicker: primary.marketSlug,
       closeTime: primary.endDate,
       endDate: primary.endDate,
       startDate: primary.startDate,
@@ -2976,19 +2979,30 @@ function polymarketSentiment(markets, sym) {
         priceToBeatNum = existingLock.price;
         priceToBeatSource = existingLock.source;
       } else {
+        // 0. CANONICAL CONTRACT BENCHMARK: Polymarket Chainlink 60s TWAP Candle Open (Absolute Truth)
+        try {
+          const candleStrike = await fetchPolymarketChainlinkCandleOpen(sym, '15m', windowTs, POLY_TWAP_LOOKBACK_SEC, false);
+          if (candleStrike != null && candleStrike > 0) {
+            priceToBeatNum = candleStrike;
+            priceToBeatSource = PRIMARY_LOCK_SOURCE;
+          }
+        } catch (_) {}
+
         // 1. Direct Gamma metadata
-        if (Number.isFinite(m.priceToBeat) && m.priceToBeat > 0) {
-          priceToBeatNum = m.priceToBeat;
-          priceToBeatSource = 'gamma-market';
-        } else if (m.eventMetadata && Number.isFinite(m.eventMetadata.priceToBeat)) {
-          priceToBeatNum = m.eventMetadata.priceToBeat;
-          priceToBeatSource = 'gamma-event-metadata';
-        } else if (m.price_to_beat && Number.isFinite(m.price_to_beat)) {
-          priceToBeatNum = m.price_to_beat;
-          priceToBeatSource = 'gamma-price-to-beat';
+        if (priceToBeatNum == null) {
+          if (Number.isFinite(m.priceToBeat) && m.priceToBeat > 0) {
+            priceToBeatNum = m.priceToBeat;
+            priceToBeatSource = 'gamma-market';
+          } else if (m.eventMetadata && Number.isFinite(m.eventMetadata.priceToBeat)) {
+            priceToBeatNum = m.eventMetadata.priceToBeat;
+            priceToBeatSource = 'gamma-event-metadata';
+          } else if (m.price_to_beat && Number.isFinite(m.price_to_beat)) {
+            priceToBeatNum = m.price_to_beat;
+            priceToBeatSource = 'gamma-price-to-beat';
+          }
         }
 
-        // 2. Scrape event page or Chainlink candle
+        // 2. Scrape event page
         if (priceToBeatNum == null) {
           try {
             const scraped = await fetchPolymarketPriceToBeat(marketSlug);
@@ -3022,6 +3036,9 @@ function polymarketSentiment(markets, sym) {
 
       const data = {
         slug: marketSlug,
+        ticker: marketSlug,
+        contractSlug: marketSlug,
+        contractTicker: marketSlug,
         title,
         probability: liveUpProb,
         gammaProbability: upProb,
