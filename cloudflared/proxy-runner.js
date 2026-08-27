@@ -11,7 +11,7 @@ const { SocksProxyAgent } = require('socks-proxy-agent');
 
 const SOCKS_PORT = Number(process.env.MULLVAD_SOCKS_PORT || 18090);
 const HTTP_PORT = Number(process.env.WECRYPTO_PROXY_PORT || 3010);
-const TUNNEL_LOCAL_ADDR = process.env.MULLVAD_TUNNEL_LOCAL_ADDR || '10.65.50.149';
+const TUNNEL_LOCAL_ADDR = process.env.MULLVAD_TUNNEL_LOCAL_ADDR || '';
 
 // 1. SOCKS5 Server for Binance & Bybit
 const socksScript = path.join(__dirname, 'mullvad-standalone-socks.js');
