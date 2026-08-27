@@ -25,6 +25,7 @@ jobs:
         uses: sourcery-ai/action@v1
         continue-on-error: true
         env:
-          SOURCERY_TOKEN: ${{ secrets.SOURCERY_TOKEN || 'user_Pu5QIhTeyCEKAoh35vSLsQud1xjZBPiJFls8HfBggLTxkNARfEPSs6EciEQ' }}
+          SOURCERY_TOKEN: ${{ secrets.SOURCERY_TOKEN }}
         with:
-          token: ${{ secrets.SOURCERY_TOKEN || 'user_Pu5QIhTeyCEKAoh35vSLsQud1xjZBPiJFls8HfBggLTxkNARfEPSs6EciEQ' }}
+          token: ${{ secrets.SOURCERY_TOKEN }}
+
