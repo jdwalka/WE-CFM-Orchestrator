@@ -82,7 +82,7 @@
     const raw = num(poly.priceToBeatNum ?? poly.targetPriceNum ?? ctx?.ptb);
     if (!(raw > 0)) return null;
     const src = String(poly.priceToBeatSource || poly.ptbSource || ctx?.ptbSource || '').toLowerCase();
-    if (/rtds|twap30|title|provisional|coinbase|binance|gecko|rti|crypto-price|boundary|rejected:/.test(src)) {
+    if (/rtds|twap|title|provisional|coinbase|binance|gecko|rti|crypto-price|boundary|rejected:|chainlink-candles/.test(src)) {
       return null;
     }
     return raw;

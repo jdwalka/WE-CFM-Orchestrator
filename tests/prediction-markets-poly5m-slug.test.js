@@ -101,12 +101,24 @@ test('Polymarket price-to-beat parser stays scoped to the requested slug', () =>
   }
 });
 
+test('15m and 60m slugs share the same immutable open-price parser', () => {
+  const { hooks, restore } = loadPredictionMarkets();
+  try {
+    const html15 = '{"id":"m15","slug":"btc-updown-15m-2000","priceToBeat":105500.50}';
+    const html60 = '{"id":"m60","slug":"btc-updown-1h-3000","priceToBeat":105600.25}';
+    assert.strictEqual(hooks._parsePolymarketPriceToBeat(html15, 'btc-updown-15m-2000'), 105500.50);
+    assert.strictEqual(hooks._parsePolymarketPriceToBeat(html60, 'btc-updown-1h-3000'), 105600.25);
+  } finally {
+    restore();
+  }
+});
+
 test('5m PTB uses 60s Chainlink TWAP, not the old 30s series', () => {
   const { hooks, restore } = loadPredictionMarkets();
   try {
     assert.strictEqual(hooks.POLY_TWAP_LOOKBACK_SEC, 60);
     assert.strictEqual(hooks.PTB_TWAP_SETTLE_SEC, 62);
-    assert.strictEqual(hooks.POLY5M_PTB_LOCK_VERSION, 17);
+    assert.strictEqual(hooks.POLY5M_PTB_LOCK_VERSION, 18);
   } finally {
     restore();
   }
@@ -128,6 +140,8 @@ test('trusted Polymarket contract sources lock cleanly and immutably', () => {
     // Immutable once locked -- later attempts to overwrite with wrong prices are ignored
     const relocked = hooks._lockPolymarketPriceToBeat(slug, 999999.99, 'gamma-market');
     assert.strictEqual(relocked.price, 105432.12, 'locked contract price must be immutable');
+    const upgraded = hooks._lockPolymarketPriceToBeat(slug, 888888.88, 'polymarket-contract');
+    assert.strictEqual(upgraded.price, 105432.12, 'PRIMARY source must not rewrite an already-locked T0 strike');
   } finally {
     restore();
   }
@@ -141,6 +155,7 @@ test('untrusted / synthetic sources are rejected from locking', () => {
     assert.strictEqual(hooks._lockPolymarketPriceToBeat(slug, 105400.00, 'polymarket-title'), null);
     assert.strictEqual(hooks._lockPolymarketPriceToBeat(slug, 105400.00, 'binance-spot'), null);
     assert.strictEqual(hooks._lockPolymarketPriceToBeat(slug, 105400.00, 'pyth-lazer'), null);
+    assert.strictEqual(hooks._lockPolymarketPriceToBeat(slug, 105400.00, 'polymarket-chainlink-candles'), null);
     assert.strictEqual(hooks._getPolymarketPriceToBeatLock(slug), null);
   } finally {
     restore();
