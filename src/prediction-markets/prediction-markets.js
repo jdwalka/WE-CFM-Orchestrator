@@ -2336,6 +2336,17 @@
         const isImmediateNext = ts === windowTs + 300;
         const shouldResolvePTB = !isFuture || isImmediateNext;
 
+        // 0. CANONICAL CONTRACT BENCHMARK: Polymarket Chainlink 60s TWAP Candle Open (Absolute Truth)
+        if (priceToBeatNum == null && shouldResolvePTB) {
+          try {
+            const candleStrike = await fetchPolymarketChainlinkCandleOpen(sym, '5m', ts, POLY_TWAP_LOOKBACK_SEC, false);
+            if (candleStrike != null && candleStrike > 0) {
+              priceToBeatNum = candleStrike;
+              priceToBeatSource = 'polymarket-chainlink-candles';
+            }
+          } catch (_) {}
+        }
+
         // 1. Direct Polymarket Contract Benchmark posted on Polygon / Polymarket metadata
         if (priceToBeatNum == null && shouldResolvePTB) {
           const directContractStrike = toPositiveFiniteNumber(
@@ -2942,6 +2953,15 @@ function polymarketSentiment(markets, sym) {
         priceToBeatNum = existingLock.price;
         priceToBeatSource = existingLock.source;
       } else {
+        // 0. CANONICAL CONTRACT BENCHMARK: Polymarket Chainlink 60s TWAP Candle Open (Absolute Truth)
+        try {
+          const candleStrike = await fetchPolymarketChainlinkCandleOpen(sym, '15m', windowTs, POLY_TWAP_LOOKBACK_SEC, false);
+          if (candleStrike != null && candleStrike > 0) {
+            priceToBeatNum = candleStrike;
+            priceToBeatSource = 'polymarket-chainlink-candles';
+          }
+        } catch (_) {}
+
         // 1. Direct Polymarket Contract Benchmark posted on metadata
         const directContractStrike = toPositiveFiniteNumber(
           m.eventMetadata?.priceToBeat
