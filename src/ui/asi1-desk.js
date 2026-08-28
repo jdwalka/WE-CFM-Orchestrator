@@ -64,7 +64,7 @@
       <div class="ad-pills" id="adAccounts"></div>
       <div class="ad-selects">
         <select id="adCoin"></select>
-        <select id="adHorizon"><option value="15m">15m</option><option value="5m">5m</option></select>
+        <select id="adHorizon"><option value="15m">15m</option><option value="5m">5m</option><option value="anytime">Look Ahead (Anytime)</option></select>
       </div>
       <div class="ad-selects">
         <select id="adModelChoice">
@@ -334,7 +334,7 @@
     } catch (_) { pkt = {}; }
 
     const pmCoin = (typeof window !== 'undefined' && window.PredictionMarkets?.getCoin?.(coin)) || {};
-    const poly = (horizon === '5m' ? pmCoin.poly5m : pmCoin.poly15m) || pmCoin.poly5m || pmCoin.poly15m || {};
+    const poly = horizon === 'anytime' ? {} : ((horizon === '5m' ? pmCoin.poly5m : pmCoin.poly15m) || pmCoin.poly5m || pmCoin.poly15m || {});
     const pred = (typeof window !== 'undefined' && (window.PredictionEngine?.get?.(coin) || window._predictions?.[coin])) || {};
     const cache = (typeof window !== 'undefined' && window.candleCache?.[coin]) || {};
 
@@ -394,7 +394,7 @@
   function paintNextHorizon() {
     const coin = document.getElementById('adCoin')?.value || 'BTC';
     const horizon = document.getElementById('adHorizon')?.value || '5m';
-    const hMin = horizon === '15m' ? 15 : 5;
+    const hMin = horizon === 'anytime' ? 60 : (horizon === '15m' ? 15 : 5);
     const forecast = window.PredictionEngine?.getPreOpenForecast?.(coin, hMin);
     if (!forecast) return;
 
@@ -479,7 +479,8 @@
         web_search: webSearch ? true : undefined,
       };
 
-      const res = await invoke('infer', { packet, mode, options });
+      const inferMode = packet.horizon === 'anytime' ? 'planner' : mode;
+      const res = await invoke('infer', { packet, mode: inferMode, options });
       paintContract(res?.contract, res);
       window.dispatchEvent(new CustomEvent('asi1:desk', { detail: res }));
     } catch (err) {
@@ -533,7 +534,7 @@
           prompt: query,
           context: {
             coin: packet.sym,
-            horizon: packet.horizon === '5m' ? 5 : 15,
+            horizon: packet.horizon === 'anytime' ? 'anytime' : (packet.horizon === '5m' ? 5 : 15),
             spot: packet.spot,
             ptb: packet.priceToBeatNum,
             model: modelChoice !== 'auto' ? modelChoice : 'asi1-mini',
