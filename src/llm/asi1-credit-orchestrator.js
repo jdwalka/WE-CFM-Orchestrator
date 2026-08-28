@@ -210,31 +210,50 @@ async function fetchPythSpotDirect(coin) {
   return null;
 }
 
+const _directPtbLocks = new Map(); // slug -> locked opening strike
+
+function _horizonSpec(horizon) {
+  // Accept every horizon representation used across the repo: bare ('15m', '15'),
+  // the h-prefixed form ('h15', 'h60') from inference snapshots / tuner state,
+  // and the word forms ('fifteen', 'hourly'). An unrecognized value that slips
+  // through here builds a 5-minute slug and hydrates the wrong contract's PTB
+  // into a longer-horizon packet.
+  const h = String(horizon || '5m').toLowerCase().replace(/\s+/g, '');
+  if (h === '15m' || h === '15' || h === 'h15' || h === 'fifteen') {
+    return { intervalSec: 900, tags: ['15m'] };
+  }
+  if (h === '60m' || h === '1h' || h === 'hourly' || h === '60' || h === 'h60' || h === 'sixty') {
+    return { intervalSec: 3600, tags: ['1h', '60m'] };
+  }
+  return { intervalSec: 300, tags: ['5m'] };
+}
+
 async function fetchPolymarketPtbDirect(sym, horizon = '5m') {
   try {
     const symbol = String(sym || 'BTC').toUpperCase();
-    const h = String(horizon || '5m').toLowerCase().replace(/\s+/g, '');
-    let intervalSec = 300;
-    let normHorizon = '5m';
-    if (h === '15m' || h === '15' || h === 'h15') {
-      intervalSec = 900;
-      normHorizon = '15m';
-    } else if (h === '60m' || h === '1h' || h === 'hourly' || h === '60' || h === 'h60') {
-      intervalSec = 3600;
-      normHorizon = '60m';
-    }
+    const spec = _horizonSpec(horizon);
     const nowSec = Math.floor(Date.now() / 1000);
-    const boundarySec = nowSec - (nowSec % intervalSec);
+    const boundarySec = nowSec - (nowSec % spec.intervalSec);
     const prefixMap = { BTC: 'btc', ETH: 'eth', SOL: 'sol', XRP: 'xrp', DOGE: 'doge', BNB: 'bnb', HYPE: 'hype' };
     const prefix = prefixMap[symbol] || symbol.toLowerCase();
-    const slug = `${prefix}-updown-${normHorizon}-${boundarySec}`;
+    const slugs = spec.tags.map((tag) => `${prefix}-updown-${tag}-${boundarySec}`);
+    for (const lockedSlug of slugs) {
+      const locked = _directPtbLocks.get(lockedSlug);
+      if (Number.isFinite(locked) && locked > 0) return locked;
+    }
+    const lockStrike = (strike) => {
+      if (!(Number.isFinite(strike) && strike > 0)) return null;
+      for (const k of slugs) _directPtbLocks.set(k, strike);
+      return strike;
+    };
 
-    // 1. Direct Polymarket Gamma market contract metadata
-    try {
-      const resp = await fetch(`https://gamma-api.polymarket.com/markets?slug=${encodeURIComponent(slug)}`, {
-        signal: AbortSignal.timeout(4000),
-      });
-      if (resp.ok) {
+    // 1. Direct Polymarket Gamma market contract metadata (opening strike)
+    for (const pageSlug of slugs) {
+      try {
+        const resp = await fetch(`https://gamma-api.polymarket.com/markets?slug=${encodeURIComponent(pageSlug)}`, {
+          signal: AbortSignal.timeout(4000),
+        });
+        if (!resp.ok) continue;
         const list = await resp.json();
         const m = Array.isArray(list) ? list[0] : list;
         const strike = Number(
@@ -244,28 +263,30 @@ async function fetchPolymarketPtbDirect(sym, horizon = '5m') {
           m?.price_to_beat ??
           m?.targetPrice
         );
-        if (Number.isFinite(strike) && strike > 0) return strike;
-      }
-    } catch (_) {}
+        const locked = lockStrike(strike);
+        if (locked) return locked;
+      } catch (_) {}
+    }
 
-    // 2. Direct Polymarket contract event page
-    try {
-      const resp = await fetch(`https://polymarket.com/event/${encodeURIComponent(slug)}`, {
-        signal: AbortSignal.timeout(4000),
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151 Safari/537.36',
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        },
-      });
-      if (resp.ok) {
+    // 2. Direct Polymarket contract event page (openPrice at T0, locked)
+    for (const pageSlug of slugs) {
+      try {
+        const resp = await fetch(`https://polymarket.com/event/${encodeURIComponent(pageSlug)}`, {
+          signal: AbortSignal.timeout(4000),
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          },
+        });
+        if (!resp.ok) continue;
         const html = await resp.text();
         const fwd = [...html.matchAll(/\\"openPrice\\":\s*([0-9.]+)/g), ...html.matchAll(/"openPrice":\s*([0-9.]+)/g)];
         if (fwd.length > 0) {
-          const val = Number(fwd[0][1]);
-          if (Number.isFinite(val) && val > 0) return val;
+          const locked = lockStrike(Number(fwd[0][1]));
+          if (locked) return locked;
         }
-      }
-    } catch (_) {}
+      } catch (_) {}
+    }
   } catch (_) {}
   return null;
 }
@@ -284,12 +305,12 @@ async function deskInfer(packet, mode, options = {}) {
     }
   }
 
-  // If PTB is missing or zero, actively hydrate from Polymarket chainlink candles
+  // If PTB is missing or zero, hydrate the immutable contract opening strike (not live TWAP)
   if (!packet.priceToBeatNum || packet.priceToBeatNum <= 0) {
     const directPtb = await fetchPolymarketPtbDirect(packet.sym, packet.horizon);
     if (directPtb && directPtb > 0) {
       packet.priceToBeatNum = directPtb;
-      packet.priceToBeatSource = 'polymarket-chainlink-candles-direct';
+      packet.priceToBeatSource = 'polymarket-contract';
     }
   }
 
