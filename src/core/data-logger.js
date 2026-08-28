@@ -15,6 +15,7 @@
   'use strict';
 
   let LOCAL_ROOT = '';
+  let env = 'uvix';
   let DRIVE_PATHS = [];
   const GOOGLE_DRIVE_ROOTS = [
     'H:\\My Drive\\WECRYP\\data',

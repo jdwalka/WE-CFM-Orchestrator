@@ -23,6 +23,35 @@ const {
 const Asi1Client = require("../infra/asi1-client");
 const Asi1CreditOrch = require("./asi1-credit-orchestrator");
 
+function loadLLMEnv() {
+  const loadedPaths = [];
+
+  try {
+    const dotenv = require("dotenv");
+    const candidatePaths = [
+      process.env.LLM_ENV_PATH,
+      path.resolve(process.cwd(), ".env"),
+      path.resolve(__dirname, "../../.env"),
+      process.resourcesPath ? path.resolve(process.resourcesPath, "..", ".env") : null,
+      process.execPath ? path.resolve(path.dirname(process.execPath), ".env") : null,
+    ].filter(Boolean);
+
+    for (const envPath of candidatePaths) {
+      try {
+        if (!fs.existsSync(envPath)) continue;
+        const result = dotenv.config({ path: envPath, override: true, quiet: true });
+        if (!result.error) loadedPaths.push(envPath);
+      } catch (_) { }
+    }
+
+    return [...new Set(loadedPaths)];
+  } catch (_) { }
+
+  return [];
+}
+
+const LLM_ENV_SOURCES = loadLLMEnv();
+
 // ── Robust secret dir candidates (Electron-aware, multi-drive) ──────────────
 // Mirrors the logic in electron/main.js so keys placed in secrets/ are found
 // whether running from source, packaged asar, different drive letters, etc.
@@ -110,7 +139,13 @@ function resolveTokenMixApiKey() {
   return process.env.TOKENMIX_API_KEY || readTokenMixKeyFromSecrets() || '';
 }
 
+function resolveAnthropicApiKey() {
+  return process.env.ANTHROPIC_API_KEY || '';
+}
+
 const TOKENMIX_API_KEY = resolveTokenMixApiKey();
+const ANTHROPIC_API_KEY = resolveAnthropicApiKey();
+const ANTHROPIC_MODEL = process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-6';
 const TOKENMIX_BASE_URL = process.env.TOKENMIX_BASE_URL || "https://api.tokenmix.ai/v1/chat/completions";
 // deepseek/deepseek-v4-flash is the verified-working cost/detail pick (confirmed
 // live against api.tokenmix.ai on 2026-08-22: 200 OK, ~2s, clean JSON content).
@@ -140,35 +175,6 @@ const TOKENMIX_CREDIT_RE = /\bhttp\s*40[23]\b|\bstatus(?:code)?[:\s]*40[23]\b|\b
 // pre-2026-08-22 order -- TokenMix's account is card-payment-blocked and
 // couldn't be funded, so ASI1 is primary again until that clears.
 const LLM_PRIMARY_PROVIDER = (process.env.LLM_PRIMARY_PROVIDER || 'asi1').toLowerCase();
-
-function loadLLMEnv() {
-  const loadedPaths = [];
-
-  try {
-    const dotenv = require("dotenv");
-    const candidatePaths = [
-      process.env.LLM_ENV_PATH,
-      path.resolve(process.cwd(), ".env"),
-      path.resolve(__dirname, "../../.env"),
-      process.resourcesPath ? path.resolve(process.resourcesPath, "..", ".env") : null,
-      process.execPath ? path.resolve(path.dirname(process.execPath), ".env") : null,
-    ].filter(Boolean);
-
-    for (const envPath of candidatePaths) {
-      try {
-        if (!fs.existsSync(envPath)) continue;
-        const result = dotenv.config({ path: envPath, quiet: true });
-        if (!result.error) loadedPaths.push(envPath);
-      } catch (_) { }
-    }
-
-    return [...new Set(loadedPaths)];
-  } catch (_) { }
-
-  return [];
-}
-
-const LLM_ENV_SOURCES = loadLLMEnv();
 
 // ── Inference layer: TokenMix primary, ASI1 fallback ────────────────────
 // PR #86 (2026-08-19) made ASI1 the sole inference provider, removing
@@ -224,9 +230,10 @@ function isFiveMinPtbMarket(snapshot) {
 
 class LLMSignalAssistant {
   constructor() {
-    this.provider = LLM_PRIMARY_PROVIDER === 'tokenmix' && TOKENMIX_API_KEY ? "tokenmix" : "asi1";
+    this.provider = LLM_PRIMARY_PROVIDER === 'anthropic' && ANTHROPIC_API_KEY ? "anthropic" : (LLM_PRIMARY_PROVIDER === 'tokenmix' && TOKENMIX_API_KEY ? "tokenmix" : "asi1");
+    this.anthropicEnabled = !!ANTHROPIC_API_KEY;
     this.tokenmixEnabled = !!TOKENMIX_API_KEY;
-    this.enabled = this.tokenmixEnabled || Asi1Client.hasAsi1Credentials();
+    this.enabled = this.anthropicEnabled || this.tokenmixEnabled || Asi1Client.hasAsi1Credentials();
 
     this.contextCache = new Map();      // short-lived prompt/result cache
     this.marketMemory = new Map();      // per-coin rolling recall memory
@@ -247,6 +254,7 @@ class LLMSignalAssistant {
       dotenvSources: LLM_ENV_SOURCES,
       hasAsi1Key: Asi1Client.hasAsi1Credentials(),
       asi1KeysConfigured: Asi1Client.getDiagnostics().keysConfigured,
+      hasAnthropicKey: this.anthropicEnabled,
       hasTokenMixKey: this.tokenmixEnabled,
       primaryProvider: this.provider,
       providerOverride: null,
@@ -271,7 +279,7 @@ class LLMSignalAssistant {
 
     console.log(
       `[LLMSignalAssistant] Initialized ${this.enabled ? "\u2713 ENABLED" : "\u26a0 DISABLED"} ` +
-      `(primary=${this.provider}, tokenmix=${this.tokenmixEnabled ? `${TOKENMIX_MODEL}` : 'no-key'}, ` +
+      `(primary=${this.provider}, anthropic=${this.anthropicEnabled ? `${ANTHROPIC_MODEL}` : 'no-key'}, tokenmix=${this.tokenmixEnabled ? `${TOKENMIX_MODEL}` : 'no-key'}, ` +
       `asi1-fallback=${Asi1Client.hasAsi1Credentials() ? 'yes' : 'no-key'}, roster=${Asi1Client.ASI1_ALL_MODELS.join("/")})`
     );
     if (this.envDiagnostics.dotenvLoaded) {
@@ -550,6 +558,66 @@ Use this recall only as context, and prioritize current market snapshot data if 
       || String(snapshot?.horizon || '') === '60m'
       || String(snapshot?.horizon || '') === '1h'
     );
+
+    // Anthropic-first: primary provider if configured
+    if (LLM_PRIMARY_PROVIDER === 'anthropic' && ANTHROPIC_API_KEY && process.env.LLM_DISABLE_ANTHROPIC !== '1') {
+      const coinAnt = String(snapshot?.coin || 'GLOBAL');
+      const horizonAnt = is5mPtb ? '5m-ptb' : String(snapshot?.horizon || snapshot?.horizonMinutes || '15m');
+      const promptLengthAnt = (systemPrompt || '').length + (userPrompt || '').length;
+      const startAnt = Date.now();
+      try {
+        console.log(`[LLM ${horizonAnt}] trying anthropic (${ANTHROPIC_MODEL})`);
+        const res = await this.callAnthropicAPI(systemPrompt, userPrompt, {});
+        const parsed = this.parseLlmJsonContent(res.content, { provider: 'anthropic', rawText: res.content });
+        parsed._provider = 'anthropic';
+        parsed._model = res.model;
+        this._recordQueryExecution({
+          id: `llm-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          timestamp: new Date().toISOString(),
+          ts: Date.now(),
+          coin: coinAnt,
+          horizon: horizonAnt,
+          provider: 'anthropic',
+          model: res.model,
+          status: 'SUCCESS',
+          latencyMs: Date.now() - startAnt,
+          promptChars: promptLengthAnt,
+          responseChars: res.content.length,
+          resultCall: parsed?.call || parsed?.direction || null,
+          regime: parsed?.regime || null,
+          confidence: parsed?.confidence ?? null,
+          notes: parsed?.suggestions?.notes?.slice(0, 280) || null,
+          attempted: ['anthropic'],
+          skipped: [],
+          error: null,
+        });
+        this._lastProvider = 'anthropic';
+        this._lastModel = res.model;
+        return this.normalizeResponse(parsed, snapshot);
+      } catch (err) {
+        this._recordQueryExecution({
+          id: `llm-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          timestamp: new Date().toISOString(),
+          ts: Date.now(),
+          coin: coinAnt,
+          horizon: horizonAnt,
+          provider: 'anthropic',
+          model: ANTHROPIC_MODEL,
+          status: 'FAILURE',
+          latencyMs: Date.now() - startAnt,
+          promptChars: promptLengthAnt,
+          responseChars: 0,
+          resultCall: null,
+          regime: null,
+          confidence: null,
+          notes: null,
+          attempted: ['anthropic'],
+          skipped: [],
+          error: String(err.message || err),
+        });
+        console.warn(`[LLM ${horizonAnt}] anthropic failed, falling back: ${String(err.message || err).slice(0, 180)}`);
+      }
+    }
 
     // TokenMix-first: primary provider while ASI1/Fetch.ai credits are
     // unfunded (see LLM_PRIMARY_PROVIDER, default 'tokenmix'). Falls through
@@ -1012,6 +1080,58 @@ Use this recall only as context, and prioritize current market snapshot data if 
       }
     }
     throw lastErr || new Error('TokenMix DeepSeek failed');
+  }
+
+  async callAnthropicAPI(systemPrompt, userPrompt, config = {}) {
+    if (!ANTHROPIC_API_KEY) throw new Error('ANTHROPIC_API_KEY missing');
+    const model = config.model || ANTHROPIC_MODEL;
+    const maxTokens = Number(config.maxTokens || 4096);
+    const timeoutMs = Number(config.timeoutMs || 45000);
+
+    const payload = {
+      model,
+      max_tokens: maxTokens,
+      system: systemPrompt,
+      messages: [
+        { role: 'user', content: userPrompt }
+      ],
+      temperature: 0.1
+    };
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      try { controller.abort(new Error(`anthropic timeout after ${timeoutMs}ms`)); } catch (_) {}
+    }, timeoutMs);
+
+    let response;
+    try {
+      response = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "x-api-key": ANTHROPIC_API_KEY,
+          "anthropic-version": "2023-06-01",
+          "content-type": "application/json"
+        },
+        body: JSON.stringify(payload),
+        signal: controller.signal
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+
+    if (!response.ok) {
+      const errBody = await response.text().catch(() => '');
+      const err = new Error(`Anthropic API error ${response.status}: ${response.statusText} - ${errBody.slice(0, 220)}`);
+      err.status = response.status;
+      throw err;
+    }
+
+    const data = await response.json();
+    const content = data.content?.[0]?.text;
+    if (!content) {
+      throw new Error(`Unexpected Anthropic API response format: ${JSON.stringify(data).slice(0, 200)}`);
+    }
+    return { content, model };
   }
 
   /**

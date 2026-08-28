@@ -1251,7 +1251,7 @@ async function startPythLazerService(win) {
           if (!pfeeds.length) {
             try {
               const hUrl = 'https://hermes.pyth.network/v2/updates/price/latest?ids[]=0xe62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43&ids[]=0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace&ids[]=0xef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d&ids[]=0xec5d399846a9209f3fe5881d70aae9268c94339ff9817e8d18ff19fa05eea1c8&ids[]=0xdcef50dd0a4cd2dcc17e45df1676dcb336a11a61c69df7a0299b0150c672d25c&ids[]=0x2f95862b045670cd22bee3114c39763a4a08beeb663b145d283c31d7d1101c4f&ids[]=0x4279e31cc369bbcc2faf022b382b080e32a8e689ff20fbc530d2a603eb6cd98b';
-              const r = await fetch(hUrl);
+              const r = await fetch(hUrl, token ? { headers: { "Authorization": "Bearer " + token } } : {});
               if (r.ok) {
                 const j = await r.json();
                 if (j && Array.isArray(j.parsed)) {
@@ -1499,7 +1499,7 @@ async function startPythLazerService(win) {
         if (!win.isDestroyed()) {
           win.webContents.send('pyth:connection-lost', {
             reason: 'all_connections_down',
-            channel: activeChannel,
+            channel: "fixed_rate@50ms",
           });
         }
         if (!reconnectInFlight) {
@@ -2422,7 +2422,7 @@ function refreshPythFromProxy() {
             '4279e31cc369bbcc2faf022b382b080e32a8e689ff20fbc530d2a603eb6cd98b': 'HYPEUSD'
           };
           const hUrl = 'https://hermes.pyth.network/v2/updates/price/latest?' + hermesIds.map(id => 'ids[]=' + id).join('&');
-          const hResp = await fetch(hUrl);
+          const hResp = await fetch(hUrl, token ? { headers: { "Authorization": "Bearer " + token } } : {});
           if (hResp.ok) {
             const hData = await hResp.json();
             if (hData && Array.isArray(hData.parsed)) {
@@ -2566,7 +2566,7 @@ ipcMain.handle('pyth:getProxyLatest', async (_, feedIds) => {
         '4279e31cc369bbcc2faf022b382b080e32a8e689ff20fbc530d2a603eb6cd98b': 'HYPEUSD'
       };
       const hUrl = 'https://hermes.pyth.network/v2/updates/price/latest?' + hermesIds.map(id => 'ids[]=' + id).join('&');
-      const hResp = await fetch(hUrl);
+      const hResp = await fetch(hUrl, token ? { headers: { "Authorization": "Bearer " + token } } : {});
       if (hResp.ok) {
         const hData = await hResp.json();
         if (hData && Array.isArray(hData.parsed)) {

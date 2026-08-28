@@ -18,7 +18,7 @@ class UVIXReverseEngineer {
       decodedBytes = Buffer.from(slug, 'base64').toString('utf-8');
       slugData = JSON.parse(decodedBytes);
     } catch (e) {
-      throw new Error(\UVIX slug decode failure: \\);
+      throw new Error(`UVIX slug decode failure: ${e.message}`);
     }
 
     function sortObjKeys(obj) {
@@ -78,7 +78,7 @@ class UVIXReverseEngineer {
     const handoverPackage = this.prepareHandover(slugObj);
     const headers = {
       'Content-Type': 'application/json',
-      'Authorization': \Bearer \\,
+      'Authorization': `Bearer ${authToken}`,
       'X-UVIX-Protocol': slugObj.protocolVersion,
       'X-UVIX-Compatibility': slugObj.compatibilityLayer
     };
