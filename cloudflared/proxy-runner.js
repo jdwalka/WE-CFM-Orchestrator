@@ -176,6 +176,7 @@ const forward = async (targetUrl, req, res) => {
       } catch (socksErr) {
         console.warn(`[ProxyRunner] SOCKS forward failed for ${targetUrl} (${socksErr.message}), falling back to direct connection`);
         if (res.headersSent) return;
+        if (!['GET', 'HEAD', 'PUT', 'DELETE', 'OPTIONS', 'TRACE'].includes(method)) throw socksErr;
       }
     }
     await makeRequest(false);
