@@ -95,11 +95,35 @@
     return result;
   }
 
+  // Full-state snapshot/restore for cross-session persistence (see
+  // src/core/data-logger.js's weight_tuning_state category and
+  // adaptive-tuner.js's bootstrapFromPriorSession()). This is the "native
+  // weights" state that per-signal online tuning actually mutates.
+  function getAllOnlineState() {
+    return JSON.parse(JSON.stringify(ONLINE_WEIGHT_STATE));
+  }
+
+  function loadOnlineState(snapshot) {
+    if (!snapshot || typeof snapshot !== 'object') return { loaded: false, coins: 0 };
+    let coins = 0;
+    for (const [sym, state] of Object.entries(snapshot)) {
+      if (!state || typeof state !== 'object' || !state.signals) continue;
+      ONLINE_WEIGHT_STATE[_coinKey(sym)] = {
+        updatedAt: Number(state.updatedAt) || Date.now(),
+        signals: { ...state.signals },
+      };
+      coins++;
+    }
+    return { loaded: coins > 0, coins };
+  }
+
   window.PredictionRegimeWeights = {
     REGIME_WEIGHT_MULTS,
     ONLINE_WEIGHT_BOUNDS,
     OUTER_ORBITAL_WEIGHTS,
     ONLINE_WEIGHT_STATE,
+    getAllOnlineState,
+    loadOnlineState,
     _coinKey,
     _ensureOnlineState,
     _ensureOnlineSignalState,

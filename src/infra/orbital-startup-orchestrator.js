@@ -1,38 +1,187 @@
 /**
  * orbital-startup-orchestrator.js
- * Manages the lifecycle of Redpanda and the Orbital Matrix services.
+ * Manages the lifecycle of Redpanda, Redis, and the Orbital Matrix services.
  *
  * Responsibilities:
- * 1. Detect if Docker is available
- * 2. Spin up docker-compose (Redpanda cluster)
- * 3. Wait for Redpanda to be healthy
- * 4. Pre-create orbital topics (idempotent)
- * 5. Initialize the Redpanda bridge (KafkaJS producer)
- * 6. Start the Orbital Ingestor daemon (s, p, d, f producers)
- * 7. Start the Matrix Processor (coherence loop / consumer)
- * 8. Handle graceful shutdown on app exit
+ * 1. Detect if Docker is available (and auto-launch Docker Desktop on Windows if installed)
+ * 2. Resolve or generate docker-compose configuration (support workspace, resourcesPath, and AppData fallbacks)
+ * 3. Spin up docker compose for Redpanda, Redis, and Redpanda Console
+ * 4. Wait for Redpanda to be healthy
+ * 5. Pre-create orbital topics (idempotent, using bundled module)
+ * 6. Initialize the Redpanda bridge (KafkaJS producer)
+ * 7. Start the Orbital Ingestor daemon (s, p, d, f producers)
+ * 8. Start the Matrix Processor (coherence loop / consumer)
+ * 9. Handle graceful shutdown on app exit
  */
 
 const { spawn, exec } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const net = require('net');
+const os = require('os');
 
 const REDPANDA_CONTAINER_NAME = 'redpanda-orbital';
 
+const STANDALONE_COMPOSE_YAML = `services:
+  redis:
+    image: redis:7-alpine
+    container_name: wecrypto-redis
+    command:
+      [
+        "redis-server",
+        "--save",
+        "",
+        "--appendonly",
+        "no",
+        "--maxmemory",
+        "512mb",
+        "--maxmemory-policy",
+        "allkeys-lru",
+      ]
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 3
+      start_period: 2s
+    networks:
+      - wecrypto-net
+
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:v24.1.2
+    container_name: redpanda-orbital
+    command:
+      - redpanda start
+      - --overprovisioned
+      - --smp 2
+      - --memory 2G
+      - --reserve-memory 0M
+      - --node-id 0
+      - --check=false
+      - --kafka-addr PLAINTEXT://0.0.0.0:29092,OUTSIDE://0.0.0.0:9092
+      - --advertise-kafka-addr PLAINTEXT://redpanda:29092,OUTSIDE://localhost:9092
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+      - "9644:9644"
+    user: "0:0"
+    volumes:
+      - redpanda_data:/var/lib/redpanda/data
+    environment:
+      - REDPANDA_ADVERTISE_KAFKA_ADDR=redpanda:29092
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster info"]
+      interval: 3s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    networks:
+      - wecrypto-net
+
+  redpanda-console:
+    image: docker.redpanda.com/redpandadata/console:v2.5.2
+    container_name: redpanda-console
+    environment:
+      KAFKA_BROKERS: "redpanda:29092"
+      KAFKA_SCHEMAREGISTRY_ENABLED: "false"
+    ports:
+      - "8081:8080"
+    depends_on:
+      redpanda:
+        condition: service_started
+    networks:
+      - wecrypto-net
+
+volumes:
+  redpanda_data:
+    driver: local
+
+networks:
+  wecrypto-net:
+    driver: bridge
+`;
+
 // Fix Windows PATH for Docker if missing
-if (process.platform === 'win32') {
-    const dockerPaths = [
-        'C:\\Program Files\\Docker\\Docker\\resources\\bin',
-        'C:\\ProgramData\\DockerDesktop\\version-bin'
-    ];
-    for (const dp of dockerPaths) {
-        if (!process.env.PATH.includes(dp) && fs.existsSync(dp)) {
-            process.env.PATH = process.env.PATH + ';' + dp;
+function ensureDockerPath() {
+    if (process.platform === 'win32') {
+        const dockerDirs = [
+            'C:\\Program Files\\Docker\\Docker\\resources\\bin',
+            'C:\\ProgramData\\DockerDesktop\\version-bin',
+            'C:\\Program Files\\Docker\\Docker\\resources',
+            path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'Programs\\Docker\\Docker\\resources\\bin'),
+            path.join(process.env.ProgramFiles || 'C:\\Program Files', 'Docker\\Docker\\resources\\bin'),
+        ];
+        let currentPath = process.env.PATH || '';
+        for (const dir of dockerDirs) {
+            if (dir && fs.existsSync(dir) && !currentPath.toLowerCase().includes(dir.toLowerCase())) {
+                currentPath = `${currentPath};${dir}`;
+            }
         }
+        process.env.PATH = currentPath;
     }
 }
 
+ensureDockerPath();
+
+function getDockerExecutable() {
+    ensureDockerPath();
+    if (process.platform === 'win32') {
+        const potentialBins = [
+            'C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe',
+            'C:\\ProgramData\\DockerDesktop\\version-bin\\docker.exe',
+            'C:\\Program Files\\Docker\\Docker\\resources\\docker.exe',
+            path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'Programs\\Docker\\Docker\\resources\\bin\\docker.exe'),
+            path.join(process.env.ProgramFiles || 'C:\\Program Files', 'Docker\\Docker\\resources\\bin\\docker.exe'),
+        ];
+        for (const bin of potentialBins) {
+            try {
+                if (bin && fs.existsSync(bin)) return bin;
+            } catch (_) {}
+        }
+    }
+    return 'docker';
+}
+
+function resolveComposeFile(workspacePath) {
+    const candidates = [
+        workspacePath && path.join(workspacePath, 'docker-compose.yml'),
+        process.env.WECRYP_ROOT && path.join(process.env.WECRYP_ROOT, 'docker-compose.yml'),
+        process.resourcesPath && path.join(process.resourcesPath, 'docker-compose.yml'),
+        process.resourcesPath && path.join(process.resourcesPath, '..', 'docker-compose.yml'),
+        path.join(process.cwd(), 'docker-compose.yml'),
+        path.join(__dirname, '..', '..', 'docker-compose.yml'),
+    ].filter(Boolean);
+
+    for (const cand of candidates) {
+        try {
+            if (fs.existsSync(cand) && fs.statSync(cand).isFile()) {
+                console.log(`[OrbitalOrchestrator] Using existing compose file: ${cand}`);
+                return cand;
+            }
+        } catch (_) {}
+    }
+
+    // Fallback: write standalone docker-compose.orbital.yml in user AppData/config dir
+    const configDir = process.platform === 'win32'
+        ? path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'WE-CRYPTO')
+        : path.join(os.homedir(), '.wecrypto');
+    try {
+        fs.mkdirSync(configDir, { recursive: true });
+        const fallbackPath = path.join(configDir, 'docker-compose.orbital.yml');
+        fs.writeFileSync(fallbackPath, STANDALONE_COMPOSE_YAML, 'utf8');
+        console.log(`[OrbitalOrchestrator] Generated standalone compose file at: ${fallbackPath}`);
+        return fallbackPath;
+    } catch (e) {
+        console.warn(`[OrbitalOrchestrator] Failed to write fallback compose file to ${configDir}:`, e.message);
+        const tmpPath = path.join(os.tmpdir(), 'wecrypto-docker-compose.orbital.yml');
+        fs.writeFileSync(tmpPath, STANDALONE_COMPOSE_YAML, 'utf8');
+        return tmpPath;
+    }
+}
+
+let activeComposeFilePath = null;
 let dockerComposeProcess = null;
 let ingestorProcess = null;
 let processorIntervalHandle = null;
@@ -140,13 +289,16 @@ async function waitForRedpandaReady(maxWaitMs = 60000) {
 /**
  * Check if Docker daemon is running.
  */
-async function isDockerAvailable() {
+async function isDockerAvailable(attemptLog = true) {
+    ensureDockerPath();
+    const dockerBin = getDockerExecutable();
     return new Promise((resolve) => {
-        exec('docker ps', (err, stdout, stderr) => {
-            if (err) {
+        exec(`"${dockerBin}" ps`, (err, stdout, stderr) => {
+            if (err && attemptLog) {
                 console.error('[OrbitalOrchestrator] isDockerAvailable failed:', err.message, stderr);
                 try {
-                    fs.writeFileSync(require('path').join(process.cwd(), 'docker-error.log'), 'Docker err: ' + err.message + '\nStderr: ' + stderr);
+                    const logDir = process.env.APPDATA || os.tmpdir();
+                    fs.writeFileSync(path.join(logDir, 'wecrypto-docker-error.log'), 'Docker err: ' + err.message + '\nStderr: ' + stderr);
                 } catch (e) { }
             }
             resolve(!err);
@@ -155,14 +307,57 @@ async function isDockerAvailable() {
 }
 
 /**
- * Spawn docker-compose up -d and wait for it to complete.
+ * Attempt to launch Docker Desktop on Windows if installed and not running.
  */
-function spawnDockerCompose(workspacePath) {
+async function tryLaunchDockerDesktop() {
+    if (process.platform !== 'win32') return false;
+    const desktopExes = [
+        'C:\\Program Files\\Docker\\Docker\\Docker Desktop.exe',
+        path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'Programs\\Docker\\Docker\\Docker Desktop.exe'),
+        path.join(process.env.ProgramFiles || 'C:\\Program Files', 'Docker\\Docker\\Docker Desktop.exe'),
+    ];
+    const exe = desktopExes.find(p => {
+        try { return p && fs.existsSync(p); } catch (_) { return false; }
+    });
+    if (!exe) {
+        console.log('[OrbitalOrchestrator] Docker Desktop binary not found on standard paths.');
+        return false;
+    }
+
+    console.log(`[OrbitalOrchestrator] Docker daemon not responsive. Attempting to start Docker Desktop (${exe})...`);
+    recordStatusEvent('info', 'Launching Docker Desktop in background...');
+    try {
+        spawn(exe, [], { detached: true, stdio: 'ignore' }).unref();
+        // Wait for Docker daemon to initialize (up to 45 seconds)
+        for (let i = 1; i <= 15; i++) {
+            await new Promise(r => setTimeout(r, 3000));
+            const available = await isDockerAvailable(false);
+            if (available) {
+                console.log('[OrbitalOrchestrator] ✓ Docker Desktop daemon is now online!');
+                recordStatusEvent('success', 'Docker Desktop daemon started successfully');
+                return true;
+            }
+            console.log(`[OrbitalOrchestrator] Waiting for Docker Desktop daemon... (${i * 3}s)`);
+        }
+    } catch (e) {
+        console.warn('[OrbitalOrchestrator] Failed to launch Docker Desktop:', e.message);
+    }
+    return false;
+}
+
+/**
+ * Spawn docker compose up -d and wait for it to complete.
+ */
+function spawnDockerCompose(composeFilePath) {
+    activeComposeFilePath = composeFilePath;
+    const dockerBin = getDockerExecutable();
     return new Promise((resolve, reject) => {
-        console.log('[OrbitalOrchestrator] Spawning docker-compose for Redpanda services...');
-        const proc = spawn('docker', ['compose', 'up', '-d', 'redpanda', 'redpanda-console'], {
-            cwd: workspacePath,
-            stdio: ['ignore', 'pipe', 'pipe']
+        console.log(`[OrbitalOrchestrator] Spawning docker compose for Redpanda & Redis (file: ${composeFilePath})...`);
+        const proc = spawn(dockerBin, ['compose', '-f', composeFilePath, 'up', '-d', '--no-recreate', 'redis', 'redpanda', 'redpanda-console'], {
+            cwd: path.dirname(composeFilePath),
+            stdio: ['ignore', 'pipe', 'pipe'],
+            windowsHide: true,
+            env: process.env
         });
         let stderr = '';
         proc.stdout.on('data', (data) => console.log('[Docker-Compose]', data.toString().trim()));
@@ -184,13 +379,21 @@ function spawnDockerCompose(workspacePath) {
  */
 async function initTopics(workspacePath) {
     try {
-        const topicScript = path.join(workspacePath, 'scripts', 'redpanda-init-topics.js');
-        if (fs.existsSync(topicScript)) {
-            const { createAllTopics } = require(topicScript);
-            await createAllTopics();
+        let topicModule = null;
+        try {
+            topicModule = require('./redpanda-init-topics');
+        } catch (_) {
+            try {
+                if (workspacePath) {
+                    topicModule = require(path.join(workspacePath, 'scripts', 'redpanda-init-topics.js'));
+                }
+            } catch (_) {}
+        }
+        if (topicModule && typeof topicModule.createAllTopics === 'function') {
+            await topicModule.createAllTopics();
             console.log('[OrbitalOrchestrator] ✓ Orbital + Grok topics created/verified');
         } else {
-            console.warn('[OrbitalOrchestrator] Topic init script not found — skipping (topics must already exist)');
+            console.warn('[OrbitalOrchestrator] Topic init module not found — skipping (topics must already exist)');
         }
     } catch (err) {
         // Topics may already exist — not fatal
@@ -267,17 +470,21 @@ async function startOrbitalSystem(workspacePath) {
             console.error('[OrbitalOrchestrator] Non-fatal: Proxies failed to start:', proxyErr.message);
         }
 
-        // Step 1: Check Docker availability
-        const dockerAvailable = await isDockerAvailable();
+        // Step 1: Check Docker availability (with auto-start for Docker Desktop)
+        let dockerAvailable = await isDockerAvailable();
+        if (!dockerAvailable && process.platform === 'win32') {
+            dockerAvailable = await tryLaunchDockerDesktop();
+        }
         if (!dockerAvailable) {
             throw new Error('Docker daemon is not running. Please start Docker Desktop and try again.');
         }
         console.log('[OrbitalOrchestrator] ✓ Docker is available');
         recordStatusEvent('success', 'Docker daemon available');
 
-        // Step 2: Spin up docker-compose (Redpanda single-node cluster)
-        dockerComposeProcess = await spawnDockerCompose(workspacePath);
-        recordStatusEvent('info', 'docker-compose started', { workspacePath });
+        // Step 2: Spin up docker-compose (Redpanda single-node cluster + Redis)
+        const composeFilePath = resolveComposeFile(workspacePath);
+        dockerComposeProcess = await spawnDockerCompose(composeFilePath);
+        recordStatusEvent('info', 'docker-compose started', { composeFilePath });
 
         // Step 3: Wait for Redpanda broker to be reachable on :9092
         await waitForRedpandaReady();
@@ -313,7 +520,7 @@ async function startOrbitalSystem(workspacePath) {
         // Bust the status cache so the next UI poll immediately reflects healthy state
         _statusCache = null;
         console.log('[OrbitalOrchestrator] ===== Orbital System Ready =====');
-        console.log('[OrbitalOrchestrator] Services online: Redpanda | Topics | Bridge | Ingestor | Processor');
+        console.log('[OrbitalOrchestrator] Services online: Redpanda | Redis | Topics | Bridge | Ingestor | Processor');
 
         return true;
     } catch (err) {
@@ -346,12 +553,7 @@ async function performShutdownOrbitalSystem(stopProxiesFlag = true, options = {}
             await stopProxies();
             console.log('[OrbitalOrchestrator] Proxies stopped');
         }
-        // Fully stop the Matrix Processor. This must disconnect the KafkaJS
-        // consumer (via stopProcessor), not merely clear the barrier interval.
-        // The consumer is a module-level singleton; if it is left connected and
-        // running, the next startProcessor() re-subscribes on a running consumer
-        // and KafkaJS throws "Cannot subscribe to topic while consumer is
-        // running", trapping the orchestrator in a failed-restart loop.
+        // Fully stop the Matrix Processor
         try {
             const { stopProcessor } = require('../orbital/orbital-matrix-processor');
             if (typeof stopProcessor === 'function') {
@@ -389,18 +591,19 @@ async function performShutdownOrbitalSystem(stopProxiesFlag = true, options = {}
             // Bridge not initialized — safe to ignore
         }
 
-        // Keep the broker persistent across Electron restarts. Cluster teardown
-        // is destructive to availability and must be explicitly requested.
+        // Keep the broker persistent across Electron restarts unless explicitly requested
         if (options.stopDocker === true) {
             if (dockerComposeProcess && !dockerComposeProcess.killed) {
                 dockerComposeProcess.kill('SIGTERM');
             }
+            const composeFilePath = activeComposeFilePath || resolveComposeFile(process.env.WECRYP_ROOT);
+            const dockerBin = getDockerExecutable();
             await new Promise((resolve) => {
-                exec('docker compose down', { cwd: process.env.WECRYP_ROOT || process.cwd() }, (err) => {
+                exec(`"${dockerBin}" compose -f "${composeFilePath}" down`, { cwd: path.dirname(composeFilePath) }, (err) => {
                     if (err) {
-                        console.warn('[OrbitalOrchestrator] docker-compose down warning:', err.message);
+                        console.warn('[OrbitalOrchestrator] docker compose down warning:', err.message);
                     } else {
-                        console.log('[OrbitalOrchestrator] docker-compose down completed');
+                        console.log('[OrbitalOrchestrator] docker compose down completed');
                     }
                     resolve();
                 });
@@ -458,7 +661,7 @@ async function getOrbitalStatus() {
         };
 
         try {
-            const dockerAvailable = await isDockerAvailable();
+            const dockerAvailable = await isDockerAvailable(false);
             status.docker = dockerAvailable ? 'healthy' : 'down';
             if (lastProbeState.docker !== status.docker) {
                 lastProbeState.docker = status.docker;
@@ -479,8 +682,6 @@ async function getOrbitalStatus() {
             }
 
             if (redpandaReady) {
-                // Use Node's built-in http.get instead of undici-backed fetch to avoid
-                // ECONNRESET on Redpanda's Admin HTTP server (known undici incompatibility).
                 const httpGetJson = (url, timeoutMs = 4000) => new Promise((resolve, reject) => {
                     const http = require('http');
                     const req = http.get(url, (res) => {
@@ -583,6 +784,23 @@ async function startProxies(workspacePath) {
 
     // 1. WebSocket Proxy
     if (!wsProxyProcess || wsProxyProcess.killed) {
+        const wsProxyCandidates = [
+            path.join(__dirname, 'ws-proxy-server.js'),
+            workspacePath && path.join(workspacePath, 'src', 'infra', 'ws-proxy-server.js'),
+            path.join(process.cwd(), 'src', 'infra', 'ws-proxy-server.js'),
+        ].filter(Boolean);
+        const wsProxyScript = wsProxyCandidates.find(p => fs.existsSync(p));
+
+        if (wsProxyScript) {
+            wsProxyProcess = spawn(process.execPath, [wsProxyScript], {
+                cwd: path.dirname(wsProxyScript),
+                env: { ...process.env, WECRYPTO_WS_PROXY_PORT: '3011' },
+                stdio: ['ignore', 'pipe', 'pipe'],
+                windowsHide: true,
+            });
+            wsProxyProcess.stdout.on('data', chunk => console.log('[ws-proxy]', chunk.toString().trim()));
+            wsProxyProcess.stderr.on('data', chunk => console.warn('[ws-proxy:err]', chunk.toString().trim()));
+            wsProxyProcess.on('exit', code => { wsProxyProcess = null; console.log('[ws-proxy] exited', code); });
         const wsProxyScript = path.join(workspacePath, 'src', 'infra', 'ws-proxy-server.js');
         if (fs.existsSync(wsProxyScript)) {
             try {
@@ -612,10 +830,10 @@ async function startProxies(workspacePath) {
     if (!httpProxyProcess || httpProxyProcess.killed) {
         const candidates = [
             path.join(process.env.APPDATA || '', 'WECRYPTO', 'we-crypto-proxy.exe'),
-            path.join(workspacePath, 'we-crypto-proxy.exe'),
-            path.join(workspacePath, 'proxy', 'target', 'x86_64-pc-windows-gnu', 'release', 'we-crypto-proxy.exe'),
-            path.join(workspacePath, 'proxy', 'target', 'release', 'we-crypto-proxy.exe'),
-        ];
+            workspacePath && path.join(workspacePath, 'we-crypto-proxy.exe'),
+            workspacePath && path.join(workspacePath, 'proxy', 'target', 'x86_64-pc-windows-gnu', 'release', 'we-crypto-proxy.exe'),
+            workspacePath && path.join(workspacePath, 'proxy', 'target', 'release', 'we-crypto-proxy.exe'),
+        ].filter(Boolean);
 
         let exePath = candidates.find(p => fs.existsSync(p));
         if (!exePath && process.resourcesPath) {
@@ -630,7 +848,6 @@ async function startProxies(workspacePath) {
             const chosenPort = 3010;
             let proxyDir = path.dirname(exePath);
             if (proxyDir.includes('app.asar')) {
-                const os = require('os');
                 proxyDir = path.join(process.env.TEMP || path.join(os.homedir(), 'AppData', 'Roaming', 'WECRYPTO'), 'proxy-config');
                 fs.mkdirSync(proxyDir, { recursive: true });
             }

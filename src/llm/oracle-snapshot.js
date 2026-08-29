@@ -20,6 +20,19 @@
     return Number.isFinite(n) ? n : null;
   }
 
+  // Push-driven Pyth Lazer ticker cache, mirrored from the working pattern in
+  // prediction-markets.js. window.pythLazer.getLatestTickers() is an async IPC call
+  // (ipcRenderer.invoke) and can never be read synchronously the way getPythSpot()
+  // below needs, so subscribe once here instead. Keys are '<SYM>USD' (e.g. 'BTCUSD')
+  // and the live price field is `.last`, not `.price` -- see electron/main.js pmap
+  // construction and prediction-markets.js's getFreshPythLazerPrice().
+  let _lazerPushCache = null;
+  try {
+    if (typeof window !== 'undefined' && window.pythLazer?.onTickers) {
+      window.pythLazer.onTickers((prices) => { _lazerPushCache = prices || null; });
+    }
+  } catch (_) { /* */ }
+
   /** BTC/ETH/SOL/BNB/HYPE → 2dp; XRP/DOGE → 4dp. No float trails for AI/UI. */
   function priceDecimals(sym, value) {
     const s = String(sym || '').toUpperCase();
@@ -108,13 +121,12 @@
       }
     } catch (_) { /* */ }
 
-    // 4) pythLazer last tick
+    // 4) pythLazer push-cache (see _lazerPushCache subscription above)
     try {
-      const tick = window.pythLazer?.getLatestTickers?.()?.[key]
-        || window.pythLazer?.last?.[key];
-      const p = num(tick?.price ?? tick);
+      const tick = _lazerPushCache?.[`${key}USD`];
+      const p = num(tick?.last);
       if (p != null && p > 0) {
-        return { price: p, source: 'pyth-lazer', ts: tick?.timestamp || Date.now() };
+        return { price: p, source: tick?.source || 'pyth-lazer', ts: tick?.timestamp || Date.now() };
       }
     } catch (_) { /* */ }
 
