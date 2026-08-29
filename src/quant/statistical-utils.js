@@ -494,7 +494,7 @@
      * Approximates the inverse normal CDF (probit function).
      */
     function norm_ppf(p) {
-        if (p <= 0.0 || p >= 1.0) throw new Error("p must be in (0, 1)");
+        if (!Number.isFinite(p) || p <= 0.0 || p >= 1.0) throw new Error("p must be in (0, 1)");
         
         const a1 = -3.969683028665376e+01, a2 =  2.209460984245205e+02,
               a3 = -2.759285104469687e+02, a4 =  1.383577518672690e+02,
