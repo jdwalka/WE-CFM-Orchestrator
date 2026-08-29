@@ -78,9 +78,9 @@
     h15: { entryThreshold: 0.06, minAgreement: 0.50 },
   };
 
-  const candleCache = {};
-  window._predictions = {};
-  window._backtests = {};
+  const candleCache = Object.create(null);
+  window._predictions = Object.create(null);
+  window._backtests = Object.create(null);
   let predictionTimer = null;
   let predictionRunPromise = null;
   let advancedBacktestWarmPromise = null;

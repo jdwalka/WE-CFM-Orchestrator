@@ -606,7 +606,7 @@ wss.on('connection', (ws, req) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   const service = url.searchParams.get('service') || url.pathname.replace('/', '');
 
-  if (!UPSTREAM[service]) {
+  if (!Object.prototype.hasOwnProperty.call(UPSTREAM, service)) {
     log(`Invalid service requested: ${service}`, 'WARN');
     ws.close(1008, `Unknown service: ${service}`);
     return;

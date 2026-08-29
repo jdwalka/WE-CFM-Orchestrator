@@ -186,7 +186,7 @@ function readPythProKeyDirect() {
 
 async function fetchPythSpotDirect(coin) {
   const sym = String(coin || 'BTC').toUpperCase();
-  const feedId = PYTH_FEEDS[sym];
+  const feedId = Object.prototype.hasOwnProperty.call(PYTH_FEEDS, sym) ? PYTH_FEEDS[sym] : null;
   if (!feedId) return null;
   const key = readPythProKeyDirect();
   const url = `https://hermes.pyth.network/v2/updates/price/latest?ids%5B%5D=${encodeURIComponent(feedId)}`;
@@ -237,7 +237,7 @@ async function fetchPolymarketPtbDirect(sym, horizon = '5m') {
     const nowSec = Math.floor(Date.now() / 1000);
     const boundarySec = nowSec - (nowSec % spec.intervalSec);
     const prefixMap = { BTC: 'btc', ETH: 'eth', SOL: 'sol', XRP: 'xrp', DOGE: 'doge', BNB: 'bnb', HYPE: 'hype' };
-    const prefix = prefixMap[symbol] || symbol.toLowerCase();
+    const prefix = Object.prototype.hasOwnProperty.call(prefixMap, symbol) ? prefixMap[symbol] : symbol.toLowerCase();
     const slugs = spec.tags.map((tag) => `${prefix}-updown-${tag}-${boundarySec}`);
     for (const lockedSlug of slugs) {
       const locked = _directPtbLocks.get(lockedSlug);
