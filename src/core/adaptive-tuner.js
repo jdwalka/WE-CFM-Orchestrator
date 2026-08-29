@@ -64,17 +64,24 @@ class AdaptiveTuner {
     this.volatilityRegime = {};
     this.lastTuneTime = Date.now();
     
-    // 15m contract tuning acceleration (2026-05-04)
+    // 15m contract tuning acceleration (2026-05-04, retightened 2026-08-26)
     // MULTI-CYCLE DYNAMIC TUNING: Retune on ANY trigger
-    // ├─ 3 minutes (fast): Captures rapid market regime changes, high volatility periods
+    // ├─ 2 minutes (fast): Captures rapid market regime changes, high volatility periods
     // ├─ 7 minutes (medium): Standard tuning cycle, balanced responsiveness
     // ├─ 12 minutes (extended): Catch drift during quiet/ranging markets
     // └─ 10 trades (volume): Automatic trigger if volume spike causes regime shift
     this.tradesSinceLastTune = 0;
-    this.TUNING_CYCLES_MS = [3, 7, 12].map(min => min * 60 * 1000);  // [180000, 420000, 720000]
+    this.TUNING_CYCLES_MINUTES = [2, 7, 12];
+    this.TUNING_CYCLES_MS = this.TUNING_CYCLES_MINUTES.map(min => min * 60 * 1000);  // [120000, 420000, 720000]
     this.TUNING_CYCLE_TRADES = 10;  // Trigger on 10 new trades OR any time threshold
 
-    console.log('[AdaptiveTuner] Initialized with 15m-optimized baseline gates + multi-cycle tuning (3m/7m/12m or 10-trade)');
+    // Separate, heavier hourly pass: full recalibration from the resolution
+    // log rather than an incremental nudge (see runHourlyAudit()).
+    this.AUDIT_CYCLE_MS = 60 * 60 * 1000;
+    this.lastAuditTime = Date.now();
+    this.auditLog = [];
+
+    console.log('[AdaptiveTuner] Initialized with 15m-optimized baseline gates + multi-cycle tuning (2m/7m/12m or 10-trade) + hourly full audit');
   }
 
   // ──────────────────────────────────────────────────────────────
@@ -90,29 +97,42 @@ class AdaptiveTuner {
       .filter(sym => this.baselineGates[sym]);
   }
 
+  /**
+   * Applies per-coin/per-signal weight nudges via the real online-weight
+   * overlay (window.PredictionEngine.applyOnlineWeightUpdate), which is
+   * actually read by weightedComposite()/MergeKit every tick.
+   *
+   * `setRegimeWeightMultipliers`/`getRegimeWeightMultipliers` this used to
+   * call never existed anywhere in the codebase — every call silently no-op'd
+   * and reported `applied: false`. Fixed 2026-08-26.
+   *
+   * @param {object} multiplierSet - { [coin]: { [signalKey]: mult|{mult}|{delta} } }
+   */
   applyRegimeMultipliers(multiplierSet, options = {}) {
-    if (typeof window === 'undefined' || !window.PredictionEngine?.setRegimeWeightMultipliers) {
-      return { applied: false, reason: 'PredictionEngine regime multiplier API unavailable' };
+    if (typeof window === 'undefined' || !window.PredictionEngine?.applyOnlineWeightUpdate) {
+      return { applied: false, reason: 'PredictionEngine online-weight API unavailable' };
     }
-    const applied = window.PredictionEngine.setRegimeWeightMultipliers(multiplierSet, {
-      persist: !!options.persist,
-    });
+    const perCoin = {};
+    for (const [sym, updates] of Object.entries(multiplierSet || {})) {
+      perCoin[sym] = window.PredictionEngine.applyOnlineWeightUpdate(sym, updates, {
+        reason: options.source || 'adaptive-tuner',
+      });
+    }
     const event = {
       timestamp: Date.now(),
       source: options.source || 'adaptive-tuner',
-      persist: !!options.persist,
-      regimes: Object.keys(multiplierSet || {}),
+      coins: Object.keys(multiplierSet || {}),
     };
     this.regimeMultiplierHistory.push(event);
     if (this.regimeMultiplierHistory.length > 50) {
       this.regimeMultiplierHistory = this.regimeMultiplierHistory.slice(-50);
     }
-    return { applied: true, event, multipliers: applied };
+    return { applied: true, event, state: perCoin };
   }
 
   getRegimeMultipliers() {
-    if (typeof window === 'undefined' || !window.PredictionEngine?.getRegimeWeightMultipliers) return null;
-    return window.PredictionEngine.getRegimeWeightMultipliers();
+    if (typeof window === 'undefined' || !window.PredictionEngine?.getOnlineWeightState) return null;
+    return window.PredictionEngine.getOnlineWeightState();
   }
 
   clamp(value, min, max) {
@@ -466,35 +486,50 @@ class AdaptiveTuner {
   shouldRetune() {
     const timeSinceLastTune = Date.now() - this.lastTuneTime;
     const tradesTriggered = this.tradesSinceLastTune >= this.TUNING_CYCLE_TRADES;
-    
-    // Check time-based triggers (3m, 7m, 12m)
+    const auditDue = (Date.now() - this.lastAuditTime) >= this.AUDIT_CYCLE_MS;
+
+    // Prioritize the hourly audit before regular time-based triggers
+    if (auditDue) {
+      return {
+        shouldRetune: true,
+        trigger: 'hourly-audit',
+        timeSinceLastTune,
+        trades: this.tradesSinceLastTune,
+        auditDue,
+      };
+    }
+
+    // Check time-based triggers (2m, 7m, 12m)
     for (let i = 0; i < this.TUNING_CYCLES_MS.length; i++) {
       if (timeSinceLastTune >= this.TUNING_CYCLES_MS[i]) {
-        const minutes = [3, 7, 12][i];
-        return { 
-          shouldRetune: true, 
+        const minutes = this.TUNING_CYCLES_MINUTES[i];
+        return {
+          shouldRetune: true,
           trigger: `time-${minutes}m`,
           timeSinceLastTune,
-          trades: this.tradesSinceLastTune
+          trades: this.tradesSinceLastTune,
+          auditDue,
         };
       }
     }
-    
+
     // Check trade-based trigger (10 trades)
     if (tradesTriggered) {
-      return { 
-        shouldRetune: true, 
+      return {
+        shouldRetune: true,
         trigger: 'trades',
         timeSinceLastTune,
-        trades: this.tradesSinceLastTune
+        trades: this.tradesSinceLastTune,
+        auditDue,
       };
     }
-    
-    return { 
-      shouldRetune: false, 
-      trigger: 'none',
+
+    return {
+      shouldRetune: auditDue,
+      trigger: auditDue ? 'hourly-audit' : 'none',
       timeSinceLastTune,
-      trades: this.tradesSinceLastTune
+      trades: this.tradesSinceLastTune,
+      auditDue,
     };
   }
 
@@ -504,6 +539,78 @@ class AdaptiveTuner {
   markTuneComplete() {
     this.lastTuneTime = Date.now();
     this.tradesSinceLastTune = 0;
+  }
+
+  /**
+   * Full hourly recalibration pass (separate from the 2m/7m/12m incremental
+   * nudges): re-derives per-indicator and per-timing state from the complete
+   * resolution log, then persists the resulting online-weight state so the
+   * next session doesn't cold-start (see persistOnlineState()).
+   */
+  async runFullAudit() {
+    const auditStartTime = Date.now();
+    const indicatorRetune = this.retuneFromLog();
+    const timingRetune = this.retuneTimingFromLog();
+    const onlineState = (typeof window !== 'undefined' && window.PredictionEngine?.getOnlineWeightState)
+      ? window.PredictionEngine.getOnlineWeightState()
+      : {};
+    const summary = {
+      timestamp: auditStartTime,
+      type: 'hourly-full-audit',
+      indicatorRetune,
+      timingRetune,
+      coinsInState: Object.keys(onlineState).length,
+      cycleTime: Date.now() - auditStartTime,
+    };
+    this.auditLog.push(summary);
+    if (this.auditLog.length > 24) this.auditLog = this.auditLog.slice(-24); // ~1 day at hourly cadence
+    this.lastAuditTime = Date.now();
+    this.persistOnlineState(onlineState, 'adaptive-tuner-hourly-audit');
+    if (typeof window !== 'undefined') {
+      window._lastAuditResult = summary;
+    }
+    console.log(`[AdaptiveTuner] Hourly full audit complete (${summary.cycleTime}ms, ${summary.coinsInState} coins in state)`);
+    return summary;
+  }
+
+  /**
+   * Persists the current online-weight state via the existing Drive-backed
+   * logging pipeline (data-logger.js) so a new session/page-reload can
+   * bootstrap from where tuning left off instead of resetting to defaults.
+   */
+  persistOnlineState(onlineState, reason) {
+    try {
+      const state = onlineState || (typeof window !== 'undefined' && window.PredictionEngine?.getOnlineWeightState
+        ? window.PredictionEngine.getOnlineWeightState()
+        : null);
+      if (!state || typeof window === 'undefined' || !window.DataLogger?.push) return { persisted: false };
+      window.DataLogger.push('weight_tuning_state', { state, reason: reason || 'adaptive-tuner' });
+      return { persisted: true };
+    } catch (err) {
+      console.warn('[AdaptiveTuner] persistOnlineState failed:', err.message);
+      return { persisted: false, error: err.message };
+    }
+  }
+
+  /**
+   * Called once at startup: reads the most recently persisted online-weight
+   * state (from the prior session, via the same Drive-backed log pipeline)
+   * and seeds the live overlay so tuning doesn't cold-start every reload.
+   */
+  bootstrapFromPriorSession() {
+    try {
+      if (typeof window === 'undefined' || !window.DataLogger?.getLatest) {
+        return { loaded: false, reason: 'DataLogger.getLatest unavailable' };
+      }
+      const latest = window.DataLogger.getLatest('weight_tuning_state');
+      if (!latest || !latest.state) return { loaded: false, reason: 'no prior session state found' };
+      const result = window.PredictionEngine?.loadOnlineWeightState?.(latest.state) ?? { loaded: false, coins: 0 };
+      console.log(`[AdaptiveTuner] Bootstrapped online-weight state from prior session: ${result.coins} coin(s).`);
+      return result;
+    } catch (err) {
+      console.warn('[AdaptiveTuner] bootstrapFromPriorSession failed:', err.message);
+      return { loaded: false, error: err.message };
+    }
   }
 
   /**
@@ -806,6 +913,10 @@ class AdaptiveTuner {
   async runTuningCycle(options = {}) {
     const { validatePyth = true, dryRun = false, reason = 'scheduled' } = options;
 
+    if (reason === 'hourly-audit' && !dryRun) {
+      return this.runFullAudit();
+    }
+
     const cycleStartTime = Date.now();
     const results = {
       timestamp: cycleStartTime,
@@ -883,6 +994,11 @@ class AdaptiveTuner {
       window._tuningLog.push(results);
       window._currentGates = { ...this.currentGates };
     }
+
+    // Persist the online-weight state after every real (non-dry-run) cycle
+    // so the next session/reload can bootstrap from it (see
+    // bootstrapFromPriorSession() / section 4d of the tuning plan).
+    if (!dryRun) this.persistOnlineState(null, `adaptive-tuner-${reason}`);
 
     console.log(
       `[AdaptiveTuner] Cycle complete: ${results.totalAdjustments} adjustments, ` +

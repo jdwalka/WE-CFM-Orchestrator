@@ -929,8 +929,9 @@ DETERMINISTIC HTF + MODEL + ON-CHAIN + X REASONING (MANDATORY):
 3. Use 15m/30m / session memory for HTF bias. Weight denser session memory more as sampleCount grows.
 4. Incorporate recent on-chain (whale flows, large transfers) and X sentiment when present.
 5. Factor ORDER-FLOW / TAIL-RISK when active (VPIN, whale trades, vol-mult).
-6. Synthesize: path + odds + book + your inference. Mention the model only if it agrees or if you are explicitly fading it.
-7. If data is thin or conflicting inside the remaining window, default to WAIT with low confidence. Never force a side.
+6. Fold in the Orbital infra signal (core/momentum coherence + charge, below) as a secondary confirmation/conflict check — cite it by name in strongest_signal or key_conflict when its charge sign agrees or disagrees with your call; treat "no signal (pipeline offline)" as absent data, not a reason to doubt the call.
+7. Synthesize: path + odds + book + your inference. Mention the model only if it agrees or if you are explicitly fading it.
+8. If data is thin or conflicting inside the remaining window, default to WAIT with low confidence. Never force a side.
 
 SNIPE / SCALP-FLIP PLAYS (when tail-risk order-flow is active):
 The trader's execution style: buy the 5-minute binary contract on the side favored by a sudden order-flow burst, ride the direction for roughly the first 45-90 seconds while it reprices, SELL, then flip and buy the OPPOSITE side for the remainder of the window if the burst is likely to fade or mean-revert (common after a whale-trade/VPIN spike burns out). Only propose a flip plan when the order-flow tail-risk block is active and gives you a real signal — never invent one on thin data. Populate the "snipe_plan" field:
@@ -983,12 +984,33 @@ CRITICAL RULES FOR HIGH SPECIALIZATION (DETERMINISTIC):
 - **call field (PRIMARY machine-read key)**: MUST be exactly one of: "UP", "DOWN", or "WAIT" — no extra text, no prefix. This is the authoritative directional verdict the trading system reads first. "UP" = you expect price to be ABOVE PTB at settlement. "DOWN" = you expect price to be BELOW PTB. "WAIT" = insufficient edge.
 - **direction field**: MUST mirror the call field exactly ("UP", "DOWN", or "WAIT").
 - suggestions.notes MUST start with the clear human-readable call: "BUY UP", "BUY DOWN", or "WAIT". Then immediately: current distance to PTB in %, momentum direction relative to PTB, time context (fresh / mid-window / late), preferred execution (scalp-and-sell vs hold vs snipe-and-flip), and the dominant risk.
-- ai_wording fields must be concrete and timing-oriented (e.g. "edge best captured by selling into first 90s repricing if it moves 8bps toward PTB").
+- ai_wording fields must be concrete and timing-oriented (e.g. "edge best captured by selling into first 90s repricing if it moves 8bps toward PTB"). Ban generic filler ("market looks bullish", "conditions are favorable", "monitor closely") — every sentence must reference a specific number, level, or named signal from this snapshot, or it does not belong in the output.
 - scalp_setups: optional high-quality micro-setups only.
 - snipe_plan: only set should_flip=true when the order-flow/tail-risk block genuinely supports a timed flip; otherwise should_flip=false and leave flip_to null.
 - broader_observations: Cite the Cross-coin flow and PTB defense sections when they contain numbers. If sync is synchronized_bid or synchronized_offer, say so with the up/down counts. If matchedLevel/local5m/local15m testedCount > 0, cite defended/broken. Do not write "no cross-coin flow data" or "no PTB defense history" when those sections have n>=2 or testedCount>0. Leave "" only if both sections say not enough / none recorded.
 - Never invent PTB value. Never give multi-hour thesis. Stay inside the 5-minute binary resolution.
 - Output must be valid JSON that JSON.parse() succeeds on with zero surrounding text. Realistic scalper tone — measured, numbers-first, time-aware.`.trim();
+}
+
+// Orbital infra signal (Kafka/Redpanda momentum pipeline, non-authoritative
+// supplementary read via window.OrbitalSignal) — legitimately absent when
+// the pipeline isn't running (Electron desktop app / start:server not up).
+// Shared by the 5m and 15m/hourly range prompt builders.
+function buildOrbitalLine(coin) {
+  const orbitalState = (typeof window !== 'undefined' && window.OrbitalSignal?.get)
+    ? window.OrbitalSignal.get(coin)
+    : null;
+  if (!orbitalState) return 'Orbital: no signal (pipeline offline).';
+  const qs = orbitalState.quantum_states || {};
+  const core = qs.s || {};
+  const mom = qs.p || {};
+  const orbitalNumber = (value) => {
+    const normalized = Number(value);
+    return Number.isFinite(normalized) ? normalized : 0;
+  };
+  return `Orbital: core coherence=${orbitalNumber(core.coherence).toFixed(2)} charge=${orbitalNumber(core.net_charge).toFixed(2)}, `
+    + `momentum coherence=${orbitalNumber(mom.coherence).toFixed(2)} charge=${orbitalNumber(mom.net_charge).toFixed(2)}`
+    + `${orbitalState.decayed_orbitals?.length ? ` (decayed: ${orbitalState.decayed_orbitals.join(',')})` : ''}.`;
 }
 
 function generateFiveMinUserPrompt(snapshot) {
@@ -1022,6 +1044,8 @@ function generateFiveMinUserPrompt(snapshot) {
   const h15 = htf['15m'] || {};
   const h30 = htf['30m'] || {};
   const htfLine = `HTF 15m: prob=${h15.prob != null ? (h15.prob*100).toFixed(1)+'%' : 'n/a'}, regime=${h15.regime || 'n/a'}, dir=${h15.direction || 'n/a'}. HTF 30m: regime=${h30.regime || 'n/a'}, dir=${h30.direction || 'n/a'}.`;
+
+  const orbitalLine = buildOrbitalLine(coin);
 
   // Compressed on-chain side-scan (BTC/ETH/SOL) — never raw txs; lean/burst/size mult for Grok
   const onchain = snapshot.onChainSideScan || snapshot.onChainRecent || {};
@@ -1070,6 +1094,9 @@ Timestamp: ${new Date().toISOString()}
 
 ## Higher Timeframe Context (15m / 30m windows — analyze first for bias)
 ${htfLine}
+
+## Orbital infra signal (supplementary — non-authoritative, may be offline)
+${orbitalLine}
 
 ## Session analytics memory (grows while app stays open — denser = stronger HTF evidence)
 ${(function () {
@@ -1301,6 +1328,7 @@ function generateRangeUserPrompt(snapshot) {
   const modelDir = snapshot.direction || snapshot.modelDirection || 'n/a';
   const modelScore = snapshot.score ?? snapshot.modelScore ?? 'n/a';
   const modelConf = snapshot.confidence != null ? (Number(snapshot.confidence) * 100).toFixed(1) + '%' : 'n/a';
+  const orbitalLine = buildOrbitalLine(coin);
 
   if (h === 15) {
     const ac = snapshot.activeContract || k15;
@@ -1331,6 +1359,9 @@ Seconds to close: ${ac.secondsToClose ?? k15.secondsToClose ?? 'n/a'}
 Best bid/ask (Up): ${ac.bestBid ?? k15.bestBid ?? 'n/a'} / ${ac.bestAsk ?? k15.bestAsk ?? 'n/a'}
 Mid / spread / depthImbalance: ${mid ?? 'n/a'} / ${spread ?? 'n/a'} / ${imb != null ? Number(imb).toFixed(2) : 'n/a'}
 Live direction vs Polymarket PTB: ${ac.liveDirection || k15.liveDirection || 'n/a'}
+
+## Orbital infra signal (supplementary — non-authoritative, may be offline)
+${orbitalLine}
 
 ${formatModelGuideBlock(snapshot)}
 
@@ -1400,6 +1431,9 @@ Current spot: ${Number.isFinite(current) && current > 0 ? '$' + current : 'n/a'}
 Timestamp: ${new Date().toISOString()}
 
 ${formatModelGuideBlock(snapshot)}
+
+## Orbital infra signal (supplementary — non-authoritative, may be offline)
+${orbitalLine}
 
 ## HOURLY RANGE LADDER (spot-centered synthetic buckets, peg preferredRange to one row)
 spotBucket=${JSON.stringify(here)}

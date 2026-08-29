@@ -79,15 +79,21 @@
       "src/**",
       "electron/**",
       "assets/**",
+      "scripts/**",
       "proxy.pac",
       "cloudflared/**",
       "settlement-retune.js",
+      "docker-compose.yml",
       "package.json"
     ],
     "extraResources": [
       {
         "from": "proxy/target/x86_64-pc-windows-gnu/release/we-crypto-proxy.exe",
         "to": "we-crypto-proxy.exe"
+      },
+      {
+        "from": "docker-compose.yml",
+        "to": "docker-compose.yml"
       }
     ],
     "asarUnpack": [

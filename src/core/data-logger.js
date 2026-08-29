@@ -537,6 +537,36 @@
     }
   }
 
+  /**
+   * Reads back the most recently persisted record for a category (today's
+   * file, falling back to yesterday's if today's is empty/missing). Used by
+   * adaptive-tuner.js's bootstrapFromPriorSession() to seed the online-weight
+   * overlay from the prior session instead of cold-starting. Best-effort —
+   * returns null on any failure (no local/Drive file, IPC bridge missing).
+   */
+  async function getLatest(category) {
+    if (!window.dataStore?.readFile) return null;
+    try {
+      const today = todayStr();
+      const d = new Date(); d.setDate(d.getDate() - 1);
+      const yesterday = localDayStr(d);
+      for (const day of [today, yesterday]) {
+        for (const root of [LOCAL_ROOT, ...DRIVE_PATHS]) {
+          const candidate = await window.dataStore.readFile(`${root}\\${day}\\${category}.jsonl`);
+          const content = candidate?.data || candidate?.content;
+          if (!content) continue;
+          const lines = content.split(/\r?\n/).filter(l => l.trim());
+          for (let i = lines.length - 1; i >= 0; i--) {
+            try { return JSON.parse(lines[i]); } catch (_) { /* try prior line */ }
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('[DataLogger] getLatest failed:', category, e.message);
+    }
+    return null;
+  }
+
   function push(category, obj) {
     if (!_buf[category]) _buf[category] = [];
     obj.ts = obj.ts || Date.now();
@@ -1073,6 +1103,8 @@
     logDerivatives: (sym, record) => push('derivatives', { sym, ...record }),
     logOptions: (sym, record) => push('options', { sym, ...record }),
     logPredictionEdge: (sym, record) => push('prediction_edge', { sym, ...record }),
+    push,
+    getLatest,
     flush:         async () => {
       await flushAll();
       await syncCloudPending();

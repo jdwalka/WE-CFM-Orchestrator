@@ -842,6 +842,12 @@ initOBHud();
       if (typeof AdaptiveTuner !== 'undefined') {
         window._adaptiveTuner = new AdaptiveTuner();
         console.log('[App] AdaptiveTuner initialized');
+        // Seed online-weight state from the prior session (Drive-backed log)
+        // instead of cold-starting at defaults every reload. Deferred slightly
+        // so DataLogger's drive discovery has had a chance to complete.
+        setTimeout(() => {
+          window._adaptiveTuner?.bootstrapFromPriorSession?.();
+        }, 3000);
 
         const adaptiveCoinSymbols = () => {
           if (window._adaptiveTuner?.getTuningCoins) return window._adaptiveTuner.getTuningCoins();

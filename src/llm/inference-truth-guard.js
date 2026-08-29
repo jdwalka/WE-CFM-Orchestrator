@@ -16,22 +16,14 @@
 }(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   'use strict';
 
-  // Market yesProb edge needed to count as a strong crowd signal
   const MKT_EDGE = Number(typeof window !== 'undefined' && window.__TRUTH_MKT_EDGE) || 0.10;
-  // Spot % past PTB to count as clear path direction
-  const PATH_EDGE_PCT = Number(typeof window !== 'undefined' && window.__TRUTH_PATH_EDGE) || 0.00015; // 1.5 bps
-  // Book imbalance |z| to count
+  const PATH_EDGE_PCT = Number(typeof window !== 'undefined' && window.__TRUTH_PATH_EDGE) || 0.00015;
   const BOOK_EDGE = 0.12;
-  // How many independent truth votes must oppose AI to nullify
   const NULLIFY_VOTES = 2;
-  // Soft downweight if only one vote opposes
   const SOFT_WEIGHT = 0.25;
 
-  const _watch = {}; // `${sym}:${horizon}` -> last verdict
+  const _watch = {};
 
-  // Market/price accessors — default to the live window globals, but overridable
-  // via configure() so the core evaluation path (resolveMarket/collectTruthVotes/
-  // evaluate) doesn't have to be tested or reused against real globals.
   const _accessors = {
     getCoin: (sym) => (typeof window !== 'undefined' && window.PredictionMarkets?.getCoin?.(sym)) || {},
     getPythSpot: (sym) => {
@@ -54,9 +46,6 @@
     Object.assign(_accessors, overrides);
   }
 
-  // Debug logging gate — matches the __TRUTH_MKT_EDGE/__TRUTH_PATH_EDGE
-  // window-config convention above. Defaults to on (preserves prior behavior);
-  // set window.__TRUTH_DEBUG = false to silence in production.
   function _debugEnabled() {
     return typeof window === 'undefined' || window.__TRUTH_DEBUG !== false;
   }
@@ -72,30 +61,29 @@
     return null;
   }
 
-  /**
-   * Pull live market context for a symbol (poly5m preferred for short, else 15m).
-   */
   function resolveMarket(sym, preferHorizon) {
     const coin = _accessors.getCoin(sym) || {};
     const p5 = coin.poly5m || null;
     const p15 = coin.poly15m || null;
+    const p60 = coin.poly60m || null;
     let m = null;
     let horizon = '15m';
     if (preferHorizon === '5m' && p5?.slug) { m = p5; horizon = '5m'; }
     else if (preferHorizon === '15m' && p15?.slug) { m = p15; horizon = '15m'; }
+    else if ((preferHorizon === '60m' || preferHorizon === '1h' || preferHorizon === 'hourly') && p60?.slug) { m = p60; horizon = '60m'; }
     else if (p5?.slug) { m = p5; horizon = '5m'; }
     else if (p15?.slug) { m = p15; horizon = '15m'; }
+    else if (p60?.slug) { m = p60; horizon = '60m'; }
 
     if (!m) return null;
 
-    // Pyth-only spot for truth path (never RTI/CEX as PTB substitute)
     let spot = _accessors.getPythSpot(sym) || NaN;
     if (!(spot > 0)) {
       spot = Number(_accessors.getPythPriceFallback(sym) || m.currentPriceNum || 0);
     }
     const rawPtb = Number(m.priceToBeatNum || m.targetPriceNum || 0);
     const ptbSrc = String(m.priceToBeatSource || m.ptbSource || '').toLowerCase();
-    const ptbRejected = /rtds|twap30|title|provisional|coinbase|binance|gecko|rti|crypto-price|boundary|rejected:/.test(ptbSrc);
+    const ptbRejected = /rtds|twap|title|provisional|coinbase|binance|gecko|rti|crypto-price|boundary|rejected:|chainlink-candles/.test(ptbSrc);
     const ptb = (!ptbRejected && Number.isFinite(rawPtb) && rawPtb > 0) ? rawPtb : NaN;
     const yes = Number(m.probability ?? m.upProbability ?? m.yesProb ?? m.clobProbability);
     const mid = Number(m.mid);
@@ -117,15 +105,9 @@
     };
   }
 
-  /**
-   * Build independent "truth votes" from raw data.
-   * Each vote: { source, call: UP|DOWN, strength: 0..1, detail }
-   */
   function collectTruthVotes(market) {
     const votes = [];
     if (!market) return votes;
-
-    // 1) Spot vs PTB path (settlement definition)
     if (market.spot != null && market.ptb != null && market.ptb > 0) {
       const delta = market.spot - market.ptb;
       const pct = delta / market.ptb;
@@ -138,21 +120,11 @@
         });
       }
     }
-
-    // 2) Explicit liveDirection from prediction-markets if present
     const ld = String(market.liveDirection || '').toUpperCase();
     if (ld === 'UP' || ld === 'DOWN') {
-      votes.push({
-        source: 'live_direction',
-        call: ld,
-        strength: 0.7,
-        detail: `liveDirection=${ld}`,
-      });
+      votes.push({ source: 'live_direction', call: ld, strength: 0.7, detail: `liveDirection=${ld}` });
     }
-
-    // 3) CLOB / Gamma P(Up) mid
-    const p = market.yesProb != null ? market.yesProb
-      : (market.mid != null ? market.mid : null);
+    const p = market.yesProb != null ? market.yesProb : (market.mid != null ? market.mid : null);
     if (p != null && Math.abs(p - 0.5) >= MKT_EDGE) {
       votes.push({
         source: 'clob_mid',
@@ -161,8 +133,6 @@
         detail: `P(Up)=${(p * 100).toFixed(1)}%`,
       });
     }
-
-    // 4) Book depth imbalance (positive = bid-heavy → UP pressure)
     if (market.depthImbalance != null && Math.abs(market.depthImbalance) >= BOOK_EDGE) {
       votes.push({
         source: 'book_imbalance',
@@ -171,7 +141,6 @@
         detail: `depthImbalance=${market.depthImbalance.toFixed(3)}`,
       });
     }
-
     return votes;
   }
 
@@ -196,15 +165,6 @@
     };
   }
 
-  /**
-   * @param {object} input
-   * @param {string} input.call - AI call UP|DOWN
-   * @param {number} [input.confidence] - 0..1
-   * @param {string} [input.sym]
-   * @param {object} [input.market] - optional prebuilt market context
-   * @param {string} [input.horizon] - '5m'|'15m'
-   * @param {number} [input.modelScore] - prediction engine score [-1,1]
-   */
   function evaluate(input = {}) {
     const aiCall = normCall(input.call);
     const conf = clamp(Number(input.confidence ?? 0.55), 0, 1);
@@ -253,8 +213,6 @@
     }
 
     const votes = collectTruthVotes(market);
-
-    // Optional: model score from prediction engine as another vote (not LLM)
     const ms = Number(input.modelScore);
     if (Number.isFinite(ms) && Math.abs(ms) >= 0.12) {
       votes.push({
@@ -277,7 +235,6 @@
     let sourceOfTruth = 'llm';
 
     if (!aiCall) {
-      // No AI call — use truth if any
       effectiveCall = truth.call;
       sourceOfTruth = truth.call ? 'raw_data' : 'none';
       reason = truth.call ? 'no_ai_call_use_raw' : 'no_signal';
@@ -288,8 +245,6 @@
       sourceOfTruth = 'raw_data';
       reason = `nullified: AI=${aiCall} opposed by ${opposing.map((v) => v.source).join('+')} → truth=${truth.call}`;
     } else if (opposing.some((v) => v.source === 'spot_vs_ptb') && truth.call && truth.call !== aiCall) {
-      // Settlement path is the contract definition — do not wait for a second
-      // vote or an "extreme" crowd swing to flip the painted color.
       nullified = true;
       weight = 0;
       effectiveCall = opposing.find((v) => v.source === 'spot_vs_ptb').call;
@@ -298,7 +253,6 @@
     } else if (opposing.length === 1 && truth.call && truth.call !== aiCall) {
       soft = true;
       weight = SOFT_WEIGHT;
-      // Keep AI label but heavily downweight; surface truth as alternate
       effectiveCall = aiCall;
       sourceOfTruth = 'llm_soft_conflict';
       reason = `soft: AI=${aiCall} vs ${opposing[0].source}(${opposing[0].call}) — weight=${SOFT_WEIGHT}`;
@@ -312,7 +266,6 @@
       weight = conf >= 0.55 ? 0.85 : 0.5;
     }
 
-    // Late window: if path is decisive and fights AI, hard nullify even on 1 strong path vote
     const ttc = market?.secondsToClose;
     const pathVote = votes.find((v) => v.source === 'spot_vs_ptb');
     if (
@@ -375,9 +328,6 @@
     return verdict;
   }
 
-  /**
-   * Evaluate a full ASI1/LLM brief object; returns brief patched with truth fields.
-   */
   function gateBrief(brief, opts = {}) {
     if (!brief) return brief;
     const call = brief.call || brief.direction;

@@ -2,7 +2,7 @@
  * Oracle Snapshot — STRICT sources for LLM inference
  * --------------------------------------------------
  * Spot  = Pyth only (Lazer / Hermes / _pythPrices / PythBrowser)
- * PTB   = Polymarket only (poly5m / poly15m priceToBeatNum from Gamma/chainlink-candles)
+ * PTB   = Polymarket only (poly5m / poly15m / poly60m opening strike locked at T0)
  * Odds  = Polymarket CLOB/Gamma only
  * Hourly = HourlyRangesPanel ladder when available
  *
@@ -19,6 +19,19 @@
     const n = Number(v);
     return Number.isFinite(n) ? n : null;
   }
+
+  // Push-driven Pyth Lazer ticker cache, mirrored from the working pattern in
+  // prediction-markets.js. window.pythLazer.getLatestTickers() is an async IPC call
+  // (ipcRenderer.invoke) and can never be read synchronously the way getPythSpot()
+  // below needs, so subscribe once here instead. Keys are '<SYM>USD' (e.g. 'BTCUSD')
+  // and the live price field is `.last`, not `.price` -- see electron/main.js pmap
+  // construction and prediction-markets.js's getFreshPythLazerPrice().
+  let _lazerPushCache = null;
+  try {
+    if (typeof window !== 'undefined' && window.pythLazer?.onTickers) {
+      window.pythLazer.onTickers((prices) => { _lazerPushCache = prices || null; });
+    }
+  } catch (_) { /* */ }
 
   /** BTC/ETH/SOL/BNB/HYPE → 2dp; XRP/DOGE → 4dp. No float trails for AI/UI. */
   function priceDecimals(sym, value) {
@@ -108,13 +121,12 @@
       }
     } catch (_) { /* */ }
 
-    // 4) pythLazer last tick
+    // 4) pythLazer push-cache (see _lazerPushCache subscription above)
     try {
-      const tick = window.pythLazer?.getLatestTickers?.()?.[key]
-        || window.pythLazer?.last?.[key];
-      const p = num(tick?.price ?? tick);
+      const tick = _lazerPushCache?.[`${key}USD`];
+      const p = num(tick?.last);
       if (p != null && p > 0) {
-        return { price: p, source: 'pyth-lazer', ts: tick?.timestamp || Date.now() };
+        return { price: p, source: tick?.source || 'pyth-lazer', ts: tick?.timestamp || Date.now() };
       }
     } catch (_) { /* */ }
 
@@ -141,12 +153,15 @@
 
   /**
    * Polymarket window only — never invent PTB.
-   * @param {'5m'|'15m'} horizon
+   * @param {'5m'|'15m'|'60m'|'1h'} horizon
    */
   function getPolymarketWindow(sym, horizon) {
     const key = String(sym || '').toUpperCase();
     const coin = (typeof window !== 'undefined' && window.PredictionMarkets?.getCoin?.(key)) || {};
-    const m = horizon === '5m' ? (coin.poly5m || null) : (coin.poly15m || null);
+    const h = String(horizon || '').toLowerCase();
+    const m = (h === '5m') ? (coin.poly5m || null)
+      : (h === '60m' || h === '1h' || h === 'hourly') ? (coin.poly60m || null)
+      : (coin.poly15m || null);
     if (!m || !m.slug) return null;
 
     // PTB: only explicit Polymarket fields (chainlink-candles / gamma lock)
@@ -173,10 +188,10 @@
     // Canonical Polymarket PTB only. Reject RTDS TWAP / title / provisional proxies
     // that are NOT what Polymarket's UI labels "Price to Beat".
     const ptbSource = String(m.priceToBeatSource || m.ptbSource || m._ptbSource || '').toLowerCase();
-    const rejected = /rtds|twap30|title|provisional|coinbase|binance|gecko|rti|crypto-price|boundary|rejected:/.test(ptbSource);
+    const rejected = /rtds|twap|title|provisional|coinbase|binance|gecko|rti|crypto-price|boundary|rejected:|chainlink-candles/.test(ptbSource);
     const allowedSource = !rejected && (
       !ptbSource
-      || /poly|gamma|chainlink|clob|candle|lock|event|openprice|pricetobeat/.test(ptbSource)
+      || /poly|gamma|lock|event|openprice|pricetobeat|contract/.test(ptbSource)
     );
 
     const ptbOk = ptb != null && ptb > 0 && allowedSource;
@@ -353,10 +368,13 @@
     // leaving the 5m slot silently empty forever. Only fall back across
     // horizons when no specific one was requested.
     let primary = null;
+    const poly60 = getPolymarketWindow(key, '60m');
     if (preferHorizon === '5m') primary = (poly5?.valid && poly5.slug) ? poly5 : null;
     else if (preferHorizon === '15m') primary = (poly15?.valid && poly15.slug) ? poly15 : null;
+    else if (preferHorizon === '60m' || preferHorizon === '1h' || preferHorizon === 'hourly') primary = (poly60?.valid && poly60.slug) ? poly60 : null;
     else if (poly15?.valid && poly15.slug) primary = poly15;
     else if (poly5?.valid && poly5.slug) primary = poly5;
+    else if (poly60?.valid && poly60.slug) primary = poly60;
 
     const hourly = getHourlyLadder(key, spot);
 
@@ -383,6 +401,7 @@
       oraclePolicy: 'pyth_spot_plus_polymarket_ptb_only',
       poly5m: poly5,
       poly15m: poly15,
+      poly60m: poly60,
       active: primary,
       horizon: primary?.horizon || preferHorizon || null,
       priceToBeatNum: primary?.priceToBeatNum ?? null,
@@ -447,16 +466,18 @@
 
     const p5 = polyBlock(o.poly5m);
     const p15 = polyBlock(o.poly15m);
+    const p60 = polyBlock(o.poly60m);
+    const is60 = o.horizon === '60m' || o.horizon === '1h' || preferHorizon === 60 || preferHorizon === '60m';
 
     return {
       coin: o.coin,
       preContract: true,
       preferAsi1: true,
       rangePrediction: true,
-      rangeHorizonMinutes: preferHorizon === '60' || preferHorizon === 60 ? 60 : 15,
-      horizonMinutes: is5 ? 5 : (preferHorizon === 60 || preferHorizon === '60m' ? 60 : 15),
-      horizon: is5 ? '5m' : (preferHorizon === 60 || preferHorizon === '60m' ? '60m' : '15m'),
-      venue: is5 ? 'polymarket-5m' : 'polymarket-15m',
+      rangeHorizonMinutes: is60 ? 60 : 15,
+      horizonMinutes: is5 ? 5 : (is60 ? 60 : 15),
+      horizon: is5 ? '5m' : (is60 ? '60m' : '15m'),
+      venue: is5 ? 'polymarket-5m' : (is60 ? 'polymarket-60m' : 'polymarket-15m'),
       // STRICT spot
       currentPrice: o.spot,
       price: o.spot,
@@ -470,7 +491,8 @@
       confidence: pred?.confidence != null ? pred.confidence / (pred.confidence > 1 ? 100 : 1) : null,
       poly5m: p5,
       poly15m: p15,
-      activeContract: is5 ? p5 : p15,
+      poly60m: p60,
+      activeContract: is5 ? p5 : (is60 ? p60 : p15),
       rangeLadder: o.hourlyLadder,
       spotBucket: o.spotBucket,
       hourlyRanges: true,

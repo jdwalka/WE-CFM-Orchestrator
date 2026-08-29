@@ -3274,7 +3274,10 @@
           adaptiveWeights,
           coinBias,
           window.PredictionRegimeWeights?.REGIME_WEIGHT_MULTS?.[liveRegime.regime] || {},
-          { slerpT: 0.35 }
+          // Live-tunable: set window.MERGEKIT_SLERP_T from the console to adjust
+          // MergeKit's pull on the composite without a redeploy. Default raised
+          // from 0.35 -> 0.5 so the regime-blended vector carries real weight.
+          { slerpT: (typeof window !== 'undefined' && Number.isFinite(window.MERGEKIT_SLERP_T)) ? window.MERGEKIT_SLERP_T : 0.5 }
         );
       } catch (_) { effectiveWeights = adaptiveWeights; }
     }
@@ -6818,6 +6821,15 @@
       state.updatedAt = now;
       if (opts.reason) state.pruneReason = String(opts.reason);
       return JSON.parse(JSON.stringify(state));
+    },
+    // Cross-session persistence for the adaptive tuner (see data-logger.js's
+    // weight_tuning_state category): snapshot the full per-coin/per-signal
+    // online-learned state, or restore one at startup instead of cold-starting.
+    getOnlineWeightState() {
+      return window.PredictionRegimeWeights?.getAllOnlineState?.() ?? {};
+    },
+    loadOnlineWeightState(snapshot) {
+      return window.PredictionRegimeWeights?.loadOnlineState?.(snapshot) ?? { loaded: false, coins: 0 };
     },
     recordOnlineSignalOutcome(payload = {}) {
       const st = _ensureOnlineSignalState(payload.sym, payload.signalKey);

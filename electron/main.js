@@ -67,10 +67,17 @@ if (!process.env.WECRYP_ROOT) {
   const candidates = [
     process.cwd(),
     path.join(__dirname, '..'),
+    process.resourcesPath,
+    process.resourcesPath ? path.join(process.resourcesPath, '..') : null,
+    'G:\\WECRYP',
     'G:\\WECRYPTO',
+    'F:\\WECRYP',
     'F:\\WECRYPTO',
-    'E:\\WECRYPTO'
-  ];
+    'E:\\WECRYP',
+    'E:\\WECRYPTO',
+    'D:\\WECRYP',
+    'C:\\WECRYP'
+  ].filter(Boolean);
 
   for (const candidate of candidates) {
     if (fs.existsSync(path.join(candidate, 'docker-compose.yml'))) {

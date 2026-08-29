@@ -1,0 +1,79 @@
+name: apply-immutable-ptb-patch
+on:
+  push:
+    branches: [fix/ptb-lock-at-open-v18]
+  workflow_dispatch:
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Decode artifacts, patch prediction-markets.js, write HUD files
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import gzip, base64, pathlib, subprocess, sys
+
+          def decode(src):
+              blob = pathlib.Path(src).read_text().replace("\n", "").replace(" ", "")
+              return gzip.decompress(base64.b64decode(blob))
+
+          pm = pathlib.Path("src/prediction-markets/prediction-markets.js")
+          oracle = pathlib.Path("src/llm/oracle-snapshot.js")
+          hourly = pathlib.Path("src/ui/hourly-ranges-panel.js")
+          changed = []
+
+          if "const POLY5M_PTB_LOCK_VERSION = 18" not in pm.read_text(encoding="utf-8", errors="replace"):
+              patch = decode("patches/prediction-markets-immutable-ptb.patch.gz.b64")
+              pathlib.Path("/tmp/ptb.patch").write_bytes(patch)
+              r = subprocess.run(["patch", "-p1", "-i", "/tmp/ptb.patch"], capture_output=True, text=True)
+              sys.stdout.write(r.stdout)
+              sys.stderr.write(r.stderr)
+              if r.returncode != 0:
+                  sys.exit(r.returncode)
+              changed.append(str(pm))
+          else:
+              print("prediction-markets.js already lock v18")
+
+          oracle_src = decode("patches/oracle-snapshot.js.gz.b64")
+          if oracle.read_bytes() != oracle_src:
+              oracle.write_bytes(oracle_src)
+              changed.append(str(oracle))
+              print("wrote oracle-snapshot.js")
+          else:
+              print("oracle-snapshot.js already current")
+
+          hourly_src = decode("patches/hourly-ranges-panel.js.gz.b64")
+          if hourly.read_bytes() != hourly_src:
+              hourly.write_bytes(hourly_src)
+              changed.append(str(hourly))
+              print("wrote hourly-ranges-panel.js")
+          else:
+              print("hourly-ranges-panel.js already current")
+
+          pathlib.Path("/tmp/ptb-changed.txt").write_text("\n".join(changed))
+          print("changed:", changed or "none")
+          PY
+          if grep -q "const POLY5M_PTB_LOCK_VERSION = 18" src/prediction-markets/prediction-markets.js; then
+            echo "lock v18 confirmed"
+          else
+            echo "lock v18 missing after apply" >&2
+            exit 1
+          fi
+          node --check src/prediction-markets/prediction-markets.js
+          node --check src/llm/oracle-snapshot.js
+          node --check src/ui/hourly-ranges-panel.js
+      - name: Commit and push applied files
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/prediction-markets/prediction-markets.js src/llm/oracle-snapshot.js src/ui/hourly-ranges-panel.js
+          if git diff --cached --quiet; then
+            echo "nothing to commit"
+            exit 0
+          fi
+          git commit -m "fix(ptb): lock 5m/15m/60m strike at window open (v18)"
+          git push

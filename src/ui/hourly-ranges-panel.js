@@ -203,6 +203,12 @@
   // No live multi-strike hourly ladder market exists on Polymarket today
   // (unlike Kalshi's KX* range series), so the ladder is always the
   // spot-centered synthetic distribution.
+  const _rangeHourTs = {};
+
+  function get60mContract(sym) {
+    return window.PredictionMarkets?.getCoin?.(sym)?.poly60m || null;
+  }
+
   async function loadCoin(sym) {
     const price = await fetchPrice(sym);
 
@@ -210,11 +216,20 @@
       _prices[sym] = price;
     }
 
-    const refPrice = _prices[sym] ?? price;
+    const p60 = get60mContract(sym);
+    const lockedPtb = Number(p60?.priceToBeatNum);
+    const hourStartMs = Math.floor(Date.now() / 3600000) * 3600000;
+    // Hourly contract is immutable at T0: center the ladder on locked PTB, not live spot.
+    const refPrice = (Number.isFinite(lockedPtb) && lockedPtb > 0) ? lockedPtb : (_prices[sym] ?? price);
     if (!Number.isFinite(refPrice) || refPrice <= 0) return;
 
-    const nextHourIso = new Date(Math.ceil(Date.now() / 3600000) * 3600000).toISOString();
+    const nextHourIso = (p60?.closeTime) || new Date(hourStartMs + 3600000).toISOString();
     _closeTimes[sym] = nextHourIso;
+    if (_rangeHourTs[sym] === hourStartMs && _ranges[sym]?.length && Number.isFinite(lockedPtb) && lockedPtb > 0) {
+      saveHRCache();
+      return;
+    }
+    _rangeHourTs[sym] = hourStartMs;
     _ranges[sym] = buildSpotCenteredRanges(sym, refPrice, nextHourIso);
     saveHRCache();
   }
@@ -730,7 +745,11 @@
     load: loadAll,
     getRanges: (sym) => {
       const r = _ranges[sym] || [];
-      const p = _prices[sym] || readLivePrice(sym);
+      const p60 = get60mContract(sym);
+      const lockedPtb = Number(p60 && p60.priceToBeatNum);
+      // Once the hourly contract is open, the ladder is locked to that PTB.
+      if (Number.isFinite(lockedPtb) && lockedPtb > 0 && r.length) return r;
+      const p = (Number.isFinite(lockedPtb) && lockedPtb > 0) ? lockedPtb : (_prices[sym] || readLivePrice(sym));
       if (p && Number.isFinite(p) && p > 0) {
         if (!r.length) return buildSpotCenteredRanges(sym, p);
         const nearest = r.reduce((best, item) => Math.min(best, Math.abs((item.low + item.high) / 2 - p)), Infinity);
@@ -742,6 +761,7 @@
     },
     getPrice:  (sym) => _prices[sym] || null,
     get15mMarket: get15mContract,
+    get60mMarket: get60mContract,
   };
 
   console.log('[HourlyRangesPanel v7] ✓ Ready');
