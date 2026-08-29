@@ -305,6 +305,8 @@ async function deskInfer(packet, mode, options = {}) {
     }
   }
 
+  // If PTB is missing or zero, actively hydrate from Polymarket chainlink candles (unless horizon is anytime)
+  if (packet.horizon !== 'anytime' && (!packet.priceToBeatNum || packet.priceToBeatNum <= 0)) {
   // If PTB is missing or zero, hydrate the immutable contract opening strike (not live TWAP)
   if (!packet.priceToBeatNum || packet.priceToBeatNum <= 0) {
     const directPtb = await fetchPolymarketPtbDirect(packet.sym, packet.horizon);
@@ -315,7 +317,7 @@ async function deskInfer(packet, mode, options = {}) {
   }
 
   // If PTB is still missing, PAUSE AND WAIT: do not fire model inference without immutable Polymarket PTB
-  if (!packet.priceToBeatNum || packet.priceToBeatNum <= 0) {
+  if (packet.horizon !== 'anytime' && (!packet.priceToBeatNum || packet.priceToBeatNum <= 0)) {
     const local = Desk.inferLocal(packet, m);
     local.notes = 'HOLD_FLAT. Awaiting immutable Polymarket Up/Down contract PTB push.';
     local.warnings = [...(local.warnings || []), 'Awaiting immutable Polymarket PTB'];

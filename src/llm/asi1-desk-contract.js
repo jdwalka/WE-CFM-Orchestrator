@@ -42,6 +42,9 @@
       'down move; negative pressure/CROWDED SHORTS or SHORT LIQ CASCADE means a bounce risks a short-squeeze ' +
       'amplifying the up move. Only let it nudge confidence or urgency when it agrees with the spot-vs-PTB ' +
       'path; never let it override spot/PTB or invent a call alone.',
+    'If binaryIV_5m or binaryIV_15m are present, use them to spot contract mispricings. Extreme IV ' +
+      '(e.g. > 150%) may indicate the contract is overpriced relative to the time to expiry and spot distance, ' +
+      'while very low IV might indicate a cheap contract. Adjust confidence/edge accordingly.',
     'Return ONLY JSON matching the desk contract schema.',
   ].join(' ');
 

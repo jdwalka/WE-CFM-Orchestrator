@@ -56,5 +56,7 @@
     "application.experimental.rendererProfiling": true,
     "chat.agent.collapseCompletedResponses": true,
     "chat.checkpoints.showFileChanges": true,
-    "chat.planAgent.defaultModel": "DeepSeek V4 Pro (deepseek-v4)"
+    "chat.planAgent.defaultModel": "DeepSeek V4 Pro (deepseek-v4)",
+    "python.terminal.useEnvFile": true,
+    "antigravityAccount.autoRotateEnabled": true
 }

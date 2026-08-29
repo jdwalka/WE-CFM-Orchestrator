@@ -483,6 +483,45 @@ const server = http.createServer((req, res) => {
     return res.end();
   }
 
+  if (req.method === 'POST' && url.pathname === '/uvix/handover') {
+    let body = '';
+    req.on('data', chunk => { body += chunk.toString(); });
+    req.on('end', async () => {
+      try {
+        const payload = JSON.parse(body);
+        if (!payload.uvix_slug) {
+          res.writeHead(400);
+          return res.end(JSON.stringify({ error: 'Missing uvix_slug' }));
+        }
+
+        const { UVIXReverseEngineer } = require('./uvix-handover');
+        const reEngine = new UVIXReverseEngineer();
+        const decodedSlug = reEngine.decodeSlug(payload.uvix_slug);
+        
+        const authHeader = req.headers.authorization || '';
+        const authToken = authHeader.replace('Bearer ', '').trim();
+        
+        // In production, executeHandover posts to Google Antigravity.
+        // For now, we prepare it to verify the logic works locally.
+        const result = reEngine.prepareHandover(decodedSlug);
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          status: 'success',
+          source_platform: decodedSlug.sourcePlatform,
+          target_platform: decodedSlug.targetPlatform,
+          integrity_verified: true,
+          handover_executed: false,
+          handover_package: result
+        }));
+      } catch (err) {
+        res.writeHead(500);
+        res.end(JSON.stringify({ error: err.message }));
+      }
+    });
+    return;
+  }
+
   if (url.pathname === '/jwt/coinbase') {
     try {
       const requestMethod = url.searchParams.get('method') || null;

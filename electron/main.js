@@ -22,6 +22,11 @@ const fsp = fs.promises;
 const { spawn } = require('child_process');
 const { normalizeCoinbaseJwtUri } = require('../src/infra/coinbase-jwt-utils');
 
+// IPC bridges & managers
+try { require('./tor-fetch-ipc-bridge'); } catch (e) { console.warn('[IPC] tor-fetch-ipc-bridge load warning:', e.message); }
+try { require('./polymarket-clob-manager'); } catch (e) { console.warn('[IPC] polymarket-clob-manager load warning:', e.message); }
+try { require('./multi-drive-logger-handlers'); } catch (e) { console.warn('[IPC] multi-drive-logger-handlers load warning:', e.message); }
+
 // --- AMD AOCL & BLAS Optimizations for Downstream C++/Python Binaries ---
 // Force NumPy, PyTorch, and Custom C++ to prioritize AMD AOCL (BLIS/libflame) and avoid Intel MKL throttling on Ryzen.
 process.env.MKL_DEBUG_CPU_TYPE = '5'; // Force MKL to not cripple AMD CPUs if inadvertently loaded
@@ -1258,7 +1263,7 @@ async function startPythLazerService(win) {
           if (!pfeeds.length) {
             try {
               const hUrl = 'https://hermes.pyth.network/v2/updates/price/latest?ids[]=0xe62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43&ids[]=0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace&ids[]=0xef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d&ids[]=0xec5d399846a9209f3fe5881d70aae9268c94339ff9817e8d18ff19fa05eea1c8&ids[]=0xdcef50dd0a4cd2dcc17e45df1676dcb336a11a61c69df7a0299b0150c672d25c&ids[]=0x2f95862b045670cd22bee3114c39763a4a08beeb663b145d283c31d7d1101c4f&ids[]=0x4279e31cc369bbcc2faf022b382b080e32a8e689ff20fbc530d2a603eb6cd98b';
-              const r = await fetch(hUrl);
+              const r = await fetch(hUrl, token ? { headers: { "Authorization": "Bearer " + token } } : {});
               if (r.ok) {
                 const j = await r.json();
                 if (j && Array.isArray(j.parsed)) {
@@ -1506,7 +1511,7 @@ async function startPythLazerService(win) {
         if (!win.isDestroyed()) {
           win.webContents.send('pyth:connection-lost', {
             reason: 'all_connections_down',
-            channel: activeChannel,
+            channel: "fixed_rate@50ms",
           });
         }
         if (!reconnectInFlight) {
@@ -1759,81 +1764,98 @@ async function startJsProxyFallback(port) {
 
     const body = isGet ? undefined : await readBody(req);
 
-    try {
-      const parsedUrl = new URL(targetUrl);
-      const isHttps = parsedUrl.protocol === 'https:';
-      const transport = isHttps ? https : http;
+    const makeRequest = (useAgent) => new Promise((resolve, reject) => {
+      try {
+        const parsedUrl = new URL(targetUrl);
+        const isHttps = parsedUrl.protocol === 'https:';
+        const transport = isHttps ? https : http;
 
-      const outgoingHeaders = {
-        'host': parsedUrl.hostname,
-        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
-        'accept': req.headers['accept'] || '*/*',
-        'accept-language': 'en-US,en;q=0.9',
-      };
-      if (req.headers['content-type']) outgoingHeaders['content-type'] = req.headers['content-type'];
-      if (req.headers['authorization']) outgoingHeaders['authorization'] = req.headers['authorization'];
-      if (req.headers['x-mbx-apikey']) outgoingHeaders['x-mbx-apikey'] = req.headers['x-mbx-apikey'];
-      if (req.headers['x-api-key']) outgoingHeaders['x-api-key'] = req.headers['x-api-key'];
-      if (req.headers['x-signature']) outgoingHeaders['x-signature'] = req.headers['x-signature'];
-      if (req.headers['x-timestamp']) outgoingHeaders['x-timestamp'] = req.headers['x-timestamp'];
-      if (body && body.length) outgoingHeaders['content-length'] = body.length;
+        const outgoingHeaders = {
+          'host': parsedUrl.hostname,
+          'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
+          'accept': req.headers['accept'] || '*/*',
+          'accept-language': 'en-US,en;q=0.9',
+        };
+        if (req.headers['content-type']) outgoingHeaders['content-type'] = req.headers['content-type'];
+        if (req.headers['authorization']) outgoingHeaders['authorization'] = req.headers['authorization'];
+        if (req.headers['x-mbx-apikey']) outgoingHeaders['x-mbx-apikey'] = req.headers['x-mbx-apikey'];
+        if (req.headers['x-api-key']) outgoingHeaders['x-api-key'] = req.headers['x-api-key'];
+        if (req.headers['x-signature']) outgoingHeaders['x-signature'] = req.headers['x-signature'];
+        if (req.headers['x-timestamp']) outgoingHeaders['x-timestamp'] = req.headers['x-timestamp'];
+        if (body && body.length) outgoingHeaders['content-length'] = body.length;
 
-      const outgoingReq = transport.request({
-        host: parsedUrl.hostname,
-        hostname: parsedUrl.hostname,
-        servername: parsedUrl.hostname,
-        port: parsedUrl.port || (isHttps ? 443 : 80),
-        path: parsedUrl.pathname + parsedUrl.search,
-        method,
-        headers: outgoingHeaders,
-        agent: socksAgent,
-        timeout: 12000,
-      }, (upstreamRes) => {
-        res.statusCode = upstreamRes.statusCode;
-        for (const [k, v] of Object.entries(upstreamRes.headers)) {
-          if (!responseHeadersToStrip.has(String(k).toLowerCase())) res.setHeader(k, v);
-        }
-        writeCors(res);
-        const chunks = [];
-        upstreamRes.on('data', chunk => {
-          chunks.push(chunk);
-          res.write(chunk);
-        });
-        upstreamRes.on('end', () => {
-          if (isGet && upstreamRes.statusCode === 200) {
-            const fullBody = Buffer.concat(chunks);
-            proxyMicroCache.set(targetUrl, {
-              statusCode: 200,
-              headers: upstreamRes.headers,
-              body: fullBody,
-              ts: Date.now(),
-            });
-            if (proxyMicroCache.size > 500) {
-              const firstKey = proxyMicroCache.keys().next().value;
-              proxyMicroCache.delete(firstKey);
-            }
+        const outgoingReq = transport.request({
+          host: parsedUrl.hostname,
+          hostname: parsedUrl.hostname,
+          servername: parsedUrl.hostname,
+          port: parsedUrl.port || (isHttps ? 443 : 80),
+          path: parsedUrl.pathname + parsedUrl.search,
+          method,
+          headers: outgoingHeaders,
+          agent: useAgent ? socksAgent : undefined,
+          timeout: 12000,
+        }, (upstreamRes) => {
+          res.statusCode = upstreamRes.statusCode;
+          for (const [k, v] of Object.entries(upstreamRes.headers)) {
+            if (!responseHeadersToStrip.has(String(k).toLowerCase())) res.setHeader(k, v);
           }
-          res.end();
+          writeCors(res);
+          const chunks = [];
+          upstreamRes.on('data', chunk => {
+            chunks.push(chunk);
+            res.write(chunk);
+          });
+          upstreamRes.on('end', () => {
+            if (isGet && upstreamRes.statusCode === 200) {
+              const fullBody = Buffer.concat(chunks);
+              proxyMicroCache.set(targetUrl, {
+                statusCode: 200,
+                headers: upstreamRes.headers,
+                body: fullBody,
+                ts: Date.now(),
+              });
+              if (proxyMicroCache.size > 500) {
+                const firstKey = proxyMicroCache.keys().next().value;
+                proxyMicroCache.delete(firstKey);
+              }
+            }
+            res.end();
+            resolve();
+          });
         });
-      });
 
-      outgoingReq.on('timeout', () => {
-        outgoingReq.destroy(new Error('upstream timeout'));
-      });
-      outgoingReq.on('error', (e) => {
+        outgoingReq.on('timeout', () => {
+          outgoingReq.destroy(new Error('upstream timeout'));
+        });
+        outgoingReq.on('error', (e) => {
+          reject(e);
+        });
+
+        if (body && body.length > 0) outgoingReq.write(body);
+        outgoingReq.end();
+      } catch (err) {
+        reject(err);
+      }
+    });
+
+    try {
+      if (socksAgent) {
+        try {
+          await makeRequest(true);
+          return;
+        } catch (socksErr) {
+          console.warn(`[proxy-js] SOCKS forward failed for ${targetUrl} (${socksErr.message}), falling back to direct connection`);
+          if (res.headersSent) return;
+        }
+      }
+      await makeRequest(false);
+    } catch (e) {
+      if (!res.headersSent) {
         writeCors(res);
         res.statusCode = 502;
         res.setHeader('Content-Type', 'application/json');
         res.end(JSON.stringify({ error: 'proxy-forward-failed', message: e?.message || 'unknown error' }));
-      });
-
-      if (body && body.length > 0) outgoingReq.write(body);
-      outgoingReq.end();
-    } catch (e) {
-      writeCors(res);
-      res.statusCode = 502;
-      res.setHeader('Content-Type', 'application/json');
-      res.end(JSON.stringify({ error: 'proxy-forward-failed', message: e?.message || 'unknown error' }));
+      }
     }
   };
 
@@ -2122,8 +2144,6 @@ async function startProxy() {
   });
   proxyRestartAttempts = 0;
   console.log(`[proxy] started on port ${chosenPort} — pid ${proxyProcess.pid}`);
-  console.log(`[proxy] starting JS SOCKS5 proxy on port ${chosenPort}`);
-  await startJsProxyFallback(chosenPort);
 }
 
 function stopProxy() {
@@ -2429,7 +2449,7 @@ function refreshPythFromProxy() {
             '4279e31cc369bbcc2faf022b382b080e32a8e689ff20fbc530d2a603eb6cd98b': 'HYPEUSD'
           };
           const hUrl = 'https://hermes.pyth.network/v2/updates/price/latest?' + hermesIds.map(id => 'ids[]=' + id).join('&');
-          const hResp = await fetch(hUrl);
+          const hResp = await fetch(hUrl, token ? { headers: { "Authorization": "Bearer " + token } } : {});
           if (hResp.ok) {
             const hData = await hResp.json();
             if (hData && Array.isArray(hData.parsed)) {
@@ -2573,7 +2593,7 @@ ipcMain.handle('pyth:getProxyLatest', async (_, feedIds) => {
         '4279e31cc369bbcc2faf022b382b080e32a8e689ff20fbc530d2a603eb6cd98b': 'HYPEUSD'
       };
       const hUrl = 'https://hermes.pyth.network/v2/updates/price/latest?' + hermesIds.map(id => 'ids[]=' + id).join('&');
-      const hResp = await fetch(hUrl);
+      const hResp = await fetch(hUrl, token ? { headers: { "Authorization": "Bearer " + token } } : {});
       if (hResp.ok) {
         const hData = await hResp.json();
         if (hData && Array.isArray(hData.parsed)) {

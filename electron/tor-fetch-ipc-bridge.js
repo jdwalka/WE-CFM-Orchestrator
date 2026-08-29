@@ -8,7 +8,8 @@
  * src/infra/endpoint-transport.js, src/prediction-markets/prediction-markets.js.
  */
 
-const { ipcMain } = require('electron');
+const electron = require('electron');
+const ipcMain = electron.ipcMain || electron;
 const { SocksProxyAgent } = require('socks-proxy-agent');
 const fetch2 = require('node-fetch'); // Use node-fetch for agent support
 
@@ -17,7 +18,11 @@ const fetch2 = require('node-fetch'); // Use node-fetch for agent support
 const torAgent9050 = new SocksProxyAgent('socks5://127.0.0.1:9050');
 const torAgent9150 = new SocksProxyAgent('socks5://127.0.0.1:9150');
 
-ipcMain.handle('ipc:fetch', async (event, url, opts = {}) => {
+function registerTorFetchBridge(targetIpc = ipcMain) {
+  if (!targetIpc || typeof targetIpc.handle !== 'function') return;
+  try { targetIpc.removeHandler('ipc:fetch'); } catch (_) {}
+
+  targetIpc.handle('ipc:fetch', async (event, url, opts = {}) => {
   const isOnion = /\.onion/i.test(url);
   const wantTor = (isOnion || opts.useTor === true) && opts.useTor !== false;
 
@@ -69,4 +74,9 @@ ipcMain.handle('ipc:fetch', async (event, url, opts = {}) => {
     console.error(`[IPC Fetch] Direct fetch error for ${url}:`, directErr.message);
     return { ok: false, status: 0, error: directErr.message };
   }
-});
+  });
+}
+
+registerTorFetchBridge(ipcMain);
+
+module.exports = { registerTorFetchBridge };

@@ -407,6 +407,7 @@ async function chatCompletion(messagesOrOptions, maybeOptions = {}) {
       ...(options.tools ? { tools: options.tools } : {}),
       ...(options.response_format ? { response_format: options.response_format } : {}),
       ...(options.web_search != null ? { web_search: options.web_search } : {}),
+      ...(options.uvix != null ? { uvix: options.uvix } : {}),
     };
 
     const rateLimitedAccounts = new Set();
