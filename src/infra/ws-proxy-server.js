@@ -496,11 +496,26 @@ const server = http.createServer((req, res) => {
 
         const { UVIXReverseEngineer } = require('./uvix-handover');
         const reEngine = new UVIXReverseEngineer();
-        const decodedSlug = reEngine.decodeSlug(payload.uvix_slug);
-        
+
+        // Require a configured bearer token to protect the handover endpoint.
+        // Configure UVIX_HANDOVER_BEARER in the environment for production use.
         const authHeader = req.headers.authorization || '';
-        const authToken = authHeader.replace('Bearer ', '').trim();
-        
+        const authToken = String(authHeader).replace(/^Bearer\s+/i, '').trim();
+        const expectedToken = process.env.UVIX_HANDOVER_BEARER || '';
+
+        if (!expectedToken) {
+          // Explicitly disabled in this environment — do not proceed.
+          res.writeHead(403, { 'Content-Type': 'application/json' });
+          return res.end(JSON.stringify({ error: 'uvix_handover_disabled' }));
+        }
+
+        if (!authToken || authToken !== expectedToken) {
+          res.writeHead(401, { 'Content-Type': 'application/json' });
+          return res.end(JSON.stringify({ error: 'unauthorized' }));
+        }
+
+        const decodedSlug = reEngine.decodeSlug(payload.uvix_slug);
+
         // In production, executeHandover posts to Google Antigravity.
         // For now, we prepare it to verify the logic works locally.
         const result = reEngine.prepareHandover(decodedSlug);

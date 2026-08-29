@@ -130,6 +130,25 @@ const forward = async (targetUrl, req, res) => {
         }
         writeCors(res);
         const chunks = [];
+
+        // If the upstream response emits an error after headers/partial body,
+        // ensure the client response is closed and the request promise rejects
+        upstreamRes.on('error', (err) => {
+          console.warn(`[ProxyRunner] upstream response error for ${targetUrl}: ${err.message}`);
+          try {
+            if (!res.headersSent) {
+              writeCors(res);
+              res.statusCode = 502;
+              res.setHeader('Content-Type', 'application/json');
+              res.end(JSON.stringify({ error: 'upstream-response-error', message: err.message }));
+            } else {
+              // If headers already sent, destroy the socket to terminate the stream
+              try { res.destroy(); } catch (_) { }
+            }
+          } catch (_) { }
+          reject(err);
+        });
+
         upstreamRes.on('data', chunk => {
           chunks.push(chunk);
           res.write(chunk);
@@ -175,7 +194,13 @@ const forward = async (targetUrl, req, res) => {
         return;
       } catch (socksErr) {
         console.warn(`[ProxyRunner] SOCKS forward failed for ${targetUrl} (${socksErr.message}), falling back to direct connection`);
-        if (res.headersSent) return;
+        // If we've already begun returning data to the client, close the
+        // client connection instead of silently returning and leaving it open.
+        if (res.headersSent) {
+          try { res.destroy(); } catch (_) { }
+          return;
+        }
+        // Only replay request body on idempotent methods (safe retry policy).
         if (!['GET', 'HEAD', 'PUT', 'DELETE', 'OPTIONS', 'TRACE'].includes(method)) throw socksErr;
       }
     }
