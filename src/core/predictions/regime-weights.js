@@ -69,15 +69,17 @@
   }
 
   function applyOnlineWeightOverlay(sym, baseWeights) {
-    const state = ONLINE_WEIGHT_STATE[_coinKey(sym)];
+    const key = _coinKey(sym);
+    const state = Object.prototype.hasOwnProperty.call(ONLINE_WEIGHT_STATE, key) ? ONLINE_WEIGHT_STATE[key] : undefined;
     if (!state || !state.signals) return { ...baseWeights };
     const out = { ...baseWeights };
     Object.keys(out).forEach((signal) => {
-      const st = state.signals[signal];
+      const st = Object.prototype.hasOwnProperty.call(state.signals, signal) ? state.signals[signal] : undefined;
       if (!st) return;
       const mult = clamp(Number(st.mult) || 1, ONLINE_WEIGHT_BOUNDS.minMult, ONLINE_WEIGHT_BOUNDS.maxMult);
       const pruneMult = clamp(Number(st.pruneMult) || 1, ONLINE_WEIGHT_BOUNDS.minPruneMult, 1);
-      out[signal] = out[signal] * mult * pruneMult;
+      const val = Object.prototype.hasOwnProperty.call(out, signal) ? out[signal] : undefined;
+      if (val !== undefined) out[signal] = val * mult * pruneMult;
     });
     return out;
   }
@@ -87,7 +89,7 @@
    * side-effect free while preserving O(n) key traversal.
    */
   function applyRegimeMults(baseWeights, regimeKey) {
-    const mults = REGIME_WEIGHT_MULTS[regimeKey] || {};
+    const mults = Object.prototype.hasOwnProperty.call(REGIME_WEIGHT_MULTS, regimeKey) ? REGIME_WEIGHT_MULTS[regimeKey] : {};
     const result = { ...baseWeights };
     for (const [k, m] of Object.entries(mults)) {
       if (result[k] !== undefined) result[k] = result[k] * m;
@@ -108,7 +110,8 @@
     let coins = 0;
     for (const [sym, state] of Object.entries(snapshot)) {
       if (!state || typeof state !== 'object' || !state.signals) continue;
-      ONLINE_WEIGHT_STATE[_coinKey(sym)] = {
+      const key = _coinKey(sym);
+      ONLINE_WEIGHT_STATE[key] = {
         updatedAt: Number(state.updatedAt) || Date.now(),
         signals: { ...state.signals },
       };
