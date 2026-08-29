@@ -845,6 +845,8 @@ initOBHud();
         // Seed online-weight state from the prior session (Drive-backed log)
         // instead of cold-starting at defaults every reload. Deferred slightly
         // so DataLogger's drive discovery has had a chance to complete.
+        setTimeout(async () => {
+          await window._adaptiveTuner?.bootstrapFromPriorSession?.();
         setTimeout(() => {
           window._adaptiveTuner?.bootstrapFromPriorSession?.();
         }, 3000);

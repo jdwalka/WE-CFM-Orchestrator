@@ -12,6 +12,9 @@
 
   const PYTH_HERMES_V2 = 'https://hermes.pyth.network/v2/updates/price/latest';
   const PYTH_HERMES = 'https://hermes.pyth.network/api/latest_price_feeds';
+  // Hermes' /v2/updates/price/latest requires a Pyth Pro-entitled key (secrets/PYTH_PRO_API_KEY.txt)
+  // -- the Lazer streaming token (PYTH_API/PYTH_NEW/...) 401s/403s on this endpoint even though it's
+  // valid for Lazer WS. Try PRO first, keep the Lazer names as a fallback in case that changes again.
   // hermes.pyth.network is Pyth's PUBLIC Hermes instance: the standard price
   // endpoints take NO auth. We therefore fetch anonymously first and only
   // attach `Authorization: Bearer` as a *retry* on 401/403/429, and only with a
@@ -50,6 +53,25 @@
   } catch (_) { }
   // Support new Pyth key from secrets/PYTH_NEW_API wired via public env or resolveRuntimeKey
   let PYTH_API_KEY = '';
+  try {
+    if (typeof window !== 'undefined') {
+      PYTH_API_KEY = window.resolveRuntimeKey
+        ? (window.resolveRuntimeKey('PYTH_PRO_API_KEY') || window.resolveRuntimeKey('PYTH_API') || window.resolveRuntimeKey('PYTH_NEW') || window.resolveRuntimeKey('PYTH_NEW_API') || window.resolveRuntimeKey('PYTH_API_KEY') || window.resolveRuntimeKey('PYTH_LAZER_TOKEN') || window.resolveRuntimeKey('LAZER_TOKEN'))
+        : '';
+      if (!PYTH_API_KEY && window.__env) {
+        PYTH_API_KEY = window.__env.PYTH_PRO_API_KEY || window.__env.PYTH_API || window.__env.PYTH_NEW || window.__env.PYTH_NEW_API || window.__env.PYTH_API_KEY || window.__env.PYTH_LAZER_TOKEN || window.__env.LAZER_TOKEN || '';
+      }
+      if (!PYTH_API_KEY && window.electron && typeof window.electron.getPublicEnv === 'function') {
+        window.electron.getPublicEnv().then(cfg => {
+          if (cfg && (cfg.PYTH_PRO_API_KEY || cfg.PYTH_API || cfg.PYTH_NEW || cfg.PYTH_NEW_API || cfg.PYTH_API_KEY)) {
+            PYTH_API_KEY = cfg.PYTH_PRO_API_KEY || cfg.PYTH_API || cfg.PYTH_NEW || cfg.PYTH_NEW_API || cfg.PYTH_API_KEY || cfg.PYTH_LAZER_TOKEN || cfg.LAZER_TOKEN || PYTH_API_KEY;
+          }
+        }).catch(() => {});
+      }
+      if (!PYTH_API_KEY) {
+        PYTH_API_KEY = (typeof process !== 'undefined' && process.env)
+          ? (process.env.PYTH_PRO_API_KEY || process.env.PYTH_API || process.env.PYTH_NEW || process.env.PYTH_NEW_API || process.env.PYTH_API_KEY || '')
+          : '';
   function resolvePythKey() {
     try {
       if (typeof window !== 'undefined') {
@@ -201,6 +223,11 @@
 
       const feedIds = Object.values(PYTH_FEEDS);
       const url = `${PYTH_HERMES_V2}?${feedIds.map(id => 'ids[]=' + encodeURIComponent(id)).join('&')}`;
+      // Hermes only accepts the key as `Authorization: Bearer <key>` -- the old
+      // `api_key=` query param / `x-api-key` header both 401 regardless of key validity.
+      const headers = {};
+      if (PYTH_API_KEY) {
+        headers['Authorization'] = `Bearer ${PYTH_API_KEY}`;
       const headers = { 'Accept': 'application/json' };
       if (PYTH_API_KEY) {
         headers['Authorization'] = `Bearer ${PYTH_API_KEY}`;
@@ -284,6 +311,8 @@
     if (_pollTimer) return;
     console.log(`[PythClient] 🚀 Starting PYTH price polling (5s interval)`);
     
+    // Wire PYTH_PRO_API_KEY for Hermes realtime (main reads secrets/PYTH_PRO_API_KEY.txt) --
+    // falls back to the Lazer token names only if no Pro key is configured.
     // Pick up a Pro Hermes key if one is configured (used only for the auth
     // retry on 401/403/429 -- anonymous is the primary path). Never the Lazer
     // token: it is not valid for Hermes and only causes gateway 401s.
@@ -291,6 +320,8 @@
       if (typeof window !== 'undefined' && window.electron && typeof window.electron.getPublicEnv === 'function') {
         const cfg = await window.electron.getPublicEnv().catch(() => null);
         if (cfg) {
+          PYTH_API_KEY = cfg.PYTH_PRO_API_KEY || cfg.PYTH_API || cfg.PYTH_NEW || cfg.PYTH_NEW_API || cfg.PYTH_API_KEY || cfg.PYTH_LAZER_TOKEN || cfg.LAZER_TOKEN || PYTH_API_KEY;
+          if (PYTH_API_KEY) console.log(`[PythClient] Hermes realtime using key from ${cfg.PYTH_PRO_API_KEY ? 'PYTH_PRO_API_KEY' : 'PYTH_API'}`);
           const k = _firstKey((n) => cfg[n]);
           if (k) { PYTH_API_KEY = k; console.log('[PythClient] Hermes Pro key available for auth retry'); }
         }

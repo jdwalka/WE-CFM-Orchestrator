@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+"""HTTP CONNECT proxy for WeCrypto geofenced market data.
+
+Binds only to 127.0.0.1:PORT for localhost-only access (not exposed to network).
+Enforces an allowlist of geofenced endpoints to prevent abuse as an unrestricted
+outbound proxy. All CONNECT requests to non-whitelisted hosts are rejected with 403.
 """HTTP CONNECT proxy for WeCrypto directHosts.
 
 Windows Electron sockets are captured by Tailscale RouteAll/exit.
@@ -10,6 +15,31 @@ import threading
 import sys
 
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 18080
+
+# Allowlist of permitted CONNECT destinations (geofenced endpoints only).
+# Add only the specific hosts required for market data and trading logic.
+# Format: 'hostname:port' or 'hostname' (port matched independently).
+ALLOWED_DESTINATIONS = {
+    'api.polymarket.com:443',
+    'clob.polymarket.com:443',
+    'polymarket.com:443',
+    'binance.com:443',
+    'api.binance.com:443',
+    'api1.binance.com:443',
+    'api2.binance.com:443',
+    'api3.binance.com:443',
+    'fapi.binance.com:443',
+    'dapi.binance.com:443',
+    'stream.binance.com:443',
+    'fstream.binance.com:443',
+    'dstream.binance.com:443',
+}
+
+
+def is_allowed(host, port):
+    """Check if destination is in allowlist."""
+    dest = f"{host}:{port}"
+    return dest in ALLOWED_DESTINATIONS
 
 
 def pipe(a, b):
@@ -43,6 +73,12 @@ def handle(client):
             return
         host, port = parts[1].rsplit(":", 1)
         port = int(port)
+        
+        # Security: Whitelist check before connecting
+        if not is_allowed(host, port):
+            client.sendall(b"HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n")
+            return
+        
         dest = socket.create_connection((host, port), timeout=8)
         client.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
         t = threading.Thread(target=pipe, args=(dest, client), daemon=True)
@@ -63,6 +99,11 @@ def handle(client):
 
 
 def listen(bind):
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s.bind((bind, PORT))
+    s.listen(128)
+    print(f"direct-proxy listen {bind}:{PORT} (allowlist enforced)", flush=True)
     family = socket.AF_INET6 if ":" in bind else socket.AF_INET
     s = socket.socket(family, socket.SOCK_STREAM)
     s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -75,6 +116,7 @@ def listen(bind):
 
 
 def main():
+    listen("127.0.0.1")
     threading.Thread(target=listen, args=("127.0.0.1",), daemon=True).start()
     listen("::1")
 

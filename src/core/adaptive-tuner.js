@@ -597,11 +597,13 @@ class AdaptiveTuner {
    * state (from the prior session, via the same Drive-backed log pipeline)
    * and seeds the live overlay so tuning doesn't cold-start every reload.
    */
+  async bootstrapFromPriorSession() {
   bootstrapFromPriorSession() {
     try {
       if (typeof window === 'undefined' || !window.DataLogger?.getLatest) {
         return { loaded: false, reason: 'DataLogger.getLatest unavailable' };
       }
+      const latest = await window.DataLogger.getLatest('weight_tuning_state');
       const latest = window.DataLogger.getLatest('weight_tuning_state');
       if (!latest || !latest.state) return { loaded: false, reason: 'no prior session state found' };
       const result = window.PredictionEngine?.loadOnlineWeightState?.(latest.state) ?? { loaded: false, coins: 0 };

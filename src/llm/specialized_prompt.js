@@ -1004,6 +1004,8 @@ function buildOrbitalLine(coin) {
   const qs = orbitalState.quantum_states || {};
   const core = qs.s || {};
   const mom = qs.p || {};
+  return `Orbital: core coherence=${(core.coherence ?? 0).toFixed(2)} charge=${(core.net_charge ?? 0).toFixed(2)}, `
+    + `momentum coherence=${(mom.coherence ?? 0).toFixed(2)} charge=${(mom.net_charge ?? 0).toFixed(2)}`
   const orbitalNumber = (value) => {
     const normalized = Number(value);
     return Number.isFinite(normalized) ? normalized : 0;
