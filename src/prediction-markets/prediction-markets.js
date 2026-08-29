@@ -489,7 +489,10 @@
   // found, just retried for longer before conceding "pending" is honest.
   const PTB_LOCK_GRACE_MS = 120_000;
   const PTB_SCRAPE_RETRY_MS = 4_000;
-  const PTB_SCRAPE_RETRIES_SEC = [1, 3, 5, 7, 9, 12, 15];
+  const PTB_SCRAPE_RETRIES_SEC = Array.from(
+    { length: Math.ceil(PTB_LOCK_GRACE_MS / PTB_SCRAPE_RETRY_MS) },
+    () => PTB_SCRAPE_RETRY_MS / 1000
+  );
   const PTB_SCRAPE_MAX_ATTEMPTS = PTB_SCRAPE_RETRIES_SEC.length;
   // Live-verified (2026-08-18): Gamma `cryptoMarketConfig` for current 5m and
   // 15m Up/Down markets is `btc-5m-twap-60` / `btc-15m-twap-60` with
