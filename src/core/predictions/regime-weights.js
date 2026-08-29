@@ -111,6 +111,7 @@
     for (const [sym, state] of Object.entries(snapshot)) {
       if (!state || typeof state !== 'object' || !state.signals) continue;
       const key = _coinKey(sym);
+      if (key === '__proto__' || key === 'constructor' || key === 'prototype') continue;
       ONLINE_WEIGHT_STATE[key] = {
         updatedAt: Number(state.updatedAt) || Date.now(),
         signals: { ...state.signals },
