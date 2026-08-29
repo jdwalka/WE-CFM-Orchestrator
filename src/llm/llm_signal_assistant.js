@@ -39,7 +39,7 @@ function loadLLMEnv() {
     for (const envPath of candidatePaths) {
       try {
         if (!fs.existsSync(envPath)) continue;
-        const result = dotenv.config({ path: envPath, override: true, quiet: true });
+        const result = dotenv.config({ path: envPath, quiet: true });
         if (!result.error) loadedPaths.push(envPath);
       } catch (_) { }
     }
