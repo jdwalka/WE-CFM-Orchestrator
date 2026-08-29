@@ -22,6 +22,11 @@ const fsp = fs.promises;
 const { spawn } = require('child_process');
 const { normalizeCoinbaseJwtUri } = require('../src/infra/coinbase-jwt-utils');
 
+// IPC bridges & managers
+try { require('./tor-fetch-ipc-bridge'); } catch (e) { console.warn('[IPC] tor-fetch-ipc-bridge load warning:', e.message); }
+try { require('./polymarket-clob-manager'); } catch (e) { console.warn('[IPC] polymarket-clob-manager load warning:', e.message); }
+try { require('./multi-drive-logger-handlers'); } catch (e) { console.warn('[IPC] multi-drive-logger-handlers load warning:', e.message); }
+
 // --- AMD AOCL & BLAS Optimizations for Downstream C++/Python Binaries ---
 // Force NumPy, PyTorch, and Custom C++ to prioritize AMD AOCL (BLIS/libflame) and avoid Intel MKL throttling on Ryzen.
 process.env.MKL_DEBUG_CPU_TYPE = '5'; // Force MKL to not cripple AMD CPUs if inadvertently loaded
@@ -1752,81 +1757,98 @@ async function startJsProxyFallback(port) {
 
     const body = isGet ? undefined : await readBody(req);
 
-    try {
-      const parsedUrl = new URL(targetUrl);
-      const isHttps = parsedUrl.protocol === 'https:';
-      const transport = isHttps ? https : http;
+    const makeRequest = (useAgent) => new Promise((resolve, reject) => {
+      try {
+        const parsedUrl = new URL(targetUrl);
+        const isHttps = parsedUrl.protocol === 'https:';
+        const transport = isHttps ? https : http;
 
-      const outgoingHeaders = {
-        'host': parsedUrl.hostname,
-        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
-        'accept': req.headers['accept'] || '*/*',
-        'accept-language': 'en-US,en;q=0.9',
-      };
-      if (req.headers['content-type']) outgoingHeaders['content-type'] = req.headers['content-type'];
-      if (req.headers['authorization']) outgoingHeaders['authorization'] = req.headers['authorization'];
-      if (req.headers['x-mbx-apikey']) outgoingHeaders['x-mbx-apikey'] = req.headers['x-mbx-apikey'];
-      if (req.headers['x-api-key']) outgoingHeaders['x-api-key'] = req.headers['x-api-key'];
-      if (req.headers['x-signature']) outgoingHeaders['x-signature'] = req.headers['x-signature'];
-      if (req.headers['x-timestamp']) outgoingHeaders['x-timestamp'] = req.headers['x-timestamp'];
-      if (body && body.length) outgoingHeaders['content-length'] = body.length;
+        const outgoingHeaders = {
+          'host': parsedUrl.hostname,
+          'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
+          'accept': req.headers['accept'] || '*/*',
+          'accept-language': 'en-US,en;q=0.9',
+        };
+        if (req.headers['content-type']) outgoingHeaders['content-type'] = req.headers['content-type'];
+        if (req.headers['authorization']) outgoingHeaders['authorization'] = req.headers['authorization'];
+        if (req.headers['x-mbx-apikey']) outgoingHeaders['x-mbx-apikey'] = req.headers['x-mbx-apikey'];
+        if (req.headers['x-api-key']) outgoingHeaders['x-api-key'] = req.headers['x-api-key'];
+        if (req.headers['x-signature']) outgoingHeaders['x-signature'] = req.headers['x-signature'];
+        if (req.headers['x-timestamp']) outgoingHeaders['x-timestamp'] = req.headers['x-timestamp'];
+        if (body && body.length) outgoingHeaders['content-length'] = body.length;
 
-      const outgoingReq = transport.request({
-        host: parsedUrl.hostname,
-        hostname: parsedUrl.hostname,
-        servername: parsedUrl.hostname,
-        port: parsedUrl.port || (isHttps ? 443 : 80),
-        path: parsedUrl.pathname + parsedUrl.search,
-        method,
-        headers: outgoingHeaders,
-        agent: socksAgent,
-        timeout: 12000,
-      }, (upstreamRes) => {
-        res.statusCode = upstreamRes.statusCode;
-        for (const [k, v] of Object.entries(upstreamRes.headers)) {
-          if (!responseHeadersToStrip.has(String(k).toLowerCase())) res.setHeader(k, v);
-        }
-        writeCors(res);
-        const chunks = [];
-        upstreamRes.on('data', chunk => {
-          chunks.push(chunk);
-          res.write(chunk);
-        });
-        upstreamRes.on('end', () => {
-          if (isGet && upstreamRes.statusCode === 200) {
-            const fullBody = Buffer.concat(chunks);
-            proxyMicroCache.set(targetUrl, {
-              statusCode: 200,
-              headers: upstreamRes.headers,
-              body: fullBody,
-              ts: Date.now(),
-            });
-            if (proxyMicroCache.size > 500) {
-              const firstKey = proxyMicroCache.keys().next().value;
-              proxyMicroCache.delete(firstKey);
-            }
+        const outgoingReq = transport.request({
+          host: parsedUrl.hostname,
+          hostname: parsedUrl.hostname,
+          servername: parsedUrl.hostname,
+          port: parsedUrl.port || (isHttps ? 443 : 80),
+          path: parsedUrl.pathname + parsedUrl.search,
+          method,
+          headers: outgoingHeaders,
+          agent: useAgent ? socksAgent : undefined,
+          timeout: 12000,
+        }, (upstreamRes) => {
+          res.statusCode = upstreamRes.statusCode;
+          for (const [k, v] of Object.entries(upstreamRes.headers)) {
+            if (!responseHeadersToStrip.has(String(k).toLowerCase())) res.setHeader(k, v);
           }
-          res.end();
+          writeCors(res);
+          const chunks = [];
+          upstreamRes.on('data', chunk => {
+            chunks.push(chunk);
+            res.write(chunk);
+          });
+          upstreamRes.on('end', () => {
+            if (isGet && upstreamRes.statusCode === 200) {
+              const fullBody = Buffer.concat(chunks);
+              proxyMicroCache.set(targetUrl, {
+                statusCode: 200,
+                headers: upstreamRes.headers,
+                body: fullBody,
+                ts: Date.now(),
+              });
+              if (proxyMicroCache.size > 500) {
+                const firstKey = proxyMicroCache.keys().next().value;
+                proxyMicroCache.delete(firstKey);
+              }
+            }
+            res.end();
+            resolve();
+          });
         });
-      });
 
-      outgoingReq.on('timeout', () => {
-        outgoingReq.destroy(new Error('upstream timeout'));
-      });
-      outgoingReq.on('error', (e) => {
+        outgoingReq.on('timeout', () => {
+          outgoingReq.destroy(new Error('upstream timeout'));
+        });
+        outgoingReq.on('error', (e) => {
+          reject(e);
+        });
+
+        if (body && body.length > 0) outgoingReq.write(body);
+        outgoingReq.end();
+      } catch (err) {
+        reject(err);
+      }
+    });
+
+    try {
+      if (socksAgent) {
+        try {
+          await makeRequest(true);
+          return;
+        } catch (socksErr) {
+          console.warn(`[proxy-js] SOCKS forward failed for ${targetUrl} (${socksErr.message}), falling back to direct connection`);
+          if (res.headersSent) return;
+        }
+      }
+      await makeRequest(false);
+    } catch (e) {
+      if (!res.headersSent) {
         writeCors(res);
         res.statusCode = 502;
         res.setHeader('Content-Type', 'application/json');
         res.end(JSON.stringify({ error: 'proxy-forward-failed', message: e?.message || 'unknown error' }));
-      });
-
-      if (body && body.length > 0) outgoingReq.write(body);
-      outgoingReq.end();
-    } catch (e) {
-      writeCors(res);
-      res.statusCode = 502;
-      res.setHeader('Content-Type', 'application/json');
-      res.end(JSON.stringify({ error: 'proxy-forward-failed', message: e?.message || 'unknown error' }));
+      }
     }
   };
 
@@ -2115,8 +2137,6 @@ async function startProxy() {
   });
   proxyRestartAttempts = 0;
   console.log(`[proxy] started on port ${chosenPort} — pid ${proxyProcess.pid}`);
-  console.log(`[proxy] starting JS SOCKS5 proxy on port ${chosenPort}`);
-  await startJsProxyFallback(chosenPort);
 }
 
 function stopProxy() {

@@ -64,7 +64,7 @@
       <div class="ad-pills" id="adAccounts"></div>
       <div class="ad-selects">
         <select id="adCoin"></select>
-        <select id="adHorizon"><option value="15m">15m</option><option value="5m">5m</option><option value="anytime">Look Ahead (Anytime)</option></select>
+        <select id="adHorizon"><option value="15m">15m</option><option value="5m">5m</option><option value="anytime">Look Ahead (Anytime)</option><option value="mispricings">Contract Mispricings</option></select>
       </div>
       <div class="ad-selects">
         <select id="adModelChoice">
@@ -359,6 +359,28 @@
       }
     }
 
+    let binaryIV = null;
+    let binaryIV_15m = null;
+    if (horizon === 'mispricings' && window.QuantStatUtils && window.QuantStatUtils.calculateBinaryIV) {
+      // Calculate for 5m
+      const poly5m = pmCoin.poly5m || {};
+      const ptb5m = Number(poly5m.priceToBeatNum || poly5m.targetPriceNum);
+      const prob5m = Number(poly5m.probability || 0.5);
+      const ttc5m = Number(poly5m.secondsToClose || 300);
+      if (spot != null && !isNaN(ptb5m) && !isNaN(prob5m) && !isNaN(ttc5m) && ttc5m > 0) {
+        binaryIV = window.QuantStatUtils.calculateBinaryIV(prob5m, spot, ptb5m, ttc5m / 86400, 'polymarket');
+      }
+      
+      // Calculate for 15m
+      const poly15m = pmCoin.poly15m || {};
+      const ptb15m = Number(poly15m.priceToBeatNum || poly15m.targetPriceNum);
+      const prob15m = Number(poly15m.probability || 0.5);
+      const ttc15m = Number(poly15m.secondsToClose || 900);
+      if (spot != null && !isNaN(ptb15m) && !isNaN(prob15m) && !isNaN(ttc15m) && ttc15m > 0) {
+        binaryIV_15m = window.QuantStatUtils.calculateBinaryIV(prob15m, spot, ptb15m, ttc15m / 86400, 'polymarket');
+      }
+    }
+
     return {
       ...(Desk?.SAMPLE_PACKET || {}),
       ...pkt,
@@ -375,6 +397,8 @@
       secondsToClose: ttc,
       deltaVsPtb: delta,
       liveDirection: pkt.liveDirection || pathDir,
+      ...(binaryIV !== null ? { binaryIV_5m: binaryIV } : {}),
+      ...(binaryIV_15m !== null ? { binaryIV_15m: binaryIV_15m } : {}),
     };
   }
 
