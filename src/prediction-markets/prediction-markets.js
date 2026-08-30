@@ -88,7 +88,7 @@
 
   const KALSHI_DISABLED = true; // 100% Polymarket only mode
 
-  let cache = {};
+  let cache = Object.create(null);
   let lastFetch = 0;
   let inFlight = null;
   let timer = null;
@@ -100,7 +100,7 @@
   // â”€â”€ Kalshi probability velocity tracking â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   // Tracks the last 12 probability readings per coin to detect smart-money
   // drift BEFORE the model catches up. velocity > 0 = Kalshi odds rising (bullish).
-  const _probHistory = {};
+  const _probHistory = Object.create(null);
   // Signed CLOB auth lives in Electron main (secrets/POLYMARKET_API.txt).
   // Public Gamma/CLOB market GETs do not need L2 headers in the renderer.
   function _injectPolyHeaders(url, headers = {}) {
@@ -411,7 +411,7 @@
   // later in a window as a live/current price, or it would be exactly the
   // "provisional spot proxy" this whole PTB effort has been built to avoid.
   const RTDS_TWAP_SYMBOL = { BTC: 'btc/usd', ETH: 'eth/usd', SOL: 'sol/usd', XRP: 'xrp/usd', DOGE: 'doge/usd', BNB: 'bnb/usd', HYPE: 'hype/usd' };
-  const _rtdsLiveTwap = {}; // sym -> { price, obsTs, recvAt }
+  const _rtdsLiveTwap = Object.create(null); // sym -> { price, obsTs, recvAt }
   let _rtdsSocket = null;
   let _rtdsPingTimer = null;
   let _rtdsReconnectTimer = null;
@@ -477,7 +477,7 @@
   // scrape is throttled since it's a real network fetch. After the grace
   // window elapses with nothing found, stop -- that means Polymarket
   // genuinely hasn't published it yet, and "pending" is the honest state.
-  const _pendingPtbLocks = {}; // slug -> { sym, boundaryMs, lastScrapeAttemptTs, scrapeAttempts }
+  const _pendingPtbLocks = Object.create(null); // slug -> { sym, boundaryMs, lastScrapeAttemptTs, scrapeAttempts }
   // Verified live (2026-08-11): Polymarket's own chainlink-candles endpoint
   // does not have a candle for a brand-new window immediately -- checked a
   // window 31 seconds after it opened and the API's latest candle was still
@@ -489,7 +489,11 @@
   // found, just retried for longer before conceding "pending" is honest.
   const PTB_LOCK_GRACE_MS = 120_000;
   const PTB_SCRAPE_RETRY_MS = 4_000;
-  const PTB_SCRAPE_MAX_ATTEMPTS = 30;
+  const PTB_SCRAPE_RETRIES_SEC = Array.from(
+    { length: Math.ceil(PTB_LOCK_GRACE_MS / PTB_SCRAPE_RETRY_MS) },
+    () => PTB_SCRAPE_RETRY_MS / 1000
+  );
+  const PTB_SCRAPE_MAX_ATTEMPTS = PTB_SCRAPE_RETRIES_SEC.length;
   // Live-verified (2026-08-18): Gamma `cryptoMarketConfig` for current 5m and
   // 15m Up/Down markets is `btc-5m-twap-60` / `btc-15m-twap-60` with
   // twapLookbackSeconds=60. Querying chainlink-candles with lookback=30
@@ -527,7 +531,8 @@
       // Only the event-page scrape (Polymarket's own closed-window continuity
       // record) can produce an exact value, so that's the only thing retried.
       if (st.scrapeAttempts >= PTB_SCRAPE_MAX_ATTEMPTS) continue;
-      if (now - st.lastScrapeAttemptTs < PTB_SCRAPE_RETRY_MS) continue;
+      const delayMs = (PTB_SCRAPE_RETRIES_SEC[st.scrapeAttempts] || 15) * 1000;
+      if (now - st.lastScrapeAttemptTs < delayMs) continue;
       st.lastScrapeAttemptTs = now;
       st.scrapeAttempts++;
       fetchPolymarketPriceToBeat(slug).then(() => {
@@ -1619,11 +1624,11 @@
     return !Number.isFinite(endMs) || endMs > nowMs + 5_000;
   }
 
-  let _poly5mCache = {};
-  let _poly5mPriceToBeatCache = {};
+  let _poly5mCache = Object.create(null);
+  let _poly5mPriceToBeatCache = Object.create(null);
   const _poly5mPriceToBeatLocks = new Map();
   let _poly5mEventScanCache = { fetchedAt: 0, events: [], source: '', error: '' };
-  let _poly5mClobSnapshotCache = {};
+  let _poly5mClobSnapshotCache = Object.create(null);
   // CLOB market WS lives in window.PolymarketWS — see fetchPolymarketClobMarketSnapshot.
   // Rotate whenever PTB validation semantics change so a previously accepted
   // benchmark cannot survive in localStorage and poison later sessions.
@@ -1670,8 +1675,6 @@
   // Purges stale v14 locks, which could still lock on one read.
   const POLY5M_PTB_LOCK_VERSION = 15;
   // Polymarket 5m and 15m Up/Down contracts settle exclusively on Chainlink TWAP-60
-  // Primary settled-TWAP contract endpoint
-  const PRIMARY_LOCK_SOURCE = 'polymarket-chainlink-candles';
   // Polymarket 5m / 15m / 60m Up/Down contracts settle on Chainlink TWAP-60 PATH vs locked open strike
   // (cryptoMarketConfig.twapLookbackSeconds = 60).
   // The contract Price-To-Beat (PTB) is an immutable variable sourced strictly from
@@ -1825,15 +1828,14 @@
       reads.push({ price, source, at: now });
       if (reads.length > PTB_CONFIRM_MAX_READS) reads.shift();
       _pendingPtbReads.set(slug, reads);
-      return null;
-    }
-    const existingRace = _getPolymarketPriceToBeatLock(slug);
-    if (existingRace) return existingRace;
+      
       // Safety valve: after PTB_CONFIRM_MAX_READS unconfirmed reads, lock the
       // latest one rather than leave PTB stuck on "pending" forever -- still a
       // Polymarket-native trusted source, just never independently confirmed.
       if (reads.length < PTB_CONFIRM_MAX_READS) return null;
     }
+    const existingRace = _getPolymarketPriceToBeatLock(slug);
+    if (existingRace) return existingRace;
 
     const locked = Object.freeze({
       version: POLY5M_PTB_LOCK_VERSION,
@@ -2174,7 +2176,7 @@
   // rate-limited cache below -- mirrors the existing Kalshi 429-cooldown
   // pattern (_ipcLooksRateLimited/_tripKalshiCooldown above) rather than
   // inventing a new one.
-  const _chainlinkCandleCache = {}; // `${sym}:${interval}:${lookback}` -> { candles, fetchedAt, inFlight }
+  const _chainlinkCandleCache = Object.create(null); // `${sym}:${interval}:${lookback}` -> { candles, fetchedAt, inFlight }
   const CHAINLINK_CANDLE_TTL_MS = 45_000;
   const CHAINLINK_MIN_GLOBAL_INTERVAL_MS = 1_500; // gate across ALL keys, not per-key
   let _chainlinkLastRequestAt = 0;
@@ -2373,75 +2375,7 @@
       }
     }
 
-    const slugMatch = slug.match(/^([a-z0-9-]+)-updown-(5m|15m)-(\d+)$/i);
-    if (slugMatch) {
-      const symMap = { btc: 'BTC', eth: 'ETH', sol: 'SOL', xrp: 'XRP', doge: 'DOGE', hype: 'HYPE', bnb: 'BNB' };
-      const sym = symMap[slugMatch[1].toLowerCase()];
-      const horizonTag = slugMatch[2].toLowerCase();
-      const startSec = Number(slugMatch[3]);
-      if (sym && Number.isFinite(startSec)) {
-        // PRIMARY: chainlink-candles REST endpoint
-        // NOTE: an unconfirmed read (_lockPolymarketPriceToBeat returns null while it
-        // waits for a second independent read -- see PTB_CONFIRM_* / v15 above) must
-        // NEVER be used as the returned/cached value. Falling back to the raw
-        // single-read candleOpen/pmOpen/fallbackPrice here (as this code used to do)
-        // silently bypassed the whole confirmation gate: the very first, unconfirmed
-        // read got cached and handed to callers immediately, so v15's fix never
-        // actually prevented a wrong PTB from being used -- it only changed what got
-        // frozen internally a few seconds later, after the wrong value had already
-        // been displayed/traded on. Return null (not-yet-available) instead; the
-        // caller's short-TTL cache (PTB_SCRAPE_RETRY_MS below) re-invokes this within
-        // ~1s, which naturally supplies the second confirming read.
-        try {
-          const candleOpen = await fetchPolymarketChainlinkCandleOpen(sym, horizonTag, startSec, POLY_TWAP_LOOKBACK_SEC, false);
-          if (candleOpen != null && candleOpen > 0) {
-            const locked = _lockPolymarketPriceToBeat(slug, candleOpen, 'polymarket-chainlink-candles');
-            if (locked) {
-              _poly5mPriceToBeatCache[slug] = { value: locked.price, fetchedAt: Date.now() };
-              return locked.price;
-            }
-            return null;
-          }
-        } catch (_) {}
 
-        // SECONDARY: Polymarket event page dehydrated state
-        try {
-          const html = await textFetch(`https://polymarket.com/event/${encodeURIComponent(slug)}`, {
-            headers: {
-              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151 Safari/537.36',
-              'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-              'Accept-Language': 'en-US,en;q=0.9',
-            },
-          });
-          const pmOpen = toPositiveFiniteNumber(_parsePolymarketPriceToBeat(html, slug));
-          if (pmOpen != null && pmOpen > 0) {
-            const locked = _lockPolymarketPriceToBeat(slug, pmOpen, 'polymarket-event-page');
-            if (locked) {
-              _poly5mPriceToBeatCache[slug] = { value: locked.price, fetchedAt: Date.now() };
-              return locked.price;
-            }
-            return null;
-          }
-        } catch (e) {
-          console.warn(`[Poly5M-PTB] Polymarket openPrice lookup failed for ${slug}:`, e?.message || e);
-        }
-
-        // TERTIARY FALLBACK: Only at the exact open boundary (<= 15 seconds into window)
-        const secondsSinceStart = (Date.now() / 1000) - startSec;
-        if (secondsSinceStart >= 0 && secondsSinceStart <= 15) {
-          const rtdsFallback = _getFreshRtdsTwap(sym, 15_000);
-          const fallbackPrice = toPositiveFiniteNumber(rtdsFallback?.price);
-          if (fallbackPrice != null && fallbackPrice > 0) {
-            const locked = _lockPolymarketPriceToBeat(slug, fallbackPrice, 'chainlink-open-fallback');
-            if (locked) {
-              _poly5mPriceToBeatCache[slug] = { value: locked.price, fetchedAt: Date.now() };
-              return locked.price;
-            }
-            return null;
-          }
-        }
-      }
-    }
 
     // Sourced solely from Polymarket contract event page
     try {
@@ -2452,16 +2386,6 @@
           'Accept-Language': 'en-US,en;q=0.9',
         },
       });
-      const value = _parsePolymarketPriceToBeat(html, slug);
-      if (value != null && value > 0) {
-        const locked = _lockPolymarketPriceToBeat(slug, value, 'polymarket-event-page');
-        if (locked) {
-          _poly5mPriceToBeatCache[slug] = { value: locked.price, fetchedAt: Date.now() };
-          return locked.price;
-        }
-        if (existingLock) return existingLock.price;
-        return null;
-        return null;
       const pmOpen = toPositiveFiniteNumber(_parsePolymarketPriceToBeat(html, slug));
       if (pmOpen != null && pmOpen > 0) {
         const locked = _lockPolymarketPriceToBeat(slug, pmOpen, 'polymarket-event-page');
@@ -2914,7 +2838,7 @@ function polymarketSentiment(markets, sym) {
   let _polyLastFetch = 0;
   let _polyLastError = '';
   let _polyLastSource = '';
-  let _k5mCache = {};
+  let _k5mCache = Object.create(null);
   const FETCH_TIMEOUT_MS = 12_000;
 
   function withTimeout(promise, ms, label) {
@@ -2963,10 +2887,10 @@ function polymarketSentiment(markets, sym) {
       }
     }
 
-    const poly15mResults = {};
-    const poly60mResults = {};
+    const poly15mResults = Object.create(null);
+    const poly60mResults = Object.create(null);
     if (fetchPoly5M) {
-      const poly5mResults = {};
+      const poly5mResults = Object.create(null);
       await Promise.all(Object.keys(POLY_5M_COIN_SLUGS).map(async sym => {
         try {
           poly5mResults[sym] = await withTimeout(fetchPolymarket5MBySlug(sym), 8_000, `Poly5M ${sym}`);
@@ -3012,7 +2936,7 @@ function polymarketSentiment(markets, sym) {
       window.NetworkHealth.update('Polymarket', polyStatus);
     }
 
-    const next = {};
+    const next = Object.create(null);
     for (const sym of Object.keys(POLY_5M_COIN_SLUGS)) {
       const k5raw = _k5mCache[sym] ?? null;
       const poly5mSlug = k5raw?._poly5m ?? null;
@@ -3086,7 +3010,7 @@ function polymarketSentiment(markets, sym) {
   }
 
   async function refreshPoly5M(reason = 'manual') {
-    const results = {};
+    const results = Object.create(null);
     await Promise.all(Object.keys(POLY_5M_COIN_SLUGS).map(async sym => {
       _poly5mCache[sym] = null;
       results[sym] = await fetchPolymarket5MBySlug(sym);
@@ -3132,7 +3056,7 @@ function polymarketSentiment(markets, sym) {
   // 5m). No immutable-lock version namespace of its own is needed: the lock
   // key is the full slug string, which already encodes "15m" vs "5m", so
   // reusing the same lock store cannot collide between horizons.
-  const _poly15mCache = {};
+  const _poly15mCache = Object.create(null);
 
   async function fetchPolymarket15MBySlug(sym) {
     const coinSlugPrefix = POLY_5M_COIN_SLUGS[sym];
@@ -3221,7 +3145,6 @@ function polymarketSentiment(markets, sym) {
         }
 
         if (priceToBeatNum != null) {
-          const locked = _lockPolymarketPriceToBeat(marketSlug, priceToBeatNum, priceToBeatSource);
           // Same confirmation-bypass hazard as the 5m path above: an unconfirmed
           // single read (locked falsy) must not flow through as this market's
           // priceToBeatNum. Revert to pending; the next poll supplies the second,
@@ -3298,7 +3221,7 @@ function polymarketSentiment(markets, sym) {
   // ── Polymarket 60-minute / hourly pull ──────────────────────────────────
   // Same immutable-at-open model as 5m and 15m. Slug candidates:
   //   {prefix}-updown-1h-{hourStart}  and  {prefix}-updown-60m-{hourStart}
-  const _poly60mCache = {};
+  const _poly60mCache = Object.create(null);
 
   async function fetchPolymarket60MBySlug(sym) {
     const coinSlugPrefix = POLY_5M_COIN_SLUGS[sym];
@@ -3445,7 +3368,7 @@ function polymarketSentiment(markets, sym) {
   }
 
   async function _doRefreshPoly60M(reason) {
-    const results = {};
+    const results = Object.create(null);
     await Promise.all(Object.keys(POLY_5M_COIN_SLUGS).map(async sym => {
       results[sym] = await fetchPolymarket60MBySlug(sym);
     }));
@@ -3487,7 +3410,7 @@ function polymarketSentiment(markets, sym) {
   }
 
   async function _doRefreshPoly15M(reason) {
-    const results = {};
+    const results = Object.create(null);
     await Promise.all(Object.keys(POLY_5M_COIN_SLUGS).map(async sym => {
       results[sym] = await fetchPolymarket15MBySlug(sym);
     }));

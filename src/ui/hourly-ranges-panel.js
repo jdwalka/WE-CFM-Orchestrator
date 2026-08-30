@@ -13,6 +13,7 @@
   'use strict';
 
   // ── Constants ──────────────────────────────────────────────────
+  const escapeHTML = (str) => String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   const COINBASE_EXCH_BASE = 'https://api.exchange.coinbase.com';
   const INSTRUMENTS = {
     BTC: 'BTCUSD', ETH: 'ETHUSD', SOL: 'SOLUSD',
@@ -384,8 +385,8 @@
       const renderOne = (label, g) => {
         if (!g) return '';
         if (g.error && !g.call) {
-          return `<div class="hr-grok-row"><span class="hr-grok-label">${label}</span>
-            <span class="hr-grok-meta" style="color:var(--color-orange,#f59e0b)">${g.error}</span></div>`;
+          return `<div class="hr-grok-row"><span class="hr-grok-label">${escapeHTML(label)}</span>
+            <span class="hr-grok-meta" style="color:var(--color-orange,#f59e0b)">${escapeHTML(g.error)}</span></div>`;
         }
         if (!g.call && !(g.livePath && g.livePath.dir) && !g.displayCall) return '';
         const call = (g.displayCall || (g.livePath && g.livePath.dir) || g.call) === 'DOWN' ? 'DOWN' : 'UP';
@@ -394,7 +395,7 @@
         const pct = confRaw <= 1 ? Math.round(confRaw * 100) : Math.round(confRaw);
 
         let metaLine = `${pct}%`;
-        let notes = String(g.notes || '').slice(0, 180);
+        let notes = escapeHTML(String(g.notes || '').slice(0, 180));
 
         if (label === '15m contract') {
           const peg15 = g.polyPeg || g.poly15m;
@@ -425,9 +426,9 @@
         }
 
         return `<div class="hr-grok-row">
-          <span class="hr-grok-label">${label}</span>
+          <span class="hr-grok-label">${escapeHTML(label)}</span>
           <span class="hr-grok-call" style="color:${col}">${call === 'UP' ? '▲' : '▼'} price ${call}</span>
-          <span class="hr-grok-meta">${metaLine}</span>
+          <span class="hr-grok-meta">${escapeHTML(metaLine)}</span>
           ${notes ? `<div class="hr-grok-notes">${notes}</div>` : ''}
         </div>`;
       };
@@ -501,8 +502,8 @@
     return `
       <div class="hr-card">
         <div class="hr-card-header">
-          <span class="hr-sym" style="color:${color}">${sym}</span>
-          <span class="hr-price">${priceStr}</span>
+          <span class="hr-sym" style="color:${color}">${escapeHTML(sym)}</span>
+          <span class="hr-price">${escapeHTML(priceStr)}</span>
         </div>
         <div class="hr-card-body">${poly15mHtml || '<div class="hr-empty">Loading Polymarket 15m market…</div>'}${body}${grokHtml}</div>
       </div>`;

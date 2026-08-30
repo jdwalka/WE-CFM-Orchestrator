@@ -25,9 +25,10 @@ class UVIXReverseEngineer {
       if (obj === null || typeof obj !== 'object') return obj;
       if (Array.isArray(obj)) return obj.map(sortObjKeys);
       return Object.keys(obj).sort().reduce((acc, key) => {
+        if (key === '__proto__' || key === 'constructor' || key === 'prototype') return acc;
         acc[key] = sortObjKeys(obj[key]);
         return acc;
-      }, {});
+      }, Object.create(null));
     }
 
     const sortedPayload = sortObjKeys(slugData.raw_payload || {});
@@ -41,7 +42,18 @@ class UVIXReverseEngineer {
     const hashTight = crypto.createHash('sha256').update(tightStr).digest('hex');
     const hashSpaced = crypto.createHash('sha256').update(spacedStr).digest('hex');
 
-    if (hashTight !== slugData.payload_hash && hashSpaced !== slugData.payload_hash) {
+    const expectedHash = typeof slugData.payload_hash === 'string' ? slugData.payload_hash : '';
+    let tightMatch = false;
+    let spacedMatch = false;
+    
+    if (hashTight.length === expectedHash.length && expectedHash.length > 0) {
+      tightMatch = crypto.timingSafeEqual(Buffer.from(hashTight), Buffer.from(expectedHash));
+    }
+    if (hashSpaced.length === expectedHash.length && expectedHash.length > 0) {
+      spacedMatch = crypto.timingSafeEqual(Buffer.from(hashSpaced), Buffer.from(expectedHash));
+    }
+
+    if (!tightMatch && !spacedMatch) {
       throw new Error('UVIX slug integrity verification FAILED — payload hash mismatch');
     }
 

@@ -169,12 +169,14 @@ function readPythProKeyDirect() {
     path.join(__dirname, '../secrets/PYTH_PRO_API_KEY.txt'),
     path.join(process.cwd(), 'secrets/PYTH_PRO_API_KEY.txt'),
   ];
-  for (const p of paths) {
+  const basePath = path.resolve(__dirname, '../../');
+  for (const rawP of paths) {
     try {
+      const p = path.normalize(rawP);
       if (fs.existsSync(p)) {
         const raw = fs.readFileSync(p, 'utf8').trim();
         const lines = raw.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-        const k = lines.find(l => !l.startsWith('#') && !l.includes('PYTH_PRO_API_KEY') && l.length > 20) || lines[lines.length - 1];
+        const k = lines.find(l => !l.startsWith('#') && !l.includes('PYTH_PRO_API_KEY') && l.length > 20) || lines.at(-1);
         if (k) return k;
       }
     } catch (_) {}
@@ -184,7 +186,7 @@ function readPythProKeyDirect() {
 
 async function fetchPythSpotDirect(coin) {
   const sym = String(coin || 'BTC').toUpperCase();
-  const feedId = PYTH_FEEDS[sym];
+  const feedId = Object.prototype.hasOwnProperty.call(PYTH_FEEDS, sym) ? PYTH_FEEDS[sym] : null;
   if (!feedId) return null;
   const key = readPythProKeyDirect();
   const url = `https://hermes.pyth.network/v2/updates/price/latest?ids%5B%5D=${encodeURIComponent(feedId)}`;
@@ -235,7 +237,7 @@ async function fetchPolymarketPtbDirect(sym, horizon = '5m') {
     const nowSec = Math.floor(Date.now() / 1000);
     const boundarySec = nowSec - (nowSec % spec.intervalSec);
     const prefixMap = { BTC: 'btc', ETH: 'eth', SOL: 'sol', XRP: 'xrp', DOGE: 'doge', BNB: 'bnb', HYPE: 'hype' };
-    const prefix = prefixMap[symbol] || symbol.toLowerCase();
+    const prefix = Object.prototype.hasOwnProperty.call(prefixMap, symbol) ? prefixMap[symbol] : symbol.toLowerCase();
     const slugs = spec.tags.map((tag) => `${prefix}-updown-${tag}-${boundarySec}`);
     for (const lockedSlug of slugs) {
       const locked = _directPtbLocks.get(lockedSlug);
@@ -308,7 +310,7 @@ async function deskInfer(packet, mode, options = {}) {
   // If PTB is missing or zero, actively hydrate from Polymarket chainlink candles (unless horizon is anytime)
   if (packet.horizon !== 'anytime' && (!packet.priceToBeatNum || packet.priceToBeatNum <= 0)) {
   // If PTB is missing or zero, hydrate the immutable contract opening strike (not live TWAP)
-  if (!packet.priceToBeatNum || packet.priceToBeatNum <= 0) {
+  if (packet.horizon !== 'anytime' && (!packet.priceToBeatNum || packet.priceToBeatNum <= 0)) {
     const directPtb = await fetchPolymarketPtbDirect(packet.sym, packet.horizon);
     if (directPtb && directPtb > 0) {
       packet.priceToBeatNum = directPtb;
