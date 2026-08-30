@@ -1,0 +1,9 @@
+name = "wecrypto"
+compatibility_date = "2026-08-28"
+compatibility_flags = ["nodejs_compat"]
+
+[assets]
+directory = "./dist/public"
+binding = "ASSETS"
+html_handling = "auto-trailing-slash"
+not_found_handling = "single-page-application"
