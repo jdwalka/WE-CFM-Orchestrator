@@ -90,17 +90,23 @@ class WecryptoNuclear:
         self,
         btc_lambda_base: float = None,
         max_contracts: int = None,
-        dry_run: bool = False,
+        dry_run: bool = True,
         state_file: str = None,
     ):
         self.btc_lambda_base  = float(os.environ.get('WECRYPTO_BTC_LAMBDA_BASE', btc_lambda_base or 0.005))
         self.max_contracts    = int(os.environ.get('WECRYPTO_MAX_CONTRACTS', max_contracts or 10))
-        self.dry_run          = dry_run or os.environ.get('WECRYPTO_DRY_RUN', '').lower() in ('1', 'true', 'yes')
+        # Ensure it defaults to True, only allowing override to False if explicitly stated
+        env_dry_run = os.environ.get('WECRYPTO_DRY_RUN', '').lower()
+        if env_dry_run in ('0', 'false', 'no'):
+            self.dry_run = False
+        else:
+            self.dry_run = dry_run
+            
         self.state_file       = state_file or os.environ.get('WECRYPTO_STATE_FILE', 'wecrypto_state.json')
         self.kalshi_token     = os.environ.get('KALSHI_API_TOKEN', '')
 
         if not self.kalshi_token and not self.dry_run:
-            log.warning('KALSHI_API_TOKEN not set — running in dry-run mode')
+            log.warning('KALSHI_API_TOKEN not set — forcing dry-run mode')
             self.dry_run = True
 
         # Per-asset state (prices, volumes, position tracking)
@@ -290,7 +296,7 @@ class WecryptoNuclear:
             return True
         except Exception as e:
             log.warning(f"Orderbook fetch failed: {e}")
-            return True 
+            return False 
 
     # ── Order Execution ───────────────────────────────────────────────────────
 
