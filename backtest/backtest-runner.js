@@ -875,10 +875,10 @@ function runBacktest(sym, candles) {
       const bt  = active.filter(o => o.bucket === b);
       acc[b] = { count: bt.length, winRate: bt.length ? bt.filter(o => o.signedReturn > 0).length / bt.length * 100 : null };
       return acc;
-    }, {});
+    }, Object.create(null));
 
     // Session accuracy
-    const sessionStats = {};
+    const sessionStats = Object.create(null);
     active.forEach(o => {
       const utcH = new Date(o.t).getUTCHours();
       let sess = utcH >= 13 && utcH < 18 ? 'NY Open' : utcH >= 7 && utcH < 12 ? 'London' : utcH >= 0 && utcH < 6 ? 'Asia' : 'Off-Hours';
