@@ -85,10 +85,9 @@
     const ptbSrc = String(m.priceToBeatSource || m.ptbSource || '').toLowerCase();
     const ptbRejected = /rtds|twap|title|provisional|coinbase|binance|gecko|rti|crypto-price|boundary|rejected:|chainlink-candles/.test(ptbSrc);
     const ptb = (!ptbRejected && Number.isFinite(rawPtb) && rawPtb > 0) ? rawPtb : NaN;
-    const tradeFlowRatio = Number(m.tradeFlowRatio ?? m.tradeFlow ?? 0.5);
-    const volumeDelta = Number(m.volumeDelta ?? 0);
-    const spread = (Number(m.bestAsk) && Number(m.bestBid)) ? (Number(m.bestAsk) - Number(m.bestBid)) : null;
-    const spotVelocity = Number(m.spotVelocity ?? m.velocity ?? 0);
+    const yes = Number(m.probability ?? m.upProbability ?? m.yesProb ?? m.clobProbability);
+    const mid = Number(m.mid);
+    const imb = Number(m.depthImbalance);
 
     return {
       sym: String(sym || '').toUpperCase(),
@@ -101,102 +100,14 @@
       depthImbalance: Number.isFinite(imb) ? imb : null,
       bestBid: m.bestBid ?? null,
       bestAsk: m.bestAsk ?? null,
-      spread: Number.isFinite(spread) ? spread : null,
-      tradeFlowRatio: Number.isFinite(tradeFlowRatio) ? tradeFlowRatio : 0.5,
-      volumeDelta: Number.isFinite(volumeDelta) ? volumeDelta : 0,
-      spotVelocity: Number.isFinite(spotVelocity) ? spotVelocity : 0,
       secondsToClose: m.secondsToClose ?? null,
       liveDirection: m.liveDirection || null,
-    };
-  }
-
-  /**
-   * Anti-Spoofing Engine: Detects fake or ghost orderbook walls.
-   * Prevents false positives caused by non-executable flash liquidity.
-   */
-  function detectOrderbookSpoofing(market) {
-    if (!market || market.depthImbalance == null) {
-      return { isSpoofed: false, reason: null, confidenceMultiplier: 1.0 };
-    }
-
-    const imb = market.depthImbalance;
-    const flow = market.tradeFlowRatio;
-    const spread = market.spread;
-
-    // 1. Ghost Wall Divergence: Extreme book depth opposite to actual executed trade flow
-    if (imb > 0.60 && flow < 0.35) {
-      return {
-        isSpoofed: true,
-        reason: `Ghost Bid Wall (Imbalance +${imb.toFixed(2)} vs Aggressor Sell Flow ${(flow * 100).toFixed(0)}%)`,
-        confidenceMultiplier: 0.15,
-      };
-    }
-    if (imb < -0.60 && flow > 0.65) {
-      return {
-        isSpoofed: true,
-        reason: `Ghost Ask Wall (Imbalance ${imb.toFixed(2)} vs Aggressor Buy Flow ${(flow * 100).toFixed(0)}%)`,
-        confidenceMultiplier: 0.15,
-      };
-    }
-
-    // 2. Wide Spread Depth Illusion: High imbalance in illiquid / wide spreads
-    if (spread != null && spread > 0.08 && Math.abs(imb) > 0.50) {
-      return {
-        isSpoofed: true,
-        reason: `Illiquid Spread Trap (Spread ${(spread * 100).toFixed(1)}c with fake wall ${imb > 0 ? 'Bid' : 'Ask'})`,
-        confidenceMultiplier: 0.25,
-      };
-    }
-
-    return { isSpoofed: false, reason: null, confidenceMultiplier: 1.0 };
-  }
-
-  /**
-   * AI Lookahead Engine: Computes projected contract path at expiration
-   * and sets dynamic lookahead error tolerances based on remaining seconds.
-   */
-  function computeLookaheadTrajectory(market) {
-    if (!market || !market.spot || !market.ptb || market.secondsToClose == null) {
-      return null;
-    }
-
-    const ttc = market.secondsToClose;
-    const velocity = market.spotVelocity || 0; // price change per second
-    const projectedSpot = market.spot + (velocity * Math.min(ttc, 300));
-    const projectedDelta = projectedSpot - market.ptb;
-    const projectedPct = projectedDelta / market.ptb;
-
-    // Dynamic tolerances: tighter as expiration nears
-    let lookaheadTolerance = 0.0006; // default 0.06% for early candle
-    if (ttc <= 45) {
-      lookaheadTolerance = 0.0001; // ultra-tight for final 45s
-    } else if (ttc <= 120) {
-      lookaheadTolerance = 0.00025; // tight for final 2m
-    } else if (ttc <= 300) {
-      lookaheadTolerance = 0.00045; // moderate
-    }
-
-    const projectedCall = Math.abs(projectedPct) >= lookaheadTolerance
-      ? (projectedDelta > 0 ? 'UP' : 'DOWN')
-      : null;
-
-    return {
-      ttc,
-      velocity,
-      projectedSpot,
-      projectedDelta,
-      projectedPct,
-      projectedCall,
-      lookaheadTolerance,
-      strength: clamp(Math.abs(projectedPct) / (lookaheadTolerance * 4), 0.35, 1.0),
     };
   }
 
   function collectTruthVotes(market) {
     const votes = [];
     if (!market) return votes;
-
-    // 1. Current Spot vs Settlement PTB
     if (market.spot != null && market.ptb != null && market.ptb > 0) {
       const delta = market.spot - market.ptb;
       const pct = delta / market.ptb;
@@ -209,25 +120,10 @@
         });
       }
     }
-
-    // 2. Lookahead Projected Path
-    const lookahead = computeLookaheadTrajectory(market);
-    if (lookahead && lookahead.projectedCall) {
-      votes.push({
-        source: 'lookahead_trajectory',
-        call: lookahead.projectedCall,
-        strength: lookahead.strength,
-        detail: `lookahead ${lookahead.ttc}s: projected ${lookahead.projectedDelta > 0 ? '+' : ''}${(lookahead.projectedPct * 100).toFixed(3)}% vs PTB (tol ${(lookahead.lookaheadTolerance * 100).toFixed(3)}%)`,
-      });
-    }
-
-    // 3. Live Direction
     const ld = String(market.liveDirection || '').toUpperCase();
     if (ld === 'UP' || ld === 'DOWN') {
       votes.push({ source: 'live_direction', call: ld, strength: 0.7, detail: `liveDirection=${ld}` });
     }
-
-    // 4. CLOB Mid-Price
     const p = market.yesProb != null ? market.yesProb : (market.mid != null ? market.mid : null);
     if (p != null && Math.abs(p - 0.5) >= MKT_EDGE) {
       votes.push({
@@ -237,31 +133,14 @@
         detail: `P(Up)=${(p * 100).toFixed(1)}%`,
       });
     }
-
-    // 5. Orderbook Imbalance with Spoofing Guard
     if (market.depthImbalance != null && Math.abs(market.depthImbalance) >= BOOK_EDGE) {
-      const spoofCheck = detectOrderbookSpoofing(market);
-      const rawCall = market.depthImbalance > 0 ? 'UP' : 'DOWN';
-      
-      if (spoofCheck.isSpoofed) {
-        votes.push({
-          source: 'book_imbalance_spoofed',
-          call: rawCall,
-          strength: clamp(Math.abs(market.depthImbalance) * spoofCheck.confidenceMultiplier, 0.05, 0.25),
-          detail: `[SPOOF DETECTED] ${spoofCheck.reason} — downweighted`,
-          spoofed: true,
-        });
-      } else {
-        votes.push({
-          source: 'book_imbalance',
-          call: rawCall,
-          strength: clamp(Math.abs(market.depthImbalance), 0.3, 1),
-          detail: `depthImbalance=${market.depthImbalance.toFixed(3)} (Flow confirmed)`,
-          spoofed: false,
-        });
-      }
+      votes.push({
+        source: 'book_imbalance',
+        call: market.depthImbalance > 0 ? 'UP' : 'DOWN',
+        strength: clamp(Math.abs(market.depthImbalance), 0.3, 1),
+        detail: `depthImbalance=${market.depthImbalance.toFixed(3)}`,
+      });
     }
-
     return votes;
   }
 
@@ -344,12 +223,9 @@
       });
     }
 
-    const validVotes = votes.filter((v) => !v.spoofed);
-    const truth = majorityTruth(validVotes);
-    const opposing = validVotes.filter((v) => aiCall && v.call && v.call !== aiCall);
-    const supporting = validVotes.filter((v) => aiCall && v.call && v.call === aiCall);
-    const spoofDetected = votes.some((v) => v.spoofed);
-    const lookaheadInfo = votes.find((v) => v.source === 'lookahead_trajectory');
+    const truth = majorityTruth(votes);
+    const opposing = votes.filter((v) => aiCall && v.call && v.call !== aiCall);
+    const supporting = votes.filter((v) => aiCall && v.call && v.call === aiCall);
 
     let nullified = false;
     let soft = false;
@@ -367,31 +243,31 @@
       weight = 0;
       effectiveCall = truth.call;
       sourceOfTruth = 'raw_data';
-      reason = `nullified: AI=${aiCall} opposed by ${opposing.map((v) => v.source).join('+')} → truth=${truth.call}${spoofDetected ? ' [SPOOF_FILTERED]' : ''}`;
+      reason = `nullified: AI=${aiCall} opposed by ${opposing.map((v) => v.source).join('+')} → truth=${truth.call}`;
     } else if (opposing.some((v) => v.source === 'spot_vs_ptb') && truth.call && truth.call !== aiCall) {
       nullified = true;
       weight = 0;
       effectiveCall = opposing.find((v) => v.source === 'spot_vs_ptb').call;
       sourceOfTruth = 'raw_data_path';
-      reason = `nullified: AI=${aiCall} vs spot_vs_ptb → ${effectiveCall}${spoofDetected ? ' [SPOOF_FILTERED]' : ''}`;
+      reason = `nullified: AI=${aiCall} vs spot_vs_ptb → ${effectiveCall}`;
     } else if (opposing.length === 1 && truth.call && truth.call !== aiCall) {
       soft = true;
       weight = SOFT_WEIGHT;
       effectiveCall = aiCall;
       sourceOfTruth = 'llm_soft_conflict';
-      reason = `soft: AI=${aiCall} vs ${opposing[0].source}(${opposing[0].call}) — weight=${SOFT_WEIGHT}${spoofDetected ? ' [SPOOF_FILTERED]' : ''}`;
+      reason = `soft: AI=${aiCall} vs ${opposing[0].source}(${opposing[0].call}) — weight=${SOFT_WEIGHT}`;
     } else if (supporting.length && (!truth.call || truth.call === aiCall)) {
-      reason = `confirmed by ${supporting.map((v) => v.source).join('+')}${spoofDetected ? ' [SPOOF_FILTERED]' : ''}`;
+      reason = `confirmed by ${supporting.map((v) => v.source).join('+')}`;
       sourceOfTruth = 'llm+raw';
       weight = 1;
     } else {
-      reason = spoofDetected ? 'insufficient_raw_edge [SPOOF_FILTERED]' : 'insufficient_raw_edge';
+      reason = 'insufficient_raw_edge';
       sourceOfTruth = 'llm';
       weight = conf >= 0.55 ? 0.85 : 0.5;
     }
 
     const ttc = market?.secondsToClose;
-    const pathVote = validVotes.find((v) => v.source === 'spot_vs_ptb');
+    const pathVote = votes.find((v) => v.source === 'spot_vs_ptb');
     if (
       !nullified
       && aiCall
@@ -419,8 +295,6 @@
       truthCall: truth.call,
       nullified,
       soft,
-      spoofDetected,
-      lookahead: lookaheadInfo ? lookaheadInfo.detail : null,
       weight,
       confidence: nullified ? Math.round(truth.strength * 100) / 100 : conf * weight,
       sourceOfTruth,
@@ -433,8 +307,6 @@
         ptb: market.ptb,
         yesProb: market.yesProb,
         depthImbalance: market.depthImbalance,
-        tradeFlowRatio: market.tradeFlowRatio,
-        spread: market.spread,
         secondsToClose: market.secondsToClose,
       } : null,
     };
@@ -500,20 +372,16 @@
   function renderBadgeHtml(verdictOrBrief) {
     const v = verdictOrBrief;
     if (!v) return '';
-    let extra = '';
-    if (v.spoofDetected) {
-      extra += `<span style="font-size:8px;margin-left:4px;padding:1px 5px;border-radius:999px;background:rgba(255,152,0,0.2);color:#ffb74d;font-weight:700;">🛡 SPOOF FILTERED</span>`;
-    }
     if (v.nullified) {
-      return `<span style="font-size:8px;padding:1px 6px;border-radius:999px;background:rgba(255,82,82,0.2);color:#ff8a80;font-weight:800;">⛔ NULLIFIED → ${String(v.effectiveCall || v.truthCall || '').toUpperCase()}</span>${extra}`;
+      return `<span style="font-size:8px;padding:1px 6px;border-radius:999px;background:rgba(255,82,82,0.2);color:#ff8a80;font-weight:800;">⛔ NULLIFIED → ${String(v.effectiveCall || v.truthCall || '').toUpperCase()}</span>`;
     }
     if (v.softConflict || v.soft) {
-      return `<span style="font-size:8px;padding:1px 6px;border-radius:999px;background:rgba(255,193,7,0.15);color:#ffe082;font-weight:700;">⚠ RAW CONFLICT</span>${extra}`;
+      return `<span style="font-size:8px;padding:1px 6px;border-radius:999px;background:rgba(255,193,7,0.15);color:#ffe082;font-weight:700;">⚠ RAW CONFLICT</span>`;
     }
     if (v.sourceOfTruth === 'llm+raw') {
-      return `<span style="font-size:8px;padding:1px 6px;border-radius:999px;background:rgba(0,230,118,0.12);color:#69f0ae;font-weight:700;">✓ RAW OK</span>${extra}`;
+      return `<span style="font-size:8px;padding:1px 6px;border-radius:999px;background:rgba(0,230,118,0.12);color:#69f0ae;font-weight:700;">✓ RAW OK</span>`;
     }
-    return extra;
+    return '';
   }
 
   return {

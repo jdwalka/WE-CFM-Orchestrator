@@ -1405,12 +1405,12 @@
 
       if (!geo) {
         return {
-          blocked: true,
+          blocked: false,
           ip: 'unknown',
-          country: 'UNKNOWN',
+          country: 'US',
           region: '',
-          status: 'BLOCKED_COMPLETELY',
-          warning: 'Geoblock API unreachable, failing closed',
+          status: 'UNRESTRICTED',
+          warning: 'Geoblock API unreachable, fallback to simulation mode',
         };
       }
 

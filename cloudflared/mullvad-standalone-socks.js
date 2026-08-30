@@ -3,7 +3,7 @@ const net = require('net');
 const os = require('os');
 
 const PORT = Number(process.env.MULLVAD_SOCKS_PORT || 18090);
-const BIND = process.env.MULLVAD_SOCKS_BIND || '0.0.0.0';
+const BIND = process.env.MULLVAD_SOCKS_BIND || '127.0.0.1';
 
 // Auto-detect tunnel local address if present, otherwise connect without binding
 function resolveTunnelAddress() {
@@ -93,9 +93,7 @@ const server = net.createServer((client) => {
       const connectOpts = { host, port, noDelay: true };
       if (TUNNEL_LOCAL_ADDR) connectOpts.localAddress = TUNNEL_LOCAL_ADDR;
 
-      let connected = false;
       const dest = net.connect(connectOpts, () => {
-        connected = true;
         replySocks(client, 0x00, port);
         dest.setKeepAlive(true, 15000);
         client.setKeepAlive(true, 15000);
@@ -109,18 +107,16 @@ const server = net.createServer((client) => {
       dest.on('error', (err) => {
         if (!dest._loggedErr) {
           dest._loggedErr = true;
-          console.error(`[mullvad-standalone-socks] dest ${host}:${port} via ${TUNNEL_LOCAL_ADDR || 'default'} -> ${err.message}`);
+          console.error(`[mullvad-standalone-socks] dest ${host}:${port} via ${TUNNEL_LOCAL_ADDR} -> ${err.message}`);
           // #region agent log
           fetch('http://127.0.0.1:7629/ingest/9b1c0a9c-43ba-46f7-b483-8aad6ef8128f', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '8ad9ce' }, body: JSON.stringify({ sessionId: '8ad9ce', runId: 'post-fix', hypothesisId: 'I', location: 'mullvad-standalone-socks.js:dest-error', message: 'Tunnel dest connect failed', data: { host, port, error: err.message, code: err.code || null, tunnelLocal: TUNNEL_LOCAL_ADDR }, timestamp: Date.now() }) }).catch(() => { });
           // #endregion
         }
-        if (!connected) {
-          try { replySocks(client, 0x05, 0); } catch (_) {}
-        }
         client.destroy();
       });
-      dest.on('close', () => client.destroy());
+      dest.on('error', () => { client.destroy(); });
       client.on('close', () => dest.destroy());
+      dest.on('close', () => client.destroy());
     }
   }
 
