@@ -27,7 +27,7 @@
     "allowImportingTsExtensions": true,
     "moduleResolution": "bundler",
     "forceConsistentCasingInFileNames": true,
-    "ignoreDeprecations": "5.0",
+
     "types": [
       "node"
     ],

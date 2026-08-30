@@ -336,6 +336,10 @@
           <!-- Left: Live Polymarket Embed & Orderbook Depth -->
           <div style="display:flex;flex-direction:column;gap:16px;">
             <div style="background:var(--color-surface);border:1px solid var(--color-border);border-radius:8px;overflow:hidden;padding:8px;">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;padding:0 4px;">
+                <span style="font-size:11px;font-weight:700;color:var(--color-text-faint);text-transform:uppercase;">Live Embed</span>
+                <span style="color:var(--color-text-muted);font-family:monospace;font-size:10px;" title="Market Slug">${poly5m.slug || '—'}</span>
+              </div>
               <div id="poly-pro-embed-slot" style="width:100%;height:340px;"></div>
             </div>
 
@@ -437,7 +441,9 @@
   function _reconcileEmbed(container, poly5m) {
     const slot = container.querySelector('#poly-pro-embed-slot');
     if (!slot) return;
-    const slug = poly5m.slug || `${_activeSymbol.toLowerCase()}-updown-5m`;
+    const nowSec = Math.floor(Date.now() / 1000);
+    const windowSec = nowSec - (nowSec % 300);
+    const slug = poly5m.slug || `${_activeSymbol.toLowerCase()}-updown-5m-${windowSec}`;
 
     // The panel's innerHTML rewrite always produces a brand-new slot div, so
     // any previously-loaded iframe is now detached (its old parent is gone).

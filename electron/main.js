@@ -931,8 +931,12 @@ function configureCachePaths() {
     // current file content.
     app.commandLine.appendSwitch('v8-cache-options', 'none');
 
-    // V8 Optimizations for AMD Ryzen + Windows 11 Huge Pages (Fake Quant Box configuration) + WASM SIMD
-    app.commandLine.appendSwitch('js-flags', '--use-largepages=on --max-old-space-size=8192 --no-lazy --turbo-fast-api-calls --experimental-wasm-simd');
+    // V8 Optimizations for AMD Ryzen (max-old-space-size + WASM SIMD)
+    // Note: --use-largepages=on causes STATUS_ACCESS_VIOLATION (0xC0000005 / -1073741819) on Windows without SeLockMemoryPrivilege.
+    const v8Flags = process.platform === 'win32'
+      ? '--max-old-space-size=8192 --no-lazy --turbo-fast-api-calls --experimental-wasm-simd'
+      : '--use-largepages=on --max-old-space-size=8192 --no-lazy --turbo-fast-api-calls --experimental-wasm-simd';
+    app.commandLine.appendSwitch('js-flags', v8Flags);
     app.commandLine.appendSwitch('enable-features', 'SharedArrayBuffer');
 
     if (process.env.WECRYPTO_SWEDEN_SOCKS) {

@@ -598,7 +598,6 @@ class AdaptiveTuner {
    * and seeds the live overlay so tuning doesn't cold-start every reload.
    */
   async bootstrapFromPriorSession() {
-  bootstrapFromPriorSession() {
     try {
       if (typeof window === 'undefined' || !window.DataLogger?.getLatest) {
         return { loaded: false, reason: 'DataLogger.getLatest unavailable' };

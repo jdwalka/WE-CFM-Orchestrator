@@ -36,17 +36,17 @@ jobs:
     if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - name: claude-commands-check
-        uses: MukundaKatta/claude-commands-check@v0.1.0
+        uses: MukundaKatta/claude-commands-check@3fd1b946b46f23ec1b88373746762d39c891dc6b
         with:
           paths: .claude/commands
       - name: claude-hooks-check
-        uses: MukundaKatta/claude-hooks-check@v0.1.0
+        uses: MukundaKatta/claude-hooks-check@7ebcea5d5e828d003cdbb5841a50dd6047efecf3
         with:
           paths: .claude/hooks
       - name: claude-skill-check
-        uses: MukundaKatta/claude-skill-check@v0.1.0
+        uses: MukundaKatta/claude-skill-check@77bbd644d76bf926266f5971c2c81c579271f6af
         with:
           paths: .claude/skills
 
@@ -60,7 +60,7 @@ jobs:
       (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude'))
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
       - name: Temporarily hide tsconfig.json to avoid bun tsconfig auto-discovery
@@ -68,7 +68,7 @@ jobs:
           if [ -f tsconfig.json ]; then mv tsconfig.json .tsconfig.ci.bak; echo "tsconfig hidden"; fi
         shell: bash
       - name: Claude Code Action Official
-        uses: anthropics/claude-code-action@v1
+        uses: anthropics/claude-code-action@923714f19352008835430ae7d21fa14865c3d476
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           # claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}  # use instead of api key on Max/Pro
@@ -84,11 +84,11 @@ jobs:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
       - name: Claude Code Base Action
-        uses: anthropics/claude-code-base-action@beta
+        uses: anthropics/claude-code-base-action@e8132bc5e637a42c27763fc757faa37e1ee43b34
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           prompt: "Review the latest changes on this branch for correctness bugs and summarise anything risky."
@@ -98,11 +98,11 @@ jobs:
     if: github.event_name == 'pull_request' && github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
       - name: Claude BugBot
-        uses: rekpero/claude-bugbot-github-action@v1.0.14
+        uses: rekpero/claude-bugbot-github-action@8eedc356796c3b6e73a2d2288fe10643702b8bfb
         with:
           anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
           github-token: ${{ github.token }}
@@ -114,11 +114,11 @@ jobs:
     if: github.event_name == 'pull_request' && github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
       - name: Claude PR Auditor
-        uses: LennardGeissler/ai-pr-reviewer@v0.1.0
+        uses: LennardGeissler/ai-pr-reviewer@9162ccdeb8fb6b513b2a7fe1d3386d314e82ebcc
         with:
           anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
           github-token: ${{ github.token }}
@@ -129,11 +129,11 @@ jobs:
     if: github.event_name == 'pull_request' && github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
       - name: Claude PR Review
-        uses: mjthinkkits/claude-pr-review@v1.0.0
+        uses: mjthinkkits/claude-pr-review@587dee6ac5b220f5f9bd3b177f8a11ee9346cc46
         with:
           anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
           github-token: ${{ github.token }}
@@ -143,11 +143,11 @@ jobs:
     if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
       - name: Claude AutoFix
-        uses: enriconunes/claude-autofix-action@v2.1.2
+        uses: enriconunes/claude-autofix-action@86cc82d4d18e33e99106982f12b5e2a502d5ab97
         with:
           anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
           language: javascript
@@ -163,11 +163,11 @@ jobs:
       contains(join(github.event.pull_request.labels.*.name, ','), 'claudecoder')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
       - name: ClaudeCoderAction
-        uses: EndemicMedia/claudecoder@v2.1.0
+        uses: EndemicMedia/claudecoder@ad844d436c9a5354cd2d61314763c254daf39644
         with:
           github-token: ${{ github.token }}
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -179,11 +179,11 @@ jobs:
     if: github.event_name == 'pull_request' && github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
       - name: Claude AI Code Review
-        uses: chimaek/claude-code-review-action@v1.0.2
+        uses: chimaek/claude-code-review-action@8b7f3e33b5503cb940562c20ef5061f267b1c03c
         with:
           github-token: ${{ github.token }}
 
@@ -192,11 +192,11 @@ jobs:
     if: github.event_name == 'pull_request' && github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
       - name: Claude Self-Learning Review
-        uses: Valmarelox/claude-learn-action@v1.1.1
+        uses: Valmarelox/claude-learn-action@b47c547cd995d6c132376ceb3ebdbb9b353613d7
         with:
           github-token: ${{ github.token }}
 
@@ -205,11 +205,11 @@ jobs:
     if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
       - name: Claude Code session
-        uses: CVector-Energy/claude-code-session@v0.1.1
+        uses: CVector-Energy/claude-code-session@d1678c397e6a74044b2ebd3e049fc5d2ae3d2286
         with:
           github-token: ${{ github.token }}
 
@@ -218,6 +218,6 @@ jobs:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - name: Install Claude Code
-        uses: pleaseai/setup-claude-code@v1.1.4
+        uses: pleaseai/setup-claude-code@a584779d3e6ee20cf6246a0ba4dcc2672a97ca2a

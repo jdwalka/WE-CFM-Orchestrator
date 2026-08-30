@@ -403,6 +403,7 @@
           const side = peg15 && peg15.side ? peg15.side : (call === 'UP' ? 'Up' : 'Down');
           const ptb = peg15 && peg15.priceToBeatNum;
           const ptbLabel = ptb ? `$${Number(ptb).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : (priceStr !== '—' ? priceStr : '');
+          if (slug) metaLine += ` · id: ${escapeHTML(slug.length > 20 ? slug.substring(0, 12) + '...' : slug)}`;
           if (slug) metaLine += ` · buy ${side}`;
           if (ptbLabel) metaLine += ` · PTB ${ptbLabel}`;
           if (peg15 && peg15.yesProb != null) metaLine += ` · mkt Up ${(Number(peg15.yesProb) * 100).toFixed(0)}%`;
@@ -479,7 +480,10 @@
           ? `$${ptbNum.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 6 })}` : 'pending');
         const closeLabel15 = p15.closeTime ? timeToClose(p15.closeTime) : null;
         poly15mHtml = `<div class="hr-poly15m" style="margin-bottom:8px;">
-          <div class="hr-grok-hdr">Polymarket 15m Up/Down</div>
+          <div class="hr-grok-hdr" style="display:flex;justify-content:space-between;">
+            <span>Polymarket 15m Up/Down</span>
+            <span style="opacity:0.5;font-family:monospace;font-size:9px;" title="Market Slug">${p15.slug}</span>
+          </div>
           <iframe
             title="${sym} Up or Down 15m — Polymarket"
             src="https://embed.polymarket.com/market?market=${encodeURIComponent(p15.slug)}&theme=dark&border=false&creator=JohnDaWalka&height=220"
