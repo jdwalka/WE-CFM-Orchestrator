@@ -26,7 +26,7 @@
     vwap: 0.05,
   };
 
-  const ONLINE_WEIGHT_STATE = {};
+  const ONLINE_WEIGHT_STATE = Object.create(null);
 
   function clamp(value, min, max) {
     return Math.min(max, Math.max(min, value));
@@ -36,12 +36,19 @@
     return String(sym || 'GLOBAL').toUpperCase();
   }
 
+  function _isPrototypeKey(key) {
+    if (!key || typeof key !== 'string') return true;
+    const lower = key.toLowerCase();
+    return lower === '__proto__' || lower === 'constructor' || lower === 'prototype';
+  }
+
   function _ensureOnlineState(sym) {
     const key = _coinKey(sym);
+    if (_isPrototypeKey(key)) return null;
     if (!ONLINE_WEIGHT_STATE[key]) {
       ONLINE_WEIGHT_STATE[key] = {
         updatedAt: Date.now(),
-        signals: {},
+        signals: Object.create(null),
       };
     }
     return ONLINE_WEIGHT_STATE[key];
@@ -49,8 +56,9 @@
 
   function _ensureOnlineSignalState(sym, signal) {
     const state = _ensureOnlineState(sym);
+    if (!state) return null;
     const skey = String(signal || '').trim();
-    if (!skey) return null;
+    if (!skey || _isPrototypeKey(skey)) return null;
     if (!state.signals[skey]) {
       state.signals[skey] = {
         mult: 1,
@@ -70,15 +78,17 @@
 
   function applyOnlineWeightOverlay(sym, baseWeights) {
     const key = _coinKey(sym);
-    const state = Object.prototype.hasOwnProperty.call(ONLINE_WEIGHT_STATE, key) ? ONLINE_WEIGHT_STATE[key] : undefined;
+    if (_isPrototypeKey(key)) return { ...baseWeights };
+    const state = ONLINE_WEIGHT_STATE[key];
     if (!state || !state.signals) return { ...baseWeights };
     const out = { ...baseWeights };
     Object.keys(out).forEach((signal) => {
-      const st = Object.prototype.hasOwnProperty.call(state.signals, signal) ? state.signals[signal] : undefined;
+      if (_isPrototypeKey(signal)) return;
+      const st = state.signals[signal];
       if (!st) return;
       const mult = clamp(Number(st.mult) || 1, ONLINE_WEIGHT_BOUNDS.minMult, ONLINE_WEIGHT_BOUNDS.maxMult);
       const pruneMult = clamp(Number(st.pruneMult) || 1, ONLINE_WEIGHT_BOUNDS.minPruneMult, 1);
-      const val = Object.prototype.hasOwnProperty.call(out, signal) ? out[signal] : undefined;
+      const val = out[signal];
       if (val !== undefined) out[signal] = val * mult * pruneMult;
     });
     return out;
@@ -111,10 +121,15 @@
     for (const [sym, state] of Object.entries(snapshot)) {
       if (!state || typeof state !== 'object' || !state.signals) continue;
       const key = _coinKey(sym);
-      if (key === '__proto__' || key === 'constructor' || key === 'prototype') continue;
+      if (_isPrototypeKey(key) || _isPrototypeKey(sym)) continue;
+      const safeSignals = Object.create(null);
+      for (const [sig, sigData] of Object.entries(state.signals)) {
+        if (_isPrototypeKey(sig)) continue;
+        safeSignals[sig] = { ...sigData };
+      }
       ONLINE_WEIGHT_STATE[key] = {
         updatedAt: Number(state.updatedAt) || Date.now(),
-        signals: { ...state.signals },
+        signals: safeSignals,
       };
       coins++;
     }
