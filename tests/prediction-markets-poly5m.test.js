@@ -34,15 +34,18 @@ async function test(name, fn) {
 }
 
 function createFixedDate(fixedMs) {
-  return class FixedDate extends Date {
+  let currentMs = fixedMs;
+  const Cls = class FixedDate extends Date {
     constructor(...args) {
-      super(...(args.length ? args : [fixedMs]));
+      super(...(args.length ? args : [currentMs]));
     }
 
     static now() {
-      return fixedMs;
+      return currentMs;
     }
   };
+  Cls.setNow = (ms) => { currentMs = ms; };
+  return Cls;
 }
 
 function parseSlug(url) {
@@ -152,7 +155,7 @@ function createHarness(options = {}) {
   context.globalThis = context;
 
   vm.runInNewContext(source, context, { filename: sourcePath });
-  return { fetchedUrls, predictionMarkets: window.PredictionMarkets };
+  return { fetchedUrls, predictionMarkets: window.PredictionMarkets, clock: context.Date };
 }
 
 (async () => {
@@ -198,7 +201,7 @@ function createHarness(options = {}) {
   });
 
   await test('uses Gamma market metadata before slower event-page fallbacks', async () => {
-    const { fetchedUrls, predictionMarkets } = createHarness({
+    const { fetchedUrls, predictionMarkets, clock } = createHarness({
       metadataPrices: { btc: 105432.12 },
       titlePrices: {
         eth: 3500,
@@ -210,6 +213,10 @@ function createHarness(options = {}) {
       },
     });
 
+    // 1st read sets pending lock
+    await predictionMarkets.refreshPoly5M('test-gamma-metadata-1');
+    // Advance clock > 1000ms to confirm
+    clock.setNow(FIXED_MS + 1500);
     const results = await predictionMarkets.refreshPoly5M('test-gamma-metadata');
     const btc = results.BTC;
 

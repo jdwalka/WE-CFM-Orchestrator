@@ -139,6 +139,9 @@ input, select { font: inherit; color: inherit; }
   color: var(--color-primary);
 }
 .nav-btn svg { flex-shrink: 0; }
+.nav-icon-updown { display: inline-flex; align-items: center; gap: 3px; margin-right: 5px; }
+.nav-icon-badge-up { display: inline-flex; align-items: center; justify-content: center; width: 15px; height: 15px; background: rgba(0, 230, 118, 0.22); border: 1.2px solid #00e676; border-radius: 3px; }
+.nav-icon-badge-down { display: inline-flex; align-items: center; justify-content: center; width: 15px; height: 15px; background: rgba(255, 82, 82, 0.22); border: 1.2px solid #ff5252; border-radius: 3px; }
 
 .sidebar-footer {
   padding: 12px 14px;
@@ -381,7 +384,7 @@ input, select { font: inherit; color: inherit; }
   text-align: left; font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em;
   color: var(--color-text-muted); font-weight: 600;
   border-bottom: 1px solid var(--color-border);
-  cursor: pointer; user-select: none; white-space: nowrap;
+  cursor: pointer; -webkit-user-select: none; user-select: none; white-space: nowrap;
 }
 .price-table th:hover { color: var(--color-text); }
 .price-table th.sorted { color: var(--color-primary); }
@@ -1254,6 +1257,7 @@ input, select { font: inherit; color: inherit; }
   font-weight: inherit;
   line-height: 1;
   font-family: 'Segoe UI Symbol', 'Segoe UI Emoji', 'Apple Symbols', 'Apple Color Emoji', 'Noto Sans Symbols 2', 'Arial Unicode MS', Arial, sans-serif;
+  -webkit-user-select: none;
   user-select: none;
   pointer-events: none;
 }
@@ -2890,10 +2894,7 @@ input, select { font: inherit; color: inherit; }
   border-radius: 3px;
   font-size: 10px;
   font-weight: 700;
-}
   border-bottom: 1px solid var(--color-green);
-  color: var(--color-green);
-  font-weight: 700;
 }
 
 .hr-level-price {

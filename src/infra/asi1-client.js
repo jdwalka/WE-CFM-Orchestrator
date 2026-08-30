@@ -40,18 +40,18 @@ const ASI1_ALL_MODELS = Object.freeze([...ASI1_OFFICIAL_MODELS, ...ASI1_EXTRA_MO
 // and not rate-limited; gitgoin/mauro are same-tier fallbacks only.
 const ASI1_ACCOUNTS = Object.freeze([
   {
-    id: 'mauro',
-    email: 'maurofanellijr@gmail.com',
-    envNames: ['ASI1_API_KEY_MAURO', 'ASI_ONE_API_KEY_MAURO'],
-    sessionEnv: 'ASI1_SESSION_MAURO',
-    secretFiles: ['ASI1_MAURO.txt', 'ASI1_maurofanellijr.txt'],
-  },
-  {
     id: 'icloud',
     email: 'mauro_fanelli@icloud.com',
     envNames: ['ASI1_API_KEY_ICLOUD', 'ASI_ONE_API_KEY_ICLOUD'],
     sessionEnv: 'ASI1_SESSION_ICLOUD',
     secretFiles: ['ASI1_ICLOUD.txt'],
+  },
+  {
+    id: 'mauro',
+    email: 'maurofanellijr@gmail.com',
+    envNames: ['ASI1_API_KEY_MAURO', 'ASI_ONE_API_KEY_MAURO'],
+    sessionEnv: 'ASI1_SESSION_MAURO',
+    secretFiles: ['ASI1_MAURO.txt', 'ASI1_maurofanellijr.txt'],
   },
   {
     id: 'gitgoin',
@@ -216,10 +216,12 @@ function resolveAsi1ApiKeys() {
     keys.push(k);
   }
 
-  const preferredAccount = process.env.ASI1_ONLY_ACCOUNT || process.env.ASI1_PREFERRED_ACCOUNT || 'mauro';
+  const preferredAccount = process.env.ASI1_ONLY_ACCOUNT || process.env.ASI1_PREFERRED_ACCOUNT || process.env.ASI1_PRIMARY_ACCOUNT || 'mauro';
   keys.sort((a, b) => {
-    if (a.account === preferredAccount && b.account !== preferredAccount) return -1;
-    if (a.account !== preferredAccount && b.account === preferredAccount) return 1;
+    const aIsPref = a.account === preferredAccount || a.email === 'maurofanellijr@gmail.com';
+    const bIsPref = b.account === preferredAccount || b.email === 'maurofanellijr@gmail.com';
+    if (aIsPref && !bIsPref) return -1;
+    if (!aIsPref && bIsPref) return 1;
     return 0;
   });
 

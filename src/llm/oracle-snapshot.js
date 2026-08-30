@@ -123,7 +123,8 @@
 
     // 4) pythLazer push-cache (see _lazerPushCache subscription above)
     try {
-      const tick = _lazerPushCache?.[`${key}USD`];
+      const pairKey = `${key}USD`;
+      const tick = (_lazerPushCache && typeof pairKey === 'string' && Object.prototype.hasOwnProperty.call(_lazerPushCache, pairKey)) ? _lazerPushCache[pairKey] : null;
       const p = num(tick?.last);
       if (p != null && p > 0) {
         return { price: p, source: tick?.source || 'pyth-lazer', ts: tick?.timestamp || Date.now() };
@@ -132,7 +133,7 @@
 
     // 5) PredictionEngine live spot price
     try {
-      const pred = window.PredictionEngine?.get?.(key) || window._predictions?.[key];
+      const pred = window.PredictionEngine?.get?.(key) || (window._predictions && typeof key === 'string' && Object.prototype.hasOwnProperty.call(window._predictions, key) ? window._predictions[key] : null);
       const p = num(pred?.price || pred?.currentPrice);
       if (p != null && p > 0) {
         return { price: p, source: 'prediction-engine', ts: Date.now() };
@@ -141,7 +142,7 @@
 
     // 6) Candle cache last price
     try {
-      const cache = window.candleCache?.[key];
+      const cache = (window.candleCache && typeof key === 'string' && Object.prototype.hasOwnProperty.call(window.candleCache, key)) ? window.candleCache[key] : null;
       const p = num(cache?.ticker?.usd || cache?.candles?.[cache?.candles?.length - 1]?.c);
       if (p != null && p > 0) {
         return { price: p, source: 'candle-cache', ts: Date.now() };

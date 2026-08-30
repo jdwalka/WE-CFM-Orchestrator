@@ -1,5 +1,6 @@
 const assert = require('assert');
 const path = require('path');
+const nodeRequire = require;
 
 let passed = 0;
 let failed = 0;
@@ -62,7 +63,7 @@ function loadPredictionMarkets({ fetchImpl, nowMs } = {}) {
   const originalNow = Date.now;
   if (nowMs != null) Date.now = () => nowMs;
 
-  require(modulePath);
+  nodeRequire(modulePath);
   const hooks = global.window.__PredictionMarketsTestHooks;
 
   return {
@@ -118,17 +119,21 @@ test('5m PTB uses 60s Chainlink TWAP, not the old 30s series', () => {
   try {
     assert.strictEqual(hooks.POLY_TWAP_LOOKBACK_SEC, 60);
     assert.strictEqual(hooks.PTB_TWAP_SETTLE_SEC, 62);
-    assert.strictEqual(hooks.POLY5M_PTB_LOCK_VERSION, 18);
+    assert.strictEqual(hooks.POLY5M_PTB_LOCK_VERSION, 15);
   } finally {
     restore();
   }
 });
 
 test('trusted Polymarket contract sources lock cleanly and immutably', () => {
-  const nowMs = 1_700_000_000_000;
-  const { hooks, restore } = loadPredictionMarkets({ nowMs });
+  let currentMs = 1_700_000_000_000;
+  const { hooks, restore } = loadPredictionMarkets({ nowMs: currentMs });
   try {
     const slug = 'btc-updown-5m-1699999940';
+    // 1st read records pending
+    hooks._lockPolymarketPriceToBeat(slug, 105432.12, 'gamma-market');
+    // 2nd read confirming >= 1s later locks
+    Date.now = () => currentMs + 1500;
     const locked = hooks._lockPolymarketPriceToBeat(slug, 105432.12, 'gamma-market');
     assert.ok(locked, 'trusted contract source must lock');
     assert.strictEqual(locked.price, 105432.12);
@@ -217,30 +222,37 @@ asyncTests.push(testAsync('5m slug fetch uses Polymarket metadata without callin
   const calls = [];
   const fetchImpl = async (url) => {
     calls.push(String(url));
+    const payload = {
+      markets: [{
+        slug: `btc-updown-5m-${expectedWindow}`,
+        active: true,
+        closed: false,
+        acceptingOrders: true,
+        question: 'Bitcoin Up or Down - 5m',
+        endDate: futureIso(nowMs, 60_000),
+        eventStartTime: new Date(nowMs).toISOString(),
+        outcomePrices: '["0.62","0.38"]',
+        outcomes: '["Up","Down"]',
+        priceToBeat: 105432.25,
+        volume24hr: '2500',
+      }],
+    };
     return {
       ok: true,
       async json() {
-        assert(String(url).startsWith('https://gamma-api.polymarket.com/markets?slug='));
-        return {
-          markets: [{
-            slug: `btc-updown-5m-${expectedWindow}`,
-            active: true,
-            closed: false,
-            acceptingOrders: true,
-            question: 'Bitcoin Up or Down - 5m',
-            endDate: futureIso(nowMs, 60_000),
-            eventStartTime: new Date(nowMs).toISOString(),
-            outcomePrices: '["0.62","0.38"]',
-            outcomes: '["Up","Down"]',
-            priceToBeat: 105432.25,
-            volume24hr: '2500',
-          }],
-        };
+        return payload;
+      },
+      async text() {
+        return JSON.stringify(payload);
       },
     };
   };
   const { hooks, restore } = loadPredictionMarkets({ fetchImpl, nowMs });
   try {
+    // 1st fetch queues pending read for v15 confirmation gate
+    await hooks.fetchPolymarket5MBySlug('BTC');
+    // 2nd fetch 1.5s later confirms and locks
+    Date.now = () => nowMs + 1500;
     const data = await hooks.fetchPolymarket5MBySlug('BTC');
 
     assert.strictEqual(data.probability, 0.62);

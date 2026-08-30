@@ -864,6 +864,11 @@
   let _refreshTmr = null;
 
   function buildHTML() {
+    // XSS guard — use window.escapeHtml when render-layer is loaded, else inline fallback
+    const esc = (typeof window !== 'undefined' && typeof window.escapeHtml === 'function')
+      ? window.escapeHtml
+      : (v) => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
     const s     = _stats;
     const upMin = Math.floor((Date.now() - s.session.startTs) / 60000);
     const kb    = (s.session.bytesWritten / 1024).toFixed(1);
@@ -877,17 +882,17 @@
       const acc = r?.total ? Math.round(r.correct / r.total * 100) : null;
       const accColor = acc == null ? '' : acc >= 55 ? 'var(--color-up)' : acc >= 45 ? 'var(--color-gold)' : 'var(--color-down)';
       return `<tr>
-        <td>${sym}</td><td>${p.total}</td>
+        <td>${esc(sym)}</td><td>${p.total}</td>
         <td style="color:var(--color-up)">${p.up}</td>
         <td style="color:var(--color-down)">${p.down}</td>
         <td style="color:${+avg < 0 ? 'var(--color-down)' : 'var(--color-up)'}">${avg}</td>
-        <td>${acc != null ? `<b style="color:${accColor}">${acc}%</b> (${r.total})` : '—'}</td>
+        <td>${acc != null ? `<b style="color:${esc(accColor)}">${acc}%</b> (${r.total})` : '—'}</td>
       </tr>`;
     }).join('') || '<tr><td colspan="6" style="color:var(--color-text-muted)">No data yet — waiting for prediction cycles</td></tr>';
 
     /* ── Decision rows ── */
     const decRows = Object.entries(s.decisions).map(([sym, d]) => `<tr>
-      <td>${sym}</td>
+      <td>${esc(sym)}</td>
       <td style="color:var(--color-green)">${d.trade}</td>
       <td>${d.watch}</td>
       <td style="color:var(--color-gold)">${d.hold}</td>
@@ -901,10 +906,10 @@
       const mom = c.momentum || 0;
       const col = mom > 0.01 ? 'var(--color-up)' : mom < -0.01 ? 'var(--color-down)' : 'var(--color-text-muted)';
       return `<tr>
-        <td>${sym}</td>
+        <td>${esc(sym)}</td>
         <td style="color:${col}">${mom.toFixed(5)}</td>
         <td>${(c.cfmRate || 0).toFixed(5)}</td>
-        <td>${c.trend || '—'}</td>
+        <td>${esc(c.trend || '—')}</td>
         <td>${c.sourceCount || 0}</td>
       </tr>`;
     }).join('') || '<tr><td colspan="5" style="color:var(--color-text-muted)">CFM warming up…</td></tr>';
@@ -915,7 +920,7 @@
       ? Object.entries(sr.shells || {}).map(([key, sh]) => {
           const col = sh.ionized ? 'var(--color-down)' : sh.volSpiked ? 'var(--color-gold)' : 'var(--color-text-muted)';
           return `<tr>
-            <td>${key}</td>
+            <td>${esc(key)}</td>
             <td style="color:${col}">${(sh.velocity || 0).toFixed(4)}</td>
             <td>${sh.ionized ? '⚡ IONIZED' : sh.volSpiked ? `📊 ${(sh.volSpikeMult || 0).toFixed(1)}×` : '—'}</td>
           </tr>`;
@@ -924,8 +929,8 @@
 
     /* ── Error rows ── */
     const errRows = s.errors.slice(-8).reverse().map(e =>
-      `<tr><td style="color:var(--color-red);white-space:nowrap">${e.source}</td>
-       <td style="color:var(--color-text-muted);max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${e.msg}</td></tr>`
+      `<tr><td style="color:var(--color-red);white-space:nowrap">${esc(e.source)}</td>
+       <td style="color:var(--color-text-muted);max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(e.msg)}</td></tr>`
     ).join('');
 
     return `
@@ -991,12 +996,12 @@
 
         <div style="margin-top:14px;padding:10px 12px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.07);border-radius:6px;font-size:10px;color:var(--color-text-muted);line-height:1.9">
           <div style="font-weight:700;color:var(--color-text,#e2e8f0);margin-bottom:4px">💾 Storage Paths (${1 + DRIVE_PATHS.length} roots)</div>
-          <div>📁 Local spool: <code>${LOCAL_ROOT}\\${todayStr()}</code></div>
-          ${DRIVE_PATHS.map(p => `<div>💾 Google My Drive: <code>${p}\\${todayStr()}</code></div>`).join('')}
+          <div>📁 Local spool: <code>${esc(LOCAL_ROOT)}\\${esc(todayStr())}</code></div>
+          ${DRIVE_PATHS.map(p => `<div>💾 Google My Drive: <code>${esc(p)}\\${esc(todayStr())}</code></div>`).join('')}
           ${DRIVE_PATHS.length === 0 ? '<div style="color:var(--color-gold)">⚠ Google My Drive unavailable; retaining local spool</div>' : ''}
           <div>Cloud monitor: <b>${s.session.cloudTrackedFiles}</b> files · sync checks: <b>${s.session.cloudSyncCount}</b> · failures: <b>${s.session.cloudSyncFailures}</b></div>
-          ${_storage.accountHints.length ? `<div>Google accounts: <code>${_storage.accountHints.join('</code> · <code>')}</code></div>` : ''}
-          ${s.session.writeFailures ? `<div style="color:var(--color-red);margin-top:4px">Write failures: <b>${s.session.writeFailures}</b> · last: <code>${s.session.lastWriteFailure?.category || 'unknown'}</code></div>` : ''}
+          ${_storage.accountHints.length ? `<div>Google accounts: <code>${_storage.accountHints.map(h => esc(h)).join('</code> · <code>')}</code></div>` : ''}
+          ${s.session.writeFailures ? `<div style="color:var(--color-red);margin-top:4px">Write failures: <b>${s.session.writeFailures}</b> · last: <code>${esc(s.session.lastWriteFailure?.category || 'unknown')}</code></div>` : ''}
           <div style="margin-top:6px">Categories: predictions · decisions · cfm_snapshots · shell_events · resolver_outcomes · polymarket_raw · polymarket_5m · logic_debug · errors</div>
         </div>
 

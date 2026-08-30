@@ -22,7 +22,7 @@
   const NULLIFY_VOTES = 2;
   const SOFT_WEIGHT = 0.25;
 
-  const _watch = {};
+  const _watch = new Map();
 
   const _accessors = {
     getCoin: (sym) => (typeof window !== 'undefined' && window.PredictionMarkets?.getCoin?.(sym)) || {},
@@ -37,7 +37,8 @@
     },
     getPythPriceFallback: (sym) => {
       if (typeof window === 'undefined') return null;
-      const v = window.PythBrowser?.getPrice?.(sym) ?? window._pythPrices?.[String(sym).toUpperCase()];
+      const symKey = String(sym || '').toUpperCase();
+      const v = window.PythBrowser?.getPrice?.(sym) ?? (window._pythPrices && typeof symKey === 'string' && Object.prototype.hasOwnProperty.call(window._pythPrices, symKey) ? window._pythPrices[symKey] : null);
       return Number.isFinite(Number(v)) ? Number(v) : null;
     },
   };
@@ -440,7 +441,7 @@
     };
 
     if (sym) {
-      _watch[`${sym}:${verdict.horizon || 'x'}`] = verdict;
+      _watch.set(`${sym}:${verdict.horizon || 'x'}`, verdict);
     }
 
     try {
@@ -493,8 +494,12 @@
 
   function getLast(sym, horizon) {
     const s = String(sym || '').toUpperCase();
-    if (horizon) return _watch[`${s}:${horizon}`] || null;
-    return _watch[`${s}:5m`] || _watch[`${s}:15m`] || _watch[`${s}:x`] || null;
+    if (horizon) return _watch.get(`${s}:${horizon}`) || null;
+    return _watch.get(`${s}:5m`) || _watch.get(`${s}:15m`) || _watch.get(`${s}:x`) || null;
+  }
+
+  function escapeHtml(str) {
+    return String(str || '').replace(/[&<>"']/g, (m) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m]));
   }
 
   function renderBadgeHtml(verdictOrBrief) {
@@ -505,7 +510,8 @@
       extra += `<span style="font-size:8px;margin-left:4px;padding:1px 5px;border-radius:999px;background:rgba(255,152,0,0.2);color:#ffb74d;font-weight:700;">🛡 SPOOF FILTERED</span>`;
     }
     if (v.nullified) {
-      return `<span style="font-size:8px;padding:1px 6px;border-radius:999px;background:rgba(255,82,82,0.2);color:#ff8a80;font-weight:800;">⛔ NULLIFIED → ${String(v.effectiveCall || v.truthCall || '').toUpperCase()}</span>${extra}`;
+      const callText = escapeHtml(String(v.effectiveCall || v.truthCall || '').toUpperCase());
+      return `<span style="font-size:8px;padding:1px 6px;border-radius:999px;background:rgba(255,82,82,0.2);color:#ff8a80;font-weight:800;">⛔ NULLIFIED → ${callText}</span>${extra}`;
     }
     if (v.softConflict || v.soft) {
       return `<span style="font-size:8px;padding:1px 6px;border-radius:999px;background:rgba(255,193,7,0.15);color:#ffe082;font-weight:700;">⚠ RAW CONFLICT</span>${extra}`;

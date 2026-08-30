@@ -14,6 +14,7 @@
 
   // ── Constants ──────────────────────────────────────────────────
   const escapeHTML = (str) => String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  const safeGet = (obj, key) => (obj && typeof key === 'string' && key !== '__proto__' && key !== 'constructor' && Object.prototype.hasOwnProperty.call(obj, key) ? obj[key] : undefined);
   const COINBASE_EXCH_BASE = 'https://api.exchange.coinbase.com';
   const INSTRUMENTS = {
     BTC: 'BTCUSD', ETH: 'ETHUSD', SOL: 'SOLUSD',
@@ -144,9 +145,9 @@
   }
 
   function readLivePrice(sym) {
-    const instrument = INSTRUMENTS[sym];
+    const instrument = safeGet(INSTRUMENTS, sym);
     const ticker = instrument
-      ? (window.tickers?.[instrument] || window._appTickers?.[instrument])
+      ? (safeGet(window.tickers, instrument) || safeGet(window._appTickers, instrument))
       : null;
     if (ticker) {
       const p = parseFloat(ticker.last ?? ticker.price ?? ticker.close);
@@ -161,7 +162,7 @@
       return wsQuotes.reduce((sum, p) => sum + p, 0) / wsQuotes.length;
     }
 
-    const pred = window._predictions?.[sym]?.price;
+    const pred = safeGet(window._predictions, sym)?.price;
     if (pred && Number.isFinite(+pred) && +pred > 0) return +pred;
 
     return null;
@@ -172,21 +173,24 @@
     const cached = readLivePrice(sym);
     if (cached !== null) return cached;
 
-    try {
-      const d = await apiFetch(`${COINBASE_EXCH_BASE}/products/${CB_PRODUCTS[sym]}/ticker`, 8000);
-      if (d?.price) {
-        const p = parseFloat(d.price);
-        if (Number.isFinite(p) && p > 0) return p;
-      }
-    } catch (e) { console.warn(`[HR] Coinbase exchange ticker failed for ${sym}:`, e.message); }
+    const cbProd = safeGet(CB_PRODUCTS, sym);
+    if (cbProd) {
+      try {
+        const d = await apiFetch(`${COINBASE_EXCH_BASE}/products/${cbProd}/ticker`, 8000);
+        if (d?.price) {
+          const p = parseFloat(d.price);
+          if (Number.isFinite(p) && p > 0) return p;
+        }
+      } catch (e) { console.warn(`[HR] Coinbase exchange ticker failed for ${sym}:`, e.message); }
+    }
 
-    const kt = KRAKEN_TICKERS[sym];
+    const kt = safeGet(KRAKEN_TICKERS, sym);
     if (kt) {
       try {
         const d = await apiFetch(`${KRAKEN_BASE}/Ticker?pair=${kt}`, 8000);
-        const c = d?.result?.[kt]?.c;
-        if (c) {
-          const p = parseFloat(c[0]);
+        const c = safeGet(d?.result, kt)?.c;
+        if (c && Array.isArray(c)) {
+          const p = parseFloat(c.at(0));
           if (Number.isFinite(p) && p > 0) return p;
         }
       } catch (e) { console.warn(`[HR] Kraken price fetch failed for ${sym}:`, e.message); }
@@ -204,7 +208,7 @@
   // No live multi-strike hourly ladder market exists on Polymarket today
   // (unlike Kalshi's KX* range series), so the ladder is always the
   // spot-centered synthetic distribution.
-  const _rangeHourTs = {};
+  const _rangeHourTs = Object.create(null);
 
   function get60mContract(sym) {
     return window.PredictionMarkets?.getCoin?.(sym)?.poly60m || null;
@@ -213,25 +217,31 @@
   async function loadCoin(sym) {
     const price = await fetchPrice(sym);
 
-    if (price !== null && Number.isFinite(price)) {
-      _prices[sym] = price;
+    if (price !== null && Number.isFinite(price) && sym) {
+      Object.defineProperty(_prices, sym, { value: price, writable: true, enumerable: true, configurable: true });
     }
 
     const p60 = get60mContract(sym);
     const lockedPtb = Number(p60?.priceToBeatNum);
     const hourStartMs = Math.floor(Date.now() / 3600000) * 3600000;
     // Hourly contract is immutable at T0: center the ladder on locked PTB, not live spot.
-    const refPrice = (Number.isFinite(lockedPtb) && lockedPtb > 0) ? lockedPtb : (_prices[sym] ?? price);
+    const refPrice = (Number.isFinite(lockedPtb) && lockedPtb > 0) ? lockedPtb : (safeGet(_prices, sym) ?? price);
     if (!Number.isFinite(refPrice) || refPrice <= 0) return;
 
     const nextHourIso = (p60?.closeTime) || new Date(hourStartMs + 3600000).toISOString();
-    _closeTimes[sym] = nextHourIso;
-    if (_rangeHourTs[sym] === hourStartMs && _ranges[sym]?.length && Number.isFinite(lockedPtb) && lockedPtb > 0) {
+    if (sym) {
+      Object.defineProperty(_closeTimes, sym, { value: nextHourIso, writable: true, enumerable: true, configurable: true });
+    }
+    const currentHourTs = safeGet(_rangeHourTs, sym);
+    const currentRanges = safeGet(_ranges, sym);
+    if (currentHourTs === hourStartMs && currentRanges?.length && Number.isFinite(lockedPtb) && lockedPtb > 0) {
       saveHRCache();
       return;
     }
-    _rangeHourTs[sym] = hourStartMs;
-    _ranges[sym] = buildSpotCenteredRanges(sym, refPrice, nextHourIso);
+    if (sym) {
+      Object.defineProperty(_rangeHourTs, sym, { value: hourStartMs, writable: true, enumerable: true, configurable: true });
+      Object.defineProperty(_ranges, sym, { value: buildSpotCenteredRanges(sym, refPrice, nextHourIso), writable: true, enumerable: true, configurable: true });
+    }
     saveHRCache();
   }
 
@@ -249,7 +259,9 @@
         // Find nearest bucket mid
         let best = Infinity;
         for (let i = 0; i < ranges.length; i++) {
-          const mid = (ranges[i].low + ranges[i].high) / 2;
+          const r = ranges.at(i);
+          if (!r) continue;
+          const mid = (r.low + r.high) / 2;
           const d = Math.abs(mid - currentPrice);
           if (d < best) { best = d; pivotIdx = i; }
         }
@@ -260,7 +272,9 @@
       // Default: bucket with highest probability
       let bestProb = -1;
       for (let i = 0; i < ranges.length; i++) {
-        if (ranges[i].prob > bestProb) { bestProb = ranges[i].prob; pivotIdx = i; }
+        const r = ranges.at(i);
+        if (!r) continue;
+        if (r.prob > bestProb) { bestProb = r.prob; pivotIdx = i; }
       }
     }
 
@@ -298,10 +312,10 @@
 
   // ── Build HTML for one coin card ───────────────────────────────
   function buildCoinCard(sym) {
-    const ranges  = _ranges[sym] || [];
-    const price   = _prices[sym];
-    const color   = COIN_COLORS[sym];
-    const ctISO   = _closeTimes[sym] || (ranges[0]?.closeTime);
+    const ranges  = safeGet(_ranges, sym) || [];
+    const price   = safeGet(_prices, sym);
+    const color   = safeGet(COIN_COLORS, sym) || '#888';
+    const ctISO   = safeGet(_closeTimes, sym) || (ranges.at(0)?.closeTime);
     const ttc     = ctISO ? timeToClose(ctISO) : null;
     const ttcMs   = ctISO ? Date.parse(ctISO) - Date.now() : null;
     const isFinal = ttcMs !== null && ttcMs < FAST_WINDOW_MS;
@@ -347,16 +361,16 @@
         let badgeHtml = '';
         if (isCurrent) {
           const herePct = rInfo ? `${rInfo.pct}%` : probPctStr;
-          badgeHtml = `<span class="hr-row-badge" style="background:${color};color:#000;font-weight:800;padding:2px 6px;border-radius:4px;margin-left:auto;">● HERE (${herePct})</span>`;
+          badgeHtml = `<span class="hr-row-badge" style="background:${escapeHTML(color)};color:#000;font-weight:800;padding:2px 6px;border-radius:4px;margin-left:auto;">● HERE (${escapeHTML(herePct)})</span>`;
         } else if (rInfo) {
-          badgeHtml = `<span class="hr-row-badge-rank" style="background:rgba(0,212,170,0.15);color:var(--color-accent,#00d4aa);font-size:10px;padding:2px 5px;border-radius:3px;margin-left:auto;font-weight:700;">🎯 #${rInfo.rank} (${rInfo.pct}%)</span>`;
+          badgeHtml = `<span class="hr-row-badge-rank" style="background:rgba(0,212,170,0.15);color:var(--color-accent,#00d4aa);font-size:10px;padding:2px 5px;border-radius:3px;margin-left:auto;font-weight:700;">🎯 #${escapeHTML(rInfo.rank)} (${escapeHTML(rInfo.pct)}%)</span>`;
         }
 
         return `
           <div class="hr-row${isCurrent ? ' hr-row--current' : ''}">
-            <div class="hr-row-bar" style="width:${barW}%;background:${isCurrent ? color : 'rgba(255,255,255,0.12)'}"></div>
-            <span class="hr-row-range">${fmtPrice(r.low, r.high)}</span>
-            <span class="hr-row-prob" style="${isCurrent ? `color:${color}` : ''}">${probPctStr}</span>
+            <div class="hr-row-bar" style="width:${escapeHTML(barW)}%;background:${isCurrent ? escapeHTML(color) : 'rgba(255,255,255,0.12)'}"></div>
+            <span class="hr-row-range">${escapeHTML(fmtPrice(r.low, r.high))}</span>
+            <span class="hr-row-prob" style="${isCurrent ? `color:${escapeHTML(color)}` : ''}">${escapeHTML(probPctStr)}</span>
             ${badgeHtml}
           </div>`;
       });

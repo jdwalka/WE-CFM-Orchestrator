@@ -26,7 +26,7 @@
   const TICK_WINDOW_MS = 12_000;
   const TICK_MAX = 24;
 
-  const _ticks = Object.create(null);
+  const _ticks = new Map();
 
   function clamp(n, lo, hi) {
     return Math.max(lo, Math.min(hi, n));
@@ -42,21 +42,21 @@
     const price = num(px);
     if (!key || !(price > 0)) return;
     const t = Number.isFinite(Number(ts)) ? Number(ts) : Date.now();
-    if (!_ticks[key]) _ticks[key] = [];
-    const arr = _ticks[key];
-    const last = arr[arr.length - 1];
+    if (!_ticks.has(key)) _ticks.set(key, []);
+    const arr = _ticks.get(key);
+    const last = arr.at(-1);
     if (last && t - last.t < 80 && Math.abs(price - last.px) / last.px < 1e-7) return;
     arr.push({ t, px: price });
     const cutoff = t - TICK_WINDOW_MS;
-    while (arr.length > TICK_MAX || (arr.length && arr[0].t < cutoff)) arr.shift();
+    while (arr.length > TICK_MAX || (arr.length && arr.at(0)?.t < cutoff)) arr.shift();
   }
 
   function tickMomentumBps(sym) {
-    const arr = _ticks[String(sym || '').toUpperCase()];
+    const arr = _ticks.get(String(sym || '').toUpperCase());
     if (!arr || arr.length < 3) return null;
-    const first = arr[0];
-    const last = arr[arr.length - 1];
-    if (!(first.px > 0) || last.t - first.t < 400) return null;
+    const first = arr.at(0);
+    const last = arr.at(-1);
+    if (!first || !last || !(first.px > 0) || last.t - first.t < 400) return null;
     return ((last.px - first.px) / first.px) * 10000;
   }
 
@@ -68,7 +68,8 @@
       if (typeof window !== 'undefined') {
         const o = window.OracleSnapshot?.getPythSpot?.(sym);
         if (o && o.price > 0) return Number(o.price);
-        const p = window.PythBrowser?.getPrice?.(sym) ?? window._pythPrices?.[String(sym).toUpperCase()];
+        const symKey = String(sym || '').toUpperCase();
+        const p = window.PythBrowser?.getPrice?.(sym) ?? (window._pythPrices && typeof symKey === 'string' && Object.prototype.hasOwnProperty.call(window._pythPrices, symKey) ? window._pythPrices[symKey] : null);
         if (Number(p) > 0) return Number(p);
       }
     } catch (_) { /* */ }

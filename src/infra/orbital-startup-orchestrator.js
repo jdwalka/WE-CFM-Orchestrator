@@ -19,6 +19,24 @@ const path = require('path');
 const fs = require('fs');
 const net = require('net');
 const os = require('os');
+const http = require('http');
+
+let redpandaBridge = null;
+try { redpandaBridge = require('./orbital-redpanda-bridge'); } catch (_) {}
+
+let redpandaInitTopics = null;
+try { redpandaInitTopics = require('./redpanda-init-topics'); } catch (_) {}
+
+let orbitalIngestorDaemon = null;
+try { orbitalIngestorDaemon = require('../orbital/orbital-ingestor-daemon'); } catch (_) {}
+
+let orbitalMatrixProcessor = null;
+try { orbitalMatrixProcessor = require('../orbital/orbital-matrix-processor'); } catch (_) {}
+
+function safePath(...parts) {
+    const joined = path.join(...parts.filter(Boolean));
+    return path.normalize(joined);
+}
 
 const REDPANDA_CONTAINER_NAME = 'redpanda-orbital';
 
@@ -110,8 +128,8 @@ function ensureDockerPath() {
             'C:\\Program Files\\Docker\\Docker\\resources\\bin',
             'C:\\ProgramData\\DockerDesktop\\version-bin',
             'C:\\Program Files\\Docker\\Docker\\resources',
-            path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'Programs\\Docker\\Docker\\resources\\bin'),
-            path.join(process.env.ProgramFiles || 'C:\\Program Files', 'Docker\\Docker\\resources\\bin'),
+            safePath(process.env.LOCALAPPDATA || safePath(os.homedir(), 'AppData', 'Local'), 'Programs\\Docker\\Docker\\resources\\bin'),
+            safePath(process.env.ProgramFiles || 'C:\\Program Files', 'Docker\\Docker\\resources\\bin'),
         ];
         let currentPath = process.env.PATH || '';
         for (const dir of dockerDirs) {
@@ -132,8 +150,8 @@ function getDockerExecutable() {
             'C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe',
             'C:\\ProgramData\\DockerDesktop\\version-bin\\docker.exe',
             'C:\\Program Files\\Docker\\Docker\\resources\\docker.exe',
-            path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'Programs\\Docker\\Docker\\resources\\bin\\docker.exe'),
-            path.join(process.env.ProgramFiles || 'C:\\Program Files', 'Docker\\Docker\\resources\\bin\\docker.exe'),
+            safePath(process.env.LOCALAPPDATA || safePath(os.homedir(), 'AppData', 'Local'), 'Programs\\Docker\\Docker\\resources\\bin\\docker.exe'),
+            safePath(process.env.ProgramFiles || 'C:\\Program Files', 'Docker\\Docker\\resources\\bin\\docker.exe'),
         ];
         for (const bin of potentialBins) {
             try {
@@ -146,12 +164,12 @@ function getDockerExecutable() {
 
 function resolveComposeFile(workspacePath) {
     const candidates = [
-        workspacePath && path.join(workspacePath, 'docker-compose.yml'),
-        process.env.WECRYP_ROOT && path.join(process.env.WECRYP_ROOT, 'docker-compose.yml'),
-        process.resourcesPath && path.join(process.resourcesPath, 'docker-compose.yml'),
-        process.resourcesPath && path.join(process.resourcesPath, '..', 'docker-compose.yml'),
-        path.join(process.cwd(), 'docker-compose.yml'),
-        path.join(__dirname, '..', '..', 'docker-compose.yml'),
+        workspacePath && safePath(workspacePath, 'docker-compose.yml'),
+        process.env.WECRYP_ROOT && safePath(process.env.WECRYP_ROOT, 'docker-compose.yml'),
+        process.resourcesPath && safePath(process.resourcesPath, 'docker-compose.yml'),
+        process.resourcesPath && safePath(process.resourcesPath, '..', 'docker-compose.yml'),
+        safePath(process.cwd(), 'docker-compose.yml'),
+        safePath(__dirname, '..', '..', 'docker-compose.yml'),
     ].filter(Boolean);
 
     for (const cand of candidates) {
@@ -165,17 +183,17 @@ function resolveComposeFile(workspacePath) {
 
     // Fallback: write standalone docker-compose.orbital.yml in user AppData/config dir
     const configDir = process.platform === 'win32'
-        ? path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'WE-CRYPTO')
-        : path.join(os.homedir(), '.wecrypto');
+        ? safePath(process.env.APPDATA || safePath(os.homedir(), 'AppData', 'Roaming'), 'WE-CRYPTO')
+        : safePath(os.homedir(), '.wecrypto');
     try {
         fs.mkdirSync(configDir, { recursive: true });
-        const fallbackPath = path.join(configDir, 'docker-compose.orbital.yml');
+        const fallbackPath = safePath(configDir, 'docker-compose.orbital.yml');
         fs.writeFileSync(fallbackPath, STANDALONE_COMPOSE_YAML, 'utf8');
         console.log(`[OrbitalOrchestrator] Generated standalone compose file at: ${fallbackPath}`);
         return fallbackPath;
     } catch (e) {
         console.warn(`[OrbitalOrchestrator] Failed to write fallback compose file to ${configDir}:`, e.message);
-        const tmpPath = path.join(os.tmpdir(), 'wecrypto-docker-compose.orbital.yml');
+        const tmpPath = safePath(os.tmpdir(), 'wecrypto-docker-compose.orbital.yml');
         fs.writeFileSync(tmpPath, STANDALONE_COMPOSE_YAML, 'utf8');
         return tmpPath;
     }
@@ -223,8 +241,8 @@ function recordStatusEvent(level, message, meta = {}) {
 
 function getBridgeStatsSafe() {
     try {
-        const bridge = require('./orbital-redpanda-bridge');
-        return typeof bridge.getBridgeStats === 'function'
+        const bridge = redpandaBridge;
+        return bridge && typeof bridge.getBridgeStats === 'function'
             ? bridge.getBridgeStats()
             : { connected: false, messageCounts: {}, lastTickAt: {}, totalMessages: 0, activeOrbitals: [], recentEvents: [] };
     } catch (_) {
@@ -298,7 +316,7 @@ async function isDockerAvailable(attemptLog = true) {
                 console.error('[OrbitalOrchestrator] isDockerAvailable failed:', err.message, stderr);
                 try {
                     const logDir = process.env.APPDATA || os.tmpdir();
-                    fs.writeFileSync(path.join(logDir, 'wecrypto-docker-error.log'), 'Docker err: ' + err.message + '\nStderr: ' + stderr);
+                    fs.writeFileSync(safePath(logDir, 'wecrypto-docker-error.log'), 'Docker err: ' + err.message + '\nStderr: ' + stderr);
                 } catch (e) { }
             }
             resolve(!err);
@@ -313,8 +331,8 @@ async function tryLaunchDockerDesktop() {
     if (process.platform !== 'win32') return false;
     const desktopExes = [
         'C:\\Program Files\\Docker\\Docker\\Docker Desktop.exe',
-        path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'Programs\\Docker\\Docker\\Docker Desktop.exe'),
-        path.join(process.env.ProgramFiles || 'C:\\Program Files', 'Docker\\Docker\\Docker Desktop.exe'),
+        safePath(process.env.LOCALAPPDATA || safePath(os.homedir(), 'AppData', 'Local'), 'Programs\\Docker\\Docker\\Docker Desktop.exe'),
+        safePath(process.env.ProgramFiles || 'C:\\Program Files', 'Docker\\Docker\\Docker Desktop.exe'),
     ];
     const exe = desktopExes.find(p => {
         try { return p && fs.existsSync(p); } catch (_) { return false; }
@@ -379,16 +397,7 @@ function spawnDockerCompose(composeFilePath) {
  */
 async function initTopics(workspacePath) {
     try {
-        let topicModule = null;
-        try {
-            topicModule = require('./redpanda-init-topics');
-        } catch (_) {
-            try {
-                if (workspacePath) {
-                    topicModule = require(path.join(workspacePath, 'scripts', 'redpanda-init-topics.js'));
-                }
-            } catch (_) {}
-        }
+        let topicModule = redpandaInitTopics;
         if (topicModule && typeof topicModule.createAllTopics === 'function') {
             await topicModule.createAllTopics();
             console.log('[OrbitalOrchestrator] ✓ Orbital + Grok topics created/verified');
@@ -406,8 +415,9 @@ async function initTopics(workspacePath) {
  */
 async function initBridge() {
     try {
-        const { initRedpanda } = require('./orbital-redpanda-bridge');
-        await initRedpanda();
+        if (redpandaBridge && typeof redpandaBridge.initRedpanda === 'function') {
+            await redpandaBridge.initRedpanda();
+        }
         if (!getBridgeStatsSafe().connected) {
             throw new Error('Kafka producer bridge did not connect to Redpanda');
         }
@@ -423,8 +433,10 @@ async function initBridge() {
  */
 function startIngestor() {
     try {
-        const OrbitalIngestor = require('../orbital/orbital-ingestor-daemon');
-        OrbitalIngestor.start();
+        const OrbitalIngestor = orbitalIngestorDaemon;
+        if (OrbitalIngestor && typeof OrbitalIngestor.start === 'function') {
+            OrbitalIngestor.start();
+        }
         console.log('[OrbitalOrchestrator] ✓ Orbital Ingestor daemon started');
         return OrbitalIngestor;
     } catch (err) {
@@ -438,8 +450,10 @@ function startIngestor() {
  */
 async function startProcessor() {
     try {
-        const { startProcessor: runProcessor } = require('../orbital/orbital-matrix-processor');
-        processorIntervalHandle = await runProcessor();
+        const runProcessor = orbitalMatrixProcessor?.startProcessor;
+        if (typeof runProcessor === 'function') {
+            processorIntervalHandle = await runProcessor();
+        }
         console.log('[OrbitalOrchestrator] ✓ Matrix Processor coherence loop started');
     } catch (err) {
         console.error('[OrbitalOrchestrator] Failed to start processor:', err.message);
@@ -555,7 +569,7 @@ async function performShutdownOrbitalSystem(stopProxiesFlag = true, options = {}
         }
         // Fully stop the Matrix Processor
         try {
-            const { stopProcessor } = require('../orbital/orbital-matrix-processor');
+            const stopProcessor = orbitalMatrixProcessor?.stopProcessor;
             if (typeof stopProcessor === 'function') {
                 await stopProcessor();
             }
@@ -582,7 +596,7 @@ async function performShutdownOrbitalSystem(stopProxiesFlag = true, options = {}
 
         // Disconnect KafkaJS producer gracefully
         try {
-            const { disconnectRedpanda } = require('./orbital-redpanda-bridge');
+            const disconnectRedpanda = redpandaBridge?.disconnectRedpanda;
             if (typeof disconnectRedpanda === 'function') {
                 await disconnectRedpanda();
             }
@@ -683,7 +697,6 @@ async function getOrbitalStatus() {
 
             if (redpandaReady) {
                 const httpGetJson = (url, timeoutMs = 4000) => new Promise((resolve, reject) => {
-                    const http = require('http');
                     const req = http.get(url, (res) => {
                         let body = '';
                         res.on('data', chunk => { body += chunk; });
@@ -785,9 +798,9 @@ async function startProxies(workspacePath) {
     // 1. WebSocket Proxy
     if (!wsProxyProcess || wsProxyProcess.killed) {
         const wsProxyCandidates = [
-            path.join(__dirname, 'ws-proxy-server.js'),
-            workspacePath && path.join(workspacePath, 'src', 'infra', 'ws-proxy-server.js'),
-            path.join(process.cwd(), 'src', 'infra', 'ws-proxy-server.js'),
+            safePath(__dirname, 'ws-proxy-server.js'),
+            workspacePath && safePath(workspacePath, 'src', 'infra', 'ws-proxy-server.js'),
+            safePath(process.cwd(), 'src', 'infra', 'ws-proxy-server.js'),
         ].filter(Boolean);
         const wsProxyScript = wsProxyCandidates.find(p => fs.existsSync(p));
 
@@ -818,17 +831,17 @@ async function startProxies(workspacePath) {
     // 2. HTTP Rust Proxy
     if (!httpProxyProcess || httpProxyProcess.killed) {
         const candidates = [
-            path.join(process.env.APPDATA || '', 'WECRYPTO', 'we-crypto-proxy.exe'),
-            workspacePath && path.join(workspacePath, 'we-crypto-proxy.exe'),
-            workspacePath && path.join(workspacePath, 'proxy', 'target', 'x86_64-pc-windows-gnu', 'release', 'we-crypto-proxy.exe'),
-            workspacePath && path.join(workspacePath, 'proxy', 'target', 'release', 'we-crypto-proxy.exe'),
+            safePath(process.env.APPDATA || '', 'WECRYPTO', 'we-crypto-proxy.exe'),
+            workspacePath && safePath(workspacePath, 'we-crypto-proxy.exe'),
+            workspacePath && safePath(workspacePath, 'proxy', 'target', 'x86_64-pc-windows-gnu', 'release', 'we-crypto-proxy.exe'),
+            workspacePath && safePath(workspacePath, 'proxy', 'target', 'release', 'we-crypto-proxy.exe'),
         ].filter(Boolean);
 
         let exePath = candidates.find(p => fs.existsSync(p));
         if (!exePath && process.resourcesPath) {
             const cp = [
-                path.join(process.resourcesPath, 'app.asar.unpacked', 'we-crypto-proxy.exe'),
-                path.join(process.resourcesPath, 'we-crypto-proxy.exe')
+                safePath(process.resourcesPath, 'app.asar.unpacked', 'we-crypto-proxy.exe'),
+                safePath(process.resourcesPath, 'we-crypto-proxy.exe')
             ];
             exePath = cp.find(p => fs.existsSync(p));
         }
@@ -837,7 +850,7 @@ async function startProxies(workspacePath) {
             const chosenPort = 3010;
             let proxyDir = path.dirname(exePath);
             if (proxyDir.includes('app.asar')) {
-                proxyDir = path.join(process.env.TEMP || path.join(os.homedir(), 'AppData', 'Roaming', 'WECRYPTO'), 'proxy-config');
+                proxyDir = safePath(process.env.TEMP || safePath(os.homedir(), 'AppData', 'Roaming', 'WECRYPTO'), 'proxy-config');
                 fs.mkdirSync(proxyDir, { recursive: true });
             }
             try {
@@ -870,7 +883,7 @@ crypto-com      = "https://api.crypto.com"
 bitstamp        = "https://www.bitstamp.net"
 upbit           = "https://api.upbit.com"
 binance-data    = "https://data-api.binance.vision"`;
-                fs.writeFileSync(path.join(proxyDir, 'config.toml'), configContent);
+                fs.writeFileSync(safePath(proxyDir, 'config.toml'), configContent);
             } catch (e) {
                 console.warn('[OrbitalOrchestrator] could not write config.toml:', e.message);
             }

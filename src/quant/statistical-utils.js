@@ -28,11 +28,11 @@
 
         // Sort by x values
         const indices = Array.from({ length: n }, (_, i) => i)
-            .sort((i, j) => x[i] - x[j]);
+            .sort((i, j) => (x.at(i) ?? 0) - (x.at(j) ?? 0));
 
-        const xs = indices.map(i => x[i]);
-        const ys = indices.map(i => y[i]);
-        const ws = indices.map(i => weights[i]);
+        const xs = indices.map(i => x.at(i));
+        const ys = indices.map(i => y.at(i));
+        const ws = indices.map(i => weights.at(i));
 
         // PAV (Pool Adjacent Violators) Algorithm
         let ghat = ys.slice();
@@ -43,15 +43,19 @@
         while (changed) {
             changed = false;
             for (let i = 0; i < ghat.length - 1; i++) {
-                if (ghat[i] > ghat[i + 1]) {
+                const g_i = ghat.at(i);
+                const g_next = ghat.at(i + 1);
+                if (g_i > g_next) {
                     // Pool blocks i and i+1
-                    const newVal = (ghat[i] * gw[i] + ghat[i + 1] * gw[i + 1]) / (gw[i] + gw[i + 1]);
+                    const gw_i = gw.at(i);
+                    const gw_next = gw.at(i + 1);
+                    const newVal = (g_i * gw_i + g_next * gw_next) / (gw_i + gw_next);
                     ghat[i] = newVal;
                     ghat[i + 1] = newVal;
-                    gw[i] = gw[i] + gw[i + 1];
+                    gw[i] = gw_i + gw_next;
 
                     // Merge blocks
-                    blocks[i] = blocks[i].concat(blocks[i + 1]);
+                    blocks[i] = (blocks.at(i) || []).concat(blocks.at(i + 1) || []);
                     blocks.splice(i + 1, 1);
                     ghat.splice(i + 1, 1);
                     gw.splice(i + 1, 1);
@@ -66,7 +70,8 @@
         const f = Array(n);
         blocks.forEach((blockIndices, blockIdx) => {
             blockIndices.forEach(idx => {
-                f[indices[idx]] = ghat[blockIdx];
+                const origIdx = indices.at(idx);
+                if (origIdx !== undefined) f[origIdx] = ghat.at(blockIdx);
             });
         });
 
@@ -95,9 +100,13 @@
         const bins = Array(numBins).fill(0).map(() => ({ preds: [], outcomes: [] }));
 
         for (let i = 0; i < predictions.length; i++) {
-            const bin = Math.min(numBins - 1, Math.floor(predictions[i] * numBins));
-            bins[bin].preds.push(predictions[i]);
-            bins[bin].outcomes.push(outcomes[i]);
+            const predVal = predictions.at(i);
+            const outVal = outcomes.at(i);
+            if (predVal !== undefined && outVal !== undefined) {
+                const bin = Math.min(numBins - 1, Math.floor(predVal * numBins));
+                bins.at(bin)?.preds.push(predVal);
+                bins.at(bin)?.outcomes.push(outVal);
+            }
         }
 
         let totalError = 0;
@@ -167,7 +176,9 @@
         // Sum PSI across bins
         let psi = 0;
         for (let i = 0; i < numBins; i++) {
-            psi += (actProb[i] - expProb[i]) * Math.log(actProb[i] / expProb[i]);
+            const a = actProb.at(i) ?? 1e-10;
+            const e = expProb.at(i) ?? 1e-10;
+            psi += (a - e) * Math.log(a / e);
         }
 
         return psi;
@@ -189,9 +200,10 @@
 
         let kl = 0;
         for (let i = 0; i < p.length; i++) {
-            if (p[i] > 1e-10) {  // avoid log(0)
-                const qVal = Math.max(1e-10, q[i]);
-                kl += p[i] * Math.log(p[i] / qVal);
+            const pVal = p.at(i) ?? 0;
+            if (pVal > 1e-10) {  // avoid log(0)
+                const qVal = Math.max(1e-10, q.at(i) ?? 1e-10);
+                kl += pVal * Math.log(pVal / qVal);
             }
         }
 
@@ -256,11 +268,12 @@
         } else if (type === 'ema') {
             const result = [];
             const alpha = 2 / (period + 1);
-            let ema = values[0];
+            let ema = values.at(0) ?? 0;
             result.push(ema);
 
             for (let i = 1; i < values.length; i++) {
-                ema = values[i] * alpha + ema * (1 - alpha);
+                const val = values.at(i) ?? 0;
+                ema = val * alpha + ema * (1 - alpha);
                 result.push(ema);
             }
             return result;
@@ -317,7 +330,7 @@
 
         let cov = 0;
         for (let i = 0; i < x.length; i++) {
-            cov += (x[i] - meanX) * (y[i] - meanY);
+            cov += ((x.at(i) ?? 0) - meanX) * ((y.at(i) ?? 0) - meanY);
         }
 
         return cov / (x.length - 1 || 1);
@@ -340,8 +353,8 @@
         let denomY = 0;
 
         for (let i = 0; i < x.length; i++) {
-            const dx = x[i] - meanX;
-            const dy = y[i] - meanY;
+            const dx = (x.at(i) ?? 0) - meanX;
+            const dy = (y.at(i) ?? 0) - meanY;
             numSum += dx * dy;
             denomX += dx * dx;
             denomY += dy * dy;
@@ -423,10 +436,12 @@
             let sum = 0, sumVar = 0, n = 0;
             for (let i = start; i < end; i++) {
                 if (i < this.buckets.length) {
-                    const b = this.buckets[i];
-                    sum += b.sum;
-                    sumVar += b.var;
-                    n += b.size;
+                    const b = this.buckets.at(i);
+                    if (b) {
+                        sum += b.sum;
+                        sumVar += b.var;
+                        n += b.size;
+                    }
                 }
             }
             return { sum, var: sumVar, n };
