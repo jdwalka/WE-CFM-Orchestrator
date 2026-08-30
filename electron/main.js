@@ -2859,10 +2859,27 @@ ipcMain.handle('coinbase:generate-jwt', async (_, options = {}) => {
 // ── IPC: File system helpers for DataLogger ────────────────────────────────
 function isPathSafe(targetPath) {
   if (!targetPath || typeof targetPath !== 'string') return false;
-  const WORKSPACE_ROOT = path.resolve(process.env.WECRYP_ROOT || path.join(__dirname, '..'));
-  const target = path.resolve(targetPath);
-  if (target === WORKSPACE_ROOT || target.startsWith(WORKSPACE_ROOT + path.sep)) return true;
-  const upper = target.toUpperCase();
+  let realTarget;
+  try {
+    realTarget = fs.realpathSync(targetPath);
+  } catch (e) {
+    try {
+      const parentReal = fs.realpathSync(path.dirname(targetPath));
+      realTarget = path.join(parentReal, path.basename(targetPath));
+    } catch (e2) {
+      realTarget = path.resolve(targetPath);
+    }
+  }
+  
+  let WORKSPACE_ROOT;
+  try {
+    WORKSPACE_ROOT = fs.realpathSync(path.resolve(process.env.WECRYP_ROOT || path.join(__dirname, '..')));
+  } catch (e) {
+    WORKSPACE_ROOT = path.resolve(process.env.WECRYP_ROOT || path.join(__dirname, '..'));
+  }
+
+  if (realTarget === WORKSPACE_ROOT || realTarget.startsWith(WORKSPACE_ROOT + path.sep)) return true;
+  const upper = realTarget.toUpperCase();
   if (upper.includes('\\MY DRIVE') || upper.includes('\\WE-CRYPTO') || upper.includes('\\WECRYPTO') || upper.includes('\\ONEDRIVE')) return true;
   return false;
 }
