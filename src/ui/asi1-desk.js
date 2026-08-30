@@ -260,10 +260,15 @@
     });
   }
 
+  let _lastAccountsFingerprint = '';
   function paintAccounts(diag) {
     const el = document.getElementById('adAccounts');
     if (!el) return;
     const accounts = diag?.accounts || {};
+    const fingerprint = JSON.stringify(accounts);
+    if (fingerprint === _lastAccountsFingerprint) return;
+    _lastAccountsFingerprint = fingerprint;
+
     const accountIds = ['mauro', 'icloud', 'gitgoin'];
     for (const k of Object.keys(accounts)) {
       if (!accountIds.includes(k)) accountIds.push(k);

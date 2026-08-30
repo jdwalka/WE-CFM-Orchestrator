@@ -415,18 +415,68 @@ function initOBHud() {
     if (!hud) return;
     let minimized = false;
     let hudFilter = 'ALL';
-    let soundOn = isTradeBellOn();
+    let shellBuilt = false;
+    let renderScheduled = false;
 
-    function renderHud() {
-      const all = window.OB?.wallAlerts || [];
-      const alerts = hudFilter === 'ALL' ? all : all.filter(a => a.sym === hudFilter);
-      const shown = alerts.slice(0, 15);
-
+    function buildShell() {
       const syms = PREDICTION_COINS.map(c => c.sym);
       const filterPills = ['ALL', ...syms].map(s => {
         const active = s === hudFilter ? 'active' : '';
         return `<button class="hud-pill ${active}" data-hud-filter="${s}">${s}</button>`;
       }).join('');
+
+      hud.innerHTML = `
+        <div class="hud-header">
+          <span class="hud-title">⚡ WALL ALERTS <span class="hud-conn" id="hud-conn-count">0/7</span></span>
+          <div class="hud-header-btns">
+            <button class="hud-icon-btn" id="hud-sound-btn" title="Toggle signal alerts">
+              ${soundOn ? '🔔' : '🔕'}
+            </button>
+            <button class="hud-icon-btn" id="hud-min-btn" title="Minimize">
+              ${minimized ? '▲' : '▼'}
+            </button>
+          </div>
+        </div>
+        <div class="hud-body-wrap" id="hud-body-wrap" style="${minimized ? 'display:none;' : ''}">
+          <div class="hud-filters" id="hud-filters-wrap">${filterPills}</div>
+          <div class="hud-rows" id="hud-rows-wrap"><div class="hud-empty">Monitoring for wall events…</div></div>
+        </div>`;
+
+      hud.querySelector('#hud-min-btn')?.addEventListener('click', () => {
+        minimized = !minimized;
+        const bodyWrap = hud.querySelector('#hud-body-wrap');
+        const minBtn = hud.querySelector('#hud-min-btn');
+        if (bodyWrap) bodyWrap.style.display = minimized ? 'none' : '';
+        if (minBtn) minBtn.textContent = minimized ? '▲' : '▼';
+      });
+
+      hud.querySelector('#hud-sound-btn')?.addEventListener('click', () => {
+        soundOn = !soundOn;
+        setTradeBellOn(soundOn);
+        const soundBtn = hud.querySelector('#hud-sound-btn');
+        if (soundBtn) soundBtn.textContent = soundOn ? '🔔' : '🔕';
+      });
+
+      hud.querySelectorAll('[data-hud-filter]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          hudFilter = btn.dataset.hudFilter;
+          hud.querySelectorAll('[data-hud-filter]').forEach(b => {
+            b.classList.toggle('active', b.dataset.hudFilter === hudFilter);
+          });
+          renderHud();
+        });
+      });
+
+      shellBuilt = true;
+    }
+
+    function renderHud() {
+      if (!shellBuilt) buildShell();
+      if (minimized) return;
+
+      const all = window.OB?.wallAlerts || [];
+      const alerts = hudFilter === 'ALL' ? all : all.filter(a => a.sym === hudFilter);
+      const shown = alerts.slice(0, 15);
 
       const fmtP = (p) => p >= 1000 ? p.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : p >= 1 ? p.toFixed(3) : p.toFixed(5);
 
@@ -443,40 +493,26 @@ function initOBHud() {
       }).join('');
 
       const connCount = window.OB?.getConnected?.()?.length || 0;
+      const connEl = hud.querySelector('#hud-conn-count');
+      if (connEl) connEl.textContent = `${connCount}/7`;
 
-      hud.innerHTML = `
-        <div class="hud-header">
-          <span class="hud-title">⚡ WALL ALERTS <span class="hud-conn">${connCount}/7</span></span>
-          <div class="hud-header-btns">
-            <button class="hud-icon-btn" id="hud-sound-btn" title="Toggle signal alerts">
-              ${soundOn ? '🔔' : '🔕'}
-            </button>
-            <button class="hud-icon-btn" id="hud-min-btn" title="Minimize">
-              ${minimized ? '▲' : '▼'}
-            </button>
-          </div>
-        </div>
-        ${!minimized ? `
-          <div class="hud-filters">${filterPills}</div>
-          <div class="hud-rows">${rows || '<div class="hud-empty">Monitoring for wall events…</div>'}</div>
-        ` : ''}`;
+      const rowsWrap = hud.querySelector('#hud-rows-wrap');
+      if (rowsWrap) {
+        rowsWrap.innerHTML = rows || '<div class="hud-empty">Monitoring for wall events…</div>';
+      }
+    }
 
-      // Attach handlers
-      hud.querySelector('#hud-min-btn')?.addEventListener('click', () => {
-        minimized = !minimized; renderHud();
-      });
-      hud.querySelector('#hud-sound-btn')?.addEventListener('click', () => {
-        soundOn = !soundOn;
-        setTradeBellOn(soundOn);
+    function scheduleRenderHud() {
+      if (renderScheduled) return;
+      renderScheduled = true;
+      requestAnimationFrame(() => {
+        renderScheduled = false;
         renderHud();
-      });
-      hud.querySelectorAll('[data-hud-filter]').forEach(btn => {
-        btn.addEventListener('click', () => { hudFilter = btn.dataset.hudFilter; renderHud(); });
       });
     }
 
-    // Re-render HUD every 3 seconds
-    setInterval(renderHud, 3000);
+    // Re-render HUD every 3 seconds for timestamp age updates
+    setInterval(scheduleRenderHud, 3000);
     renderHud();
 
     // Live Market Divergence timer — update elapsed time on cards every 3s
@@ -522,7 +558,7 @@ function initOBHud() {
     }, 1000);
 
     // Re-render immediately on alert
-    window.OB?.onAlert(() => renderHud());
+    window.OB?.onAlert(() => scheduleRenderHud());
   }
 
 function drawOrbital() {
