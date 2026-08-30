@@ -19,7 +19,7 @@ test('official docs roster is ultra + asi1 + mini; fast is extra', () => {
   assert.ok(Asi1.ASI1_ACCOUNTS.some((a) => a.email === 'mauro_fanelli@icloud.com'));
   assert.ok(Asi1.ASI1_ACCOUNTS.some((a) => a.email === 'maurofanellijr@gmail.com'));
   assert.ok(Asi1.ASI1_ACCOUNTS.some((a) => a.email === 'gitgoin87@gmail.com'));
-  assert.strictEqual(Asi1.ASI1_ACCOUNTS[0].id, 'icloud');
+  assert.strictEqual(Asi1.ASI1_ACCOUNTS[0].id, 'mauro');
 });
 
 test('secret labels map to the two Gmail accounts', () => {

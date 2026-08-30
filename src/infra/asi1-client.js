@@ -36,22 +36,28 @@ const ASI1_OFFICIAL_MODELS = Object.freeze(['asi1-ultra', 'asi1', 'asi1-mini']);
 const ASI1_EXTRA_MODELS = Object.freeze(['asi1-fast']);
 const ASI1_ALL_MODELS = Object.freeze([...ASI1_OFFICIAL_MODELS, ...ASI1_EXTRA_MODELS]);
 
-// icloud (enterprise/Pro) first — routes here whenever its key is present
-// and not rate-limited; gitgoin/mauro are same-tier fallbacks only.
+// mauro (Pro Unlimited primary) first — routes here whenever its key is present
+// and not rate-limited; icloud / gitgoin are secondary fallbacks.
 const ASI1_ACCOUNTS = Object.freeze([
+  {
+    id: 'mauro',
+    email: 'maurofanellijr@gmail.com',
+    envNames: ['ASI1_API_KEY_MAURO', 'ASI_ONE_API_KEY_MAURO', 'ASI1_API_KEY', 'ASI_ONE_API_KEY'],
+    sessionEnv: 'ASI1_SESSION_MAURO',
+    secretFiles: [
+      'ASI1_MAUROFANELLIJR_ACCT.txt',
+      'ASI1 MAUROFANELLIJR ACCT.txt',
+      'ASI1_MAURO.txt',
+      'ASI1_maurofanellijr.txt',
+      'ASI1_API.txt',
+    ],
+  },
   {
     id: 'icloud',
     email: 'mauro_fanelli@icloud.com',
     envNames: ['ASI1_API_KEY_ICLOUD', 'ASI_ONE_API_KEY_ICLOUD'],
     sessionEnv: 'ASI1_SESSION_ICLOUD',
     secretFiles: ['ASI1_ICLOUD.txt'],
-  },
-  {
-    id: 'mauro',
-    email: 'maurofanellijr@gmail.com',
-    envNames: ['ASI1_API_KEY_MAURO', 'ASI_ONE_API_KEY_MAURO'],
-    sessionEnv: 'ASI1_SESSION_MAURO',
-    secretFiles: ['ASI1_MAURO.txt', 'ASI1_maurofanellijr.txt'],
   },
   {
     id: 'gitgoin',
@@ -216,8 +222,15 @@ function resolveAsi1ApiKeys() {
     keys.push(k);
   }
 
+  const primaryKeyVal = 'sk_6e0fd5443f0142cdabb698464e0d1760259cf526025140a4a04d36f5b1e3f1fd';
+  const fallbackKeyVal = 'sk_3b69c96c28364341b1aadff583e38739329767058b0f44f8a17e7b61eaf2e0f9';
   const preferredAccount = process.env.ASI1_ONLY_ACCOUNT || process.env.ASI1_PREFERRED_ACCOUNT || process.env.ASI1_PRIMARY_ACCOUNT || 'mauro';
   keys.sort((a, b) => {
+    if (a.value === primaryKeyVal) return -1;
+    if (b.value === primaryKeyVal) return 1;
+    if (a.value === fallbackKeyVal) return -1;
+    if (b.value === fallbackKeyVal) return 1;
+
     const aIsPref = a.account === preferredAccount || a.email === 'maurofanellijr@gmail.com';
     const bIsPref = b.account === preferredAccount || b.email === 'maurofanellijr@gmail.com';
     if (aIsPref && !bIsPref) return -1;
