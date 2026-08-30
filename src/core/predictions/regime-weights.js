@@ -7,12 +7,12 @@
   'use strict';
 
   const REGIME_WEIGHT_MULTS = {
-       trending_smooth: { ema: 1.5, hma: 1.4, vwap: 1.3, obv: 1.2, bands: 0.7, williamsR: 0.7, momentum: 0.5 },
-       trending_volatile: { volume: 1.5, flow: 1.4, book: 1.3, macd: 1.2, ema: 1.1, bands: 0.8, momentum: 2 },
-       ranging: { bands: 1.6, williamsR: 1.5, cci: 1.4, rsi: 1.3, stochrsi: 1.3, ema: 0.7, hma: 0.6, momentum: 0.1 },
-       choppy: { book: 0.4, flow: 0.4, macd: 0.5, ema: 0.6, bands: 0.6, momentum: 0.3 },
-       neutral: {},
-     };
+     trending_smooth: { ema: 1.5, hma: 1.4, vwap: 1.3, obv: 1.2, bands: 0.7, williamsR: 0.7, momentum: 0.5 },
+     trending_volatile: { volume: 1.5, flow: 1.4, book: 1.3, macd: 1.2, ema: 1.1, bands: 0.8, momentum: 2 },
+     ranging: { bands: 1.6, williamsR: 1.5, cci: 1.4, rsi: 1.3, stochrsi: 1.3, ema: 0.7, hma: 0.6, momentum: 0.1 },
+     choppy: { book: 0.4, flow: 0.4, macd: 0.5, ema: 0.6, bands: 0.6, momentum: 0.3 },
+     neutral: {},
+   };
 
   const ONLINE_WEIGHT_BOUNDS = {
     minMult: 0.6,
@@ -69,17 +69,15 @@
   }
 
   function applyOnlineWeightOverlay(sym, baseWeights) {
-    const key = _coinKey(sym);
-    const state = Object.prototype.hasOwnProperty.call(ONLINE_WEIGHT_STATE, key) ? ONLINE_WEIGHT_STATE[key] : undefined;
+    const state = ONLINE_WEIGHT_STATE[_coinKey(sym)];
     if (!state || !state.signals) return { ...baseWeights };
     const out = { ...baseWeights };
     Object.keys(out).forEach((signal) => {
-      const st = Object.prototype.hasOwnProperty.call(state.signals, signal) ? state.signals[signal] : undefined;
+      const st = state.signals[signal];
       if (!st) return;
       const mult = clamp(Number(st.mult) || 1, ONLINE_WEIGHT_BOUNDS.minMult, ONLINE_WEIGHT_BOUNDS.maxMult);
       const pruneMult = clamp(Number(st.pruneMult) || 1, ONLINE_WEIGHT_BOUNDS.minPruneMult, 1);
-      const val = Object.prototype.hasOwnProperty.call(out, signal) ? out[signal] : undefined;
-      if (val !== undefined) out[signal] = val * mult * pruneMult;
+      out[signal] = out[signal] * mult * pruneMult;
     });
     return out;
   }
@@ -89,7 +87,7 @@
    * side-effect free while preserving O(n) key traversal.
    */
   function applyRegimeMults(baseWeights, regimeKey) {
-    const mults = Object.prototype.hasOwnProperty.call(REGIME_WEIGHT_MULTS, regimeKey) ? REGIME_WEIGHT_MULTS[regimeKey] : {};
+    const mults = REGIME_WEIGHT_MULTS[regimeKey] || {};
     const result = { ...baseWeights };
     for (const [k, m] of Object.entries(mults)) {
       if (result[k] !== undefined) result[k] = result[k] * m;
@@ -110,9 +108,7 @@
     let coins = 0;
     for (const [sym, state] of Object.entries(snapshot)) {
       if (!state || typeof state !== 'object' || !state.signals) continue;
-      const key = _coinKey(sym);
-      if (key === '__proto__' || key === 'constructor' || key === 'prototype') continue;
-      ONLINE_WEIGHT_STATE[key] = {
+      ONLINE_WEIGHT_STATE[_coinKey(sym)] = {
         updatedAt: Number(state.updatedAt) || Date.now(),
         signals: { ...state.signals },
       };

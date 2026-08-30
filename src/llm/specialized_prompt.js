@@ -414,7 +414,7 @@ function isSignalStrong(snapshot, indicatorName) {
 
 // Add confidence scoring
 function calculateRegimeConfidence(snapshot, regime) {
-  const rules = Object.prototype.hasOwnProperty.call(REGIME_RULES, regime) ? REGIME_RULES[regime] : null;
+  const rules = REGIME_RULES[regime];
   if (!rules || !rules.strongSignals || !rules.strongSignals.length) return 0;
   const strongCount = rules.strongSignals.filter(sig =>
     isSignalStrong(snapshot, sig)
@@ -865,7 +865,7 @@ function formatModelGuideBlock(snapshot) {
   const indicators = snapshot.indicators || snapshot.market?.indicators || {};
 
   const pickLabel = (key) => {
-    const row = Object.prototype.hasOwnProperty.call(indicators, key) ? indicators[key] : null;
+    const row = indicators[key];
     if (!row || typeof row !== 'object') return null;
     const lab = row.label || row.signal;
     const val = row.value != null ? row.value : (row.slope != null ? row.slope : null);

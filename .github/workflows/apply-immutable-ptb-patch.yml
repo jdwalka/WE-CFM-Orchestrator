@@ -9,7 +9,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@8ade135a41bc03ea155e62e844d188df1ea18608
+      - uses: actions/checkout@v4
       - name: Decode artifacts, patch prediction-markets.js, write HUD files
         run: |
           set -euo pipefail

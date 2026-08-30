@@ -5,7 +5,6 @@
 (function () {
   'use strict';
   if (typeof window === 'undefined' || window.Asi1Desk) return;
-  const escapeHTML = (str) => String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 
   const COINS = ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'BNB', 'HYPE'];
   const MODE_KEY = 'wecrypto.asi1Desk.mode';
@@ -277,8 +276,8 @@
       const label = id === 'icloud' ? 'icloud (Pro)' : id;
       return `<div class="ad-pill">
         <span class="ad-dot ${dotClass}"></span>
-        <span style="font-weight:600;color:${live ? '#00e676' : '#e6e8eb'}">${escapeHTML(label)}</span>
-        <span style="font-size:9px;color:#8ab4f8;margin-left:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:140px;" title="${escapeHTML(email)}">${escapeHTML(email)}</span>
+        <span style="font-weight:600;color:${live ? '#00e676' : '#e6e8eb'}">${label}</span>
+        <span style="font-size:9px;color:#8ab4f8;margin-left:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:140px;" title="${email}">${email}</span>
         <span style="margin-left:auto;color:${live ? '#00e676' : '#8b929a'};font-weight:700;">${keys} key${keys === 1 ? '' : 's'}</span>
       </div>`;
     });

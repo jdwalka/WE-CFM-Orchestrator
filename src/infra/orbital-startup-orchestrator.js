@@ -792,9 +792,20 @@ async function startProxies(workspacePath) {
         const wsProxyScript = wsProxyCandidates.find(p => fs.existsSync(p));
 
         if (wsProxyScript) {
+            wsProxyProcess = spawn(process.execPath, [wsProxyScript], {
+                cwd: path.dirname(wsProxyScript),
+                env: { ...process.env, WECRYPTO_WS_PROXY_PORT: '3011' },
+                stdio: ['ignore', 'pipe', 'pipe'],
+                windowsHide: true,
+            });
+            wsProxyProcess.stdout.on('data', chunk => console.log('[ws-proxy]', chunk.toString().trim()));
+            wsProxyProcess.stderr.on('data', chunk => console.warn('[ws-proxy:err]', chunk.toString().trim()));
+            wsProxyProcess.on('exit', code => { wsProxyProcess = null; console.log('[ws-proxy] exited', code); });
+        const wsProxyScript = path.join(workspacePath, 'src', 'infra', 'ws-proxy-server.js');
+        if (fs.existsSync(wsProxyScript)) {
             try {
                 wsProxyProcess = spawn(process.execPath, [wsProxyScript], {
-                    cwd: path.dirname(wsProxyScript),
+                    cwd: workspacePath,
                     env: { ...process.env, WECRYPTO_WS_PROXY_PORT: '3011', ELECTRON_RUN_AS_NODE: '1' },
                     stdio: ['ignore', 'pipe', 'pipe'],
                     windowsHide: true,

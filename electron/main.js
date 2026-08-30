@@ -2857,24 +2857,12 @@ ipcMain.handle('coinbase:generate-jwt', async (_, options = {}) => {
 });
 
 // ── IPC: File system helpers for DataLogger ────────────────────────────────
-function isPathSafe(targetPath) {
-  if (!targetPath || typeof targetPath !== 'string') return false;
-  const WORKSPACE_ROOT = path.resolve(process.env.WECRYP_ROOT || path.join(__dirname, '..'));
-  const target = path.resolve(targetPath);
-  if (target === WORKSPACE_ROOT || target.startsWith(WORKSPACE_ROOT + path.sep)) return true;
-  const upper = target.toUpperCase();
-  if (upper.includes('\\MY DRIVE') || upper.includes('\\WE-CRYPTO') || upper.includes('\\WECRYPTO') || upper.includes('\\ONEDRIVE')) return true;
-  return false;
-}
-
 ipcMain.handle('data:ensureDir', async (_, dirPath) => {
-  if (!isPathSafe(dirPath)) return false;
   try { await fsp.mkdir(dirPath, { recursive: true }); return true; }
   catch (e) { return false; }
 });
 
 ipcMain.handle('data:appendLine', async (_, filePath, line) => {
-  if (!isPathSafe(filePath)) return false;
   try {
     await fsp.mkdir(path.dirname(filePath), { recursive: true });
     await fsp.appendFile(filePath, line + '\n', 'utf8');
@@ -2883,7 +2871,6 @@ ipcMain.handle('data:appendLine', async (_, filePath, line) => {
 });
 
 ipcMain.handle('data:appendLineDetailed', async (_, filePath, line) => {
-  if (!isPathSafe(filePath)) return { ok: false, error: 'Access denied: Path outside workspace' };
   try {
     await fsp.mkdir(path.dirname(filePath), { recursive: true });
     await fsp.appendFile(filePath, line + '\n', 'utf8');
@@ -2899,7 +2886,6 @@ ipcMain.handle('data:appendLineDetailed', async (_, filePath, line) => {
 });
 
 ipcMain.handle('data:writeFile', async (_, filePath, content) => {
-  if (!isPathSafe(filePath)) return false;
   try {
     await fsp.mkdir(path.dirname(filePath), { recursive: true });
     await fsp.writeFile(filePath, content, 'utf8');
@@ -2908,7 +2894,6 @@ ipcMain.handle('data:writeFile', async (_, filePath, content) => {
 });
 
 ipcMain.handle('data:writeFileDetailed', async (_, filePath, content) => {
-  if (!isPathSafe(filePath)) return { ok: false, error: 'Access denied: Path outside workspace' };
   try {
     await fsp.mkdir(path.dirname(filePath), { recursive: true });
     await fsp.writeFile(filePath, content, 'utf8');
@@ -2924,9 +2909,6 @@ ipcMain.handle('data:syncFileIncremental', async (_, request) => {
   const statePath = String(request?.statePath || '');
   if (!sourcePath || !targetPath || !statePath) {
     return { ok: false, code: 'EINVAL', error: 'sourcePath, targetPath, and statePath are required' };
-  }
-  if (!isPathSafe(sourcePath) || !isPathSafe(targetPath) || !isPathSafe(statePath)) {
-    return { ok: false, code: 'EACCES', error: 'Access denied: Path outside workspace' };
   }
 
   try {
@@ -3016,7 +2998,6 @@ ipcMain.handle('data:syncFileIncremental', async (_, request) => {
 });
 
 ipcMain.handle('data:readFile', async (_, filePath) => {
-  if (!isPathSafe(filePath)) return { ok: false, error: 'Access denied: Path outside workspace' };
   try {
     try {
       await fsp.access(filePath, fs.constants.R_OK);
@@ -3028,7 +3009,6 @@ ipcMain.handle('data:readFile', async (_, filePath) => {
 });
 
 ipcMain.handle('data:listDir', async (_, dirPath) => {
-  if (!isPathSafe(dirPath)) return { ok: false, error: 'Access denied: Path outside workspace' };
   try {
     try {
       await fsp.access(dirPath, fs.constants.R_OK);

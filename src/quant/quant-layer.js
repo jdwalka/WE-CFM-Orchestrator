@@ -184,7 +184,7 @@ function parseForensicsCsv(csvText) {
     const rows = [];
     for (let i = 1; i < lines.length; i++) {
         const cols = _parseCsvLine(lines[i]);
-        const row = Object.create(null);
+        const row = {};
         headers.forEach((h, ix) => {
             row[h] = cols[ix] ?? '';
         });
@@ -1154,10 +1154,10 @@ function buildWebStateSnapshot() {
     const predAll = window.PredictionEngine?.getAll?.() || window._predictions || {};
     const chainAll = window.BlockchainScan?.getAll?.() || {};
     const congestionAll = window.NetworkCongestion?.getAll?.() || {};
-    const predictions = Object.create(null);
-    const signals = Object.create(null);
-    const kalshiMarkets = Object.create(null);
-    const stats = Object.create(null);
+    const predictions = {};
+    const signals = {};
+    const kalshiMarkets = {};
+    const stats = {};
     configuredCoins.forEach((coin) => {
         const sym = coin?.sym;
         if (!sym)
@@ -1392,8 +1392,7 @@ function startWebStateHeartbeat() {
 }
 function updateMarketDivergence(sym, modelDir, kalshiDir, kalshiPct, score) {
     const now = Date.now();
-    window._marketDivergence = window._marketDivergence || Object.create(null);
-    const buf = Object.prototype.hasOwnProperty.call(window._marketDivergence, sym) ? window._marketDivergence[sym] : {};
+    const buf = window._marketDivergence[sym] || {};
     const isDiverging = modelDir !== 'wait' && kalshiDir !== null && modelDir !== kalshiDir;
     if (isDiverging) {
         if (!buf.active || !buf.firstDivTs) {

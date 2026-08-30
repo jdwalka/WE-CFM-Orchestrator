@@ -126,8 +126,8 @@
   let _lastPollTs = 0;
 
   // Initialize global store
-  window._pythPrices = window._pythPrices || Object.create(null);
-  window._pythPythMetadata = window._pythPythMetadata || Object.create(null);
+  window._pythPrices = window._pythPrices || {};
+  window._pythPythMetadata = window._pythPythMetadata || {};
 
   function scalePythPrice(rawPrice, expo) {
     const price = parseFloat(rawPrice);

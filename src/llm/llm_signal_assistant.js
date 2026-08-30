@@ -238,13 +238,13 @@ class LLMSignalAssistant {
     this.contextCache = new Map();      // short-lived prompt/result cache
     this.marketMemory = new Map();      // per-coin rolling recall memory
     this.queryHistory = [];             // rolling query log across all LLM providers
-    this.queryStatsByProvider = Object.create(null);     // per-provider stats (calls, latency, errors)
-    this.queryStatsByModel = Object.create(null);        // per-model stats (calls, latency, errors)
+    this.queryStatsByProvider = {};     // per-provider stats (calls, latency, errors)
+    this.queryStatsByModel = {};        // per-model stats (calls, latency, errors)
     // Circuit breaker: provider -> { until, reason }. ASI1 handles its own
     // multi-key/multi-model rotation internally (see asi1-client.js). TokenMix
     // uses this directly for 402/credit-exhaustion cooldowns (see
     // _isTokenmixInCooldown / _markTokenmixCooldown below).
-    this._providerCooldowns = Object.create(null);
+    this._providerCooldowns = {};
     this._tokenmixCreditExhausted = false;
 
     // Restore query history / market memory / cooldowns from disk (cold-start avoidance)
@@ -1298,11 +1298,11 @@ Use this recall only as context, and prioritize current market snapshot data if 
     try {
       const dir = path.dirname(file);
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-      const marketMemory = Object.create(null);
+      const marketMemory = {};
       for (const [k, rows] of this.marketMemory.entries()) {
         marketMemory[k] = (rows || []).slice(-12);
       }
-      const contextCache = Object.create(null);
+      const contextCache = {};
       for (const [k, entry] of this.contextCache.entries()) {
         contextCache[k] = { ts: entry.ts, value: entry.value };
       }
@@ -1537,7 +1537,7 @@ Use this recall only as context, and prioritize current market snapshot data if 
       return { changed: false, newWeights: currentWeights };
     }
 
-    let newWeights = Object.assign(Object.create(null), currentWeights);
+    let newWeights = { ...currentWeights };
     let changed = false;
 
     const maxAdjustment = 1.05; // max 5% nudge

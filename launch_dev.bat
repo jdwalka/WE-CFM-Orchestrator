@@ -4,7 +4,7 @@ title WE-CFM-Orchestrator Dev Launcher [Split Routing: ASI1 Direct + WSL Sweden 
 
 echo.
 echo ==============================================================================
-echo    WE-CFM-Orchestrator — Development Launcher with Auto Proxy ^& Port Binding
+echo    WE-CFM-Orchestrator — Development Launcher with Auto Proxy & Port Binding
 echo    - Direct US:   ASI1 (api.asi1.ai), Polymarket CLOB/Gamma, Coinbase, Kraken
 echo    - WSL Sweden:  Binance Spot/Futures, Bybit, OKX, MEXC (10.13.13.2:18090)
 echo ==============================================================================

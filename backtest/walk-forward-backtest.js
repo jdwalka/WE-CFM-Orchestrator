@@ -949,7 +949,7 @@ async function runWalkForwardForCoin(sym, candles) {
 
       // Session breakdown on test window
       const testActive = testSigs.filter(s => passesFilter(s, cal.entryThreshold, cal.minAgreement, null));
-      const sessions = Object.create(null);
+      const sessions = {};
       testActive.forEach(s => {
         const sess = getSession(s.t);
         if (!sessions[sess]) sessions[sess] = { w: 0, t: 0 };
@@ -1019,7 +1019,7 @@ function printWalkForwardReport(sym, hrResults, logLines) {
   line(`\n${d}`);
   line(' RECOMMENDED BACKTEST_FILTER_OVERRIDES');
   line(d);
-  const overrides = Object.create(null);
+  const overrides = {};
   for (const horizonMin of SHORT_HORIZON_MINUTES) {
     const hr = hrResults[`h${horizonMin}`];
     if (hr) {

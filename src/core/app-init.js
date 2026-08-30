@@ -847,6 +847,8 @@ initOBHud();
         // so DataLogger's drive discovery has had a chance to complete.
         setTimeout(async () => {
           await window._adaptiveTuner?.bootstrapFromPriorSession?.();
+        setTimeout(() => {
+          window._adaptiveTuner?.bootstrapFromPriorSession?.();
         }, 3000);
 
         const adaptiveCoinSymbols = () => {
