@@ -69,11 +69,11 @@
       </div>
       <div class="ad-selects">
         <select id="adModelChoice">
-          <option value="auto">Model: Auto</option>
-          <option value="asi1-ultra">asi1-ultra (Deep Reasoning)</option>
           <option value="asi1">asi1 (Standard)</option>
+          <option value="asi1-ultra">asi1-ultra (Deep Reasoning)</option>
           <option value="asi1-mini">asi1-mini (Fast / Scalp)</option>
           <option value="asi1-fast">asi1-fast (Quick)</option>
+          <option value="auto">Model: Auto</option>
         </select>
         <select id="adReasoningEffort">
           <option value="auto">Effort: Auto</option>
@@ -206,8 +206,8 @@
   try { minimized = window.localStorage.getItem(MIN_KEY) === '1'; } catch (_) { /* */ }
 
   try {
-    const savedModel = window.localStorage.getItem(MODEL_KEY);
-    if (savedModel && document.getElementById('adModelChoice')) {
+    const savedModel = window.localStorage.getItem(MODEL_KEY) || 'asi1';
+    if (document.getElementById('adModelChoice')) {
       document.getElementById('adModelChoice').value = savedModel;
     }
     const savedEffort = window.localStorage.getItem(REASONING_KEY);
