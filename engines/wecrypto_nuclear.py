@@ -62,6 +62,7 @@ KALSHI_V2_URL    = 'https://trading-api.kalshi.com/trade-api/v2'
 KALSHI_MARKETS   = f'{KALSHI_V2_URL}/markets'
 KALSHI_ORDERS    = f'{KALSHI_V2_URL}/portfolio/events/orders'
 COINBASE_TICKER  = 'https://api.exchange.coinbase.com/products/{ticker}/ticker'
+COINBASE_CANDLES = 'https://api.exchange.coinbase.com/products/{ticker}/candles?granularity=900'
 COINGECKO_PRICE  = 'https://api.coingecko.com/api/v3/simple/price?ids={coin}&vs_currencies=usd'
 COINGECKO_HIST   = 'https://api.coingecko.com/api/v3/coins/{coin}/market_chart?vs_currency=usd&days=14'
 
@@ -573,8 +574,47 @@ class WecryptoNuclear:
 
 # ── Live Execution Loop ───────────────────────────────────────────────────────
 
+def _fetch_coinbase_ohlcv(ticker: str) -> Optional[dict]:
+    """Pull the most recent 15m candle from Coinbase Exchange API.
+
+    Returns dict with keys: open, high, low, close, volume, sigma.
+    Falls back to ticker price if candles endpoint fails.
+    """
+    try:
+        resp = requests.get(COINBASE_CANDLES.format(ticker=ticker), timeout=6)
+        candles = resp.json()
+        # Coinbase returns candles descending: [[time, low, high, open, close, volume], ...]
+        if not candles or not isinstance(candles, list) or len(candles) < 2:
+            log.warning('%s | No candles returned, falling back to ticker', ticker)
+            return None
+
+        # Most recent closed candle (skip the in-progress one at index 0)
+        recent = candles[1] if len(candles) > 1 else candles[0]
+        _, low, high, opan, close, volume = recent
+
+        # Compute rolling sigma from log returns of last 16 candles
+        closes = [c[4] for c in candles[:min(16, len(candles))]]
+        if len(closes) > 2:
+            log_rets = np.diff(np.log(np.array(closes, dtype=float)))
+            sigma = float(np.std(log_rets))
+        else:
+            sigma = 0.01
+
+        return {
+            'open':   float(opan),
+            'high':   float(high),
+            'low':    float(low),
+            'close':  float(close),
+            'volume': float(volume),
+            'sigma':  max(sigma, 0.001),
+        }
+    except Exception as e:
+        log.warning('%s | Coinbase candles fetch failed: %s', ticker, e)
+        return None
+
+
 def _fetch_coinbase_price(ticker: str) -> Optional[float]:
-    """Pull spot price from Coinbase exchange API."""
+    """Pull spot price from Coinbase exchange API (fallback)."""
     try:
         resp = requests.get(COINBASE_TICKER.format(ticker=ticker), timeout=4)
         return float(resp.json()['price'])
@@ -590,23 +630,34 @@ def run_loop(engine: WecryptoNuclear, once: bool = False):
         cycle_start = time.time()
         for asset, ticker in ASSETS.items():
             try:
-                price = _fetch_coinbase_price(ticker)
-                if not price:
-                    log.warning('%s | Coinbase price unavailable — skip', asset.upper())
-                    continue
-
-                # In production, replace mock values with real OHLCV from your
-                # WebSocket stream (Binance 15m, Coinbase Advanced, etc.)
-                mock_open  = price * (1 - random.uniform(-0.005, 0.005))
-                mock_vol   = 8000 + random.randint(-2000, 5000)
-                mock_sigma = 0.012 + random.random() * 0.01
+                # Fetch real 15m OHLCV candle from Coinbase
+                candle = _fetch_coinbase_ohlcv(ticker)
+                if candle:
+                    current_price = candle['close']
+                    open_price    = candle['open']
+                    interval_vol  = candle['volume']
+                    rolling_sigma = candle['sigma']
+                    log.info('%s | OHLCV: O=%.2f H=%.2f L=%.2f C=%.2f V=%.2f σ=%.4f',
+                             asset.upper(), candle['open'], candle['high'],
+                             candle['low'], candle['close'], candle['volume'], candle['sigma'])
+                else:
+                    # Fallback to ticker price if candles endpoint fails
+                    current_price = _fetch_coinbase_price(ticker)
+                    if not current_price:
+                        log.warning('%s | Coinbase price unavailable — skip', asset.upper())
+                        continue
+                    # Use the ticker price as both open and close with conservative defaults
+                    open_price    = current_price
+                    interval_vol  = 1.0
+                    rolling_sigma = 0.01
+                    log.warning('%s | Using ticker fallback (no OHLCV)', asset.upper())
 
                 order = engine.process_interval(
                     asset=         asset,
-                    current_price= price,
-                    open_price=    mock_open,
-                    interval_vol=  mock_vol,
-                    rolling_sigma= mock_sigma,
+                    current_price= current_price,
+                    open_price=    open_price,
+                    interval_vol=  interval_vol,
+                    rolling_sigma= rolling_sigma,
                 )
                 if order:
                     log.info('SIGNAL FIRED: %s', json.dumps(order, default=str))
