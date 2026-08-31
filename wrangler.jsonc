@@ -1,16 +1,11 @@
 {
-  "name": "we-cfm-orchestrator",
-  "compatibility_date": "2026-08-28",
-  "compatibility_flags": ["nodejs_compat_v2", "transformstream_enable_standard_constructor"],
-  "assets": {
-    "directory": "./dist/public",
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "wecrypto",
   "compatibility_date": "2026-08-28",
-  "compatibility_flags": ["nodejs_compat"],
+  "compatibility_flags": ["nodejs_compat_v2", "transformstream_enable_standard_constructor"],
+  "tags": ["UVIX"],
   "assets": {
     "directory": "./dist/public",
-    "binding": "ASSETS",
     "html_handling": "auto-trailing-slash",
     "not_found_handling": "single-page-application"
   }
