@@ -207,6 +207,8 @@ let orbitalServiceProcess = null;
 let orchestratorReady = false;
 let shutdownInFlight = null;
 let shutdownComplete = false;
+let startupInFlight = null;
+let restartInFlight = null;
 
 // WE-CRYPTO proxies
 let httpProxyProcess = null;
@@ -466,7 +468,18 @@ async function startProcessor() {
  * Called from Electron main process on app-ready.
  * @param {string} workspacePath - Absolute path to the project root (contains docker-compose.yml).
  */
-async function startOrbitalSystem(workspacePath) {
+function startOrbitalSystem(workspacePath) {
+    if (orchestratorReady) {
+        console.log('[OrbitalOrchestrator] System already running.');
+        return Promise.resolve(true);
+    }
+    if (startupInFlight) return startupInFlight;
+    startupInFlight = performStartOrbitalSystem(workspacePath)
+        .finally(() => { startupInFlight = null; });
+    return startupInFlight;
+}
+
+async function performStartOrbitalSystem(workspacePath) {
     if (orchestratorReady) {
         console.log('[OrbitalOrchestrator] System already running.');
         return true;
@@ -635,7 +648,14 @@ async function performShutdownOrbitalSystem(stopProxiesFlag = true, options = {}
     }
 }
 
-async function restartOrbitalSystem(workspacePath) {
+function restartOrbitalSystem(workspacePath) {
+    if (restartInFlight) return restartInFlight;
+    restartInFlight = performRestartOrbitalSystem(workspacePath)
+        .finally(() => { restartInFlight = null; });
+    return restartInFlight;
+}
+
+async function performRestartOrbitalSystem(workspacePath) {
     recordStatusEvent('info', 'Orbital restart requested');
     await shutdownOrbitalSystem(false, { stopDocker: false });
     _statusCache = null;

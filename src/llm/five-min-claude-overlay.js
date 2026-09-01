@@ -34,7 +34,7 @@
 (function () {
   'use strict';
 
-  // 5m Grok analysis for Polymarket binary PTB contracts.
+  // 5m ASI1/Fetch.ai analysis for Polymarket binary PTB contracts.
   // Enabled: fires per-coin inference against live polycool.app / Polymarket 5m windows.
   const FIVE_MIN_GROK_ENABLED = true;
 
@@ -640,7 +640,7 @@
     if (_timer) return;
     _timer = setInterval(tick, TICK_MS);
     setTimeout(tick, 5_000); // first pass shortly after load
-    console.log('[FiveMinGrok] started — 5m binary PTB Polymarket/Chainlink Grok analysis for', COINS.join(', '),
+    console.log('[FiveMinGrok] started — 5m binary PTB Polymarket/Chainlink ASI1/Fetch.ai analysis for', COINS.join(', '),
       '| cadence floor=15m tricky=4m tailRisk=45s');
   }
 
