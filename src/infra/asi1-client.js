@@ -29,7 +29,7 @@ const ASI1_CHAT_URL = `${ASI1_BASE_URL}/chat/completions`;
 const ASI1_QUICK_TICK_MODEL = process.env.ASI1_QUICK_TICK_MODEL || 'asi1-mini';
 const ASI1_DEEP_INSIGHT_MODEL = process.env.ASI1_DEEP_INSIGHT_MODEL || process.env.ASI1_MODEL || 'asi1-mini';
 const ASI1_DEFAULT_MODEL = process.env.ASI1_MODEL || 'asi1-mini';
-const ASI1_HEALTH_TIMEOUT_MS = Number(process.env.ASI1_HEALTH_TIMEOUT_MS || 12000);
+const ASI1_HEALTH_TIMEOUT_MS = Number(process.env.ASI1_HEALTH_TIMEOUT_MS || 5000);
 const ASI1_REQUEST_TIMEOUT_MS = Number(process.env.ASI1_REQUEST_TIMEOUT_MS || 30000);
 
 const ASI1_OFFICIAL_MODELS = Object.freeze(['asi1-ultra', 'asi1', 'asi1-mini']);
@@ -97,8 +97,9 @@ function resolveModelForTier(tier, requestedModel) {
 
 function defaultCandidateModels(requestedModel, tier) {
   const preferred = resolveModelForTier(tier, requestedModel);
-  const rest = ASI1_ALL_MODELS.filter((m) => m !== preferred);
-  return [preferred, ...rest];
+  // Only try preferred + asi1-mini as fallback — not all 4 models sequentially
+  const fallback = preferred === 'asi1-mini' ? 'asi1' : 'asi1-mini';
+  return [preferred, fallback];
 }
 
 const KEY_ENV_NAMES = [
@@ -259,7 +260,7 @@ function isRetryableAsi1Error(err) {
     || msg.includes('econnreset') || msg.includes('fetch failed');
 }
 
-function fetchWithTimeout(url, options = {}, timeoutMs = 35000) {
+function fetchWithTimeout(url, options = {}, timeoutMs = 20000) {
   return new Promise((resolve, reject) => {
     const parsed = new URL(url);
     const transport = parsed.protocol === 'https:' ? https : http;
@@ -314,7 +315,7 @@ const net = require('net');
 const NATIVE_ROUTE_LATENCY_THRESHOLD_MS = Number(process.env.ASI1_NATIVE_LATENCY_THRESHOLD_MS || 250);
 const ROUTE_STALE_MS = 5 * 60_000;
 const ROUTE_PROBE_INTERVAL_MS = Number(process.env.ASI1_ROUTE_PROBE_INTERVAL_MS || 30_000);
-const ROUTE_PROBE_TIMEOUT_MS = Number(process.env.ASI1_ROUTE_PROBE_TIMEOUT_MS || 12_000);
+const ROUTE_PROBE_TIMEOUT_MS = Number(process.env.ASI1_ROUTE_PROBE_TIMEOUT_MS || 4_000);
 const routeState = {
   lastLatencyMs: null,
   lastMeasuredAt: null,
