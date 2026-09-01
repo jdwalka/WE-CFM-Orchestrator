@@ -76,10 +76,10 @@
           <option value="auto">Model: Auto</option>
         </select>
         <select id="adReasoningEffort">
+          <option value="low">Reasoning: Low</option>
           <option value="auto">Effort: Auto</option>
           <option value="high">Reasoning: High</option>
           <option value="medium">Reasoning: Medium</option>
-          <option value="low">Reasoning: Low</option>
           <option value="off">Thinking: Off</option>
         </select>
       </div>
@@ -210,8 +210,8 @@
     if (document.getElementById('adModelChoice')) {
       document.getElementById('adModelChoice').value = savedModel;
     }
-    const savedEffort = window.localStorage.getItem(REASONING_KEY);
-    if (savedEffort && document.getElementById('adReasoningEffort')) {
+    const savedEffort = window.localStorage.getItem(REASONING_KEY) || 'low';
+    if (document.getElementById('adReasoningEffort')) {
       document.getElementById('adReasoningEffort').value = savedEffort;
     }
     const savedWeb = window.localStorage.getItem(WEBSEARCH_KEY);
@@ -504,7 +504,7 @@
 
       const options = {
         model: modelChoice !== 'auto' ? modelChoice : undefined,
-        reasoning_effort: (effortChoice === 'high' || effortChoice === 'medium' || effortChoice === 'low') ? effortChoice : undefined,
+        reasoning_effort: (effortChoice === 'high' || effortChoice === 'medium' || effortChoice === 'low') ? effortChoice : 'low',
         enable_thinking: effortChoice === 'off' ? false : (effortChoice !== 'auto' ? true : undefined),
         web_search: webSearch ? true : undefined,
       };
@@ -555,7 +555,7 @@
           prompt: query,
           packet,
           model: modelChoice !== 'auto' ? modelChoice : 'asi1-mini',
-          reasoning_effort: effortChoice !== 'auto' ? effortChoice : 'medium',
+          reasoning_effort: effortChoice !== 'auto' ? effortChoice : 'low',
           web_search: webSearch,
         });
       } catch (_) {
@@ -568,7 +568,7 @@
             spot: packet.spot,
             ptb: packet.priceToBeatNum,
             model: modelChoice !== 'auto' ? modelChoice : 'asi1-mini',
-            reasoning_effort: effortChoice !== 'auto' ? effortChoice : 'medium',
+            reasoning_effort: effortChoice !== 'auto' ? effortChoice : 'low',
             web_search: webSearch,
           }
         });
