@@ -105,10 +105,10 @@ function markTokenmixExhausted(assistant, err) {
 
 function rosterFor(options = {}) {
   const preferred = String(options.model || '').trim();
-  const all = ASI1_ALL_MODELS.slice();
-  if (preferred && !all.includes(preferred)) return [preferred, ...all];
-  if (preferred) return [preferred, ...all.filter((m) => m !== preferred)];
-  return all;
+  // Only try preferred + asi1-mini — not all 4 models sequentially
+  const fallback = preferred === 'asi1-mini' ? 'asi1' : 'asi1-mini';
+  if (preferred) return [preferred, fallback];
+  return ['asi1', 'asi1-mini'];
 }
 
 function reshapeCascade(cascade, assistant, skipCached) {
