@@ -567,8 +567,7 @@
         .hr-price { font-size:.85rem; font-weight:600; color:var(--color-text-muted,#aaa); }
         .hr-card-body { padding: 6px 0 6px; }
         .hr-ranges-scroll {
-          max-height: 340px;
-          overflow-y: auto;
+          overflow-y: visible;
           scrollbar-width: thin;
         }
         .hr-ranges-header {
@@ -692,23 +691,14 @@
       const container = document.getElementById('content');
       if (!container) return;
 
-      // Preserve scroll positions of range tables
-      const scrollEls = container.querySelectorAll('.hr-ranges-scroll');
-      const scrollPosMap = [];
-      scrollEls.forEach((el, idx) => {
-        scrollPosMap[idx] = el.scrollTop;
-      });
+      // Preserve page scroll position across re-renders
+      const savedScrollTop = container.scrollTop;
 
       container.innerHTML = buildPanelHTML();
       _mounted = true;
 
-      // Restore scroll positions seamlessly
-      const newScrollEls = container.querySelectorAll('.hr-ranges-scroll');
-      newScrollEls.forEach((el, idx) => {
-        if (scrollPosMap[idx] != null) {
-          el.scrollTop = scrollPosMap[idx];
-        }
-      });
+      // Restore page scroll position seamlessly
+      container.scrollTop = savedScrollTop;
     });
   }
 
