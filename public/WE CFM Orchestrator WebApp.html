@@ -195,6 +195,7 @@ input, select { font: inherit; color: inherit; }
   display: grid;
   grid-template-rows: var(--header-h) 1fr;
   overflow: hidden;
+  min-height: 0;
 }
 
 /* ---- Header ---- */
@@ -265,7 +266,14 @@ input, select { font: inherit; color: inherit; }
   overflow-x: hidden;
   padding: 16px 20px 24px;
   overscroll-behavior: contain;
+  min-height: 0;
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border) transparent;
 }
+.content::-webkit-scrollbar { width: 10px; }
+.content::-webkit-scrollbar-track { background: var(--color-bg); }
+.content::-webkit-scrollbar-thumb { background: var(--color-border); border-radius: 5px; border: 2px solid var(--color-bg); }
+.content::-webkit-scrollbar-thumb:hover { background: var(--color-text-faint); }
 
 /* ---- Loading ---- */
 .loading-screen {
