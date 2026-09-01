@@ -148,24 +148,24 @@ def test_process_interval_buffer_cap():
     assert len(state['volumes']) <= mod.F_ANOMALY_WINDOW
 
 
-def test_kalshi_payload_format():
-    """Kalshi payload should use fixed-point strings."""
+def test_polymarket_payload_format():
+    """Polymarket payload should use proper CLOB format."""
     mod = _import_nuclear()
     engine = mod.WecryptoNuclear(dry_run=True)
-    payload = engine._build_kalshi_payload('bitcoin', 'bid', 0.5500, count=10)
-    assert payload['side'] == 'bid'
-    assert payload['count'] == '10.00'
+    payload = engine._build_polymarket_payload('bitcoin', 'BUY', 0.5500, count=10)
+    assert payload['side'] == 'BUY'
+    assert payload['size'] == '10.00'
     assert payload['price'] == '0.5500'
-    assert payload['time_in_force'] == 'immediate_or_cancel'
-    assert 'client_order_id' in payload
-    assert 'ticker' in payload
+    assert payload['timeInForce'] == 'FOK'
+    assert 'orderID' in payload
+    assert 'market' in payload
 
 
 def test_execute_order_dry_run():
     """In dry-run mode, execute_order should return a dry_run dict, not fire."""
     mod = _import_nuclear()
     engine = mod.WecryptoNuclear(dry_run=True)
-    payload = {'ticker': 'TEST', 'side': 'bid', 'price': '0.50', 'count': '5.00'}
+    payload = {'market': 'TEST', 'side': 'BUY', 'price': '0.50', 'size': '5.00'}
     result = engine.execute_order(payload)
     assert result is not None
     assert result.get('dry_run') is True

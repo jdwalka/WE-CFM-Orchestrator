@@ -1,20 +1,22 @@
 #!/usr/bin/env python3
 """
-WECRYPTO Nuclear Engine — Cross-Chain Orbital + Kalshi V2 Executor
+WECRYPTO Nuclear Engine — Cross-Chain Orbital + Polymarket CLOB Executor
 ═══════════════════════════════════════════════════════════════════
 Standalone Python execution layer for the WE CFM Orchestrator.
 Runs locally on the AMD server, fetches live 15m OHLCV, evaluates
-the Orbital Exhaustion Quotient (OEQ), and fires Kalshi V2 orders.
+the Orbital Exhaustion Quotient (OEQ), and fires Polymarket CLOB orders.
 
 Architecture:
   1. _initialize_lambdas() — session-locked λ per asset at boot
   2. process_interval()    — 15m OHLCV → s/p/d/f orbital states → OEQ
   3. Hybrid exit logic     — d-orbital trailing stop + s-orbital decay
-  4. _build_kalshi_payload() → Kalshi V2 IOC order (fixed-point strings)
-  5. execute_order()       — POST to trading-api.kalshi.com/trade-api/v2
+  4. _build_polymarket_payload() → Polymarket CLOB order (YES/NO tokens)
+  5. execute_order()       — POST to clob.polymarket.com/order
 
 Environment Variables (set in .env or system env):
-  KALSHI_API_TOKEN          — Bearer token (required for live execution)
+  POLYMARKET_API_KEY        — API key for live execution (CLOB auth)
+  POLYMARKET_API_SECRET    — API secret for CLOB signing
+  POLYMARKET_PASSPHRASE    — CLOB passphrase
   WECRYPTO_MAX_CONTRACTS    — max contracts per order (default: 10)
   WECRYPTO_BTC_LAMBDA_BASE  — base lambda for BTC (default: 0.005)
   WECRYPTO_DRY_RUN          — set to "true" to skip live order submission
@@ -58,9 +60,9 @@ ASSETS = {
     'ripple':   'XRP-USD',
 }
 
-KALSHI_V2_URL    = 'https://trading-api.kalshi.com/trade-api/v2'
-KALSHI_MARKETS   = f'{KALSHI_V2_URL}/markets'
-KALSHI_ORDERS    = f'{KALSHI_V2_URL}/portfolio/events/orders'
+POLYMARKET_CLOB  = 'https://clob.polymarket.com'
+POLYMARKET_GAMMA  = 'https://gamma-api.polymarket.com'
+
 COINBASE_TICKER  = 'https://api.exchange.coinbase.com/products/{ticker}/ticker'
 COINBASE_CANDLES = 'https://api.exchange.coinbase.com/products/{ticker}/candles?granularity=900'
 COINGECKO_PRICE  = 'https://api.coingecko.com/api/v3/simple/price?ids={coin}&vs_currencies=usd'
@@ -107,10 +109,12 @@ class WecryptoNuclear:
             self.dry_run = bool(dry_run)
             
         self.state_file       = state_file or os.environ.get('WECRYPTO_STATE_FILE', 'wecrypto_state.json')
-        self.kalshi_token     = os.environ.get('KALSHI_API_TOKEN', '')
+        self.poly_api_key     = os.environ.get('POLYMARKET_API_KEY', '')
+        self.poly_api_secret  = os.environ.get('POLYMARKET_API_SECRET', '')
+        self.poly_passphrase  = os.environ.get('POLYMARKET_PASSPHRASE', '')
 
-        if not self.kalshi_token and not self.dry_run:
-            log.warning('KALSHI_API_TOKEN not set — forcing dry-run mode')
+        if not self.poly_api_key and not self.dry_run:
+            log.warning('POLYMARKET_API_KEY not set — forcing dry-run mode')
             self.dry_run = True
 
         # Per-asset state (prices, volumes, position tracking)
@@ -206,41 +210,42 @@ class WecryptoNuclear:
             log.warning('CoinGecko fetch failed for %s: %s', coin_id, e)
             return 1.0, 0.015
 
-    # ── Kalshi Market Resolution ──────────────────────────────────────────────
+    # ── Polymarket Market Resolution ──────────────────────────────────────────
 
-    def get_active_kalshi_ticker(self, asset: str) -> str:
+    def get_active_polymarket_slug(self, asset: str) -> str:
         """
-        Resolve the live 15m Kalshi KX ticker for an asset.
-        Queries the Kalshi markets endpoint and caches per session.
-        Falls back to a synthetic ticker if unavailable.
+        Resolve the live 15m Polymarket contract slug for an asset.
+        Queries the Gamma API and caches per session.
+        Falls back to a synthetic slug if unavailable.
         """
         if self._active_tickers.get(asset):
             return self._active_tickers[asset]
         sym = ASSETS[asset].replace('-USD', '')  # e.g. 'BTC'
-        fallback = f'KX{sym}15M-ACTIVE'
-        if not self.kalshi_token:
+        fallback = f'{sym.lower()}-15m-up-or-down'
+        if not self.poly_api_key:
             return fallback
         try:
-            resp    = requests.get(
-                KALSHI_MARKETS,
-                headers={'Authorization': f'Bearer {self.kalshi_token}'},
-                params={'status': 'open', 'series_ticker': f'KX{sym}15M'},
+            resp = requests.get(
+                f'{POLYMARKET_GAMMA}/markets',
+                params={'active': 'true', 'closed': 'false', 'limit': 50,
+                        'tag': 'crypto'},
                 timeout=6,
             )
-            markets = resp.json().get('markets', [])
+            markets = resp.json()
             for m in markets:
-                ticker = m.get('ticker', '')
-                if sym in ticker and '15M' in ticker and m.get('status') == 'open':
-                    self._active_tickers[asset] = ticker
-                    log.info('%s | Resolved live ticker: %s', asset.upper(), ticker)
-                    return ticker
+                question = (m.get('question', '') + m.get('slug', '')).lower()
+                if sym.lower() in question and '15' in question:
+                    slug = m.get('slug', fallback)
+                    self._active_tickers[asset] = slug
+                    log.info('%s | Resolved Polymarket slug: %s', asset.upper(), slug)
+                    return slug
         except Exception as e:
-            log.warning('%s | Ticker resolution failed: %s', asset.upper(), e)
+            log.warning('%s | Polymarket slug resolution failed: %s', asset.upper(), e)
         return fallback
 
     # ── Payload Builder ───────────────────────────────────────────────────────
 
-    def _build_kalshi_payload(
+    def _build_polymarket_payload(
         self,
         asset:       str,
         side:        str,
@@ -248,82 +253,80 @@ class WecryptoNuclear:
         count:       float = None,
     ) -> dict:
         """
-        Formats the strict fixed-point string payload for Kalshi V2.
+        Formats the CLOB order payload for Polymarket.
 
-        V2 semantics:
-          side='bid'  → buying YES contracts
-          side='ask'  → selling YES contracts (equivalent to buying NO)
-
-        Price inversion for NO trades:
-          Buying NO @ $0.45 requires selling YES @ $0.55
-          Submit: side='ask', price='0.5500'
+        Polymarket semantics:
+          side='BUY'   → buying YES token
+          side='SELL'  → selling YES token (equivalent to buying NO)
         """
         n       = min(count or self.max_contracts, self.max_contracts)
-        ticker  = self.get_active_kalshi_ticker(asset)
+        slug    = self.get_active_polymarket_slug(asset)
         return {
-            'ticker':           ticker,
-            'client_order_id':  str(uuid.uuid4()),
-            'side':             side,
-            'count':            f'{n:.2f}',
-            'price':            f'{limit_price:.4f}',
-            'time_in_force':    'immediate_or_cancel',
+            'orderID':     str(uuid.uuid4()),
+            'market':      slug,
+            'side':        side.upper(),
+            'size':        f'{n:.2f}',
+            'price':        f'{limit_price:.4f}',
+            'timeInForce':  'FOK',
         }
 
-    def _check_kalshi_orderbook(self, ticker: str, side: str) -> bool:
+    def _check_polymarket_orderbook(self, slug: str, side: str) -> bool:
         """
-        Check Bid-Ask Imbalance before firing market/IOC orders.
+        Check Bid-Ask Imbalance before firing FOK orders on Polymarket CLOB.
         Returns True if liquidity is safe, False to delay.
         """
         if self.dry_run:
             return True
-            
+
         try:
             resp = requests.get(
-                f'{KALSHI_MARKETS}/{ticker}/orderbook',
-                headers={'Authorization': f'Bearer {self.kalshi_token}'},
+                f'{POLYMARKET_CLOB}/book',
+                params={'market': slug},
                 timeout=2
             )
-            ob = resp.json().get('orderbook', {})
+            ob = resp.json()
             bids = ob.get('bids', [])
             asks = ob.get('asks', [])
-            
-            bid_vol = sum(b[1] for b in bids)
-            ask_vol = sum(a[1] for a in asks)
-            
-            if side == 'bid' and ask_vol < self.max_contracts * 2:
-                log.warning(f"[{ticker}] Liquidity vacuum on ASK side! Imbalance (Ask Vol: {ask_vol}). Delaying exit.")
+
+            bid_vol = sum(float(b.get('size', 0)) for b in bids)
+            ask_vol = sum(float(a.get('size', 0)) for a in asks)
+
+            if side == 'BUY' and ask_vol < self.max_contracts * 2:
+                log.warning(f"[{slug}] Liquidity vacuum on ASK side! (Ask Vol: {ask_vol}). Delaying exit.")
                 return False
-            if side == 'ask' and bid_vol < self.max_contracts * 2:
-                log.warning(f"[{ticker}] Liquidity vacuum on BID side! Imbalance (Bid Vol: {bid_vol}). Delaying exit.")
+            if side == 'SELL' and bid_vol < self.max_contracts * 2:
+                log.warning(f"[{slug}] Liquidity vacuum on BID side! (Bid Vol: {bid_vol}). Delaying exit.")
                 return False
-                
+
             return True
         except Exception as e:
-            log.warning(f"Orderbook fetch failed: {e}")
+            log.warning(f"Polymarket orderbook fetch failed: {e}")
             return False 
 
     # ── Order Execution ───────────────────────────────────────────────────────
 
     def execute_order(self, payload: dict) -> Optional[dict]:
-        """POST order to Kalshi V2. No-ops in dry-run mode."""
+        """POST order to Polymarket CLOB. No-ops in dry-run mode."""
         if not payload:
             return None
         if self.dry_run:
             log.info('[DRY-RUN] Would fire: %s', json.dumps(payload))
             return {'dry_run': True, 'payload': payload}
         headers = {
-            'Authorization': f'Bearer {self.kalshi_token}',
+            'POLY_API_KEY':  self.poly_api_key,
+            'POLY_API_SECRET': self.poly_api_secret,
+            'POLY_PASSPHRASE': self.poly_passphrase,
             'Content-Type':  'application/json',
         }
         try:
-            r = requests.post(KALSHI_ORDERS, json=payload, headers=headers, timeout=8)
+            r = requests.post(f'{POLYMARKET_CLOB}/order', json=payload, headers=headers, timeout=8)
             log.info(
-                'KALSHI EXEC → side=%s ticker=%s price=%s | HTTP %s',
-                payload['side'], payload['ticker'], payload['price'], r.status_code,
+                'POLYMARKET EXEC → side=%s market=%s price=%s | HTTP %s',
+                payload['side'], payload['market'], payload['price'], r.status_code,
             )
             return r.json()
         except Exception as e:
-            log.error('Kalshi order fire failed: %s', e)
+            log.error('Polymarket order fire failed: %s', e)
             return None
 
     # ── OEQ v2 Formula ────────────────────────────────────────────────────────
@@ -439,7 +442,7 @@ class WecryptoNuclear:
         """
         Categorize a 15-minute OHLCV interval and generate execution payloads.
 
-        Returns a Kalshi V2 order dict on EXECUTE_* signals, None otherwise.
+        Returns a Polymarket CLOB order dict on EXECUTE_* signals, None otherwise.
         """
         state = self.state_memory[asset]
 
@@ -461,15 +464,15 @@ class WecryptoNuclear:
         exit_signal = self._evaluate_exit(asset, current_price, s_base, d_sigma)
         if exit_signal:
             # Flatten position: invert the entry side
-            close_side = 'bid' if state['position_side'] == 'ask' else 'ask'
-            ticker = self.get_active_kalshi_ticker(asset)
+            close_side = 'BUY' if state['position_side'] == 'SELL' else 'SELL'
+            slug = self.get_active_polymarket_slug(asset)
             
             # Orderbook Check for Circuit Breakers
-            if not self._check_kalshi_orderbook(ticker, close_side):
+            if not self._check_polymarket_orderbook(slug, close_side):
                 log.warning('[%s] EXIT DELAYED due to orderbook liquidity vacuum.', asset.upper())
                 return None
                 
-            payload    = self._build_kalshi_payload(asset, close_side, 0.50)
+            payload    = self._build_polymarket_payload(asset, close_side, 0.50)
             self.execute_order(payload)
             state.update({'active_trade': None, 'position_side': None, 'highest_pnl': 0.0})
             payload['_meta'] = {
@@ -499,7 +502,7 @@ class WecryptoNuclear:
                 'highest_pnl':   current_price,
                 'lowest_pnl':    current_price,
             })
-            payload = self._build_kalshi_payload(asset, side, limit_price)
+            payload = self._build_polymarket_payload(asset, side, limit_price)
             self.execute_order(payload)
             payload['_meta'] = {
                 'action':    'EXECUTE_COUNTER_TRADE',
@@ -529,7 +532,7 @@ class WecryptoNuclear:
         Optional: requires WECRYPTO_FIREBASE_DB_URL in env.
         """
         db_url = os.environ.get('WECRYPTO_FIREBASE_DB_URL', '')
-        if not db_url or not self.kalshi_token:
+        if not db_url or not self.poly_api_key:
             return
         try:
             url = f'{db_url.rstrip("/")}/orbital/{asset}.json'
@@ -683,7 +686,7 @@ def run_loop(engine: WecryptoNuclear, once: bool = False):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
-        description='WECRYPTO Nuclear Engine — Orbital + Kalshi V2 Executor',
+        description='WECRYPTO Nuclear Engine — Orbital + Polymarket CLOB Executor',
     )
     parser.add_argument('--dry-run', action='store_true',
                         help='Log payloads without submitting live orders')
