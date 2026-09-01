@@ -111,7 +111,7 @@
   function selectModel(packet, mode) {
     if (isFastPath(packet)) return 'asi1-mini';
     if (normalizeMode(mode) === 'planner') return 'asi1';
-    return 'asi1-ultra';
+    return 'asi1';
   }
 
   function plannerAllowed(packet, mode) {
@@ -128,7 +128,7 @@
       // informational metadata only, kept consistent with that for accuracy.
       account_order: ['mauro', 'icloud', 'gitgoin'],
       model_for_5m: 'asi1-mini',
-      model_for_15m: 'asi1-ultra',
+      model_for_15m: 'asi1',
       planner_on_5m: false,
     };
   }
