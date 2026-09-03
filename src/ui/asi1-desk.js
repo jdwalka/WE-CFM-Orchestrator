@@ -77,6 +77,7 @@
         </select>
       </div>
       <div class="ad-selects">
+        <select id="adModelChoice">
           <option value="auto">Model: Auto (asi1-mini)</option>
           <option value="asi1-mini">asi1-mini (Fast / Scalp)</option>
           <option value="asi1">asi1 (Standard)</option>
@@ -676,6 +677,31 @@
         sendCustomPrompt();
       }
     });
+  });
+
+  try {
+    const savedModel = window.localStorage.getItem(MODEL_KEY);
+    if (savedModel && document.getElementById('adModelChoice')) {
+      document.getElementById('adModelChoice').value = savedModel;
+    }
+    const savedEffort = window.localStorage.getItem(REASONING_KEY);
+    if (savedEffort && document.getElementById('adReasoningEffort')) {
+      document.getElementById('adReasoningEffort').value = savedEffort;
+    }
+    const savedWeb = window.localStorage.getItem(WEBSEARCH_KEY);
+    if (savedWeb != null && document.getElementById('adWebSearch')) {
+      document.getElementById('adWebSearch').checked = savedWeb === '1';
+    }
+  } catch (_) {}
+
+  document.getElementById('adModelChoice')?.addEventListener('change', (e) => {
+    try { window.localStorage.setItem(MODEL_KEY, e.target.value); } catch (_) {}
+  });
+  document.getElementById('adReasoningEffort')?.addEventListener('change', (e) => {
+    try { window.localStorage.setItem(REASONING_KEY, e.target.value); } catch (_) {}
+  });
+  document.getElementById('adWebSearch')?.addEventListener('change', (e) => {
+    try { window.localStorage.setItem(WEBSEARCH_KEY, e.target.checked ? '1' : '0'); } catch (_) {}
   });
 
   setMinimized(minimized);

@@ -137,15 +137,18 @@ async function chat(messages, options = {}) {
 function resolveDeskOptions(packet, options, mode) {
   const fastPath = Desk.isFastPath(packet);
   const explicitModel = options.model && options.model !== 'auto' ? options.model : null;
-  const model = fastPath ? Desk.selectModel(packet, mode) : (explicitModel || Desk.selectModel(packet, mode));
-  const plannerOn = fastPath ? false : (options.plannerMode != null ? !!options.plannerMode : Desk.plannerAllowed(packet, mode));
+  // If user explicitly chooses a distinct model in the HUD, honor it unconditionally;
+  // otherwise fallback to fastPath (asi1-mini) or Desk default selection
+  const model = explicitModel || (fastPath ? 'asi1-mini' : Desk.selectModel(packet, mode));
+  const plannerOn = options.plannerMode != null ? !!options.plannerMode : (fastPath ? false : Desk.plannerAllowed(packet, mode));
   return {
     fastPath,
     model,
     plannerOn,
-    reasoning_effort: fastPath ? 'low' : (options.reasoning_effort || options.effort || 'low'),
-    enable_thinking: fastPath ? false : (options.enable_thinking != null ? options.enable_thinking : (options.thinking === false ? false : undefined)),
-    web_search: fastPath ? false : (options.web_search != null ? !!options.web_search : undefined),
+    reasoning_effort: options.reasoning_effort || options.effort || (fastPath ? 'low' : 'medium'),
+    enable_thinking: options.enable_thinking != null ? options.enable_thinking : (options.thinking === false ? false : undefined),
+    // Respect explicit web_search toggle from caller/HUD
+    web_search: options.web_search != null ? !!options.web_search : undefined,
   };
 }
 
