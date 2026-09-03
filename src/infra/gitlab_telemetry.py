@@ -61,6 +61,6 @@ if __name__ == "__main__":
         with tracer.start_as_current_span("test-span") as span:
             span.set_attribute("test.status", "ok")
             span.set_attribute("telemetry.target", "gitlab-o11y")
-        print("✓ GitLab Observability span emitted successfully.")
+        print("[OK] GitLab Observability span emitted successfully.")
     else:
         print("opentelemetry not installed. Run: pip install opentelemetry-sdk opentelemetry-exporter-otlp")
