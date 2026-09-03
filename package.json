@@ -2,7 +2,7 @@
   "name": "we-cfm-orchestrator",
   "version": "2.15.6",
   "private": true,
-  "description": "WalkerEnterprise CFM Polymarket 5m/15m Deep Dive Optimization — TWAP resolution tracking + real-time momentum + crash protection",
+  "description": "WalkerEnterprise CFM Polymarket 5m/15m Deep Dive Optimization \u2014 TWAP resolution tracking + real-time momentum + crash protection",
   "author": "WalkerEnterprise",
   "main": "electron/main.js",
   "scripts": {
@@ -68,7 +68,9 @@
     "backtest:llm-batch-submit": "node backtest/llm-batch-backtest.js submit --coins BTC,ETH,SOL,XRP --days 14 --horizons 15,60",
     "backtest:llm-batch-score": "node backtest/llm-batch-backtest.js score --latest --wait",
     "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build"
+    "tauri:build": "tauri build",
+    "ai:cli": "python3 scripts/universal_ai_cli.py",
+    "ai:providers": "python3 scripts/universal_ai_cli.py --list-providers"
   },
   "build": {
     "npmRebuild": false,

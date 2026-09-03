@@ -105,10 +105,10 @@ function markTokenmixExhausted(assistant, err) {
 
 function rosterFor(options = {}) {
   const preferred = String(options.model || '').trim();
-  const all = ASI1_ALL_MODELS.slice();
-  if (preferred && !all.includes(preferred)) return [preferred, ...all];
-  if (preferred) return [preferred, ...all.filter((m) => m !== preferred)];
-  return all;
+  // Only try preferred + asi1-mini — not all 4 models sequentially
+  const fallback = preferred === 'asi1-mini' ? 'asi1' : 'asi1-mini';
+  if (preferred) return [preferred, fallback];
+  return ['asi1', 'asi1-mini'];
 }
 
 function reshapeCascade(cascade, assistant, skipCached) {
@@ -143,7 +143,7 @@ function resolveDeskOptions(packet, options, mode) {
     fastPath,
     model,
     plannerOn,
-    reasoning_effort: fastPath ? undefined : (options.reasoning_effort || options.effort || undefined),
+    reasoning_effort: fastPath ? 'low' : (options.reasoning_effort || options.effort || 'low'),
     enable_thinking: fastPath ? false : (options.enable_thinking != null ? options.enable_thinking : (options.thinking === false ? false : undefined)),
     web_search: fastPath ? false : (options.web_search != null ? !!options.web_search : undefined),
   };
@@ -193,7 +193,7 @@ async function fetchPythSpotDirect(coin) {
   const headers = { 'Accept': 'application/json' };
   if (key) headers['Authorization'] = `Bearer ${key}`;
   try {
-    const resp = await fetch(url, { signal: AbortSignal.timeout(5000), headers });
+    const resp = await fetch(url, { signal: AbortSignal.timeout(3000), headers });
     if (!resp.ok) return null;
     const data = await resp.json();
     const item = data?.parsed?.[0]?.price;
@@ -251,7 +251,7 @@ async function fetchPolymarketPtbDirect(sym, horizon = '5m') {
     for (const pageSlug of slugs) {
       try {
         const resp = await fetch(`https://gamma-api.polymarket.com/markets?slug=${encodeURIComponent(pageSlug)}`, {
-          signal: AbortSignal.timeout(4000),
+          signal: AbortSignal.timeout(2000),
         });
         if (!resp.ok) continue;
         const list = await resp.json();
@@ -272,7 +272,7 @@ async function fetchPolymarketPtbDirect(sym, horizon = '5m') {
     for (const pageSlug of slugs) {
       try {
         const resp = await fetch(`https://polymarket.com/event/${encodeURIComponent(pageSlug)}`, {
-          signal: AbortSignal.timeout(4000),
+          signal: AbortSignal.timeout(2000),
           headers: {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151 Safari/537.36',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -295,9 +295,14 @@ async function deskInfer(packet, mode, options = {}) {
   if (mode) setMode(mode);
   const m = getMode();
 
-  // If spot price was missing or zero from renderer, actively hydrate from Pyth
-  if (!packet.spot || packet.spot <= 0) {
-    const livePyth = await fetchPythSpotDirect(packet.sym);
+  // Hydrate spot + PTB in parallel instead of sequential to reduce latency
+  const needSpot = !packet.spot || packet.spot <= 0;
+  const needPtb = packet.horizon !== 'anytime' && (!packet.priceToBeatNum || packet.priceToBeatNum <= 0);
+  if (needSpot || needPtb) {
+    const [livePyth, directPtb] = await Promise.all([
+      needSpot ? fetchPythSpotDirect(packet.sym) : Promise.resolve(null),
+      needPtb ? fetchPolymarketPtbDirect(packet.sym, packet.horizon) : Promise.resolve(null),
+    ]);
     if (livePyth && livePyth.price > 0) {
       packet.spot = livePyth.price;
       packet.spotSource = 'pyth-hermes-direct';
@@ -364,9 +369,9 @@ async function deskInfer(packet, mode, options = {}) {
         enable_thinking,
         web_search,
         temperature: options.temperature ?? 0.12,
-        max_tokens: options.max_tokens ?? (plannerOn ? 2500 : (model === 'asi1-ultra' ? 2200 : 1200)),
+        max_tokens: options.max_tokens ?? (plannerOn ? 2500 : 800),
         response_format: Desk.RESPONSE_FORMAT,
-        timeoutMs: plannerOn ? 90000 : (fastPath ? 25000 : 50000),
+        timeoutMs: plannerOn ? 90000 : (fastPath ? 15000 : 20000),
       },
     );
     const { contract, source } = Desk.parseOrSynthesize(

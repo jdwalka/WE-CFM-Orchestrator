@@ -510,6 +510,7 @@
       extra += `<span style="font-size:8px;margin-left:4px;padding:1px 5px;border-radius:999px;background:rgba(255,152,0,0.2);color:#ffb74d;font-weight:700;">🛡 SPOOF FILTERED</span>`;
     }
     if (v.nullified) {
+      return `<span style="font-size:8px;padding:1px 6px;border-radius:999px;background:rgba(255,82,82,0.2);color:#ff8a80;font-weight:800;">⛔ NULLIFIED → ${String(v.effectiveCall || v.truthCall || '').toUpperCase()}</span>${extra}`;
       const callText = escapeHtml(String(v.effectiveCall || v.truthCall || '').toUpperCase());
       return `<span style="font-size:8px;padding:1px 6px;border-radius:999px;background:rgba(255,82,82,0.2);color:#ff8a80;font-weight:800;">⛔ NULLIFIED → ${callText}</span>${extra}`;
     }
