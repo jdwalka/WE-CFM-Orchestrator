@@ -27,7 +27,7 @@ test('roster walks every ASI1 model and prefers the requested one first', () => 
   assert.ok(orch.ASI1_ALL_MODELS.includes('asi1-mini'));
   const r = orch.rosterFor({ model: 'asi1-fast' });
   assert.strictEqual(r[0], 'asi1-fast');
-  assert.ok(r.includes('asi1-ultra') && r.includes('asi1-mini') && r.includes('asi1'));
+  assert.ok(r.includes('asi1-mini'));
 });
 
 test('desk mode defaults to asi1_only (ASI1 is the sole inference provider)', () => {

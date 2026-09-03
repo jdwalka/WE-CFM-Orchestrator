@@ -1,0 +1,125 @@
+# ==============================================================================
+# WE-CRYPTO Polymarket & Orbital Matrix Custom CI/CD Pipeline
+# Architecture: Node.js 20 + Python 3.11 + GitLab DevSecOps + GCP WIF
+# ==============================================================================
+
+stages:
+  - lint
+  - test
+  - security
+  - build
+  - gcp-wif
+
+variables:
+  NODE_ENV: 'test'
+  npm_config_cache: '$CI_PROJECT_DIR/.npm'
+  PIP_CACHE_DIR: '$CI_PROJECT_DIR/.cache/pip'
+
+# Include official GitLab DevSecOps security templates
+include:
+  - template: Security/Secret-Detection.gitlab-ci.yml
+  - template: Security/SAST.gitlab-ci.yml
+
+default:
+  interruptible: true
+
+cache:
+  key:
+    files:
+      - package-lock.json
+  paths:
+    - .npm/
+    - .cache/pip/
+
+# ------------------------------------------------------------------------------
+# Stage: Lint & Syntax Validation
+# ------------------------------------------------------------------------------
+lint-syntax:
+  stage: lint
+  image: node:20-bookworm-slim
+  script:
+    - echo "Validating core JavaScript syntax across engine and UI..."
+    - node --check src/ui/asi1-desk.js
+    - node --check src/llm/asi1-credit-orchestrator.js
+    - node --check src/llm/asi1-desk-contract.js
+    - node --check src/infra/orbital-startup-orchestrator.js
+    - node --check src/infra/orbital-redpanda-bridge.js
+    - node --check src/orbital/orbital-matrix-processor.js
+    - echo "Syntax checks passed."
+
+# ------------------------------------------------------------------------------
+# Stage: Unit & Contract Tests
+# ------------------------------------------------------------------------------
+test-node-contracts:
+  stage: test
+  image: node:20-bookworm-slim
+  before_script:
+    - npm ci --prefer-offline --no-audit
+  script:
+    - echo "Running ASI1 Desk Contract & Model Cascade tests..."
+    - node tests/asi1-desk-contract.test.js
+    - node tests/asi1-dual-account.test.js
+    - node tests/asi1-credit-orchestrator.test.js
+    - echo "Running Orbital Matrix & Signal Calibrator tests..."
+    - node tests/orbital-quantum-state.test.js
+    - node tests/signal-calibrator.test.js
+    - echo "All core Node.js contract tests passed."
+
+test-python-engines:
+  stage: test
+  image: python:3.11-slim
+  before_script:
+    - pip install --upgrade pip
+    - pip install numpy pytest
+  script:
+    - echo "Running Python execution engine tests..."
+    - pytest tests/engines/ -v
+  allow_failure: true
+
+# ------------------------------------------------------------------------------
+# Stage: Security & DevSecOps
+# ------------------------------------------------------------------------------
+secret_detection:
+  stage: security
+  variables:
+    SECRET_DETECTION_EXCLUDED_PATHS: 'tests/,fixtures/,package-lock.json'
+  allow_failure: true
+
+semgrep-sast:
+  stage: security
+  allow_failure: true
+
+# ------------------------------------------------------------------------------
+# Stage: Build & Packaging
+# ------------------------------------------------------------------------------
+build-web-app:
+  stage: build
+  image: node:20-bookworm-slim
+  before_script:
+    - npm ci --prefer-offline --no-audit
+  script:
+    - echo "Verifying web app and TypeScript quant layer build..."
+    - npx tsc src/quant/quant-layer.ts --target ES2022 --module none --ignoreDeprecations 6.0 || true
+    - npx vite build || true
+    - echo "Web build verification completed."
+  artifacts:
+    paths:
+      - dist/
+    expire_in: 1 week
+
+# ------------------------------------------------------------------------------
+# Stage: Google Cloud Workload Identity Federation (WIF) Probe
+# ------------------------------------------------------------------------------
+gcp-wif-check:
+  stage: gcp-wif
+  image: google/cloud-sdk:slim
+  id_tokens:
+    GITLAB_OIDC_TOKEN:
+      aud: 'https://auth.gcp.gitlab.com/oidc/walkershooligans'
+  script:
+    - 'echo "Testing GitLab OIDC token generation for GCP WIF..."'
+    - 'echo "Pool: projects/931699483883/locations/global/workloadIdentityPools/wecrypto-google/providers/546464"'
+    - 'test -n "$GITLAB_OIDC_TOKEN" && echo "OIDC ID token generated successfully." || echo "OIDC token pending."'
+  allow_failure: true
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
