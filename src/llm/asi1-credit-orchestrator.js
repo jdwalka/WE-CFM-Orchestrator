@@ -217,14 +217,12 @@ const _directPtbLocks = new Map(); // slug -> locked opening strike
 function _horizonSpec(horizon) {
   // Accept every horizon representation used across the repo: bare ('15m', '15'),
   // the h-prefixed form ('h15', 'h60') from inference snapshots / tuner state,
-  // and the word forms ('fifteen', 'hourly'). An unrecognized value that slips
-  // through here builds a 5-minute slug and hydrates the wrong contract's PTB
-  // into a longer-horizon packet.
+  // the word forms ('fifteen', 'hourly'), and forward lookahead forms ('lookahead-1h', 'lookahead-15m').
   const h = String(horizon || '5m').toLowerCase().replace(/\s+/g, '');
-  if (h === '15m' || h === '15' || h === 'h15' || h === 'fifteen') {
+  if (h === '15m' || h === '15' || h === 'h15' || h === 'fifteen' || h === 'lookahead-15m') {
     return { intervalSec: 900, tags: ['15m'] };
   }
-  if (h === '60m' || h === '1h' || h === 'hourly' || h === '60' || h === 'h60' || h === 'sixty') {
+  if (h === '60m' || h === '1h' || h === 'hourly' || h === '60' || h === 'h60' || h === 'sixty' || h === 'lookahead-1h' || h.includes('1h') || h.includes('hourly')) {
     return { intervalSec: 3600, tags: ['1h', '60m'] };
   }
   return { intervalSec: 300, tags: ['5m'] };
@@ -307,8 +305,14 @@ async function deskInfer(packet, mode, options = {}) {
     }
   }
 
+  const isLookahead = packet.horizon === 'anytime' || String(packet.horizon || '').toLowerCase().includes('lookahead');
+  if (isLookahead && (!packet.priceToBeatNum || packet.priceToBeatNum <= 0) && packet.projectedOpenPtb > 0) {
+    packet.priceToBeatNum = packet.projectedOpenPtb;
+    packet.priceToBeatSource = 'lookahead-pre-open-forecast';
+  }
+
   // If PTB is missing or zero, hydrate the immutable contract opening strike (not live TWAP)
-  if (packet.horizon !== 'anytime' && (!packet.priceToBeatNum || packet.priceToBeatNum <= 0)) {
+  if (!isLookahead && (!packet.priceToBeatNum || packet.priceToBeatNum <= 0)) {
     const directPtb = await fetchPolymarketPtbDirect(packet.sym, packet.horizon);
     if (directPtb && directPtb > 0) {
       packet.priceToBeatNum = directPtb;
@@ -317,7 +321,7 @@ async function deskInfer(packet, mode, options = {}) {
   }
 
   // If PTB is still missing, PAUSE AND WAIT: do not fire model inference without immutable Polymarket PTB
-  if (packet.horizon !== 'anytime' && (!packet.priceToBeatNum || packet.priceToBeatNum <= 0)) {
+  if (!isLookahead && (!packet.priceToBeatNum || packet.priceToBeatNum <= 0)) {
     const local = Desk.inferLocal(packet, m);
     local.notes = 'HOLD_FLAT. Awaiting immutable Polymarket Up/Down contract PTB push.';
     local.warnings = [...(local.warnings || []), 'Awaiting immutable Polymarket PTB'];

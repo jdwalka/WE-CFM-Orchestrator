@@ -105,7 +105,8 @@
     const horizon = String(packet?.horizon || '').toLowerCase().replace(/\s+/g, '');
     const ttc = num(packet?.secondsToClose);
     const is5m = horizon === '5m' || horizon === '5' || horizon.startsWith('5m-') || horizon === '5m-ptb';
-    return is5m || (ttc != null && ttc < 90);
+    const isLongerOrLookahead = horizon.includes('lookahead') || horizon === '1h' || horizon === '60m' || horizon === 'hourly' || horizon === 'anytime';
+    return is5m || (ttc != null && ttc < 90 && !isLongerOrLookahead);
   }
 
   function selectModel(packet, mode) {
@@ -151,6 +152,7 @@
     if (!packet || typeof packet !== 'object') {
       return holdContract(m, ['Invalid packet'], 'HOLD_FLAT. Invalid packet structure.');
     }
+    const isLookahead = packet.horizon === 'anytime' || String(packet.horizon || '').toLowerCase().includes('lookahead');
     const spot = num(packet.spot);
     const ptb = num(packet.priceToBeatNum);
     const yes = num(packet.yesProb);
@@ -161,23 +163,27 @@
     const ttc = num(packet.secondsToClose);
     const live = String(packet.liveDirection || packet.pathDir || '').toUpperCase();
 
-    if (spot == null || spot <= 0 || ptb == null || ptb <= 0 || yes == null || mid == null) {
+    const effectivePtb = ptb || (isLookahead && num(packet.projectedOpenPtb)) || null;
+    const effectiveYes = yes ?? (isLookahead && num(packet.pUp) != null ? num(packet.pUp) : null);
+    const effectiveMid = mid ?? effectiveYes;
+
+    if (spot == null || spot <= 0 || effectivePtb == null || effectivePtb <= 0 || effectiveYes == null || effectiveMid == null) {
       const missing = [];
       if (!spot || spot <= 0) missing.push('spot');
-      if (!ptb || ptb <= 0) missing.push('priceToBeatNum (Awaiting immutable Polymarket contract push)');
-      if (yes == null) missing.push('yesProb');
-      if (mid == null) missing.push('mid');
+      if (!effectivePtb || effectivePtb <= 0) missing.push('priceToBeatNum (Awaiting immutable Polymarket contract push)');
+      if (effectiveYes == null) missing.push('yesProb');
+      if (effectiveMid == null) missing.push('mid');
       return holdContract(
         m,
         missing,
-        (!ptb || ptb <= 0)
+        (!effectivePtb || effectivePtb <= 0)
           ? 'HOLD_FLAT. Awaiting immutable Polymarket Up/Down contract PTB push.'
           : 'HOLD_FLAT. Missing required oracle feeds.'
       );
     }
 
-    const delta = spot - ptb;
-    const deltaBps = ptb !== 0 ? (delta / ptb) * 10000 : 0;
+    const delta = spot - effectivePtb;
+    const deltaBps = effectivePtb !== 0 ? (delta / effectivePtb) * 10000 : 0;
     const path = delta > 0 ? 'UP' : delta < 0 ? 'DOWN' : null;
 
     let regime = 'chop_noise';
@@ -251,20 +257,20 @@
 
     let invalidation = 'no path';
     if (call === 'UP') {
-      invalidation = `spot drops below ${ptb} or yesProb falls under ${(yes - 0.03).toFixed(2)}`;
+      invalidation = `spot drops below ${effectivePtb} or yesProb falls under ${(effectiveYes - 0.03).toFixed(2)}`;
     } else if (call === 'DOWN') {
-      invalidation = `spot rises above ${ptb} or yesProb exceeds ${(yes + 0.03).toFixed(2)}`;
+      invalidation = `spot rises above ${effectivePtb} or yesProb exceeds ${(effectiveYes + 0.03).toFixed(2)}`;
     }
 
     const graviTag = gh ? ` [Gravi: ${gh.resonantRegime}, Coherence: ${gh.harmonicCoherence}%, Escape: ${gh.escapeRatio}x]` : '';
 
     let notes;
     if (call === 'UP') {
-      notes = `UP. Spot ${spot} sits ${delta.toFixed(1)} above PTB ${ptb} with ${ttc ?? '?'}s to close. YesProb ${yes.toFixed(2)} and mid ${mid.toFixed(3)} align upward. Depth imbalance ${imb.toFixed(2)} and near-touch notional ${notional} support buying.${graviTag}${ofeTag} Fade only if spot pierces PTB.`;
+      notes = `UP. Spot ${spot} sits ${delta.toFixed(1)} above PTB ${effectivePtb} with ${ttc ?? '?'}s to close. YesProb ${effectiveYes.toFixed(2)} and mid ${effectiveMid.toFixed(3)} align upward. Depth imbalance ${imb.toFixed(2)} and near-touch notional ${notional} support buying.${graviTag}${ofeTag} Fade only if spot pierces PTB.`;
     } else if (call === 'DOWN') {
-      notes = `DOWN. Spot ${spot} sits ${Math.abs(delta).toFixed(1)} below PTB ${ptb} with ${ttc ?? '?'}s to close. YesProb ${yes.toFixed(2)} and mid ${mid.toFixed(3)} suggest downside. Depth imbalance ${imb.toFixed(2)} and near-touch notional ${notional} support selling.${graviTag}${ofeTag} Fade only if spot pierces PTB.`;
+      notes = `DOWN. Spot ${spot} sits ${Math.abs(delta).toFixed(1)} below PTB ${effectivePtb} with ${ttc ?? '?'}s to close. YesProb ${effectiveYes.toFixed(2)} and mid ${effectiveMid.toFixed(3)} suggest downside. Depth imbalance ${imb.toFixed(2)} and near-touch notional ${notional} support selling.${graviTag}${ofeTag} Fade only if spot pierces PTB.`;
     } else {
-      notes = `HOLD_FLAT. Spot ${spot} vs PTB ${ptb} shows insufficient edge. YesProb ${yes.toFixed(2)} and mid ${mid.toFixed(3)} offer no clear direction.${graviTag}${ofeTag} No legal action with positive EV.`;
+      notes = `HOLD_FLAT. Spot ${spot} vs PTB ${effectivePtb} shows insufficient edge. YesProb ${effectiveYes.toFixed(2)} and mid ${effectiveMid.toFixed(3)} offer no clear direction.${graviTag}${ofeTag} No legal action with positive EV.`;
     }
 
     return {

@@ -13,6 +13,7 @@
   const MODEL_KEY = 'wecrypto.asi1Desk.model';
   const REASONING_KEY = 'wecrypto.asi1Desk.reasoningEffort';
   const WEBSEARCH_KEY = 'wecrypto.asi1Desk.webSearch';
+  const HORIZON_KEY = 'wecrypto.asi1Desk.horizon';
 
   const dash = document.createElement('div');
   dash.id = 'asi1-desk';
@@ -65,7 +66,15 @@
       <div class="ad-pills" id="adAccounts"></div>
       <div class="ad-selects">
         <select id="adCoin"></select>
-        <select id="adHorizon"><option value="15m">15m</option><option value="5m">5m</option><option value="anytime">Look Ahead (Anytime)</option><option value="mispricings">Contract Mispricings</option></select>
+        <select id="adHorizon">
+          <option value="15m">15m Contract</option>
+          <option value="5m">5m Scalp</option>
+          <option value="1h">1h Hourly Contract</option>
+          <option value="lookahead-1h">Look Ahead (Hourly 1h)</option>
+          <option value="lookahead-15m">Look Ahead (15m)</option>
+          <option value="anytime">Look Ahead (Anytime)</option>
+          <option value="mispricings">Contract Mispricings</option>
+        </select>
       </div>
       <div class="ad-selects">
         <select id="adModelChoice">
@@ -101,7 +110,7 @@
       <div class="ad-row"><span class="ad-k">Closes in</span><span class="ad-v" id="adTtc">—</span></div>
       <div style="margin:8px 0 4px 0;padding:6px 8px;background:#06080a;border:1px solid #1f2a38;border-radius:6px">
         <div style="display:flex;justify-content:space-between;align-items:center;font-size:10px;font-weight:700;color:#00d4ff;margin-bottom:4px">
-          <span>NEXT HORIZON (T+1) · 3–5m PRE-OPEN</span>
+          <span id="adNextHorizonTitle">NEXT HORIZON (T+1) · PRE-OPEN</span>
           <span id="adNextCountdown">—</span>
         </div>
         <div class="ad-row" style="margin:2px 0"><span class="ad-k">Est. Strike PTB</span><span class="ad-v" id="adNextPtb">—</span></div>
@@ -176,6 +185,19 @@
       opt.textContent = c;
       coinSelect.appendChild(opt);
     }
+    coinSelect.addEventListener('change', () => paintNextHorizon());
+  }
+
+  const horizonSelect = document.getElementById('adHorizon');
+  if (horizonSelect) {
+    try {
+      const savedH = window.localStorage.getItem(HORIZON_KEY);
+      if (savedH) horizonSelect.value = savedH;
+    } catch (_) {}
+    horizonSelect.addEventListener('change', (e) => {
+      try { window.localStorage.setItem(HORIZON_KEY, e.target.value); } catch (_) {}
+      paintNextHorizon();
+    });
   }
 
   let mode = 'asi1_only';
@@ -334,28 +356,54 @@
   function buildPacket() {
     const Desk = window.Asi1DeskContract;
     const coin = document.getElementById('adCoin')?.value || 'BTC';
-    const horizon = document.getElementById('adHorizon')?.value || '5m';
+    const horizon = document.getElementById('adHorizon')?.value || '15m';
+    const isHourly = horizon === '1h' || horizon === '60m' || horizon === 'hourly' || horizon === 'lookahead-1h' || horizon === 'hourly-lookahead';
+    const is5m = horizon === '5m' || horizon === 'lookahead-5m';
+    const isLookahead = horizon.startsWith('lookahead') || horizon === 'anytime';
+    const hMin = (isHourly || horizon === 'anytime') ? 60 : (is5m ? 5 : 15);
+
     let pkt = {};
     try {
       if (window.OracleSnapshot?.buildOraclePacket && Desk?.packetFromOracle) {
-        const o = window.OracleSnapshot.buildOraclePacket(coin, horizon);
+        const o = window.OracleSnapshot.buildOraclePacket(coin, isHourly ? '1h' : (is5m ? '5m' : '15m'));
         pkt = Desk.packetFromOracle(o, { sym: coin, horizon }) || {};
       }
     } catch (_) { pkt = {}; }
 
     const pmCoin = (typeof window !== 'undefined' && window.PredictionMarkets?.getCoin?.(coin)) || {};
-    const poly = horizon === 'anytime' ? {} : ((horizon === '5m' ? pmCoin.poly5m : pmCoin.poly15m) || pmCoin.poly5m || pmCoin.poly15m || {});
+    const poly = horizon === 'anytime' ? {} : (
+      (isHourly ? pmCoin.poly60m : (is5m ? pmCoin.poly5m : pmCoin.poly15m))
+      || (isHourly ? pmCoin.poly60m : pmCoin.poly15m)
+      || pmCoin.poly5m
+      || {}
+    );
     const pred = (typeof window !== 'undefined' && (window.PredictionEngine?.get?.(coin) || window._predictions?.[coin])) || {};
     const cache = (typeof window !== 'undefined' && window.candleCache?.[coin]) || {};
+    const forecast = window.PredictionEngine?.getPreOpenForecast?.(coin, hMin);
 
     const pythPrice = Number(window.PythBrowser?.getPrice?.(coin) || window._pythPrices?.[coin] || 0);
     const rawSpot = Number(pkt.spot || (pythPrice > 0 ? pythPrice : 0) || pred.price || pred.currentPrice || cache.ticker?.usd || cache.candles?.[cache.candles.length - 1]?.c || 0);
-    const rawPtb = Number(pkt.priceToBeatNum || poly.priceToBeatNum || poly.targetPriceNum || 0);
+
+    let rawPtb = Number(pkt.priceToBeatNum || poly.priceToBeatNum || poly.targetPriceNum || 0);
+    if ((!rawPtb || isNaN(rawPtb)) && isLookahead && forecast?.projectedOpenPtb) {
+      rawPtb = forecast.projectedOpenPtb;
+    }
+
     const spot = Number.isFinite(rawSpot) && rawSpot > 0 ? rawSpot : null;
     const ptb = Number.isFinite(rawPtb) && rawPtb > 0 ? rawPtb : null;
-    const yesProb = Number.isFinite(Number(pkt.yesProb)) ? Number(pkt.yesProb) : (Number.isFinite(Number(poly.probability)) ? Number(poly.probability) : 0.50);
+    const yesProb = Number.isFinite(Number(pkt.yesProb))
+      ? Number(pkt.yesProb)
+      : (Number.isFinite(Number(poly.probability))
+        ? Number(poly.probability)
+        : (isLookahead && forecast?.pUp != null ? forecast.pUp : 0.50));
     const mid = Number.isFinite(Number(pkt.mid)) ? Number(pkt.mid) : (Number.isFinite(Number(poly.mid)) ? Number(poly.mid) : yesProb);
-    const ttc = Number.isFinite(Number(pkt.secondsToClose)) ? Number(pkt.secondsToClose) : (Number.isFinite(Number(poly.secondsToClose)) ? Number(poly.secondsToClose) : 180);
+    const ttc = isLookahead && forecast?.msToNextBoundary != null
+      ? Math.max(1, Math.round(forecast.msToNextBoundary / 1000))
+      : (Number.isFinite(Number(pkt.secondsToClose))
+        ? Number(pkt.secondsToClose)
+        : (Number.isFinite(Number(poly.secondsToClose))
+          ? Number(poly.secondsToClose)
+          : (isHourly ? 3600 : 180)));
 
     const delta = (spot != null && ptb != null) ? (spot - ptb) : 0;
     const pathDir = delta > 0 ? 'UP' : delta < 0 ? 'DOWN' : 'FLAT';
@@ -407,28 +455,27 @@
       secondsToClose: ttc,
       deltaVsPtb: delta,
       liveDirection: pkt.liveDirection || pathDir,
+      lookahead: isLookahead,
+      ...(isLookahead && forecast?.projectedOpenPtb ? { projectedOpenPtb: forecast.projectedOpenPtb } : {}),
+      ...(isLookahead && forecast?.msToNextBoundary ? { msToNextBoundary: forecast.msToNextBoundary } : {}),
       ...(binaryIV !== null ? { binaryIV_5m: binaryIV } : {}),
       ...(binaryIV_15m !== null ? { binaryIV_15m: binaryIV_15m } : {}),
     };
   }
 
-  // Route/latency comes from asi1-client.js's free background TCP probe
-  // (no LLM call, no quota cost) — safe to poll on a timer, unlike ask()
-  // which fires a real ASI1 inference request.
-  function paintConnectivity(diag) {
-    const latEl = document.getElementById('adLat');
-    if (!latEl) return;
-    const routeMode = diag?.routeMode || 'unknown';
-    const routeLabel = { native: 'native', fallback: 'tunneled', unreachable: 'unreachable', unknown: 'unknown' }[routeMode] || 'unknown';
-    latEl.textContent = diag?.lastLatencyMs != null && routeMode !== 'unreachable'
-      ? `${Math.round(diag.lastLatencyMs)}ms (${routeLabel})`
-      : `— (${routeLabel})`;
-  }
-
   function paintNextHorizon() {
     const coin = document.getElementById('adCoin')?.value || 'BTC';
-    const horizon = document.getElementById('adHorizon')?.value || '5m';
-    const hMin = horizon === 'anytime' ? 60 : (horizon === '15m' ? 15 : 5);
+    const horizon = document.getElementById('adHorizon')?.value || '15m';
+    const isHourly = horizon === '1h' || horizon === '60m' || horizon === 'hourly' || horizon === 'lookahead-1h' || horizon === 'hourly-lookahead';
+    const is5m = horizon === '5m' || horizon === 'lookahead-5m';
+    const hMin = (isHourly || horizon === 'anytime') ? 60 : (is5m ? 5 : 15);
+
+    const titleEl = document.getElementById('adNextHorizonTitle');
+    if (titleEl) {
+      const label = isHourly ? '1H HOURLY' : (is5m ? '5M' : '15M');
+      titleEl.textContent = `NEXT HORIZON (T+1) · ${label} PRE-OPEN`;
+    }
+
     const forecast = window.PredictionEngine?.getPreOpenForecast?.(coin, hMin);
     if (!forecast) return;
 
@@ -513,7 +560,7 @@
         web_search: webSearch ? true : undefined,
       };
 
-      const inferMode = packet.horizon === 'anytime' ? 'planner' : mode;
+      const inferMode = (packet.horizon === 'anytime' || String(packet.horizon || '').toLowerCase().includes('lookahead')) ? 'planner' : mode;
       const res = await invoke('infer', { packet, mode: inferMode, options });
       paintContract(res?.contract, res);
       window.dispatchEvent(new CustomEvent('asi1:desk', { detail: res }));
@@ -568,7 +615,7 @@
           prompt: query,
           context: {
             coin: packet.sym,
-            horizon: packet.horizon === 'anytime' ? 'anytime' : (packet.horizon === '5m' ? 5 : 15),
+            horizon: packet.horizon === 'anytime' ? 'anytime' : (packet.horizon === '5m' || packet.horizon === 'lookahead-5m' ? 5 : ((packet.horizon === '1h' || packet.horizon === '60m' || packet.horizon === 'lookahead-1h') ? 60 : 15)),
             spot: packet.spot,
             ptb: packet.priceToBeatNum,
             model: modelChoice !== 'auto' ? modelChoice : 'asi1-mini',

@@ -61,5 +61,22 @@ test('planner mode enables reasoning off 5m only; asi1_only never does', () => {
   }
 });
 
+test('lookahead-1h contract allows projectedOpenPtb strike and is not fast-path', () => {
+  const pkt = {
+    sym: 'BTC',
+    horizon: 'lookahead-1h',
+    spot: 65000,
+    projectedOpenPtb: 64900,
+    depthImbalance: 0.15,
+    pUp: 0.65,
+    secondsToClose: 2400,
+  };
+  assert.strictEqual(Desk.isFastPath(pkt), false);
+  const c = Desk.inferLocal(pkt, 'asi1_only');
+  assert.strictEqual(c.call, 'UP');
+  assert.strictEqual(c.action, 'BUY_UP');
+  assert.ok(c.confidence >= 0.60);
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);
