@@ -625,10 +625,16 @@ let _lastPmReadyRefresh = 0;
 
 const _bootGuard = setTimeout(() => {
     if (Object.keys(tickers).length === 0) {
-      console.warn('[boot] fetchAll timed out after 10s — forcing render with empty tickers');
+      console.warn('[boot] Initial feeds still establishing after 10s — triggering fallback fetch');
       _fetchAttempted = true;
-      setFeedStatus('error');
+      if (typeof setFeedStatus === 'function') {
+        setFeedStatus('loading');
+      }
       render();
+      if (typeof fetchAll === 'function') {
+        fetchAll(true).catch(() => {});
+      }
     }
   }, 10000);
+window._bootGuard = _bootGuard;
 

@@ -1227,6 +1227,10 @@ window._fetchAllNow = () => fetchAll(true).then(() => {
 
 render();
 
+if (typeof startPythLazerStream === 'function') {
+  try { startPythLazerStream(); } catch (_) {}
+}
+
 fetchAll().then(() => {
     clearTimeout(_bootGuard);
     startAsyncRefreshEngine();
@@ -1253,5 +1257,12 @@ fetchAll().then(() => {
     startAsyncRefreshEngine();
     if (!_asyncRefreshEngineBooted) resetTimer();
     render();
+    setTimeout(() => {
+      const hasTickers = Object.keys(window._appTickers || (typeof tickers !== 'undefined' ? tickers : {})).length > 0;
+      if (!hasTickers && typeof fetchAll === 'function') {
+        console.info('[boot] Retrying initial fetchAll in 1.5s...');
+        fetchAll(true).catch(() => {});
+      }
+    }, 1500);
   });
 

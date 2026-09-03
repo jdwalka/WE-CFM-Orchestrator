@@ -706,45 +706,89 @@ async function fetchPythTickers() {
       console.warn('[PythTickers] Lazer proxy failed:', e.message);
     }
 
-    // ★ FALLBACK 2: Pyth Hermes (standard, wider coin coverage)
-    const feedIds = Object.values(PYTH_FEEDS);
-    const params = feedIds.map(id => `ids[]=${id}`).join('&');
-    const res = await fetchWithTimeout(`${PYTH_HERMES}/v2/updates/price/latest?${params}`, 20000);
-    if (!res.ok) throw new Error(`Pyth HTTP ${res.status}`);
-    const json = await res.json();
-    const result = [];
-    for (const feed of json.parsed || []) {
-      const instrument = PYTH_ID_TO_INSTRUMENT[feed.id];
-      if (!instrument) continue;
-      const p = feed.price;
-      const last = parseFloat(p.price) * Math.pow(10, p.expo);
-      if (!last || last <= 0 || isNaN(last)) continue;
-      result.push({
-        instrument_name: instrument,
-        last,
-        high: last,  // Pyth spot only — 24h stats overlaid async by fetchBinanceTickers
-        low: last,
-        change: 0,
-        best_bid: null,
-        best_ask: null,
-        best_bid_size: '',
-        best_ask_size: '',
-        volume: 0,
-        volume_value: 0,
-        timestamp: Date.now(),
-        source: 'pyth',
-      });
+    // ★ FALLBACK 2: Pyth browser client memory cache (from pyth-browser-client.js)
+    if (window._pythPrices && typeof window._pythPrices === 'object' && Object.keys(window._pythPrices).length >= 4) {
+      const result = [];
+      for (const [sym, price] of Object.entries(window._pythPrices)) {
+        const instr = `${sym}_USD`;
+        const last = Number(price);
+        if (last > 0) {
+          result.push({
+            instrument_name: instr,
+            last,
+            high: last,
+            low: last,
+            change: 0,
+            best_bid: null,
+            best_ask: null,
+            best_bid_size: '',
+            best_ask_size: '',
+            volume: 0,
+            volume_value: 0,
+            timestamp: Date.now(),
+            source: 'pyth',
+          });
+        }
+      }
+      if (result.length >= 4) {
+        if (window.NetworkHealth) {
+          window.NetworkHealth.update('Pyth', {
+            status: 'healthy',
+            lastFetch: Date.now(),
+            fallback: false,
+            reason: 'Browser client live',
+          });
+        }
+        return result;
+      }
     }
-    if (!result.length) throw new Error('Pyth returned no usable feeds');
-    if (window.NetworkHealth) {
-      window.NetworkHealth.update('Pyth', {
-        status: 'healthy',
-        lastFetch: Date.now(),
-        fallback: false,
-        reason: 'Hermes live',
-      });
+
+    // ★ FALLBACK 3: Pyth Hermes (standard, wider coin coverage)
+    try {
+      const feedIds = Object.values(PYTH_FEEDS);
+      const params = feedIds.map(id => `ids[]=${id}`).join('&');
+      const res = await fetchWithTimeout(`${PYTH_HERMES}/v2/updates/price/latest?${params}`, 8000);
+      if (res.ok) {
+        const json = await res.json();
+        const result = [];
+        for (const feed of json.parsed || []) {
+          const instrument = PYTH_ID_TO_INSTRUMENT[feed.id];
+          if (!instrument) continue;
+          const p = feed.price;
+          const last = parseFloat(p.price) * Math.pow(10, p.expo);
+          if (!last || last <= 0 || isNaN(last)) continue;
+          result.push({
+            instrument_name: instrument,
+            last,
+            high: last,
+            low: last,
+            change: 0,
+            best_bid: null,
+            best_ask: null,
+            best_bid_size: '',
+            best_ask_size: '',
+            volume: 0,
+            volume_value: 0,
+            timestamp: Date.now(),
+            source: 'pyth',
+          });
+        }
+        if (result.length >= 4) {
+          if (window.NetworkHealth) {
+            window.NetworkHealth.update('Pyth', {
+              status: 'healthy',
+              lastFetch: Date.now(),
+              fallback: false,
+              reason: 'Hermes live',
+            });
+          }
+          return result;
+        }
+      }
+    } catch (e) {
+      console.warn('[PythTickers] Hermes fetch failed:', e.message);
     }
-    return result;
+    throw new Error('All Pyth ticker sources failed');
   }
 
 async function fetchPythLazerProxyTickers() {
@@ -1258,19 +1302,46 @@ function startPythLazerStream() {
       }
       let updated = false;
       for (const [instr, data] of Object.entries(prices)) {
-        if (!tickers[instr]) continue;    // only overlay known instruments
+        if (!data || data.last == null || isNaN(Number(data.last))) continue;
+        const px = Number(data.last);
+        if (!tickers[instr]) {
+          tickers[instr] = {
+            instrument_name: instr,
+            last: px,
+            high: px,
+            low: px,
+            change: 0,
+            best_bid: data.best_bid != null ? Number(data.best_bid) : null,
+            best_ask: data.best_ask != null ? Number(data.best_ask) : null,
+            best_bid_size: '',
+            best_ask_size: '',
+            volume: 0,
+            volume_value: 0,
+            timestamp: data.timestamp || Date.now(),
+            source: 'pyth-lazer',
+          };
+          updated = true;
+          continue;
+        }
         tickers[instr] = {
           ...tickers[instr],
-          last: data.last,
-          best_bid: data.best_bid ?? tickers[instr].best_bid,
-          best_ask: data.best_ask ?? tickers[instr].best_ask,
-          timestamp: data.timestamp,
+          last: px,
+          best_bid: data.best_bid != null ? Number(data.best_bid) : tickers[instr].best_bid,
+          best_ask: data.best_ask != null ? Number(data.best_ask) : tickers[instr].best_ask,
+          timestamp: data.timestamp || Date.now(),
           source: 'pyth-lazer',
         };
         updated = true;
       }
       if (!updated) return;
       window._appTickers = tickers;
+      window._lastTickerFetchTs = Date.now();
+      if (typeof setFeedStatus === 'function') {
+        setFeedStatus('live', 'pyth-lazer');
+      }
+      if (typeof _bootGuard !== 'undefined') {
+        try { clearTimeout(_bootGuard); } catch (_) {}
+      }
       if (currentView === 'markets5m') window.updateMarkets5MLivePrices?.(prices);
       if (!startPythLazerStream._debounce) {
         startPythLazerStream._debounce = setTimeout(() => {
@@ -1434,10 +1505,10 @@ async function fetchAll(manual = false, settlement = false) {
           rawTickers = _cdcQuick;
           dataSource = 'cdc';
         } else {
-          // ── Stage 2: Race fallback sources in small batches to avoid network bursts.
-          console.warn('[WE] CDC slow — racing fallback feeds in bounded batches');
+          // ── Stage 2: Race fallback sources in concurrent batches to ensure sub-second response
+          console.warn('[WE] CDC slow — racing fallback feeds concurrently');
           try {
-            const winner = await raceTickerSources(liveTickerSources(), 2);
+            const winner = await raceTickerSources(liveTickerSources(), 4);
             rawTickers = winner.data;
             dataSource = winner.source;
             _cdcFull.then(cdcData => {
@@ -1499,12 +1570,14 @@ async function fetchAll(manual = false, settlement = false) {
 
     } catch (err) {
       console.error('Fetch error:', err);
-      // Keep live status if we already have ticker data — only go red if completely blind
-      if (Object.keys(tickers).length > 0) {
+      // Check if we have tickers or if pyth prices exist
+      const hasData = Object.keys(tickers).length > 0 || (window._pythPrices && Object.keys(window._pythPrices).length > 0);
+      if (hasData) {
         setFeedStatus('degraded');
         refreshActiveView(manual);
       } else {
-        setFeedStatus('error');
+        // On initial bootstrap, display loading/reconnecting instead of flashing a permanent red error
+        setFeedStatus(_fetchAttempted ? 'degraded' : 'loading');
         render(); // still render so nav works even with empty data
       }
     } finally {
@@ -1684,3 +1757,8 @@ window.liveTickerSources = liveTickerSources;
 window.raceTickerSources = raceTickerSources;
 window.fetchAll = fetchAll;
 window.fetchScreenerMeta = fetchScreenerMeta;
+
+// Auto-start Pyth Lazer stream on load if pythLazer is available
+if (typeof window !== 'undefined' && window.pythLazer?.onTickers) {
+  try { startPythLazerStream(); } catch (_) {}
+}
