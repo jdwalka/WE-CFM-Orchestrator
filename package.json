@@ -2,8 +2,8 @@
   "name": "we-cfm-orchestrator",
   "version": "2.15.6",
   "private": true,
-  "description": "WalkerEnterprise CFM Polymarket 5m/15m Deep Dive Optimization \u2014 TWAP resolution tracking + real-time momentum + crash protection",
-  "author": "WalkerEnterprise",
+  "license": "UNLICENSED",
+  "author": "Mauro Fanelli Jr. / WalkerEnterprise",
   "main": "electron/main.js",
   "scripts": {
     "scan:google-fragments": "node scripts/scan-google-fragments.js",
