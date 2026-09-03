@@ -1092,12 +1092,10 @@ console.log('[ContractCacheDebug] API ready — ContractCacheDebug.status() .acc
 if (window.CandleWS) {
     CandleWS.start();
     window.addEventListener('candleWS:connected', () => {
-      const el = document.getElementById('feedStatusText');
-      if (el) el.textContent = 'Live · WS connected';
+      window.setFeedStatus('live', 'WS');
     });
     window.addEventListener('candleWS:disconnected', () => {
-      const el = document.getElementById('feedStatusText');
-      if (el) el.textContent = 'WS reconnecting…';
+      window.setFeedStatus('degraded');
     });
   }
 
@@ -1252,6 +1250,8 @@ fetchAll().then(() => {
     console.warn('[boot] initial fetchAll failed:', err.message);
     clearTimeout(_bootGuard);
     _fetchAttempted = true;
+    startAsyncRefreshEngine();
+    if (!_asyncRefreshEngineBooted) resetTimer();
     render();
   });
 
