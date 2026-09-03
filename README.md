@@ -10,12 +10,7 @@
 
 ---
 
-## ⚡ Key Highlights & Core Capabilities
 
-- **🎯 True Polymarket PTB & Chainlink TWAP Settlement Model**:
-  - Direct integration with Polymarket 5m & 15m crypto Up/Down binary contract mechanics.
-  - Probability computation anchored to the Open Price-To-Beat (PTB) strike and Chainlink TWAP close settlement via Gaussian CDF drift:
-    $$\mathcal{P}(\text{Up}) = \Phi\left(\frac{S_{\text{live}} + \mu_{\text{drift}} - \text{PTB}}{\sigma}\right)$$
   - **88.1% Overall True Polymarket Win Rate** and **98.9% High-Confidence Edge Win Rate** across 20-day walk-forward evaluations on `BTC`, `ETH`, `SOL`, and `XRP`.
 
 - **🤖 ASI1 Dual-Tier Inference Relay & Interactive HUD Chat**:
