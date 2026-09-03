@@ -147,21 +147,23 @@
     if (typeof window !== 'undefined') {
       const env = window.__wecrypto_env || {};
       return (
-        env.ASI1_API_KEY_ICLOUD ||
-        env.ASI1_API_KEY_GITGOIN ||
         env.ASI1_API_KEY_MAURO ||
+        env.ASI_ONE_API_KEY ||
         env.ASI1_API_KEY_FALLBACK ||
         env.ASI1_API_KEY ||
+        env.ASI1_API_KEY_ICLOUD ||
+        env.ASI1_API_KEY_GITGOIN ||
         null
       );
     }
     if (typeof process !== 'undefined' && process.env) {
       return (
-        process.env.ASI1_API_KEY_ICLOUD ||
-        process.env.ASI1_API_KEY_GITGOIN ||
         process.env.ASI1_API_KEY_MAURO ||
+        process.env.ASI_ONE_API_KEY ||
         process.env.ASI1_API_KEY_FALLBACK ||
         process.env.ASI1_API_KEY ||
+        process.env.ASI1_API_KEY_ICLOUD ||
+        process.env.ASI1_API_KEY_GITGOIN ||
         null
       );
     }

@@ -202,6 +202,16 @@ function readAsi1KeysFromSecrets() {
   return foundKeys;
 }
 
+const _deadAsi1Keys = new Set([
+  'sk_71e8da9b7cb3411c9714acc836ed14232843a372617449ae97de0b5e77c86487', // icloud 402 blocked
+  'sk_6a43cbe47d1d479aa142c1e24be3835ae7553767384c4c6eb1b3b26eb9204650', // mauro old 401
+  'sk_b8b23a6c870b4ac29368ef6734c087da4970cc75244d470eb11a9bb6119a02ed', // fallback 402
+  'sk_46efc14221a74d2eb73c09939e6a7ef647614d6ea6144e5488eb742fc2dfad50', // api 401
+  'sk_64245ce6657948a3aa62a03cfbbecf359c223c31940a45e79ff83b4b57ba22b9', // mauro 402
+  'sk_821df6bdf2cb401b87ba42a4ebdf7d01eb8ebda3d4434220b335dfec3ffaebe5', // mauro 402
+  'sk_4dab599663b94db09603f3f4f73aa3f92e8a14aefbf84524a2b21db691b56e2a', // gitgoin 401
+]);
+
 function resolveAsi1ApiKeys() {
   const keys = [];
   const seen = new Set();
@@ -226,6 +236,11 @@ function resolveAsi1ApiKeys() {
   const fallbackKeyVal = 'sk_3b69c96c28364341b1aadff583e38739329767058b0f44f8a17e7b61eaf2e0f9';
   const preferredAccount = process.env.ASI1_ONLY_ACCOUNT || process.env.ASI1_PREFERRED_ACCOUNT || process.env.ASI1_PRIMARY_ACCOUNT || 'mauro';
   keys.sort((a, b) => {
+    const aDead = _deadAsi1Keys.has(a.value);
+    const bDead = _deadAsi1Keys.has(b.value);
+    if (aDead && !bDead) return 1;
+    if (!aDead && bDead) return -1;
+
     if (a.value === primaryKeyVal) return -1;
     if (b.value === primaryKeyVal) return 1;
     if (a.value === fallbackKeyVal) return -1;
@@ -433,6 +448,7 @@ async function chatCompletion(messagesOrOptions, maybeOptions = {}) {
     const rateLimitedAccounts = new Set();
     for (const key of keys) {
       const { env, value, account, email } = key;
+      if (_deadAsi1Keys.has(value)) continue;
       if (account && rateLimitedAccounts.has(`${account}::${targetModel}`)) continue;
       try {
         const headers = {
@@ -473,17 +489,22 @@ async function chatCompletion(messagesOrOptions, maybeOptions = {}) {
           err.account = account;
           err.email = email;
           lastErr = err;
+          // Account-level blocks or invalid auth keys: permanently blacklist this key in-memory
+          if (response.status === 401 || response.status === 402 || body.includes('account_blocked') || body.includes('failed to authenticate')) {
+            _deadAsi1Keys.add(value);
+            if (account) rateLimitedAccounts.add(`${account}::${targetModel}`);
+          }
           // Same-account keys share the ultra 429 — skip the rest of this account
           // for this model instead of burning four mauro keys on the same limit.
           if (response.status === 429 && account) {
             rateLimitedAccounts.add(`${account}::${targetModel}`);
           }
           // Retry next key/model on 5xx, 429, auth
-          if (isRetryableAsi1Error(err)) {
+          if (isRetryableAsi1Error(err) && !_deadAsi1Keys.has(value)) {
             continue;
           }
           // Non-retryable for this key; still try next model
-          break;
+          continue;
         }
 
         if (payload.stream && response.body) {

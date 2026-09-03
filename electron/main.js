@@ -2640,7 +2640,7 @@ async function handleAsi1NarrativeRequest(args = {}, defaultModel = 'asi1-ultra'
       {
         model,
         candidateModels: [model], // HUD is a lone wolf: no model cascade, fail fast
-        onlyAccount: process.env.ASI1_PREFERRED_ACCOUNT || 'icloud',
+        onlyAccount: process.env.ASI1_PREFERRED_ACCOUNT || 'mauro',
         max_tokens: model.includes('ultra') ? 350 : 120,
         temperature: 0.1,
         timeoutMs: model.includes('ultra') ? 25000 : 12000,
@@ -2667,7 +2667,7 @@ ipcMain.handle('asi1:deep-narrative', async (_event, args = {}) => {
 });
 
 ipcMain.handle('asi1:mini-narrative', async (_event, args = {}) => {
-  return handleAsi1NarrativeRequest(args, 'asi1-ultra');
+  return handleAsi1NarrativeRequest(args, 'asi1-mini');
 });
 
 // Structured pre-contract brief (used by Asi1PreContract advisor + debugging)

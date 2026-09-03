@@ -69,18 +69,18 @@
       </div>
       <div class="ad-selects">
         <select id="adModelChoice">
-          <option value="auto">Model: Auto</option>
-          <option value="asi1-ultra">asi1-ultra (Deep Reasoning)</option>
-          <option value="asi1">asi1 (Standard)</option>
+          <option value="auto">Model: Auto (asi1-mini)</option>
           <option value="asi1-mini">asi1-mini (Fast / Scalp)</option>
+          <option value="asi1">asi1 (Standard)</option>
+          <option value="asi1-ultra">asi1-ultra (Deep Reasoning)</option>
           <option value="asi1-fast">asi1-fast (Quick)</option>
         </select>
         <select id="adReasoningEffort">
-          <option value="auto">Effort: Auto</option>
-          <option value="high">Reasoning: High</option>
-          <option value="medium">Reasoning: Medium</option>
-          <option value="low">Reasoning: Low</option>
+          <option value="auto">Effort: Auto (Fast)</option>
           <option value="off">Thinking: Off</option>
+          <option value="low">Reasoning: Low</option>
+          <option value="medium">Reasoning: Medium</option>
+          <option value="high">Reasoning: High</option>
         </select>
       </div>
       <div style="display:flex;align-items:center;justify-content:space-between;margin:4px 0 8px 0">
@@ -292,13 +292,12 @@
 
   // Route/latency comes from asi1-client.js's free background probe of the
   // LOCAL proxy port (no LLM call, no quota cost, and off port 443 — that's
-  // only used by real ASI1 chat requests) — safe to poll on a timer, unlike
-  // ask() which fires a real ASI1 inference request.
   function paintConnectivity(diag) {
     const latEl = document.getElementById('adLat');
     if (!latEl) return;
+    if (latEl.dataset.isInferLatency === '1') return;
     const routeMode = diag?.routeMode || 'unknown';
-    const routeLabel = { native: 'proxy up', unreachable: 'proxy unreachable', unknown: 'unknown' }[routeMode] || 'unknown';
+    const routeLabel = { native: 'direct fast', unreachable: 'unreachable', fallback: 'proxy', unknown: 'unknown' }[routeMode] || routeMode;
     latEl.textContent = diag?.lastLatencyMs != null && routeMode !== 'unreachable'
       ? `${Math.round(diag.lastLatencyMs)}ms (${routeLabel})`
       : `— (${routeLabel})`;
@@ -318,7 +317,12 @@
     document.getElementById('adSize').textContent = contract.size_hint || '—';
     document.getElementById('adModel').textContent = contract._meta?.model || '—';
     document.getElementById('adAcct').textContent = contract._meta?.account || contract._meta?.email || '—';
-    document.getElementById('adLat').textContent = contract._meta?.latency != null ? contract._meta.latency + 'ms' : '—';
+    const latEl = document.getElementById('adLat');
+    if (latEl) {
+      latEl.textContent = contract._meta?.latency != null ? contract._meta.latency + 'ms' : '—';
+      latEl.dataset.isInferLatency = '1';
+      setTimeout(() => { if (latEl) delete latEl.dataset.isInferLatency; }, 45000);
+    }
     document.getElementById('adNotes').textContent = contract.notes || '';
     const warns = (contract.warnings || []).join(' · ');
     document.getElementById('adWarn').textContent = warns;
@@ -807,8 +811,8 @@
         symbols: [sym],
         horizon: '15m',
         model: 'asi1-mini',
-        webSearch: true,
-        useAgentverse: true,
+        webSearch: false,
+        useAgentverse: false,
         verbose: false,
       });
       // Poll scan age every 30 s to keep the age counter live

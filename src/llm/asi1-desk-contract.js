@@ -111,7 +111,8 @@
   function selectModel(packet, mode) {
     if (isFastPath(packet)) return 'asi1-mini';
     if (normalizeMode(mode) === 'planner') return 'asi1';
-    return 'asi1-ultra';
+    const envModel = (typeof process !== 'undefined' && (process.env.ASI1_DESK_MODEL || process.env.ASI1_MODEL)) || null;
+    return envModel || 'asi1-mini';
   }
 
   function plannerAllowed(packet, mode) {
@@ -119,16 +120,12 @@
   }
 
   function baseContract(mode) {
+    const defaultDeskModel = (typeof process !== 'undefined' && (process.env.ASI1_DESK_MODEL || process.env.ASI1_MODEL)) || 'asi1-mini';
     return {
       mode: normalizeMode(mode),
-      // icloud (mauro_fanelli@icloud.com, Pro tier as of 2026-08-22) is the
-      // only account with real asi1-ultra token allowance -- gitgoin/mauro
-      // both sit at a hard 0-token "eon" cap. Real key rotation lives in
-      // asi1-client.js's ASI1_ACCOUNTS (icloud listed first); this order is
-      // informational metadata only, kept consistent with that for accuracy.
       account_order: ['mauro', 'icloud', 'gitgoin'],
       model_for_5m: 'asi1-mini',
-      model_for_15m: 'asi1-ultra',
+      model_for_15m: defaultDeskModel,
       planner_on_5m: false,
     };
   }
