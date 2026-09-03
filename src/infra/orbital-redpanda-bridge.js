@@ -9,7 +9,7 @@ const { createQuantumStateTracker } = require('../orbital/quantum-state');
 
 const KAFKA_BROKERS = process.env.KAFKA_BROKERS
     ? process.env.KAFKA_BROKERS.split(',')
-    : ['localhost:9092'];
+    : ['127.0.0.1:9092', 'localhost:9092'];
 
 let producer = null;
 let kafka = null;
@@ -80,13 +80,17 @@ async function initRedpanda() {
     kafka = new Kafka({
         clientId: 'wecrypto-ingestor',
         brokers: KAFKA_BROKERS,
+        connectionTimeout: 8000,
+        requestTimeout: 30000,
         retry: {
-            initialRetryTime: 100,
+            initialRetryTime: 300,
             retries: 8
         }
     });
 
-    producer = kafka.producer();
+    producer = kafka.producer({
+        allowAutoTopicCreation: true,
+    });
 
     try {
         await producer.connect();
@@ -96,6 +100,8 @@ async function initRedpanda() {
         console.error('[OrbitalBridge] Failed to connect to Redpanda:', err.message);
         recordBridgeEvent('error', 'Kafka producer failed to connect', { error: err.message });
         producer = null;
+        kafka = null;
+        throw err;
     }
 }
 

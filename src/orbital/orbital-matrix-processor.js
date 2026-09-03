@@ -29,7 +29,7 @@ function appendOrbitalLog(element) {
     }
 }
 
-const KAFKA_BROKERS      = process.env.KAFKA_BROKERS ? process.env.KAFKA_BROKERS.split(',') : ['localhost:9092'];
+const KAFKA_BROKERS      = process.env.KAFKA_BROKERS ? process.env.KAFKA_BROKERS.split(',') : ['127.0.0.1:9092', 'localhost:9092'];
 const INTERVAL_MS        = 15 * 60 * 1000; // 15 minutes
 const BARRIER_TOLERANCE_MS  = 15 * 1000;   // 15 seconds — orbital is "decayed" if no tick in this window
 const MAX_PRICE_DELTA_PCT   = 0.005;        // 0.5% divergence threshold between CoinGecko and Coinbase
@@ -102,6 +102,8 @@ function extractQuantumStates(orbitals) {
 const kafka = new Kafka({
     clientId: 'orbital-matrix-processor',
     brokers: KAFKA_BROKERS,
+    connectionTimeout: 8000,
+    requestTimeout: 30000,
     retry: { initialRetryTime: 200, retries: 10 }
 });
 

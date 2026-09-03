@@ -418,7 +418,17 @@ async function initTopics(workspacePath) {
 async function initBridge() {
     try {
         if (redpandaBridge && typeof redpandaBridge.initRedpanda === 'function') {
-            await redpandaBridge.initRedpanda();
+            // Settle delay after topic verification
+            await new Promise(r => setTimeout(r, 600));
+            for (let attempt = 1; attempt <= 5; attempt++) {
+                try {
+                    await redpandaBridge.initRedpanda();
+                    if (getBridgeStatsSafe().connected) break;
+                } catch (err) {
+                    console.warn(`[OrbitalOrchestrator] Bridge connect attempt ${attempt}/5 failed: ${err.message}`);
+                }
+                if (attempt < 5) await new Promise(r => setTimeout(r, 1200));
+            }
         }
         if (!getBridgeStatsSafe().connected) {
             throw new Error('Kafka producer bridge did not connect to Redpanda');

@@ -19,7 +19,7 @@ const { Kafka } = require('kafkajs');
 
 const KAFKA_BROKERS = process.env.KAFKA_BROKERS
     ? process.env.KAFKA_BROKERS.split(',')
-    : ['localhost:9092'];
+    : ['127.0.0.1:9092', 'localhost:9092'];
 
 // Topic configuration
 // retention.ms: how long to keep messages before purging
@@ -93,6 +93,8 @@ async function _createTopics(topicList, label) {
     const kafka = new Kafka({
         clientId: 'wecrypto-admin',
         brokers: KAFKA_BROKERS,
+        connectionTimeout: 8000,
+        requestTimeout: 30000,
         retry: { initialRetryTime: 300, retries: 5 }
     });
 
