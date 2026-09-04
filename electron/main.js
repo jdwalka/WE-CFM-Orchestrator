@@ -4358,6 +4358,7 @@ function createWindow() {
     if (visibleOnce || win.isDestroyed()) return;
     visibleOnce = true;
     win.show();
+    win.focus();
     console.log(`[Window] shown (${reason})`);
     if (process.env.WECRYPTO_OPEN_DEVTOOLS === '1') {
       win.webContents.openDevTools({ mode: 'detach' });
@@ -4376,9 +4377,10 @@ function createWindow() {
         const affinityMask = 255;
         console.log(`[Startup] Launching PowerShell to lock Renderer (Floating Orchestrator) Affinity (PID ${rendererPid}) to mask ${affinityMask}...`);
         const { exec } = require('child_process');
-        exec(`powershell -Command "$Process = Get-Process -Id ${rendererPid}; $Process.ProcessorAffinity = ${affinityMask}"`, (err) => {
+        exec(`powershell -Command "$Process = Get-Process -Id ${rendererPid}; $Process.ProcessorAffinity = ${affinityMask}"`, { windowsHide: true }, (err) => {
           if (err) console.warn(`[Startup] Failed to set Renderer Affinity: ${err.message}`);
           else console.log(`[Startup] Renderer Affinity successfully locked for PID ${rendererPid}.`);
+          if (!win.isDestroyed()) win.focus();
         });
       }
     } catch (err) {
