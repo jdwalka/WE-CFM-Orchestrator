@@ -1332,6 +1332,30 @@ function startPythLazerStream() {
           source: 'pyth-lazer',
         };
         updated = true;
+
+        // Wire real-time spot to window._pythPrices for all downstream AI / prediction models
+        let coinSym = String(instr)
+          .replace(/^Crypto\./i, '')
+          .replace(/(\/USD|USD)$/i, '')
+          .toUpperCase();
+        if (coinSym === 'DOGE13') coinSym = 'DOGE';
+        if (['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'BNB', 'HYPE'].includes(coinSym)) {
+          const meta = {
+            publishTime: data.timestamp || Date.now(),
+            source: data.source || 'pyth-lazer',
+            best_bid: data.best_bid != null ? Number(data.best_bid) : null,
+            best_ask: data.best_ask != null ? Number(data.best_ask) : null,
+            confidence: data.confidence != null ? Number(data.confidence) : null,
+          };
+          if (typeof window !== 'undefined' && window.RenderScheduler?.onPythTick) {
+            window.RenderScheduler.onPythTick(coinSym, px, meta);
+          } else if (typeof window !== 'undefined') {
+            window._pythPrices = window._pythPrices || {};
+            window._pythPythMetadata = window._pythPythMetadata || {};
+            window._pythPrices[coinSym] = px;
+            window._pythPythMetadata[coinSym] = meta;
+          }
+        }
       }
       if (!updated) return;
       window._appTickers = tickers;
@@ -1347,8 +1371,8 @@ function startPythLazerStream() {
         startPythLazerStream._debounce = setTimeout(() => {
           startPythLazerStream._debounce = null;
           if (['cfm', 'predictions', 'universe', 'markets5m'].includes(currentView)) refreshActiveView();
-          scheduleWebStatePublish('pyth-lazer-tick', 150);
-        }, 500);
+          scheduleWebStatePublish('pyth-lazer-tick', 250);
+        }, 250);
       }
     });
     if (!startPythLazerStream._statusWired) {

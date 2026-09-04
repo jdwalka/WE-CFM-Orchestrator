@@ -950,10 +950,16 @@ initOBHud();
 
         console.log('[App] PythSettlementValidator tracking volatility every 60s');
       }
-      if (typeof HolderMetrics !== 'undefined') {
-        window.HolderMetrics.start();
-        console.log('[App] HolderMetrics initialized and auto-refreshing');
-      }
+      setTimeout(() => {
+        if (typeof HolderMetrics !== 'undefined') {
+          window.HolderMetrics.start();
+          console.log('[App] HolderMetrics initialized and auto-refreshing');
+        }
+        if (typeof window !== 'undefined' && window.WalletIntelConfig && typeof window.WalletIntelConfig.startMonitoring === 'function') {
+          window.WalletIntelConfig.init().startMonitoring();
+          console.log('[App] WalletIntelConfig initialized and monitoring started');
+        }
+      }, 0);
       // Initialize Panel Data Monitor
       if (typeof PanelDataMonitor !== 'undefined') {
         // Register prediction data channel

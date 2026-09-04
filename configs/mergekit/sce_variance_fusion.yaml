@@ -1,0 +1,39 @@
+# ================================================================
+# WE|||CRYPTO — MergeKit Recipe: SCE Variance-Weighted Fusion
+# Model Merging Engine: SCE (Select, Calculate, Erase)
+# Application: 5m & 15m Crypto Prediction Contracts (Kalshi / Polymarket)
+#
+# SCE identifies features exhibiting consensus stability across models,
+# scales weights inversely with cross-model parameter variance, and
+# dampens destructive sign cancellations during volatile regimes.
+# ================================================================
+
+merge_method: sce
+base_model: models/crypto-base-foresight-8b
+dtype: bfloat16
+
+models:
+  - model: models/crypto-tape-flow-8b
+    parameters:
+      weight: 0.40
+      variance_penalty: 0.15
+  - model: models/crypto-volatility-regime-8b
+    parameters:
+      weight: 0.35
+      variance_penalty: 0.20
+  - model: models/crypto-orderbook-clob-8b
+    parameters:
+      weight: 0.45
+      variance_penalty: 0.10
+
+parameters:
+  variance_scale: 25.0
+  consensus_threshold: 0.60
+  erase_conflicts: true
+  min_weight: 0.005
+  normalize: true
+
+metadata:
+  target_horizons: ["5m", "15m"]
+  underlyings: ["BTC", "ETH", "SOL", "XRP"]
+  regime_filter: "volatile_breakout_and_chop"

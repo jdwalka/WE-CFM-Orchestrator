@@ -16,7 +16,8 @@ console.log('══════════════════════�
 
 // ── Check 1: Verify fixed_rate channel/backoff-tolerance config in main.js
 console.log('✓ CHECK 1: Verify fixed_rate channel and timeout backoff configuration');
-const mainJsPath = path.join(__dirname, 'electron', 'main.js');
+const rootDir = path.join(__dirname, '..');
+const mainJsPath = path.join(rootDir, 'electron', 'main.js');
 const mainJsContent = fs.readFileSync(mainJsPath, 'utf8');
 
 const hasFixedRate = mainJsContent.includes('fixed_rate@');
@@ -41,8 +42,8 @@ console.log(`  └─ Fallback notification event: ${hasFallbackNotify ? '✅' :
 
 // ── Check 3: Verify app.js fallback chain
 console.log('✓ CHECK 3: Verify fallback chain in app.js');
-const appJsPath = path.join(__dirname, 'src', 'core', 'app.js');
-const appJsContent = fs.readFileSync(appJsPath, 'utf8');
+const appJsPath = path.join(rootDir, 'src', 'core', 'app.js');
+const appJsContent = fs.existsSync(appJsPath) ? fs.readFileSync(appJsPath, 'utf8') : '';
 
 const hasStrictTimeout = appJsContent.includes('1000');
 const hasFallback1 = appJsContent.includes('crypto.com');
@@ -58,25 +59,25 @@ console.log(`  └─ Fallback 4 (Coinbase): ${hasFallback4 ? '✅' : '❌'}\n`)
 
 // ── Check 4: Verify preload.js event exposure
 console.log('✓ CHECK 4: Verify preload IPC event exposure');
-const preloadPath = path.join(__dirname, 'electron', 'preload.js');
+const preloadPath = path.join(rootDir, 'electron', 'preload.js');
 const preloadContent = fs.readFileSync(preloadPath, 'utf8');
 
 const hasOnStatus = preloadContent.includes("'pyth:status'");
 const hasOnTimeout = preloadContent.includes("'pyth:timeout-fallback'");  // ★ Updated to full name
 const hasOnConnectionLost = preloadContent.includes("'pyth:connection-lost'");
 
-console.log(`  ├─ onStatus event: ${hasOnStatus ? '✅' : '❌'}`);
-console.log(`  ├─ onTimeout event: ${hasOnTimeout ? '✅' : '❌'}`);
-console.log(`  └─ onConnectionLost event: ${hasOnConnectionLost ? '✅' : '❌'}\n`);
+console.log(`  ├─ pyth:status event: ${hasOnStatus ? '✅' : '❌'}`);
+console.log(`  ├─ pyth:timeout event: ${hasOnTimeout ? '✅' : '❌'}`);
+console.log(`  └─ pyth:connection-lost event: ${hasOnConnectionLost ? '✅' : '❌'}\n`);
 
-// ── Check 5: Verify timeout monitor script
-console.log('✓ CHECK 5: Verify PythTimeoutMonitor module');
-const monitorPath = path.join(__dirname, 'src', 'core', 'pyth-timeout-monitor.js');
+// ── Check 5: Verify pyth-timeout-monitor.js exists and is complete
+console.log('✓ CHECK 5: Verify pyth-timeout-monitor.js module');
+const monitorPath = path.join(rootDir, 'src', 'core', 'pyth-timeout-monitor.js');
 const monitorExists = fs.existsSync(monitorPath);
 const monitorContent = monitorExists ? fs.readFileSync(monitorPath, 'utf8') : '';
 
-const hasMonitorStart = monitorContent.includes('monitor.start');
-const hasEventTracking = monitorContent.includes('this.events');
+const hasMonitorStart = monitorContent.includes('start()');
+const hasEventTracking = monitorContent.includes('events.push');
 const hasReport = monitorContent.includes('getReport');
 
 console.log(`  ├─ Monitor file exists: ${monitorExists ? '✅' : '❌'}`);
@@ -86,7 +87,7 @@ console.log(`  └─ Report generation: ${hasReport ? '✅' : '❌'}\n`);
 
 // ── Check 6: Verify index.html includes monitor
 console.log('✓ CHECK 6: Verify index.html includes monitor script');
-const indexPath = path.join(__dirname, 'public', 'index.html');
+const indexPath = path.join(rootDir, 'public', 'index.html');
 const indexContent = fs.readFileSync(indexPath, 'utf8');
 
 const hasMonitorScript = indexContent.includes('pyth-timeout-monitor.js');

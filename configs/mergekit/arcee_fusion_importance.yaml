@@ -1,0 +1,35 @@
+# ================================================================
+# WE|||CRYPTO — MergeKit Recipe: Arcee Fusion Importance Routing
+# Model Merging Engine: Arcee Fusion (KL-Divergence / Relative Entropy)
+# Application: 5m & 15m Crypto Prediction Contracts (Kalshi / Polymarket)
+#
+# Arcee Fusion computes relative entropy shifts across macro sentiment
+# and strike defense models, utilizing dynamic IQR thresholding (Q3 + 1.2*IQR)
+# to selectively inject only statistically salient divergence signals.
+# ================================================================
+
+merge_method: arcee_fusion
+base_model: models/crypto-base-foresight-8b
+dtype: bfloat16
+
+models:
+  - model: models/crypto-macro-sentiment-8b
+    parameters:
+      weight: 0.50
+      importance_metric: "relative_entropy"
+  - model: models/crypto-pin-risk-defense-8b
+    parameters:
+      weight: 0.50
+      importance_metric: "relative_entropy"
+
+parameters:
+  iqr_multiplier: 1.2
+  quantile_low: 0.25
+  quantile_high: 0.75
+  min_kl_threshold: 0.005
+  normalize: true
+
+metadata:
+  target_horizons: ["5m", "15m"]
+  underlyings: ["BTC", "ETH", "SOL", "XRP"]
+  sniper_mode: "strike_pin_defense"

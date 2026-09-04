@@ -439,7 +439,10 @@ function initOBHud() {
         </div>
         <div class="hud-body-wrap" id="hud-body-wrap" style="${minimized ? 'display:none;' : ''}">
           <div class="hud-filters" id="hud-filters-wrap">${filterPills}</div>
-          <div class="hud-rows" id="hud-rows-wrap"><div class="hud-empty">Monitoring for wall events…</div></div>
+          <div class="hud-rows" id="hud-rows-wrap" style="position:relative;padding:0;">
+            <canvas id="ob-hud-canvas" width="320" height="160" style="display:block;width:100%;height:160px;background:#07090e;border-radius:4px;"></canvas>
+            <div id="ob-hud-empty" class="hud-empty" style="display:none;position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);">Monitoring for wall events…</div>
+          </div>
         </div>`;
 
       hud.querySelector('#hud-min-btn')?.addEventListener('click', () => {
@@ -448,6 +451,7 @@ function initOBHud() {
         const minBtn = hud.querySelector('#hud-min-btn');
         if (bodyWrap) bodyWrap.style.display = minimized ? 'none' : '';
         if (minBtn) minBtn.textContent = minimized ? '▲' : '▼';
+        if (!minimized) scheduleRenderHud();
       });
 
       hud.querySelector('#hud-sound-btn')?.addEventListener('click', () => {
@@ -474,32 +478,89 @@ function initOBHud() {
       if (!shellBuilt) buildShell();
       if (minimized) return;
 
+      const canvas = hud.querySelector('#ob-hud-canvas');
+      const emptyEl = hud.querySelector('#ob-hud-empty');
       const all = window.OB?.wallAlerts || [];
       const alerts = hudFilter === 'ALL' ? all : all.filter(a => a.sym === hudFilter);
-      const shown = alerts.slice(0, 15);
-
-      const fmtP = (p) => p >= 1000 ? p.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : p >= 1 ? p.toFixed(3) : p.toFixed(5);
-
-      const rows = shown.map(a => {
-        const ago = Math.round((Date.now() - a.ts) / 1000);
-        const agoStr = ago < 60 ? `${ago}s` : `${Math.round(ago / 60)}m`;
-        return `<div class="hud-row ${a.bias.toLowerCase()} ${Date.now() - a.ts < 2000 ? 'hud-new' : ''}">
-          <span class="hud-dot ${a.bias.toLowerCase()}"></span>
-          <span class="hud-sym">${a.sym}</span>
-          <span class="hud-msg">${a.side} ${a.type}</span>
-          <span class="hud-price">$${fmtP(a.price)}</span>
-          <span class="hud-age">${agoStr}</span>
-        </div>`;
-      }).join('');
+      const shown = alerts.slice(0, 8);
 
       const connCount = window.OB?.getConnected?.()?.length || 0;
       const connEl = hud.querySelector('#hud-conn-count');
       if (connEl) connEl.textContent = `${connCount}/7`;
 
-      const rowsWrap = hud.querySelector('#hud-rows-wrap');
-      if (rowsWrap) {
-        rowsWrap.innerHTML = rows || '<div class="hud-empty">Monitoring for wall events…</div>';
+      if (!canvas || !canvas.getContext) return;
+
+      if (shown.length === 0) {
+        if (emptyEl) emptyEl.style.display = 'block';
+        const ctx = canvas.getContext('2d');
+        if (ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
+        return;
       }
+      if (emptyEl) emptyEl.style.display = 'none';
+
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+
+      const dpr = typeof window !== 'undefined' ? (window.devicePixelRatio || 1) : 1;
+      const rect = canvas.getBoundingClientRect();
+      const w = Math.max(120, Math.floor(rect.width || 320));
+      const h = Math.max(80, Math.floor(rect.height || 160));
+      if (canvas.width !== Math.floor(w * dpr) || canvas.height !== Math.floor(h * dpr)) {
+        canvas.width = Math.floor(w * dpr);
+        canvas.height = Math.floor(h * dpr);
+      }
+      ctx.save();
+      ctx.scale(dpr, dpr);
+
+      // Canvas background
+      ctx.fillStyle = '#07090e';
+      ctx.fillRect(0, 0, w, h);
+
+      const fmtP = (p) => p >= 1000
+        ? p.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+        : (p >= 1 ? p.toFixed(3) : p.toFixed(5));
+
+      const rowH = 19;
+      ctx.textBaseline = 'middle';
+      const now = Date.now();
+
+      for (let i = 0; i < shown.length; i++) {
+        const a = shown[i];
+        const y = 11 + i * rowH;
+        if (y + rowH / 2 > h) break;
+
+        const isBull = (a.bias || '').toLowerCase().includes('bull') || a.side === 'BUY' || a.bias === 'BULL';
+        const color = isBull ? '#00e676' : '#ff5252';
+
+        // Bias indicator dot
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.arc(9, y, 3, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Symbol
+        ctx.fillStyle = '#e6e8eb';
+        ctx.font = 'bold 10px monospace';
+        ctx.fillText(a.sym, 18, y);
+
+        // Side + Type
+        ctx.font = '10px -apple-system, sans-serif';
+        ctx.fillStyle = '#8b929a';
+        ctx.fillText(`${a.side || ''} ${a.type || ''}`.slice(0, 14), 54, y);
+
+        // Price
+        ctx.font = '10px monospace';
+        ctx.fillStyle = color;
+        ctx.fillText(`$${fmtP(a.price)}`, w - 74, y);
+
+        // Age
+        const ago = Math.round((now - a.ts) / 1000);
+        const agoStr = ago < 60 ? `${ago}s` : `${Math.round(ago / 60)}m`;
+        ctx.font = '9px monospace';
+        ctx.fillStyle = '#555d68';
+        ctx.fillText(agoStr, w - 24, y);
+      }
+      ctx.restore();
     }
 
     function scheduleRenderHud() {
@@ -557,8 +618,9 @@ function initOBHud() {
       });
     }, 1000);
 
-    // Re-render immediately on alert
+    // Re-render immediately on alert and pyth-batch
     window.OB?.onAlert(() => scheduleRenderHud());
+    window.addEventListener('pyth-batch', () => scheduleRenderHud());
   }
 
 function drawOrbital() {

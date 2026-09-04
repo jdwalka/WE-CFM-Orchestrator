@@ -847,7 +847,7 @@ const PYTH_FALLBACK_TIMEOUT_MS = Number(process.env.PYTH_FALLBACK_TIMEOUT_MS || 
 const PYTH_FALLBACK_GRACE_MS = Number(process.env.PYTH_FALLBACK_GRACE_MS || 2000);
 const PYTH_TIMEOUT_CONSECUTIVE_LIMIT = Number(process.env.PYTH_TIMEOUT_CONSECUTIVE_LIMIT || 3);
 const PYTH_FALLBACK_EVENT_COOLDOWN_MS = Number(process.env.PYTH_FALLBACK_EVENT_COOLDOWN_MS || 30000);
-const PYTH_LAZER_CHANNEL = process.env.PYTH_LAZER_CHANNEL || 'fixed_rate@1000ms';
+const PYTH_LAZER_CHANNEL = process.env.PYTH_LAZER_CHANNEL || 'fixed_rate@100ms';
 const PYTH_LIVE_FEED_BACKOFF_MS = Math.max(0, Number(process.env.PYTH_LIVE_FEED_BACKOFF_MS || 5));
 
 // Timestamp of the last *real* WS tick (set only where latestPythLazerTickers is written
@@ -872,6 +872,24 @@ function isPythWsHealthy() {
 // stamped after this REST call's own network round-trip, so it is always >= the timestamp
 // of whatever WS tick most recently landed -- comparing the two can never usefully detect
 // staleness and must not be used to allow a write through).
+let _pendingPythPush = null;
+let _pythPushScheduled = false;
+function pushPythTickersCoalesced(targetWin, payload) {
+  _pendingPythPush = payload;
+  if (!_pythPushScheduled) {
+    _pythPushScheduled = true;
+    setTimeout(() => {
+      _pythPushScheduled = false;
+      const w = targetWin || mainWin;
+      if (_pendingPythPush && w && !w.isDestroyed()) {
+        w.webContents.send('pyth:tickers', _pendingPythPush);
+        w.webContents.send('pyth-lazer', _pendingPythPush);
+        _pendingPythPush = null;
+      }
+    }, 16); // ~60fps cap to prevent IPC storming under 100ms / 10Hz feed
+  }
+}
+
 function writePythRestTickers(pmap, nowP, targetWin) {
   if (!pmap || !Object.keys(pmap).length) return false;
   if (isPythWsHealthy()) return false;
@@ -881,7 +899,7 @@ function writePythRestTickers(pmap, nowP, targetWin) {
   pythLazerStatus.connected = true;
   const w = targetWin || mainWin;
   if (w && !w.isDestroyed()) {
-    w.webContents.send('pyth:tickers', pmap);
+    pushPythTickersCoalesced(w, pmap);
     w.webContents.send('pyth:status', pythLazerStatus);
   }
   return true;
@@ -1152,7 +1170,7 @@ async function startPythLazerService(win) {
   const MAX_RETRIES = 3;
   const RETRY_DELAY_MS = 2000;
   const channelCandidates = Array.from(new Set(
-    ['fixed_rate@1000ms', 'real_time', 'fixed_rate@200ms']
+    ['fixed_rate@100ms', 'fixed_rate@200ms', 'fixed_rate@1000ms', 'real_time']
       .map((s) => String(s || '').trim())
       .filter(Boolean)
   ));
@@ -1185,7 +1203,7 @@ async function startPythLazerService(win) {
         priceFeedIds: LAZER_FEED_IDS,
         properties: ["price", "bestBidPrice", "publisherCount", "fundingRate", "confidence", "bestAskPrice", "marketSession", "fundingRateInterval", "exponent", "fundingTimestamp"],
         formats: ["solana", "leEcdsa", "leUnsigned", "evm"],
-        channel: "fixed_rate@50ms",
+        channel: activeChannel,
         deliveryFormat: "json",
         jsonBinaryEncoding: "hex",
         parsed: true,
@@ -1443,10 +1461,9 @@ async function startPythLazerService(win) {
         }
 
         const now = Date.now();
-        // Subscription is real_time/50ms -- 800ms throttled this down to ~1.25 push/sec.
-        // Floor at 50ms (matches the subscribed cadence) so IPC only ever coalesces
-        // back-to-back messages faster than the feed itself, not the feed's real rate.
-        if (now - lastPush < 50) return;
+        // Subscription is fixed_rate@100ms -- floor throttle at 40ms so IPC never
+        // coalesces or drops 100ms ticks even under minor network arrival jitter (e.g. 80-95ms).
+        if (now - lastPush < 40) return;
         lastPush = now;
 
         // ★ RESET TIMEOUT on successful data arrival
@@ -1497,7 +1514,7 @@ async function startPythLazerService(win) {
           pythLazerStatus.dataCount++;
           pythLazerStatus.timeoutCount = 0;  // Reset timeout counter on success
           pythConsecutiveTimeouts = 0;
-          win.webContents.send('pyth:tickers', prices);
+          pushPythTickersCoalesced(win, prices);
           // Also send health status update every 5 data points
           if (pythLazerStatus.dataCount % 5 === 0) {
             win.webContents.send('pyth:status', pythLazerStatus);
@@ -1515,7 +1532,7 @@ async function startPythLazerService(win) {
         if (!win.isDestroyed()) {
           win.webContents.send('pyth:connection-lost', {
             reason: 'all_connections_down',
-            channel: "fixed_rate@50ms",
+            channel: activeChannel,
           });
         }
         if (!reconnectInFlight) {

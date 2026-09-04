@@ -70,7 +70,12 @@
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
     "ai:cli": "python3 scripts/universal_ai_cli.py",
-    "ai:providers": "python3 scripts/universal_ai_cli.py --list-providers"
+    "ai:providers": "python3 scripts/universal_ai_cli.py --list-providers",
+    "test:mergekit": "node --test tests/weight-mergekit.test.js",
+    "test:resonance": "node tests/resonance-filter.test.js",
+    "test:hud-perf": "node --test tests/hud-perf.test.js",
+    "mergekit:tuner": "node scripts/mergekit_evolve_tuner.js",
+    "mergekit:recipes": "node configs/mergekit/recipe_generator.js --list-templates"
   },
   "build": {
     "npmRebuild": false,

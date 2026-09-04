@@ -113,5 +113,66 @@ test('createHzTracker.reset() clears sample count and last-tick state', () => {
   assert.strictEqual(out, null, 'first tick after reset has no prior interval');
 });
 
+test('createHzTracker converges to exactly 10Hz at 100ms ticks', () => {
+  const h = createHzTracker(0.5);
+  let t = 0;
+  let out = null;
+  for (let i = 0; i < 50; i++) {
+    out = h.tick(t);
+    t += 100; // 100ms ticks == 10 Hz
+  }
+  assert.ok(out > 9.5 && out < 10.5, `expected ~10Hz, got ${out}`);
+  assert.ok(h.hz > 9.5 && h.hz < 10.5, `expected h.hz ~10, got ${h.hz}`);
+});
+
+test('createLowPassFilter(2) at 100ms cadence damps noise without overshoot or resonance', () => {
+  const f = createLowPassFilter(2);
+  let t = 0;
+  f.update(100, t);
+  // Introduce 100ms alternating noise (+-2 dollars)
+  const outputs = [];
+  for (let i = 0; i < 20; i++) {
+    t += 100;
+    const noisyPrice = 100 + (i % 2 === 0 ? 2 : -2);
+    const out = f.update(noisyPrice, t);
+    outputs.push(out);
+  }
+  // Filtered price should stay well within the noise bounds [98, 102] and never overshoot
+  for (const out of outputs) {
+    assert.ok(out >= 98 && out <= 102, `expected filtered price in [98, 102], got ${out}`);
+  }
+  // Standard deviation of output should be lower than input noise
+  const mean = outputs.reduce((a, b) => a + b, 0) / outputs.length;
+  assert.ok(Math.abs(mean - 100) < 0.5, `mean should be ~100, got ${mean}`);
+});
+
+test('createLowPassFilter reseeds cleanly after a long network disconnection gap (>3s)', () => {
+  const f = createLowPassFilter(2);
+  f.update(100, 0);
+  f.update(101, 100);
+  // Disconnection gap of 5 seconds (5000ms), market moves to 120
+  const out = f.update(120, 5100);
+  assert.strictEqual(out, 120, 'must reseed directly to new price after gap > 3s, avoiding multi-second lag');
+});
+
+test('createHzTracker handles a reconnection pause without dragging smoothed Hz down', () => {
+  const h = createHzTracker(0.5);
+  let t = 0;
+  for (let i = 0; i < 30; i++) {
+    h.tick(t);
+    t += 100;
+  }
+  assert.ok(h.hz > 9 && h.hz < 11, `expected ~10Hz before disconnect, got ${h.hz}`);
+  // Simulate 10-second gap
+  t += 10000;
+  h.tick(t);
+  // Next 100ms ticks resume
+  for (let i = 0; i < 5; i++) {
+    t += 100;
+    h.tick(t);
+  }
+  assert.ok(h.hz > 8 && h.hz < 12, `expected rapid recovery near 10Hz without prolonged drag, got ${h.hz}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);

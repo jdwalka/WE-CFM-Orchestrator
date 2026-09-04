@@ -20,8 +20,16 @@
  *   Do not enable on 5m ticks — a planner run can take minutes.
  */
 
+const CF_AIG_ACCOUNT_ID = process.env.CF_AIG_ACCOUNT_ID || process.env.CLOUDFLARE_ACCOUNT_ID || 'f226035af09775dbffd7e6350adc8a12';
+const CF_AIG_GATEWAY = process.env.CF_AIG_GATEWAY || process.env.CF_AIG_GATEWAY_ID || 'default';
+const CF_AIG_TOKEN = process.env.CF_AIG_TOKEN || process.env.CLOUDFLARE_API_TOKEN || '';
+const ASI1_USE_CF_AIG = process.env.ASI1_USE_CF_AIG === '1' || process.env.ASI1_AI_GATEWAY === '1';
+
 const ASI1_BASE_URL = (
-  process.env.ASI1_BASE_URL || 'https://api.asi1.ai/v1'
+  process.env.ASI1_BASE_URL
+  || (ASI1_USE_CF_AIG
+      ? `https://gateway.ai.cloudflare.com/v1/${CF_AIG_ACCOUNT_ID}/${CF_AIG_GATEWAY}/custom-asi1`
+      : 'https://api.asi1.ai/v1')
 ).replace(/\/$/, '');
 
 const ASI1_CHAT_URL = `${ASI1_BASE_URL}/chat/completions`;
@@ -482,11 +490,15 @@ async function chatCompletion(messagesOrOptions, maybeOptions = {}) {
         const sessionId = options.sessionId || accountSession
           || (plannerOn ? `wecrypto-${account || 'shared'}-${Date.now().toString(36)}` : '');
         if (sessionId) headers['x-session-id'] = String(sessionId);
+        const reqHeaders = { ...headers, Authorization: `Bearer ${value}` };
+        if (ASI1_CHAT_URL.includes('gateway.ai.cloudflare.com') && CF_AIG_TOKEN) {
+          reqHeaders['cf-aig-authorization'] = `Bearer ${CF_AIG_TOKEN}`;
+        }
         const response = await fetchWithTimeout(
           ASI1_CHAT_URL,
           {
             method: 'POST',
-            headers: { ...headers, Authorization: `Bearer ${value}` },
+            headers: reqHeaders,
             body: JSON.stringify(payload),
           },
           options.timeoutMs || ASI1_REQUEST_TIMEOUT_MS,
@@ -666,12 +678,22 @@ function getDiagnostics() {
     routeMode: classifyAsi1RouteMode(),
     lastLatencyMs: routeState.lastLatencyMs,
     lastMeasuredAt: routeState.lastMeasuredAt,
+    aiGateway: {
+      enabled: ASI1_BASE_URL.includes('gateway.ai.cloudflare.com'),
+      accountId: CF_AIG_ACCOUNT_ID,
+      gateway: CF_AIG_GATEWAY,
+      customProvider: 'custom-asi1',
+      dynamicRoute: 'dynamic/asi1_route',
+    },
   };
 }
 
 module.exports = {
   ASI1_BASE_URL,
   ASI1_CHAT_URL,
+  CF_AIG_ACCOUNT_ID,
+  CF_AIG_GATEWAY,
+  CF_AIG_TOKEN,
   ASI1_DEFAULT_MODEL,
   ASI1_QUICK_TICK_MODEL,
   ASI1_DEEP_INSIGHT_MODEL,

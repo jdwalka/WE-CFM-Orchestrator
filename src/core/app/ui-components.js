@@ -836,6 +836,11 @@ function normalizePredictionCardData(raw, fallbackSym = '') {
     const sym = String(incoming.sym || incoming.symbol || incoming.coin || fallbackSym || '').toUpperCase();
     if (!sym) return { ...incoming, sym: '' };
 
+    const prev = (typeof window !== 'undefined' && window._predictions?.[sym]) || null;
+    if (prev && prev.price === incoming.price && prev.score === incoming.score && prev.backtest === incoming.backtest && prev.holderMetrics === incoming.holderMetrics && prev.signal === incoming.signal) {
+      return prev; // bail - avoid unnecessary object allocation and DOM layout work
+    }
+
     const meta = getPredictionCoinMeta(sym) || {};
     const color = incoming.color
       || meta.color
@@ -873,6 +878,8 @@ function normalizePredictionCardData(raw, fallbackSym = '') {
       projections: incoming.projections || {},
       volatility: incoming.volatility || { label: 'Unknown', atrPct: 0 },
       scalpSetups: Array.isArray(incoming.scalpSetups) ? incoming.scalpSetups : [],
+      backtest: incoming.backtest || window._predictions?.[sym]?.backtest || null,
+      holderMetrics: incoming.holderMetrics || window._predictions?.[sym]?.holderMetrics || window.HolderMetrics?.getMetrics?.(sym) || null,
     };
   }
 
