@@ -99,6 +99,8 @@
         <span style="font-size:10px;color:#00d4ff">api.asi1.ai</span>
       </div>
       <button class="ad-ask" id="adAsk" type="button">Ask ASI1</button>
+      <!-- Dynamic Pin-Risk Warning Banner -->
+      <div id="adPinRiskBanner" style="display:none;margin:8px 0 4px 0;padding:6px 8px;background:rgba(255,82,82,0.12);border:1px solid #ff5252;border-radius:6px;font-size:10px;line-height:1.4;color:#ff8080"></div>
       <div class="ad-row" style="margin-top:10px"><span class="ad-k">Action</span><span class="ad-badge hold-flat" id="adAction">HOLD_FLAT</span></div>
       <div class="ad-row"><span class="ad-k">Call</span><span class="ad-v" id="adCall">—</span></div>
       <div class="ad-row"><span class="ad-k">Conf</span><span class="ad-v" id="adConf">—</span></div>
@@ -108,7 +110,7 @@
       <div class="ad-row"><span class="ad-k">Spot</span><span class="ad-v" id="adSpot">—</span></div>
       <div class="ad-row"><span class="ad-k">PTB</span><span class="ad-v" id="adPtb">—</span></div>
       <div class="ad-row"><span class="ad-k">Closes in</span><span class="ad-v" id="adTtc">—</span></div>
-      <div style="margin:8px 0 4px 0;padding:6px 8px;background:#06080a;border:1px solid #1f2a38;border-radius:6px">
+      <div id="adNextHorizonBox" style="margin:8px 0 4px 0;padding:6px 8px;background:#06080a;border:1px solid #1f2a38;border-radius:6px;transition:border-color .3s, box-shadow .3s">
         <div style="display:flex;justify-content:space-between;align-items:center;font-size:10px;font-weight:700;color:#00d4ff;margin-bottom:4px">
           <span id="adNextHorizonTitle">NEXT HORIZON (T+1) · PRE-OPEN</span>
           <span id="adNextCountdown">—</span>
@@ -116,6 +118,43 @@
         <div class="ad-row" style="margin:2px 0"><span class="ad-k">Est. Strike PTB</span><span class="ad-v" id="adNextPtb">—</span></div>
         <div class="ad-row" style="margin:2px 0"><span class="ad-k">Pre-Open Call</span><span class="ad-v" id="adNextCall">—</span></div>
         <div class="ad-row" style="margin:2px 0"><span class="ad-k">Sniper Stance</span><span class="ad-v" id="adNextSniper">—</span></div>
+      </div>
+      <!-- ═══ AGENTVERSE AUTONOMOUS SCOUT & HUNT PANEL ═══ -->
+      <div id="adAgentversePanel" style="margin:8px 0 4px 0;padding:6px 8px;background:#050a10;border:1px solid #005577;border-radius:6px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:5px">
+          <div style="display:flex;align-items:center;gap:4px">
+            <span style="font-size:10px;font-weight:700;color:#00e5ff;letter-spacing:.05em">AGENTVERSE HUNT</span>
+            <span id="adAvStatusBadge" style="font-size:9px;padding:1px 5px;border-radius:3px;background:#003344;color:#00e5ff;font-weight:600">CUED (60s)</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:4px">
+            <button id="adAvAuditBtn" type="button" title="Audit Agentverse agents" style="background:transparent;border:1px solid #005577;color:#8ab4f8;font-size:9px;padding:1px 5px;border-radius:3px;cursor:pointer">🔍 AUDIT</button>
+            <button id="adAvHuntBtn" type="button" title="Hunt contracts & intelligence now" style="background:transparent;border:1px solid #00e5ff;color:#00e5ff;font-size:9px;padding:1px 5px;border-radius:3px;cursor:pointer;font-weight:700">⚡ HUNT</button>
+          </div>
+        </div>
+        <!-- Active Roster Badges -->
+        <div id="adAvRosterBadges" style="display:flex;gap:3px;flex-wrap:wrap;margin-bottom:5px">
+          <span class="ad-pill" style="font-size:8px;padding:1px 4px;background:#081420;border:1px solid #004466;color:#8ab4f8" title="Polymarket Live Data Agent">📊 PolyLive</span>
+          <span class="ad-pill" style="font-size:8px;padding:1px 4px;background:#081420;border:1px solid #004466;color:#8ab4f8" title="Crypto Whale Radar">🐋 WhaleRadar</span>
+          <span class="ad-pill" style="font-size:8px;padding:1px 4px;background:#081420;border:1px solid #004466;color:#8ab4f8" title="Vedetta Sentiment Divergence">🎯 Vedetta</span>
+          <span class="ad-pill" style="font-size:8px;padding:1px 4px;background:#081420;border:1px solid #004466;color:#8ab4f8" title="Technical Analysis Agent">📈 TA-Ind</span>
+        </div>
+        <div class="ad-row" style="margin:2px 0"><span class="ad-k" style="font-size:10px">Macro Regime</span><span class="ad-v" id="adAvMacro" style="font-size:10px">—</span></div>
+        <div class="ad-row" style="margin:2px 0"><span class="ad-k" style="font-size:10px">Whale Bias</span><span class="ad-v" id="adAvWhale" style="font-size:10px">—</span></div>
+        <div class="ad-row" style="margin:2px 0"><span class="ad-k" style="font-size:10px">Divergence</span><span class="ad-v" id="adAvDivergence" style="font-size:10px">—</span></div>
+        <!-- Top Hunted Opportunities -->
+        <div id="adAvOpportunities" style="margin-top:4px;display:flex;flex-direction:column;gap:3px">
+          <div style="font-size:9px;color:#8b929a;font-style:italic">Cued on startup. Agents will hunt Polymarket contracts & orderbooks automatically.</div>
+        </div>
+      </div>
+      <!-- Range & Strike Viability Card -->
+      <div id="adRangeCard" style="margin:8px 0 4px 0;padding:6px 8px;background:#06080a;border:1px solid #1f2a38;border-radius:6px">
+        <div style="display:flex;justify-content:space-between;align-items:center;font-size:10px;font-weight:700;color:#00d4ff;margin-bottom:4px">
+          <span>STRIKE & RANGE VIABILITY</span>
+          <span id="adRangeStatus" style="font-size:9px;color:#00e676">LADDER ACTIVE</span>
+        </div>
+        <div class="ad-row" style="margin:2px 0"><span class="ad-k">Safe Range (1.65σ)</span><span class="ad-v" id="adRangeCone" style="font-size:10px">—</span></div>
+        <div class="ad-row" style="margin:2px 0"><span class="ad-k">Strike Zone</span><span class="ad-v" id="adActiveStrikeZone" style="font-size:10px;font-weight:700">—</span></div>
+        <div class="ad-row" style="margin:2px 0"><span class="ad-k">Optimal Target</span><span class="ad-v" id="adOptimalTarget" style="font-size:10px;color:#00d4ff">—</span></div>
       </div>
       <div style="margin:8px 0 4px 0;padding:6px 8px;background:#06080a;border:1px solid #1f2a38;border-radius:6px">
         <div style="display:flex;justify-content:space-between;align-items:center;font-size:10px;font-weight:700;color:#00d4ff;margin-bottom:4px">
@@ -218,7 +257,55 @@
     const el = document.getElementById('adTtc');
     if (windowDeadlineMs == null) { if (el) el.textContent = '—'; return; }
     const remainingMs = windowDeadlineMs - Date.now();
+    const remainingSec = Math.max(0, Math.round(remainingMs / 1000));
     if (el) el.textContent = formatCountdown(remainingMs);
+
+    // Dynamic Pin-Risk & T+1 Hone-In Guard
+    const pinBanner = document.getElementById('adPinRiskBanner');
+    const nextBox = document.getElementById('adNextHorizonBox');
+    const nextTitle = document.getElementById('adNextHorizonTitle');
+
+    if (remainingSec <= 90 && remainingSec > 0) {
+      const spotTxt = document.getElementById('adSpot')?.textContent?.replace(/,/g, '');
+      const ptbTxt = document.getElementById('adPtb')?.textContent?.replace(/,/g, '');
+      const spotNum = Number(spotTxt);
+      const ptbNum = Number(ptbTxt);
+      const dist = (spotNum > 0 && ptbNum > 0) ? Math.abs(spotNum - ptbNum) : null;
+      const distBps = (dist != null && ptbNum > 0) ? (dist / ptbNum) * 10000 : null;
+
+      const isPinTrapped = distBps != null && distBps <= 8;
+      if (isPinTrapped && pinBanner) {
+        pinBanner.style.display = 'block';
+        pinBanner.textContent = `⚠ PIN RISK DEFENSE DETECTED: Spot within $${dist.toFixed(1)} (${distBps.toFixed(1)} bps) of PTB with ${remainingSec}s left. MM defense walls active; high probability of 1-2s post-expiry snap. Focus automatically honed on T+1 Pre-Open below.`;
+      }
+
+      if (nextBox) {
+        nextBox.style.borderColor = '#00d4ff';
+        nextBox.style.background = '#0a1018';
+        nextBox.style.boxShadow = '0 0 12px rgba(0, 212, 255, 0.25)';
+      }
+      if (nextTitle) {
+        nextTitle.textContent = 'NEXT HORIZON (T+1) · AUTO-HONED [EXPIRING PIN RISK]';
+        nextTitle.style.color = '#00e676';
+      }
+    } else {
+      if (pinBanner && pinBanner.dataset.persisted !== '1') {
+        pinBanner.style.display = 'none';
+      }
+      if (nextBox) {
+        nextBox.style.borderColor = '#1f2a38';
+        nextBox.style.background = '#06080a';
+        nextBox.style.boxShadow = 'none';
+      }
+      if (nextTitle) {
+        const horizon = document.getElementById('adHorizon')?.value || '15m';
+        const isHourly = horizon === '1h' || horizon === '60m' || horizon === 'hourly' || horizon === 'lookahead-1h';
+        const is5m = horizon === '5m' || horizon === 'lookahead-5m';
+        nextTitle.textContent = `NEXT HORIZON (T+1) · ${isHourly ? '1H' : (is5m ? '5M' : '15M')} PRE-OPEN`;
+        nextTitle.style.color = '#00d4ff';
+      }
+    }
+
     if (remainingMs <= 0 && countdownTimer) {
       clearInterval(countdownTimer);
       countdownTimer = null;
@@ -260,6 +347,9 @@
         setMode: 'asi1:desk-mode',
         infer: 'asi1:desk-infer',
         chat: 'asi1:desk-chat',
+        hunt: 'asi1:agentverse-hunt',
+        auditAgents: 'asi1:agentverse-audit',
+        agentverseStatus: 'asi1:agentverse-status',
         'ai:run-inference': 'ai:run-inference',
       };
       return window.electron.invoke(map[name] || name, payload);
@@ -351,6 +441,44 @@
     document.getElementById('adFb').textContent = extra?.fallback
       ? ('offline inferLocal' + (extra.error ? ' — ' + extra.error : ''))
       : (contract._meta?.thought ? String(contract._meta.thought).slice(0, 240) : (contract._meta?.source === 'asi1' ? `ASI1 live (${contract._meta.model || 'model'})` : ''));
+
+    // ── Range Viability & Pin Risk Rendering ──────────────────────────────
+    const pinBanner = document.getElementById('adPinRiskBanner');
+    const isPinDefended = (contract.warnings || []).some(w => w.includes('PIN_RISK_DEFENDED'))
+      || (contract.notes || '').includes('PIN_RISK_DEFENDED')
+      || (contract.action === 'HOLD_FLAT' && (contract.warnings || []).some(w => w.toLowerCase().includes('pin')));
+
+    if (pinBanner) {
+      if (isPinDefended) {
+        pinBanner.style.display = 'block';
+        pinBanner.dataset.persisted = '1';
+        pinBanner.textContent = '⚠ PIN RISK DEFENSE ACTIVE: Price trapped near strike with late expiry. MM defense walls active; late directional trades risk 1-2s post-expiry snap. Active guidance pivoted to T+1 Pre-Open.';
+      } else {
+        delete pinBanner.dataset.persisted;
+        pinBanner.style.display = 'none';
+      }
+    }
+
+    const coin = document.getElementById('adCoin')?.value || 'BTC';
+    const horizon = document.getElementById('adHorizon')?.value || '15m';
+    const hMin = horizon === '1h' || horizon === '60m' ? 60 : (horizon === '5m' ? 5 : 15);
+    const rangeData = window.PredictionEngine?.getRangeViability?.(coin, hMin, Number(document.getElementById('adPtb')?.textContent?.replace(/,/g, '')));
+    if (rangeData) {
+      const coneEl = document.getElementById('adRangeCone');
+      if (coneEl) coneEl.textContent = `$${rangeData.safeBoundLower?.toLocaleString()} — $${rangeData.safeBoundUpper?.toLocaleString()} (±$${rangeData.expectedMoveDollar?.toLocaleString()})`;
+      const zoneEl = document.getElementById('adActiveStrikeZone');
+      if (zoneEl) {
+        const atm = rangeData.strikes?.find(s => s.type === 'ATM');
+        if (atm) {
+          zoneEl.textContent = `${atm.tag} (${atm.sigmaDist}σ · ${atm.distanceBps} bps)`;
+          zoneEl.style.color = atm.viabilityZone === 'CLEAN_TARGET' ? '#00e676' : atm.viabilityZone === 'PIN_TRAP_DANGER' ? '#ff5252' : '#ffb74d';
+        }
+      }
+      const optEl = document.getElementById('adOptimalTarget');
+      if (optEl && rangeData.bestTarget) {
+        optEl.textContent = `$${rangeData.bestTarget.strike.toLocaleString()} (${rangeData.bestTarget.name})`;
+      }
+    }
   }
 
   function buildPacket() {
@@ -460,6 +588,20 @@
       ...(isLookahead && forecast?.msToNextBoundary ? { msToNextBoundary: forecast.msToNextBoundary } : {}),
       ...(binaryIV !== null ? { binaryIV_5m: binaryIV } : {}),
       ...(binaryIV_15m !== null ? { binaryIV_15m: binaryIV_15m } : {}),
+      pinRisk: (spot > 0 && ptb > 0)
+        ? (window.PredictionEngine?.getPinRisk?.(coin, spot, ptb, ttc, Number(pkt.depthImbalance) || 0) || null)
+        : null,
+      rangeViability: (spot > 0)
+        ? (window.PredictionEngine?.getRangeViability?.(coin, hMin, ptb, ttc) || null)
+        : null,
+      futureWindowT1: forecast ? {
+        projectedOpenPtb: forecast.projectedOpenPtb,
+        projectedSettlement: forecast.projectedSettlement,
+        forecastDirection: forecast.forecastDirection,
+        confidence: forecast.confidence,
+        sniperAction: forecast.sniperAction,
+        msToNextBoundary: forecast.msToNextBoundary,
+      } : null,
     };
   }
 
@@ -508,7 +650,86 @@
     }
   }
 
+  let _avCuedSecondsLeft = 0;
+  function paintAgentverseHunter(st) {
+    if (!st) return;
+    const badge = document.getElementById('adAvStatusBadge');
+    const macroEl = document.getElementById('adAvMacro');
+    const whaleEl = document.getElementById('adAvWhale');
+    const divEl = document.getElementById('adAvDivergence');
+    const oppsEl = document.getElementById('adAvOpportunities');
+
+    const status = st.status || 'IDLE';
+    _avCuedSecondsLeft = Number(st.cuedSecondsLeft || 0);
+
+    if (badge) {
+      if (status === 'CUED') {
+        badge.textContent = `CUED (${_avCuedSecondsLeft}s)`;
+        badge.style.background = '#003344';
+        badge.style.color = '#00e5ff';
+      } else if (status === 'HUNTING') {
+        badge.textContent = 'HUNTING (Planner)…';
+        badge.style.background = '#332000';
+        badge.style.color = '#ffb74d';
+      } else if (status === 'COMPLETED') {
+        const ageSec = st.latestHunt?.timestamp ? Math.round((Date.now() - st.latestHunt.timestamp) / 1000) : 0;
+        const ageStr = ageSec < 60 ? `${ageSec}s ago` : `${Math.round(ageSec / 60)}m ago`;
+        badge.textContent = `LIVE INTEL (${ageStr})`;
+        badge.style.background = '#002810';
+        badge.style.color = '#00e676';
+      } else if (status === 'ERROR') {
+        badge.textContent = 'HUNT ERR';
+        badge.style.background = '#280000';
+        badge.style.color = '#ff5252';
+      } else {
+        badge.textContent = status;
+        badge.style.background = '#0a1018';
+        badge.style.color = '#8b929a';
+      }
+    }
+
+    const hunt = st.latestHunt;
+    if (hunt) {
+      if (macroEl) {
+        macroEl.textContent = hunt.macroRegime || '—';
+        macroEl.style.color = hunt.macroRegime === 'RISK_ON' ? '#00e676' : hunt.macroRegime === 'RISK_OFF' ? '#ff5252' : '#8ab4f8';
+      }
+      if (whaleEl) {
+        const w = hunt.whaleRadar || {};
+        whaleEl.textContent = w.bias ? `${w.bias.replace(/_/g, ' ')}` : '—';
+        whaleEl.style.color = (w.bias || '').includes('BULL') ? '#00e676' : (w.bias || '').includes('BEAR') ? '#ff5252' : '#8b929a';
+      }
+      if (divEl) {
+        const d = hunt.sentimentDivergence || {};
+        divEl.textContent = d.verdict ? d.verdict.slice(0, 42) : '—';
+        divEl.style.color = d.edgeDirection === 'UP' ? '#00e676' : d.edgeDirection === 'DOWN' ? '#ff5252' : '#8ab4f8';
+      }
+
+      if (oppsEl && Array.isArray(hunt.scoutedOpportunities) && hunt.scoutedOpportunities.length > 0) {
+        oppsEl.innerHTML = hunt.scoutedOpportunities.slice(0, 3).map((op) => {
+          const actColor = op.action === 'BUY_UP' ? '#00e676' : op.action === 'BUY_DOWN' ? '#ff5252' : '#ffb74d';
+          const strikeStr = op.targetStrike ? `$${Number(op.targetStrike).toLocaleString()}` : '';
+          const edgeStr = op.edgePct ? ` (${op.edgePct})` : '';
+          const pinBadge = op.pinRiskSafe === false ? '<span style="color:#ff5252;margin-left:4px">⚠ PIN</span>' : '';
+          return `<div style="display:flex;justify-content:space-between;align-items:center;font-size:9px;background:#03080e;padding:3px 5px;border-radius:4px;border-left:2px solid ${actColor}">
+            <div style="display:flex;align-items:center;gap:4px">
+              <span style="font-weight:700;color:#e6e8eb">${op.symbol} ${op.horizon || '15m'}</span>
+              <span style="color:${actColor};font-weight:700">${op.action}</span>
+              <span style="color:#8ab4f8">${strikeStr}${edgeStr}</span>
+              ${pinBadge}
+            </div>
+            <span style="color:#00d4ff;font-weight:600">${op.confidence != null ? Math.round(op.confidence * 100) + '%' : ''}</span>
+          </div>`;
+        }).join('');
+      }
+    }
+  }
+
+  let _isRefreshing = false;
   async function refreshStatus() {
+    if (_isRefreshing) return;
+    if (minimized || (typeof document !== 'undefined' && document.hidden)) return;
+    _isRefreshing = true;
     try {
       const st = await invoke('status');
       if (st?.mode) mode = st.mode;
@@ -516,10 +737,17 @@
       paintAccounts(st?.diagnostics || {});
       paintConnectivity(st?.diagnostics || {});
       paintNextHorizon();
+
+      const avSt = await invoke('agentverseStatus').catch(() => null);
+      if (avSt?.status) {
+        paintAgentverseHunter(avSt.status);
+      }
     } catch (_) {
       paintAccounts({});
       paintConnectivity({});
       paintNextHorizon();
+    } finally {
+      _isRefreshing = false;
     }
   }
 
@@ -694,23 +922,96 @@
     }
   } catch (_) {}
 
-  document.getElementById('adModelChoice')?.addEventListener('change', (e) => {
-    try { window.localStorage.setItem(MODEL_KEY, e.target.value); } catch (_) {}
-  });
-  document.getElementById('adReasoningEffort')?.addEventListener('change', (e) => {
-    try { window.localStorage.setItem(REASONING_KEY, e.target.value); } catch (_) {}
-  });
-  document.getElementById('adWebSearch')?.addEventListener('change', (e) => {
-    try { window.localStorage.setItem(WEBSEARCH_KEY, e.target.checked ? '1' : '0'); } catch (_) {}
-  });
-
   setMinimized(minimized);
   paintMode();
   applyMode(mode);
   refreshStatus();
   // Auto-refresh connectivity (free diagnostics probe) without requiring a
   // click — actual trade-signal inference (ask()) stays manual/on-demand.
-  setInterval(refreshStatus, 3000);
+  // Relaxed to 15s to keep UI / IPC bus instantaneous and avoid polling churn.
+  setInterval(refreshStatus, 15000);
+
+  // ───────────────────────────────────────────────────────────────────────
+  //  AGENTVERSE AUTONOMOUS HUNTER — HUD wiring & 1s cue ticker
+  // ───────────────────────────────────────────────────────────────────────
+  setInterval(() => {
+    if (_avCuedSecondsLeft > 0) {
+      _avCuedSecondsLeft -= 1;
+      const badge = document.getElementById('adAvStatusBadge');
+      if (badge && badge.textContent.startsWith('CUED')) {
+        badge.textContent = `CUED (${_avCuedSecondsLeft}s)`;
+      }
+    }
+  }, 1000);
+
+  const avHuntBtn = document.getElementById('adAvHuntBtn');
+  if (avHuntBtn) {
+    avHuntBtn.addEventListener('click', async () => {
+      avHuntBtn.disabled = true;
+      avHuntBtn.textContent = '⚡…';
+      const badge = document.getElementById('adAvStatusBadge');
+      if (badge) {
+        badge.textContent = 'HUNTING (Planner)…';
+        badge.style.background = '#332000';
+        badge.style.color = '#ffb74d';
+      }
+      try {
+        const packet = buildPacket();
+        const res = await invoke('hunt', {
+          marketContext: {
+            coins: ['BTC', 'ETH', 'SOL'],
+            [packet.sym || 'BTC']: {
+              spot: packet.spot,
+              ptb15m: packet.priceToBeatNum,
+              pinRisk: packet.pinRisk,
+            },
+          },
+        });
+        if (res?.result) {
+          paintAgentverseHunter({ status: 'COMPLETED', latestHunt: res.result });
+        }
+      } catch (_) {
+        if (badge) { badge.textContent = 'HUNT ERR'; badge.style.color = '#ff5252'; }
+      } finally {
+        avHuntBtn.disabled = false;
+        avHuntBtn.textContent = '⚡ HUNT';
+      }
+    });
+  }
+
+  const avAuditBtn = document.getElementById('adAvAuditBtn');
+  if (avAuditBtn) {
+    avAuditBtn.addEventListener('click', async () => {
+      avAuditBtn.disabled = true;
+      avAuditBtn.textContent = '🔍…';
+      try {
+        const res = await invoke('auditAgents');
+        const count = res?.audit?.onlineCount ?? 0;
+        const total = res?.audit?.totalAgents ?? 0;
+        const badge = document.getElementById('adAvStatusBadge');
+        if (badge) {
+          badge.textContent = `AUDITED ${count}/${total} OK`;
+          badge.style.background = '#002810';
+          badge.style.color = '#00e676';
+          setTimeout(() => refreshStatus(), 5000);
+        }
+      } catch (_) {
+        avAuditBtn.textContent = 'ERR';
+      } finally {
+        avAuditBtn.disabled = false;
+        avAuditBtn.textContent = '🔍 AUDIT';
+      }
+    });
+  }
+
+  if (window.electron?.asi1?.onHuntCompleted) {
+    window.electron.asi1.onHuntCompleted((hunt) => {
+      paintAgentverseHunter({ status: 'COMPLETED', latestHunt: hunt });
+    });
+  }
+  window.addEventListener('asi1:agentverse-hunt-completed', (e) => {
+    if (e?.detail) paintAgentverseHunter({ status: 'COMPLETED', latestHunt: e.detail });
+  });
 
   // ───────────────────────────────────────────────────────────────────────
   //  ORBITAL FORESIGHT ENGINE — HUD wiring
@@ -873,23 +1174,20 @@
     });
   }
 
-  // Auto-start the OSL scanner when the desk loads (deferred to avoid blocking)
+  // Initialize OFE panel from existing scan (if present) without auto-spamming background LLM completions.
+  // Full scans can be triggered on-demand via the Force Scan button.
   setTimeout(() => {
     try {
       const OFE = window.OrbitalForesightEngine;
-      if (!OFE || typeof OFE.startOsl !== 'function') return;
+      if (!OFE) return;
       const sym = document.getElementById('adCoin')?.value || 'BTC';
-      OFE.startOsl({
-        symbols: [sym],
-        horizon: '15m',
-        model: 'asi1-mini',
-        webSearch: false,
-        useAgentverse: false,
-        verbose: false,
-      });
+      const existingScan = typeof OFE.getLatestScan === 'function' ? OFE.getLatestScan(sym) : null;
+      if (existingScan) {
+        paintOfePanel(existingScan);
+      }
       // Poll scan age every 30 s to keep the age counter live
       setInterval(() => {
-        const scan = OFE.getLatestScan(document.getElementById('adCoin')?.value || 'BTC');
+        const scan = typeof OFE.getLatestScan === 'function' ? OFE.getLatestScan(document.getElementById('adCoin')?.value || 'BTC') : null;
         if (scan) {
           const ageEl = document.getElementById('ofeScanAge');
           if (ageEl && scan.epochMs) {
@@ -898,9 +1196,9 @@
           }
           // Update status freshness
           const coinNow = document.getElementById('adCoin')?.value || 'BTC';
-          const rhc = OFE.getRhcStatus(coinNow);
+          const rhc = typeof OFE.getRhcStatus === 'function' ? OFE.getRhcStatus(coinNow) : null;
           const statusEl = document.getElementById('ofeStatus');
-          if (statusEl) {
+          if (statusEl && rhc) {
             if (rhc.stale || rhc.dead) {
               statusEl.textContent = rhc.dead ? '⚠ DEAD' : '◈ STALE';
               statusEl.style.color = '#ffb74d';

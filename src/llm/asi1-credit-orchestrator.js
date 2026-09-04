@@ -24,10 +24,13 @@ const ASI1_ALL_MODELS = Asi1Client.ASI1_ALL_MODELS || Object.freeze([
 // inactive or unrated). Pinning avoids planner_mode's blind live discovery
 // picking a dead or low-quality agent for a real-money decision.
 const AGENTVERSE_PINNED_AGENTS = Object.freeze([
-  'agent1qg6hwwk7zltxq7pamh4ufw04kjywl2ntrkgspmvhdq5yc3mkkjjmk872mxn', // vedetta -- sentiment/price-divergence verdicts (4.8, 19.2k recent interactions)
-  'agent1q240kxgq5u77auplgtypuwtzwe9suk9asayfuczernje4wzzthvzq59agj5', // Crypto Whale Radar -- live token data + ETH whale scans (4.2, 429 recent)
-  'agent1qvcqcty9uay8avljk908hedgynla2gvcmdhhncjzsdt2u0q9wathshwunwn', // macropulse -- US macro health scores from FRED (4.4, 811 recent)
-  'agent1q085746wlr3u2uh4fmwqplude8e0w6fhrmqgsnlp49weawef3ahlutypvu6', // Technical Analysis Agent (4.5, 8.2k recent -- built for stock tickers, TA indicators transfer to crypto)
+  'agent1qw27dykr22mkr8nrp4l8gd8k0xs7xskv578n8l4kllmkkrca6wrxs5zna6f', // Polymarket Live Data Agent -- live prediction market data, prices, events
+  'agent1q27j0eghd2ph57vdkk66f50v8cjekmfs5698v87z6j26lkkwameq2p8tcxd', // Polymarket Conversational Scout -- prediction market depth & discovery
+  'agent1qg6hwwk7zltxq7pamh4ufw04kjywl2ntrkgspmvhdq5yc3mkkjjmk872mxn', // Vedetta -- sentiment/price-divergence verdicts (4.6)
+  'agent1q240kxgq5u77auplgtypuwtzwe9suk9asayfuczernje4wzzthvzq59agj5', // Crypto Whale Radar -- live token data + ETH/BTC whale scans (4.5)
+  'agent1q085746wlr3u2uh4fmwqplude8e0w6fhrmqgsnlp49weawef3ahlutypvu6', // Technical Analysis Agent -- multi-indicator TA & key levels (4.5)
+  'agent1qgrzma5mem02n03zeeqzj4e6k6rz9p4v283frt6k8mkvm050l22q25qhltx', // Crypto Fear & Greed Agent -- alternative.me macro sentiment (3.9)
+  'agent1qvcqcty9uay8avljk908hedgynla2gvcmdhhncjzsdt2u0q9wathshwunwn', // macropulse -- US macro health scores from FRED (4.4)
 ]);
 
 const DESK_MODES = Desk.MODES;
@@ -165,8 +168,11 @@ const PYTH_FEEDS = {
 const fs = require('fs');
 const path = require('path');
 
+let _cachedPythProKey = null;
+
 function readPythProKeyDirect() {
   if (process.env.PYTH_PRO_API_KEY) return process.env.PYTH_PRO_API_KEY;
+  if (_cachedPythProKey != null) return _cachedPythProKey;
   const paths = [
     path.join(__dirname, '../../secrets/PYTH_PRO_API_KEY.txt'),
     path.join(__dirname, '../secrets/PYTH_PRO_API_KEY.txt'),
@@ -180,11 +186,15 @@ function readPythProKeyDirect() {
         const raw = fs.readFileSync(p, 'utf8').trim();
         const lines = raw.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
         const k = lines.find(l => !l.startsWith('#') && !l.includes('PYTH_PRO_API_KEY') && l.length > 20) || lines.at(-1);
-        if (k) return k;
+        if (k) {
+          _cachedPythProKey = k;
+          return _cachedPythProKey;
+        }
       }
     } catch (_) {}
   }
-  return '';
+  _cachedPythProKey = '';
+  return _cachedPythProKey;
 }
 
 async function fetchPythSpotDirect(coin) {
@@ -311,6 +321,10 @@ async function deskInfer(packet, mode, options = {}) {
       packet.spotSource = 'pyth-hermes-direct';
       packet.spotAgeSec = Math.max(0, Math.round((Date.now() - livePyth.publishTime) / 1000));
     }
+    if (directPtb && directPtb > 0) {
+      packet.priceToBeatNum = directPtb;
+      packet.priceToBeatSource = 'polymarket-contract';
+    }
   }
 
   const isLookahead = packet.horizon === 'anytime' || String(packet.horizon || '').toLowerCase().includes('lookahead');
@@ -319,8 +333,8 @@ async function deskInfer(packet, mode, options = {}) {
     packet.priceToBeatSource = 'lookahead-pre-open-forecast';
   }
 
-  // If PTB is missing or zero, hydrate the immutable contract opening strike (not live TWAP)
-  if (!isLookahead && (!packet.priceToBeatNum || packet.priceToBeatNum <= 0)) {
+  // If PTB is still missing or zero, and not already queried in the parallel step above
+  if (!isLookahead && (!packet.priceToBeatNum || packet.priceToBeatNum <= 0) && !needPtb) {
     const directPtb = await fetchPolymarketPtbDirect(packet.sym, packet.horizon);
     if (directPtb && directPtb > 0) {
       packet.priceToBeatNum = directPtb;
@@ -351,6 +365,20 @@ async function deskInfer(packet, mode, options = {}) {
   if (packet.spot && packet.spot > 0 && packet.priceToBeatNum && packet.priceToBeatNum > 0) {
     packet.deltaVsPtb = packet.spot - packet.priceToBeatNum;
     packet.liveDirection = packet.deltaVsPtb > 0 ? 'UP' : (packet.deltaVsPtb < 0 ? 'DOWN' : 'FLAT');
+  }
+
+  // Hydrate pinRisk state if not already present on late-window packets
+  if (!packet.pinRisk && packet.spot > 0 && packet.priceToBeatNum > 0 && packet.secondsToClose != null && packet.secondsToClose <= 90) {
+    const dist = Math.abs(packet.spot - packet.priceToBeatNum);
+    const distBps = (dist / packet.priceToBeatNum) * 10000;
+    const isDefended = distBps <= 8;
+    packet.pinRisk = {
+      isDefendedPinZone: isDefended,
+      distance: dist,
+      distanceBps: distBps,
+      warning: isDefended ? 'PIN_RISK_DEFENDED: Spot within 8 bps of PTB in late window (<90s). MM defense risks 1-2s post-expiry snap.' : null,
+      recommendedAction: isDefended ? 'HOLD_FLAT_ROLL_T1' : 'PROCEED',
+    };
   }
 
   const {

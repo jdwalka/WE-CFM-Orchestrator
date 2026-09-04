@@ -6050,11 +6050,155 @@
     };
   }
 
+  /**
+   * Evaluates whether a contract is inside the Market Maker Strike Defense / Pin-Risk zone.
+   * Defends against the 1.23s post-expiry snap trap where MMs defend the strike right into the wire.
+   */
+  function detectPinRisk(sym, spot, ptb, secondsToClose, depthImbalance = 0) {
+    const s = Number(spot);
+    const p = Number(ptb);
+    const ttc = Number(secondsToClose);
+    if (!Number.isFinite(s) || s <= 0 || !Number.isFinite(p) || p <= 0) {
+      return { isDefendedPinZone: false, pinRiskScore: 0, warning: null };
+    }
+
+    const cache = candleCache[sym] || {};
+    const lastPred = cache._lastPrediction || (typeof window !== 'undefined' && window._predictions?.[sym]) || null;
+    const atrPctRaw = Number(lastPred?.volatility?.atrPct);
+    const atrPct = Number.isFinite(atrPctRaw) && atrPctRaw > 0 ? atrPctRaw / 100 : 0.0035;
+    const atrDollar = s * atrPct;
+    // 1-minute noise scale (1-min ATR ~= horizon ATR / sqrt(15))
+    const atr1m = atrDollar / Math.sqrt(15);
+    const pinNoiseThreshold = Math.max(s * 0.0008, 0.5 * atr1m); // ~8 bps or 0.5σ 1m ATR
+
+    const distance = Math.abs(s - p);
+    const distanceBps = (distance / p) * 10000;
+    const inLateWindow = Number.isFinite(ttc) && ttc > 0 && ttc <= 90;
+    const inExtremeLateWindow = Number.isFinite(ttc) && ttc > 0 && ttc <= 45;
+
+    // Pin Risk: in the final 90 seconds and distance to strike is within the noise margin
+    const isDefendedPinZone = inLateWindow && distance <= pinNoiseThreshold;
+    let pinRiskScore = 0;
+    if (isDefendedPinZone) {
+      const distRatio = Math.max(0, 1 - (distance / pinNoiseThreshold));
+      const timeRatio = Math.max(0, 1 - (ttc / 90));
+      pinRiskScore = Math.round((distRatio * 0.6 + timeRatio * 0.4) * 100);
+    }
+
+    let warning = null;
+    if (isDefendedPinZone) {
+      warning = inExtremeLateWindow
+        ? `CRITICAL PIN RISK (${pinRiskScore}%): Spot within $${distance.toFixed(1)} (${distanceBps.toFixed(1)} bps) of PTB with ${Math.round(ttc)}s left. MM defense wall active; high probability of 1-2s post-expiry snap. Refusing late directional entry; pivot to T+1.`
+        : `PIN RISK DEFENDED (${pinRiskScore}%): Spot within 0.5σ noise margin of PTB. MM strike defense detected; do not chase wire. Pivot focus to T+1 future window.`;
+    }
+
+    return {
+      sym,
+      spot: s,
+      ptb: p,
+      secondsToClose: ttc,
+      distance: parseFloat(distance.toFixed(sym === 'XRP' ? 4 : sym === 'DOGE' ? 6 : 2)),
+      distanceBps: parseFloat(distanceBps.toFixed(2)),
+      pinNoiseThreshold: parseFloat(pinNoiseThreshold.toFixed(2)),
+      isDefendedPinZone,
+      pinRiskScore,
+      warning,
+      recommendedAction: isDefendedPinZone ? 'HOLD_FLAT_ROLL_T1' : 'PROCEED',
+    };
+  }
+
+  /**
+   * Computes the Range & Strike Viability Ladder for a coin and horizon.
+   * Classifies strike brackets around current spot into CLEAN_TARGET, CONTESTED_FRICTION, and PIN_TRAP_DANGER.
+   */
+  function computeRangeViability(coin, horizonMin = 15, currentPtb = null, ttcSec = null) {
+    const sym = coin.sym || coin;
+    const cache = candleCache[sym] || {};
+    const lastPred = cache._lastPrediction || (typeof window !== 'undefined' && window._predictions?.[sym]) || null;
+    const s = Number(lastPred?.price || lastPred?.currentPrice || cache.ticker?.usd || cache.candles?.[cache.candles.length - 1]?.c || 0);
+    if (!Number.isFinite(s) || s <= 0) return null;
+
+    const atrPctRaw = Number(lastPred?.volatility?.atrPct);
+    const atrPct = Number.isFinite(atrPctRaw) && atrPctRaw > 0 ? atrPctRaw / 100 : 0.0035;
+    const horizonSec = horizonMin * 60;
+    const effectiveTtc = (ttcSec != null && Number.isFinite(Number(ttcSec))) ? Math.max(10, Number(ttcSec)) : horizonSec;
+    const timeDecayFactor = Math.sqrt(Math.max(0.05, effectiveTtc / horizonSec));
+
+    // Dynamic horizon sigma
+    const sigmaHorizon = Math.max(s * 0.001, s * atrPct * timeDecayFactor);
+    const safeBoundUpper = s + (1.65 * sigmaHorizon);
+    const safeBoundLower = s - (1.65 * sigmaHorizon);
+
+    // Multi-strike brackets around spot (-1.5σ, -0.75σ, Active PTB or Spot, +0.75σ, +1.5σ)
+    const activePtb = Number(currentPtb) > 0 ? Number(currentPtb) : s;
+    const baseDistance = Math.abs(s - activePtb);
+    const baseSigmaDist = baseDistance / (sigmaHorizon || 1);
+
+    const strikes = [
+      { name: 'Lower Clean Put / Down', strike: s - (1.5 * sigmaHorizon), type: 'BELOW' },
+      { name: 'Lower Contested Strike', strike: s - (0.75 * sigmaHorizon), type: 'BELOW' },
+      { name: 'At-The-Money / Active PTB', strike: activePtb, type: 'ATM' },
+      { name: 'Upper Contested Strike', strike: s + (0.75 * sigmaHorizon), type: 'ABOVE' },
+      { name: 'Upper Clean Call / Up', strike: s + (1.5 * sigmaHorizon), type: 'ABOVE' },
+    ];
+
+    const rankedStrikes = strikes.map((stk) => {
+      const dist = Math.abs(s - stk.strike);
+      const distBps = (dist / s) * 10000;
+      const sigmaDist = dist / (sigmaHorizon || 1);
+
+      let viabilityZone = 'CONTESTED_FRICTION';
+      let tag = '🟡 Contested';
+      let recommendation = 'NEUTRAL';
+
+      if (effectiveTtc <= 90 && sigmaDist <= 0.5) {
+        viabilityZone = 'PIN_TRAP_DANGER';
+        tag = '🔴 Pin Trap Danger';
+        recommendation = 'AVOID_PIN_TRAP';
+      } else if (sigmaDist >= 1.25 && effectiveTtc > 120) {
+        viabilityZone = 'CLEAN_TARGET';
+        tag = '🟢 Prime Target';
+        recommendation = 'RECOMMENDED';
+      } else if (sigmaDist < 0.6) {
+        viabilityZone = effectiveTtc <= 120 ? 'PIN_TRAP_DANGER' : 'CONTESTED_FRICTION';
+        tag = effectiveTtc <= 120 ? '🔴 Pin Danger' : '🟡 Narrow ATM';
+        recommendation = effectiveTtc <= 120 ? 'AVOID_PIN_TRAP' : 'MONITOR_RUNWAY';
+      }
+
+      return {
+        ...stk,
+        strike: parseFloat(stk.strike.toFixed(sym === 'XRP' ? 4 : sym === 'DOGE' ? 6 : 2)),
+        distanceDollar: parseFloat(dist.toFixed(2)),
+        distanceBps: parseFloat(distBps.toFixed(1)),
+        sigmaDist: parseFloat(sigmaDist.toFixed(2)),
+        viabilityZone,
+        tag,
+        recommendation,
+      };
+    });
+
+    const bestTarget = rankedStrikes.find((r) => r.viabilityZone === 'CLEAN_TARGET') || rankedStrikes[0];
+
+    return {
+      sym,
+      horizonMin,
+      spot: s,
+      sigmaHorizon: parseFloat(sigmaHorizon.toFixed(2)),
+      expectedMoveDollar: parseFloat((1.65 * sigmaHorizon).toFixed(2)),
+      safeBoundLower: parseFloat(safeBoundLower.toFixed(2)),
+      safeBoundUpper: parseFloat(safeBoundUpper.toFixed(2)),
+      effectiveTtc,
+      activePtbDeltaBps: parseFloat(((s - activePtb) / activePtb * 10000).toFixed(1)),
+      activePtbSigmaDist: parseFloat(baseSigmaDist.toFixed(2)),
+      strikes: rankedStrikes,
+      bestTarget,
+    };
+  }
+
   function computePrediction(coin, backtest = null) {
     const computedTs = Date.now();
     const cache = candleCache[coin.sym];
     if (!cache) return { error: 'Insufficient data' };
-
     let candles15m = cache.candles15m || [];
     // Prefer pre-pooled multi-source 15m (CB + BIN + WS + others via anchoredPoolCandles).
     // Only fall back to bucketing the 5m pooled candles if the dedicated 15m series is really empty.
@@ -7066,6 +7210,12 @@
     getBacktest(sym) { return window._backtests[sym] || null; },
     getBacktests() { return window._backtests; },
     getPreOpenForecast(sym, horizonMin = 5) { return computePreOpenHorizonForecast(sym, horizonMin); },
+    getPinRisk(sym, spot, ptb, secondsToClose, depthImbalance = 0) {
+      return detectPinRisk(sym, spot, ptb, secondsToClose, depthImbalance);
+    },
+    getRangeViability(sym, horizonMin = 15, currentPtb = null, ttcSec = null) {
+      return computeRangeViability(sym, horizonMin, currentPtb, ttcSec);
+    },
     getSession() { return getSessionInfo(); },
     startAutoRefresh() {
       this.stopAutoRefresh();

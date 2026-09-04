@@ -2753,7 +2753,16 @@ Provide ultra-concise, authoritative, actionable trading intelligence. Ground al
     const deltaDisplay = packet.priceToBeatNum > 0 ? `${packet.deltaVsPtb >= 0 ? '+' : ''}$${packet.deltaVsPtb || 0}` : 'Pending contract PTB';
     const tapeDirDisplay = packet.priceToBeatNum > 0 ? (packet.liveDirection || 'NEUTRAL') : 'AWAITING_PTB';
 
-    const userPrompt = `${prompt}\n\nLive Market Context:\n- Coin: ${packet.sym || 'BTC'}\n- Horizon: ${packet.horizon || '5m'}\n- Live Spot: $${packet.spot || 'N/A'}\n- Polymarket PTB Strike: ${ptbDisplay}\n- Delta vs PTB: ${deltaDisplay}\n- Live Tape Direction: ${tapeDirDisplay}\n- Polymarket Yes Prob: ${((packet.yesProb || 0.5) * 100).toFixed(1)}%\n- Seconds to Expiry: ${packet.secondsToClose || 0}s\n- Depth Imbalance: ${((packet.depthImbalance || 0) * 100).toFixed(1)}%`;
+    let pinInfo = '';
+    if (packet.pinRisk?.isDefendedPinZone || (packet.secondsToClose <= 90 && Math.abs(packet.deltaVsPtb || 0) < ((packet.spot || 1) * 0.0008))) {
+      pinInfo = `\n- ⚠ Pin Risk Status: ACTIVE PIN DEFENSE DETECTED (spot within 8 bps of strike with ${packet.secondsToClose || 0}s left). MM defense risks 1-2s late post-expiry snap.`;
+    }
+    let t1Info = '';
+    if (packet.futureWindowT1?.projectedOpenPtb) {
+      t1Info = `\n- Future Window T+1: Projected Opening PTB $${packet.futureWindowT1.projectedOpenPtb}, Stance: ${packet.futureWindowT1.sniperAction || 'STANDBY'}, Direction: ${packet.futureWindowT1.forecastDirection || '—'} (${packet.futureWindowT1.confidence || 0}%)`;
+    }
+
+    const userPrompt = `${prompt}\n\nLive Market Context:\n- Coin: ${packet.sym || 'BTC'}\n- Horizon: ${packet.horizon || '5m'}\n- Live Spot: $${packet.spot || 'N/A'}\n- Polymarket PTB Strike: ${ptbDisplay}\n- Delta vs PTB: ${deltaDisplay}\n- Live Tape Direction: ${tapeDirDisplay}\n- Polymarket Yes Prob: ${((packet.yesProb || 0.5) * 100).toFixed(1)}%\n- Seconds to Expiry: ${packet.secondsToClose || 0}s\n- Depth Imbalance: ${((packet.depthImbalance || 0) * 100).toFixed(1)}%${pinInfo}${t1Info}`;
 
     const result = await Asi1Client.chatCompletion(
       [
@@ -2807,6 +2816,36 @@ ipcMain.handle('asi1:precontract-brief', async (_event, args = {}) => {
     }, 'asi1-ultra');
   } catch (err) {
     return { ok: false, error: err?.message || 'asi1-precontract-error' };
+  }
+});
+
+// ── IPC: ASI1 Agentverse Autonomous Hunter & Agent Audit ──────────────────
+ipcMain.handle('asi1:agentverse-hunt', async (_event, args = {}) => {
+  try {
+    const AgentverseHunter = require('../src/llm/agentverse-hunter');
+    const result = await AgentverseHunter.runAutonomousHunt(args.marketContext || {});
+    return { ok: true, result };
+  } catch (err) {
+    return { ok: false, error: err?.message || 'asi1-agentverse-hunt-error' };
+  }
+});
+
+ipcMain.handle('asi1:agentverse-audit', async () => {
+  try {
+    const AgentverseHunter = require('../src/llm/agentverse-hunter');
+    const audit = await AgentverseHunter.auditAgentverseRoster();
+    return { ok: true, audit };
+  } catch (err) {
+    return { ok: false, error: err?.message || 'asi1-agentverse-audit-error' };
+  }
+});
+
+ipcMain.handle('asi1:agentverse-status', async () => {
+  try {
+    const AgentverseHunter = require('../src/llm/agentverse-hunter');
+    return { ok: true, status: AgentverseHunter.getHunterStatus() };
+  } catch (err) {
+    return { ok: false, error: err?.message || 'asi1-agentverse-status-error' };
   }
 });
 
@@ -4319,6 +4358,7 @@ function createWindow() {
     if (visibleOnce || win.isDestroyed()) return;
     visibleOnce = true;
     win.show();
+    win.focus();
     console.log(`[Window] shown (${reason})`);
     if (process.env.WECRYPTO_OPEN_DEVTOOLS === '1') {
       win.webContents.openDevTools({ mode: 'detach' });
@@ -4337,9 +4377,10 @@ function createWindow() {
         const affinityMask = 255;
         console.log(`[Startup] Launching PowerShell to lock Renderer (Floating Orchestrator) Affinity (PID ${rendererPid}) to mask ${affinityMask}...`);
         const { exec } = require('child_process');
-        exec(`powershell -Command "$Process = Get-Process -Id ${rendererPid}; $Process.ProcessorAffinity = ${affinityMask}"`, (err) => {
+        exec(`powershell -Command "$Process = Get-Process -Id ${rendererPid}; $Process.ProcessorAffinity = ${affinityMask}"`, { windowsHide: true }, (err) => {
           if (err) console.warn(`[Startup] Failed to set Renderer Affinity: ${err.message}`);
           else console.log(`[Startup] Renderer Affinity successfully locked for PID ${rendererPid}.`);
+          if (!win.isDestroyed()) win.focus();
         });
       }
     } catch (err) {
@@ -4512,6 +4553,20 @@ app.whenReady().then(async () => {
     }
     logStartupHealth('post-pyth-init');
   })();
+
+  // Proactive Agentverse Hunter: cues 60s after window is ready, non-blocking
+  try {
+    const AgentverseHunter = require('../src/llm/agentverse-hunter');
+    AgentverseHunter.onHuntCompleted((huntResult) => {
+      if (mainWin && !mainWin.isDestroyed()) {
+        mainWin.webContents.send('asi1:agentverse-hunt-completed', huntResult);
+      }
+    });
+    AgentverseHunter.startAutonomousScheduler({ bootDelayMs: 60_000, intervalMs: 300_000 });
+    console.log('[AgentverseHunter] Autonomous multi-agent scheduler initialized; cued to hunt in 60s');
+  } catch (err) {
+    console.warn('[AgentverseHunter] initialization deferred:', err.message);
+  }
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {

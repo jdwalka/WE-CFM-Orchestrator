@@ -78,5 +78,32 @@ test('lookahead-1h contract allows projectedOpenPtb strike and is not fast-path'
   assert.ok(c.confidence >= 0.60);
 });
 
+test('late-window boundary pin-risk forces HOLD_FLAT and warns of MM defense', () => {
+  // Simulates the exact 7:00 UTC-4 window: BTC spot 81005 vs PTB 81000 with 45s left
+  const pinPkt = {
+    sym: 'BTC',
+    horizon: '15m',
+    spot: 81005,
+    priceToBeatNum: 81000,
+    deltaVsPtb: 5,
+    yesProb: 0.54,
+    mid: 0.54,
+    secondsToClose: 45,
+    futureWindowT1: {
+      projectedOpenPtb: 81010,
+      forecastDirection: 'DOWN',
+      confidence: 65,
+      sniperAction: 'PRE_POSITION_DOWN',
+    },
+  };
+  const c = Desk.inferLocal(pinPkt, 'asi1_only');
+  assert.strictEqual(c.action, 'HOLD_FLAT');
+  assert.strictEqual(c.size_hint, 'skip');
+  assert.strictEqual(c.urgency, 'late_window');
+  assert.ok(c.warnings.some(w => w.includes('PIN_RISK_DEFENDED')));
+  assert.ok(c.notes.includes('PIN_RISK_DEFENDED'));
+  assert.ok(c.notes.includes('Pivot to T+1 horizon'));
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);
