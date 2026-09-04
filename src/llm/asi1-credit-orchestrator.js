@@ -260,13 +260,13 @@ async function fetchPolymarketPtbDirect(sym, horizon = '5m') {
       return strike;
     };
 
-    // 1. Direct Polymarket Gamma market contract metadata (opening strike)
-    for (const pageSlug of slugs) {
+    // 1. Direct Polymarket Gamma market contract metadata (opening strike) - parallel fetch
+    const gammaResults = await Promise.all(slugs.map(async (pageSlug) => {
       try {
         const resp = await fetch(`https://gamma-api.polymarket.com/markets?slug=${encodeURIComponent(pageSlug)}`, {
-          signal: AbortSignal.timeout(2000),
+          signal: AbortSignal.timeout(1200),
         });
-        if (!resp.ok) continue;
+        if (!resp.ok) return null;
         const list = await resp.json();
         const m = Array.isArray(list) ? list[0] : list;
         const strike = Number(
@@ -276,30 +276,33 @@ async function fetchPolymarketPtbDirect(sym, horizon = '5m') {
           m?.price_to_beat ??
           m?.targetPrice
         );
-        const locked = lockStrike(strike);
-        if (locked) return locked;
-      } catch (_) {}
-    }
+        return lockStrike(strike);
+      } catch (_) { return null; }
+    }));
+    const validGamma = gammaResults.find(r => r != null && r > 0);
+    if (validGamma) return validGamma;
 
-    // 2. Direct Polymarket contract event page (openPrice at T0, locked)
-    for (const pageSlug of slugs) {
+    // 2. Direct Polymarket contract event page (openPrice at T0, locked) - parallel fetch
+    const htmlResults = await Promise.all(slugs.map(async (pageSlug) => {
       try {
         const resp = await fetch(`https://polymarket.com/event/${encodeURIComponent(pageSlug)}`, {
-          signal: AbortSignal.timeout(2000),
+          signal: AbortSignal.timeout(1200),
           headers: {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151 Safari/537.36',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
           },
         });
-        if (!resp.ok) continue;
+        if (!resp.ok) return null;
         const html = await resp.text();
         const fwd = [...html.matchAll(/\\"openPrice\\":\s*([0-9.]+)/g), ...html.matchAll(/"openPrice":\s*([0-9.]+)/g)];
         if (fwd.length > 0) {
-          const locked = lockStrike(Number(fwd[0][1]));
-          if (locked) return locked;
+          return lockStrike(Number(fwd[0][1]));
         }
-      } catch (_) {}
-    }
+      } catch (_) { return null; }
+      return null;
+    }));
+    const validHtml = htmlResults.find(r => r != null && r > 0);
+    if (validHtml) return validHtml;
   } catch (_) {}
   return null;
 }

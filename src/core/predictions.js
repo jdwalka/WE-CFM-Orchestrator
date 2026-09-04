@@ -97,7 +97,7 @@
   const TIDE_REQUEST_TIMEOUT_MS = 6500;
   const TIDE_STATUS_TTL_MS = 60 * 1000;
   const TIDE_DISABLED_RETRY_MS = 5 * 60 * 1000;
-  const PREDICTION_FIRST_PASS_TIMEOUT_MS = 6500;
+  const PREDICTION_FIRST_PASS_TIMEOUT_MS = 18000;
   const GECKO_MARKET_SOFT_TIMEOUT_MS = 2500;
   const GECKO_MIN_GAP_MS = 60_000; // hard-backoff: max ~1 req/min
   const GECKO_RATE_LIMIT_PAUSE_MS = 5 * 60_000;
@@ -152,12 +152,22 @@
 
   function saveBtCache() {
     try {
-      const store = {};
+      let store = {};
+      try {
+        const existingRaw = localStorage.getItem(BT_CACHE_KEY);
+        if (existingRaw) store = JSON.parse(existingRaw) || {};
+      } catch (_) { }
+      let updated = false;
       PREDICTION_COINS.forEach(coin => {
         const bt = window._backtests[coin.sym];
-        if (bt) store[coin.sym] = { bt, ts: Date.now(), walkKey: candleCache[coin.sym]?._walkBacktestKey || '' };
+        if (bt && bt.summary) {
+          store[coin.sym] = { bt, ts: Date.now(), walkKey: candleCache[coin.sym]?._walkBacktestKey || '' };
+          updated = true;
+        }
       });
-      localStorage.setItem(BT_CACHE_KEY, JSON.stringify(store));
+      if (updated || Object.keys(store).length > 0) {
+        localStorage.setItem(BT_CACHE_KEY, JSON.stringify(store));
+      }
     } catch (e) { }
   }
 
@@ -858,9 +868,39 @@
       nextPrediction.tide = { ...prev.tide };
     }
 
+    // Preserve backtest if missing in nextPrediction
+    const symKey = String(nextPrediction.sym || prev.sym || '').toUpperCase();
+    if (!nextPrediction.backtest && prev.backtest) {
+      nextPrediction.backtest = prev.backtest;
+    }
+    if (!nextPrediction.backtest && symKey && window._backtests?.[symKey]) {
+      nextPrediction.backtest = window._backtests[symKey];
+    }
+
+    // Preserve holderMetrics if missing in nextPrediction
+    if (!nextPrediction.holderMetrics && prev.holderMetrics) {
+      nextPrediction.holderMetrics = prev.holderMetrics;
+    }
+    if (!nextPrediction.holderMetrics && symKey && window.HolderMetrics?._cachedMetrics?.[symKey]) {
+      const hm = window.HolderMetrics._cachedMetrics[symKey];
+      if (hm && Date.now() - (hm.ts || 0) < 180_000) {
+        nextPrediction.holderMetrics = {
+          concentration: hm.concentration,
+          source: hm.source,
+          holderCount: hm.holderCount,
+          holderScoreContribution: (window.HolderMetrics.score?.(hm) || 0) * 0.10,
+        };
+      }
+    }
+
     if (prev.diagnostics && typeof prev.diagnostics === 'object') {
       nextPrediction.diagnostics = {
         ...(nextPrediction.diagnostics || {}),
+        qualityLabel: nextPrediction.diagnostics?.qualityLabel ?? prev.diagnostics.qualityLabel ?? (nextPrediction.backtest?.summary?.label ? `Backtest ${nextPrediction.backtest.summary.label.toLowerCase()}` : null),
+        tradeFitLabel: nextPrediction.diagnostics?.tradeFitLabel ?? prev.diagnostics.tradeFitLabel ?? nextPrediction.backtest?.summary?.tradeFitLabel ?? null,
+        reliability: nextPrediction.diagnostics?.reliability ?? prev.diagnostics.reliability ?? nextPrediction.backtest?.summary?.reliability ?? null,
+        tradeFit: nextPrediction.diagnostics?.tradeFit ?? prev.diagnostics.tradeFit ?? nextPrediction.backtest?.summary?.tradeFit ?? null,
+        preferredHorizon: nextPrediction.diagnostics?.preferredHorizon ?? prev.diagnostics.preferredHorizon ?? nextPrediction.backtest?.summary?.preferredHorizon ?? null,
         llmRegime: nextPrediction.diagnostics?.llmRegime ?? prev.diagnostics.llmRegime ?? null,
         llmConfidence: nextPrediction.diagnostics?.llmConfidence ?? prev.diagnostics.llmConfidence ?? null,
         llmWarnings: nextPrediction.diagnostics?.llmWarnings ?? prev.diagnostics.llmWarnings ?? [],
@@ -6199,11 +6239,12 @@
     const computedTs = Date.now();
     const cache = candleCache[coin.sym];
     if (!cache) return { error: 'Insufficient data' };
+    const resolvedBacktest = backtest || window._backtests?.[coin.sym] || null;
     let candles15m = cache.candles15m || [];
     // Prefer pre-pooled multi-source 15m (CB + BIN + WS + others via anchoredPoolCandles).
     // Only fall back to bucketing the 5m pooled candles if the dedicated 15m series is really empty.
     // This ensures 15m markets actually use the pooled data from multiple exchanges/WS.
-    if ((!candles15m || candles15m.length < 4) && cache.candles && cache.candles.length >= 24) {
+    if ((!candles15m || candles15m.length < 4) && cache.candles && cache.candles.length >= 8) {
       const fallback = bucketCandles(cache.candles, 15 * 60 * 1000);
       if (fallback.length > candles15m.length) {
         candles15m = fallback;
@@ -6214,6 +6255,7 @@
 
     if (candles15m.length < 4) {
       console.warn(`[15mPool] ${coin.sym} 15m bars <4 after pooling (ws:${(window.CandleWS ? window.CandleWS.getClosedBuckets15m(coin.sym) : []).length}, cb:${cache._cb15m?.length||0}, bin:${cache._bin15m?.length||0}). Using 5m fallback or partial. Check exchange-ws errors and proxy.`);
+      const earlyRel = resolvedBacktest?.summary?.reliability ?? 0.50;
       return {
         sym: coin.sym, name: coin.name, color: coin.color, icon: coin.icon,
         price: cache?.ticker?.usd || window._predictions?.[coin.sym]?.price || 0,
@@ -6228,8 +6270,15 @@
           fallbackUsed: true
         },
         error: 'Insufficient 15m data (pooled from exchanges)',
-        indicators: {}, diagnostics: {}, volatility: { label: 'Unknown', atrPct: 0 },
+        indicators: {},
+        diagnostics: {
+          reliability: earlyRel,
+          qualityLabel: resolvedBacktest ? summarizeReliabilityLabel(earlyRel) : 'Backtest unavailable',
+          tradeFitLabel: resolvedBacktest?.summary?.tradeFitLabel || 'Timing mixed',
+        },
+        volatility: { label: 'Unknown', atrPct: 0 },
         projections: {}, reversalFlags: [], scalpSetups: [],
+        backtest: resolvedBacktest,
       };
     }
 
@@ -6245,10 +6294,10 @@
       candles1m: cache.candles1m || null,  // PATCH1.11: wall absorption needs 1m data
       horizon: 15,  // ★ H15 TUNING: Apply h15-specific indicator weights (2026-05-06)
     });
-    const calibrated = applyLiveCalibration(baseModel, backtest);
+    const calibrated = applyLiveCalibration(baseModel, resolvedBacktest);
     const fastTiming = buildFastTimingModel(cache.candles1m, coin.sym);
     const timed = applyFastTimingOverlay(calibrated, fastTiming);
-    const routerContext = buildSignalRouterContext(coin, timed, fastTiming, backtest, effectiveCache);
+    const routerContext = buildSignalRouterContext(coin, timed, fastTiming, resolvedBacktest, effectiveCache);
     const routedPackets = filterSignalPackets(buildSignalPackets(routerContext), routerContext);
     const routed = summarizeRoutedSignals(routedPackets, routerContext);
     logLiveExecutionCues(coin.sym, routed, routedPackets);
@@ -6534,7 +6583,7 @@
         hyperShortAnchors: hyperShortDiag,
         qft: qftResult,
       },
-      backtest,
+      backtest: resolvedBacktest,
       preOpenForecast: {
         h5: computePreOpenHorizonForecast(coin, 5),
         h15: computePreOpenHorizonForecast(coin, 15),
@@ -7114,7 +7163,10 @@
               console.log(`[runAll] h15-tuner skipped (window._h15Tuner not available)`);
             }
 
-            window._predictions[coin.sym] = basePrediction;
+            window._predictions[coin.sym] = preservePredictionOverlay(
+              window._predictions[coin.sym],
+              basePrediction
+            );
           } catch (cpErr) {
             console.error('[runAll] computePrediction crash:', coin.sym, cpErr);
             const fallbackTs = Date.now();

@@ -1,0 +1,44 @@
+# ================================================================
+# WE|||CRYPTO — MergeKit Recipe: DELLA Crypto Foresight
+# Model Merging Engine: DELLA (Magnitude-Aware Pruning & Rescaling)
+# Application: 5m & 15m Crypto Prediction Contracts (Kalshi / Polymarket)
+#
+# DELLA preserves parameters exhibiting high delta magnitude across
+# orderbook dynamics, momentum breakouts, and sniper execution, while
+# pruning noisy micro-fluctuations with exact 1/p_keep rescaling.
+# ================================================================
+
+merge_method: della
+base_model: models/crypto-base-foresight-8b
+dtype: bfloat16
+
+models:
+  - model: models/crypto-orderbook-clob-8b
+    parameters:
+      weight: 0.45
+      density: 0.75
+      epsilon: 0.012
+  - model: models/crypto-momentum-breakout-8b
+    parameters:
+      weight: 0.35
+      density: 0.70
+      epsilon: 0.015
+  - model: models/crypto-kalshi-15m-sniper-8b
+    parameters:
+      weight: 0.55
+      density: 0.80
+      epsilon: 0.010
+
+parameters:
+  density: 0.75
+  epsilon: 0.012
+  normalize: true
+  int8_mask: true
+  lambda: 1.05
+
+# Domain metadata for WeCrypto execution
+metadata:
+  target_horizons: ["5m", "15m"]
+  underlyings: ["BTC", "ETH", "SOL", "XRP"]
+  sniper_mode: "pre_open_lead_in"
+  magprune_strategy: "gradient_magnitude_adaptive"

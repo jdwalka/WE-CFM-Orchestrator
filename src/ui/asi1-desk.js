@@ -5,6 +5,8 @@
 (function () {
   'use strict';
   if (typeof window === 'undefined' || window.Asi1Desk) return;
+  if (window._deskSubscribed) return;
+  window._deskSubscribed = true;
   const escapeHTML = (str) => String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 
   const COINS = ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'BNB', 'HYPE'];
@@ -243,6 +245,21 @@
   let minimized = false;
   let windowDeadlineMs = null;
   let countdownTimer = null;
+
+  // Memoize expensive quantitative calculations to prevent main-thread churn on 100ms ticks
+  const _predMemo = new Map();
+  function getMemoizedPrediction(sym, price) {
+    if (!Number.isFinite(price) || price <= 0) return null;
+    const key = `${sym}:${Math.floor(price / 0.01)}`; // quantize to 1 cent
+    if (_predMemo.has(key)) return _predMemo.get(key);
+    const Desk = window.Asi1DeskContract;
+    const pkt = buildPacket();
+    pkt.spot = price;
+    const result = Desk?.inferLocal?.(pkt, mode);
+    _predMemo.set(key, result);
+    if (_predMemo.size > 500) _predMemo.delete(_predMemo.keys().next().value);
+    return result;
+  }
 
   function formatCountdown(ms) {
     if (ms == null) return '—';
@@ -646,7 +663,10 @@
     const mergeEl = document.getElementById('adMergeWeights');
     if (mergeEl) {
       const diag = window.PredictionWeightMergeKit?.getMergeDiagnostics?.(coin);
-      mergeEl.textContent = diag ? `SLERP θ=${(diag.thetaDeg || 24).toFixed(0)}° · Sparsity ${(diag.sparsityPct || 12).toFixed(0)}%` : 'Adaptive Matrix Live';
+      const methodName = diag?.method?.toUpperCase() || 'DELLA-SLERP';
+      mergeEl.textContent = diag
+        ? `${methodName} θ=${(diag.thetaDeg || 21).toFixed(0)}° · Sparsity ${(diag.sparsityPct || 15).toFixed(0)}%`
+        : 'Adaptive Matrix Live';
     }
   }
 
@@ -738,9 +758,16 @@
       paintConnectivity(st?.diagnostics || {});
       paintNextHorizon();
 
-      const avSt = await invoke('agentverseStatus').catch(() => null);
-      if (avSt?.status) {
-        paintAgentverseHunter(avSt.status);
+      // Defer non-critical Agentverse poll off the main render thread
+      const pollAv = () => {
+        invoke('agentverseStatus').then((avSt) => {
+          if (avSt?.status) paintAgentverseHunter(avSt.status);
+        }).catch(() => null);
+      };
+      if (typeof requestIdleCallback === 'function') {
+        requestIdleCallback(pollAv);
+      } else {
+        setTimeout(pollAv, 0);
       }
     } catch (_) {
       paintAccounts({});
@@ -750,6 +777,47 @@
       _isRefreshing = false;
     }
   }
+
+  // ── rAF-Batched HUD Tile & Spot Update (pyth-batch) ──────────────────────────
+  function renderDeskBatch(syms) {
+    if (!Array.isArray(syms) || !syms.length) return;
+    const coin = document.getElementById('adCoin')?.value || 'BTC';
+    if (!syms.includes(coin)) return;
+
+    // Read phase
+    const price = window._pythPrices?.[coin];
+    if (!Number.isFinite(price) || price <= 0) return;
+
+    // Write phase: single DOM update pass without layout thrashing
+    const spotEl = document.getElementById('adSpot');
+    if (spotEl) {
+      spotEl.textContent = price >= 1000
+        ? price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+        : price.toFixed(2);
+    }
+
+    const ptbTxt = document.getElementById('adPtb')?.textContent?.replace(/,/g, '');
+    const ptbNum = Number(ptbTxt);
+    if (Number.isFinite(ptbNum) && ptbNum > 0) {
+      const delta = price - ptbNum;
+      const dist = Math.abs(delta);
+      const distBps = (dist / ptbNum) * 10000;
+      const isDefended = distBps <= 8;
+      const pinBanner = document.getElementById('adPinRiskBanner');
+      if (pinBanner) {
+        if (isDefended) {
+          pinBanner.style.display = 'block';
+          pinBanner.textContent = `⚠ PIN RISK DEFENSE DETECTED: Spot within $${dist.toFixed(1)} (${distBps.toFixed(1)} bps) of PTB. MM defense walls active.`;
+        } else if (pinBanner.dataset.persisted !== '1') {
+          pinBanner.style.display = 'none';
+        }
+      }
+    }
+  }
+
+  window.addEventListener('pyth-batch', (e) => {
+    if (e?.detail?.syms) renderDeskBatch(e.detail.syms);
+  });
 
   async function applyMode(next) {
     mode = next;
@@ -777,18 +845,29 @@
       tickCountdown();
       if (windowDeadlineMs != null) countdownTimer = setInterval(tickCountdown, 1000);
 
+      // Instant local baseline render (0ms optimistic response)
+      const Desk = window.Asi1DeskContract;
+      const provisional = Desk?.inferLocal?.(packet, mode);
+      if (provisional) {
+        provisional._meta = { model: 'provisional (local)', latency: 0, thought: 'Querying ASI:One live stream…' };
+        paintContract(provisional, { provisional: true });
+      }
+
       const modelChoice = document.getElementById('adModelChoice')?.value || 'auto';
       const effortChoice = document.getElementById('adReasoningEffort')?.value || 'auto';
       const webSearch = document.getElementById('adWebSearch')?.checked || false;
+
+      // Only enter planner mode if explicitly chosen by user toggle
+      const inferMode = (mode === 'planner') ? 'planner' : mode;
 
       const options = {
         model: modelChoice !== 'auto' ? modelChoice : undefined,
         reasoning_effort: (effortChoice === 'high' || effortChoice === 'medium' || effortChoice === 'low') ? effortChoice : 'low',
         enable_thinking: effortChoice === 'off' ? false : (effortChoice !== 'auto' ? true : undefined),
         web_search: webSearch ? true : undefined,
+        timeoutMs: inferMode === 'planner' ? 25000 : 8000,
       };
 
-      const inferMode = (packet.horizon === 'anytime' || String(packet.horizon || '').toLowerCase().includes('lookahead')) ? 'planner' : mode;
       const res = await invoke('infer', { packet, mode: inferMode, options });
       paintContract(res?.contract, res);
       window.dispatchEvent(new CustomEvent('asi1:desk', { detail: res }));
