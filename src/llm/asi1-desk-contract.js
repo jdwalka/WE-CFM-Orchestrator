@@ -36,6 +36,16 @@
       'urgency=now when TTC>=90 and the edge (deltaVsPtb vs yesProb, depthImbalance) is live and consistent; ' +
       'urgency=wait_pullback otherwise. spotAgeSec is how many seconds old the spot price is -- ' +
       'if spotAgeSec is large relative to TTC, treat spot as stale and prefer HOLD_FLAT over a timing call.',
+    'Pin Risk & Boundary Defense Guard: When secondsToClose (TTC) < 90 and spot is within 0.5σ or 8 bps of PTB ' +
+      '(deltaVsPtb is tiny, or pinRisk.isDefendedPinZone=true), market makers aggressively absorb order flow to pin ' +
+      'the strike and collect binary premium, causing orders to evaporate right after expiration (the 1-2s late dump trap). ' +
+      'In this zone, you MUST NOT call a late directional trade into the dying wire. Force action to HOLD_FLAT ' +
+      'or SIZE_DOWN with a PIN_RISK warning, and pivot your active guidance to the T+1 future window pre-open setup.',
+    'Range & Strike Viability: When rangeViability is present, favor CLEAN_TARGET strikes (adequate volatility runway, ' +
+      'distance >= 1.25σ) and strictly reject PIN_TRAP_DANGER strikes.',
+    'Future Windows (T+1): When futureWindowT1 is provided and TTC < 90s, cite the projected opening strike ' +
+      '(projectedOpenPtb) and forward vector (forecastDirection/sniperAction), advising the trader to position for ' +
+      'the upcoming window with full 15m/1h runway rather than risking pin execution.',
     'derivPressure (-1..1) and derivLabel (e.g. CROWDED LONGS, SHORT LIQ CASCADE, OI BUILDING) are ' +
       'supplementary context from cross-venue perp positioning, never a hole card: positive pressure/' +
       'CROWDED LONGS or LONG LIQ CASCADE means a pullback risks forced long liquidations amplifying the ' +
@@ -255,6 +265,22 @@
       }
     }
 
+    // ── Pin-Risk & Expiry Boundary Defense Guard ─────────────────────────
+    // Defends against the 1.23s post-expiry snap trap where MMs defend the strike right into the wire.
+    const isPinDefended = !isLookahead && (
+      (ttc != null && ttc <= 90 && Math.abs(deltaBps) < 6)
+      || !!packet.pinRisk?.isDefendedPinZone
+    );
+
+    const warnings = [];
+    if (isPinDefended) {
+      action = 'HOLD_FLAT';
+      sizeHint = 'skip';
+      urgency = 'late_window';
+      confidence = Math.min(confidence, 0.40);
+      warnings.push('PIN_RISK_DEFENDED: Spot within 0.5σ noise margin of strike in late window (<90s). MM defense risks 1-2s post-expiry snap. Do NOT chase wire; pivot to T+1.');
+    }
+
     let invalidation = 'no path';
     if (call === 'UP') {
       invalidation = `spot drops below ${effectivePtb} or yesProb falls under ${(effectiveYes - 0.03).toFixed(2)}`;
@@ -265,7 +291,13 @@
     const graviTag = gh ? ` [Gravi: ${gh.resonantRegime}, Coherence: ${gh.harmonicCoherence}%, Escape: ${gh.escapeRatio}x]` : '';
 
     let notes;
-    if (call === 'UP') {
+    if (isPinDefended) {
+      const t1 = packet.futureWindowT1 || {};
+      const t1Guidance = t1.projectedOpenPtb
+        ? ` Pivot to T+1 horizon: Projected PTB $${t1.projectedOpenPtb}, Forward Call ${t1.forecastDirection || '—'} (${t1.confidence || 0}%), Stance: ${t1.sniperAction || 'STANDBY'}.`
+        : '';
+      notes = `HOLD_FLAT. PIN_RISK_DEFENDED. Spot ${spot} is within ${Math.abs(delta).toFixed(1)} (${Math.abs(deltaBps).toFixed(1)} bps) of PTB ${effectivePtb} with ${ttc ?? '?'}s to close. MM defense walls risk pinning strike until snapshot and snapping 1-2s post-expiry.${t1Guidance}`;
+    } else if (call === 'UP') {
       notes = `UP. Spot ${spot} sits ${delta.toFixed(1)} above PTB ${effectivePtb} with ${ttc ?? '?'}s to close. YesProb ${effectiveYes.toFixed(2)} and mid ${effectiveMid.toFixed(3)} align upward. Depth imbalance ${imb.toFixed(2)} and near-touch notional ${notional} support buying.${graviTag}${ofeTag} Fade only if spot pierces PTB.`;
     } else if (call === 'DOWN') {
       notes = `DOWN. Spot ${spot} sits ${Math.abs(delta).toFixed(1)} below PTB ${effectivePtb} with ${ttc ?? '?'}s to close. YesProb ${effectiveYes.toFixed(2)} and mid ${effectiveMid.toFixed(3)} suggest downside. Depth imbalance ${imb.toFixed(2)} and near-touch notional ${notional} support selling.${graviTag}${ofeTag} Fade only if spot pierces PTB.`;
@@ -284,7 +316,7 @@
       size_hint: sizeHint,
       invalidation,
       notes,
-      warnings: [],
+      warnings: warnings,
       _meta: {
         model: selectModel(packet, m),
         account: selectModel(packet, m) === 'asi1-ultra' ? 'icloud' : 'mauro',
@@ -421,6 +453,70 @@
             }
           }
         } catch (_) { }
+        return null;
+      })(),
+      pinRisk: (() => {
+        try {
+          const Engine = (typeof window !== 'undefined' && window.PredictionEngine);
+          const sym = String(extras.sym || o.coin || o.sym || '').toUpperCase();
+          const spot = num(o.spot);
+          const ptb = num(o.priceToBeatNum ?? w.priceToBeatNum);
+          const ttc = num(o.secondsToClose ?? w.secondsToClose);
+          if (Engine && typeof Engine.getPinRisk === 'function' && spot > 0 && ptb > 0) {
+            return Engine.getPinRisk(sym, spot, ptb, ttc, num(w.depthImbalance ?? extras.depthImbalance) || 0);
+          }
+          if (spot > 0 && ptb > 0 && ttc != null && ttc <= 90) {
+            const dist = Math.abs(spot - ptb);
+            const distBps = (dist / ptb) * 10000;
+            const isDefended = distBps <= 8;
+            return {
+              sym,
+              spot,
+              ptb,
+              secondsToClose: ttc,
+              distance: dist,
+              distanceBps: distBps,
+              isDefendedPinZone: isDefended,
+              warning: isDefended ? 'PIN_RISK_DEFENDED: Spot within 8 bps of PTB in late window (<90s). MM defense risks 1-2s post-expiry snap.' : null,
+              recommendedAction: isDefended ? 'HOLD_FLAT_ROLL_T1' : 'PROCEED',
+            };
+          }
+        } catch (_) {}
+        return null;
+      })(),
+      rangeViability: (() => {
+        try {
+          const Engine = (typeof window !== 'undefined' && window.PredictionEngine);
+          const sym = String(extras.sym || o.coin || o.sym || '').toUpperCase();
+          const spot = num(o.spot);
+          const ptb = num(o.priceToBeatNum ?? w.priceToBeatNum);
+          const ttc = num(o.secondsToClose ?? w.secondsToClose);
+          const hMin = extras.horizon === '1h' || extras.horizon === '60m' ? 60 : (extras.horizon === '5m' ? 5 : 15);
+          if (Engine && typeof Engine.getRangeViability === 'function' && spot > 0) {
+            return Engine.getRangeViability(sym, hMin, ptb, ttc);
+          }
+        } catch (_) {}
+        return null;
+      })(),
+      futureWindowT1: (() => {
+        try {
+          const Engine = (typeof window !== 'undefined' && window.PredictionEngine);
+          const sym = String(extras.sym || o.coin || o.sym || '').toUpperCase();
+          const hMin = extras.horizon === '1h' || extras.horizon === '60m' ? 60 : (extras.horizon === '5m' ? 5 : 15);
+          if (Engine && typeof Engine.getPreOpenForecast === 'function') {
+            const f = Engine.getPreOpenForecast(sym, hMin);
+            if (f) {
+              return {
+                projectedOpenPtb: f.projectedOpenPtb,
+                projectedSettlement: f.projectedSettlement,
+                forecastDirection: f.forecastDirection,
+                confidence: f.confidence,
+                sniperAction: f.sniperAction,
+                msToNextBoundary: f.msToNextBoundary,
+              };
+            }
+          }
+        } catch (_) {}
         return null;
       })(),
     };

@@ -99,6 +99,8 @@
         <span style="font-size:10px;color:#00d4ff">api.asi1.ai</span>
       </div>
       <button class="ad-ask" id="adAsk" type="button">Ask ASI1</button>
+      <!-- Dynamic Pin-Risk Warning Banner -->
+      <div id="adPinRiskBanner" style="display:none;margin:8px 0 4px 0;padding:6px 8px;background:rgba(255,82,82,0.12);border:1px solid #ff5252;border-radius:6px;font-size:10px;line-height:1.4;color:#ff8080"></div>
       <div class="ad-row" style="margin-top:10px"><span class="ad-k">Action</span><span class="ad-badge hold-flat" id="adAction">HOLD_FLAT</span></div>
       <div class="ad-row"><span class="ad-k">Call</span><span class="ad-v" id="adCall">—</span></div>
       <div class="ad-row"><span class="ad-k">Conf</span><span class="ad-v" id="adConf">—</span></div>
@@ -108,7 +110,7 @@
       <div class="ad-row"><span class="ad-k">Spot</span><span class="ad-v" id="adSpot">—</span></div>
       <div class="ad-row"><span class="ad-k">PTB</span><span class="ad-v" id="adPtb">—</span></div>
       <div class="ad-row"><span class="ad-k">Closes in</span><span class="ad-v" id="adTtc">—</span></div>
-      <div style="margin:8px 0 4px 0;padding:6px 8px;background:#06080a;border:1px solid #1f2a38;border-radius:6px">
+      <div id="adNextHorizonBox" style="margin:8px 0 4px 0;padding:6px 8px;background:#06080a;border:1px solid #1f2a38;border-radius:6px;transition:border-color .3s, box-shadow .3s">
         <div style="display:flex;justify-content:space-between;align-items:center;font-size:10px;font-weight:700;color:#00d4ff;margin-bottom:4px">
           <span id="adNextHorizonTitle">NEXT HORIZON (T+1) · PRE-OPEN</span>
           <span id="adNextCountdown">—</span>
@@ -116,6 +118,16 @@
         <div class="ad-row" style="margin:2px 0"><span class="ad-k">Est. Strike PTB</span><span class="ad-v" id="adNextPtb">—</span></div>
         <div class="ad-row" style="margin:2px 0"><span class="ad-k">Pre-Open Call</span><span class="ad-v" id="adNextCall">—</span></div>
         <div class="ad-row" style="margin:2px 0"><span class="ad-k">Sniper Stance</span><span class="ad-v" id="adNextSniper">—</span></div>
+      </div>
+      <!-- Range & Strike Viability Card -->
+      <div id="adRangeCard" style="margin:8px 0 4px 0;padding:6px 8px;background:#06080a;border:1px solid #1f2a38;border-radius:6px">
+        <div style="display:flex;justify-content:space-between;align-items:center;font-size:10px;font-weight:700;color:#00d4ff;margin-bottom:4px">
+          <span>STRIKE & RANGE VIABILITY</span>
+          <span id="adRangeStatus" style="font-size:9px;color:#00e676">LADDER ACTIVE</span>
+        </div>
+        <div class="ad-row" style="margin:2px 0"><span class="ad-k">Safe Range (1.65σ)</span><span class="ad-v" id="adRangeCone" style="font-size:10px">—</span></div>
+        <div class="ad-row" style="margin:2px 0"><span class="ad-k">Strike Zone</span><span class="ad-v" id="adActiveStrikeZone" style="font-size:10px;font-weight:700">—</span></div>
+        <div class="ad-row" style="margin:2px 0"><span class="ad-k">Optimal Target</span><span class="ad-v" id="adOptimalTarget" style="font-size:10px;color:#00d4ff">—</span></div>
       </div>
       <div style="margin:8px 0 4px 0;padding:6px 8px;background:#06080a;border:1px solid #1f2a38;border-radius:6px">
         <div style="display:flex;justify-content:space-between;align-items:center;font-size:10px;font-weight:700;color:#00d4ff;margin-bottom:4px">
@@ -218,7 +230,56 @@
     const el = document.getElementById('adTtc');
     if (windowDeadlineMs == null) { if (el) el.textContent = '—'; return; }
     const remainingMs = windowDeadlineMs - Date.now();
+    const remainingSec = Math.max(0, Math.round(remainingMs / 1000));
     if (el) el.textContent = formatCountdown(remainingMs);
+
+    // Dynamic Pin-Risk & T+1 Hone-In Guard
+    const pinBanner = document.getElementById('adPinRiskBanner');
+    const nextBox = document.getElementById('adNextHorizonBox');
+    const nextTitle = document.getElementById('adNextHorizonTitle');
+
+    if (remainingSec <= 90 && remainingSec > 0) {
+      const spotTxt = document.getElementById('adSpot')?.textContent?.replace(/,/g, '');
+      const ptbTxt = document.getElementById('adPtb')?.textContent?.replace(/,/g, '');
+      const spotNum = Number(spotTxt);
+      const ptbNum = Number(ptbTxt);
+      const dist = (spotNum > 0 && ptbNum > 0) ? Math.abs(spotNum - ptbNum) : null;
+      const distBps = (dist != null && ptbNum > 0) ? (dist / ptbNum) * 10000 : null;
+
+      const isPinTrapped = distBps != null && distBps <= 8;
+      if (isPinTrapped && pinBanner) {
+        pinBanner.style.display = 'block';
+        pinBanner.textContent = `⚠ PIN RISK DEFENSE DETECTED: Spot within $${dist.toFixed(1)} (${distBps.toFixed(1)} bps) of PTB with ${remainingSec}s left. MM defense walls active; high probability of 1-2s post-expiry snap. Focus automatically honed on T+1 Pre-Open below.`;
+      }
+
+      if (nextBox) {
+        nextBox.style.borderColor = '#00d4ff';
+        nextBox.style.background = '#0a1018';
+        nextBox.style.boxShadow = '0 0 12px rgba(0, 212, 255, 0.25)';
+      }
+      if (nextTitle) {
+        nextTitle.textContent = 'NEXT HORIZON (T+1) · AUTO-HONED [EXPIRING PIN RISK]';
+        nextTitle.style.color = '#00e676';
+      }
+      paintNextHorizon();
+    } else {
+      if (pinBanner && pinBanner.dataset.persisted !== '1') {
+        pinBanner.style.display = 'none';
+      }
+      if (nextBox) {
+        nextBox.style.borderColor = '#1f2a38';
+        nextBox.style.background = '#06080a';
+        nextBox.style.boxShadow = 'none';
+      }
+      if (nextTitle) {
+        const horizon = document.getElementById('adHorizon')?.value || '15m';
+        const isHourly = horizon === '1h' || horizon === '60m' || horizon === 'hourly' || horizon === 'lookahead-1h';
+        const is5m = horizon === '5m' || horizon === 'lookahead-5m';
+        nextTitle.textContent = `NEXT HORIZON (T+1) · ${isHourly ? '1H' : (is5m ? '5M' : '15M')} PRE-OPEN`;
+        nextTitle.style.color = '#00d4ff';
+      }
+    }
+
     if (remainingMs <= 0 && countdownTimer) {
       clearInterval(countdownTimer);
       countdownTimer = null;
@@ -351,6 +412,44 @@
     document.getElementById('adFb').textContent = extra?.fallback
       ? ('offline inferLocal' + (extra.error ? ' — ' + extra.error : ''))
       : (contract._meta?.thought ? String(contract._meta.thought).slice(0, 240) : (contract._meta?.source === 'asi1' ? `ASI1 live (${contract._meta.model || 'model'})` : ''));
+
+    // ── Range Viability & Pin Risk Rendering ──────────────────────────────
+    const pinBanner = document.getElementById('adPinRiskBanner');
+    const isPinDefended = (contract.warnings || []).some(w => w.includes('PIN_RISK_DEFENDED'))
+      || (contract.notes || '').includes('PIN_RISK_DEFENDED')
+      || (contract.action === 'HOLD_FLAT' && (contract.warnings || []).some(w => w.toLowerCase().includes('pin')));
+
+    if (pinBanner) {
+      if (isPinDefended) {
+        pinBanner.style.display = 'block';
+        pinBanner.dataset.persisted = '1';
+        pinBanner.textContent = '⚠ PIN RISK DEFENSE ACTIVE: Price trapped near strike with late expiry. MM defense walls active; late directional trades risk 1-2s post-expiry snap. Active guidance pivoted to T+1 Pre-Open.';
+      } else {
+        delete pinBanner.dataset.persisted;
+        pinBanner.style.display = 'none';
+      }
+    }
+
+    const coin = document.getElementById('adCoin')?.value || 'BTC';
+    const horizon = document.getElementById('adHorizon')?.value || '15m';
+    const hMin = horizon === '1h' || horizon === '60m' ? 60 : (horizon === '5m' ? 5 : 15);
+    const rangeData = window.PredictionEngine?.getRangeViability?.(coin, hMin, Number(document.getElementById('adPtb')?.textContent?.replace(/,/g, '')));
+    if (rangeData) {
+      const coneEl = document.getElementById('adRangeCone');
+      if (coneEl) coneEl.textContent = `$${rangeData.safeBoundLower?.toLocaleString()} — $${rangeData.safeBoundUpper?.toLocaleString()} (±$${rangeData.expectedMoveDollar?.toLocaleString()})`;
+      const zoneEl = document.getElementById('adActiveStrikeZone');
+      if (zoneEl) {
+        const atm = rangeData.strikes?.find(s => s.type === 'ATM');
+        if (atm) {
+          zoneEl.textContent = `${atm.tag} (${atm.sigmaDist}σ · ${atm.distanceBps} bps)`;
+          zoneEl.style.color = atm.viabilityZone === 'CLEAN_TARGET' ? '#00e676' : atm.viabilityZone === 'PIN_TRAP_DANGER' ? '#ff5252' : '#ffb74d';
+        }
+      }
+      const optEl = document.getElementById('adOptimalTarget');
+      if (optEl && rangeData.bestTarget) {
+        optEl.textContent = `$${rangeData.bestTarget.strike.toLocaleString()} (${rangeData.bestTarget.name})`;
+      }
+    }
   }
 
   function buildPacket() {
@@ -460,6 +559,20 @@
       ...(isLookahead && forecast?.msToNextBoundary ? { msToNextBoundary: forecast.msToNextBoundary } : {}),
       ...(binaryIV !== null ? { binaryIV_5m: binaryIV } : {}),
       ...(binaryIV_15m !== null ? { binaryIV_15m: binaryIV_15m } : {}),
+      pinRisk: (spot > 0 && ptb > 0)
+        ? (window.PredictionEngine?.getPinRisk?.(coin, spot, ptb, ttc, Number(pkt.depthImbalance) || 0) || null)
+        : null,
+      rangeViability: (spot > 0)
+        ? (window.PredictionEngine?.getRangeViability?.(coin, hMin, ptb, ttc) || null)
+        : null,
+      futureWindowT1: forecast ? {
+        projectedOpenPtb: forecast.projectedOpenPtb,
+        projectedSettlement: forecast.projectedSettlement,
+        forecastDirection: forecast.forecastDirection,
+        confidence: forecast.confidence,
+        sniperAction: forecast.sniperAction,
+        msToNextBoundary: forecast.msToNextBoundary,
+      } : null,
     };
   }
 
