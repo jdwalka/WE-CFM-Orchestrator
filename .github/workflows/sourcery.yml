@@ -5,27 +5,39 @@ on:
     types: [opened, synchronize, reopened]
   issue_comment:
     types: [created]
+  workflow_dispatch:
 
 permissions:
   contents: read
   pull-requests: write
   issues: write
+  statuses: write
 
 jobs:
   review:
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request' || contains(github.event.comment.body, '@sourcery-ai')
+    if: >-
+      github.event_name == 'pull_request' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'issue_comment' && github.event.issue.pull_request && contains(github.event.comment.body, '@sourcery-ai'))
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || (github.event.issue.pull_request && github.event.issue.pull_request.head.sha) || github.ref }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
 
       - name: Sourcery Review Action
         uses: sourcery-ai/action@v1
         continue-on-error: true
         env:
-          SOURCERYAIREVIEW: ${{ secrets.SOURCERYAIREVIEW }}
+          SOURCERY_TOKEN: ${{ secrets.SOURCERY_TOKEN || secrets.SOURCERYAIREVIEW }}
+          SOURCERYAIREVIEW: ${{ secrets.SOURCERYAIREVIEW || secrets.SOURCERY_TOKEN }}
         with:
-          token: ${{ secrets.SOURCERYAIREVIEW }}
+          token: ${{ secrets.SOURCERY_TOKEN || secrets.SOURCERYAIREVIEW }}
 
