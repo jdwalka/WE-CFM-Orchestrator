@@ -443,6 +443,14 @@ contextBridge.exposeInMainWorld('electron', {
     setMode: (mode) => ipcRenderer.invoke('asi1:desk-mode', mode),
     infer: (payload) => ipcRenderer.invoke('asi1:desk-infer', payload),
     chat: (payload) => ipcRenderer.invoke('asi1:desk-chat', payload),
+    hunt: (payload) => ipcRenderer.invoke('asi1:agentverse-hunt', payload),
+    auditAgents: () => ipcRenderer.invoke('asi1:agentverse-audit'),
+    getHuntStatus: () => ipcRenderer.invoke('asi1:agentverse-status'),
+    onHuntCompleted: (cb) => {
+      const handler = (_e, data) => cb(data);
+      ipcRenderer.on('asi1:agentverse-hunt-completed', handler);
+      return () => ipcRenderer.removeListener('asi1:agentverse-hunt-completed', handler);
+    },
   },
   telegram: {
     status: () => ipcRenderer.invoke('telegram:status'),

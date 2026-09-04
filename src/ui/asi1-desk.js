@@ -119,6 +119,33 @@
         <div class="ad-row" style="margin:2px 0"><span class="ad-k">Pre-Open Call</span><span class="ad-v" id="adNextCall">—</span></div>
         <div class="ad-row" style="margin:2px 0"><span class="ad-k">Sniper Stance</span><span class="ad-v" id="adNextSniper">—</span></div>
       </div>
+      <!-- ═══ AGENTVERSE AUTONOMOUS SCOUT & HUNT PANEL ═══ -->
+      <div id="adAgentversePanel" style="margin:8px 0 4px 0;padding:6px 8px;background:#050a10;border:1px solid #005577;border-radius:6px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:5px">
+          <div style="display:flex;align-items:center;gap:4px">
+            <span style="font-size:10px;font-weight:700;color:#00e5ff;letter-spacing:.05em">AGENTVERSE HUNT</span>
+            <span id="adAvStatusBadge" style="font-size:9px;padding:1px 5px;border-radius:3px;background:#003344;color:#00e5ff;font-weight:600">CUED (60s)</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:4px">
+            <button id="adAvAuditBtn" type="button" title="Audit Agentverse agents" style="background:transparent;border:1px solid #005577;color:#8ab4f8;font-size:9px;padding:1px 5px;border-radius:3px;cursor:pointer">🔍 AUDIT</button>
+            <button id="adAvHuntBtn" type="button" title="Hunt contracts & intelligence now" style="background:transparent;border:1px solid #00e5ff;color:#00e5ff;font-size:9px;padding:1px 5px;border-radius:3px;cursor:pointer;font-weight:700">⚡ HUNT</button>
+          </div>
+        </div>
+        <!-- Active Roster Badges -->
+        <div id="adAvRosterBadges" style="display:flex;gap:3px;flex-wrap:wrap;margin-bottom:5px">
+          <span class="ad-pill" style="font-size:8px;padding:1px 4px;background:#081420;border:1px solid #004466;color:#8ab4f8" title="Polymarket Live Data Agent">📊 PolyLive</span>
+          <span class="ad-pill" style="font-size:8px;padding:1px 4px;background:#081420;border:1px solid #004466;color:#8ab4f8" title="Crypto Whale Radar">🐋 WhaleRadar</span>
+          <span class="ad-pill" style="font-size:8px;padding:1px 4px;background:#081420;border:1px solid #004466;color:#8ab4f8" title="Vedetta Sentiment Divergence">🎯 Vedetta</span>
+          <span class="ad-pill" style="font-size:8px;padding:1px 4px;background:#081420;border:1px solid #004466;color:#8ab4f8" title="Technical Analysis Agent">📈 TA-Ind</span>
+        </div>
+        <div class="ad-row" style="margin:2px 0"><span class="ad-k" style="font-size:10px">Macro Regime</span><span class="ad-v" id="adAvMacro" style="font-size:10px">—</span></div>
+        <div class="ad-row" style="margin:2px 0"><span class="ad-k" style="font-size:10px">Whale Bias</span><span class="ad-v" id="adAvWhale" style="font-size:10px">—</span></div>
+        <div class="ad-row" style="margin:2px 0"><span class="ad-k" style="font-size:10px">Divergence</span><span class="ad-v" id="adAvDivergence" style="font-size:10px">—</span></div>
+        <!-- Top Hunted Opportunities -->
+        <div id="adAvOpportunities" style="margin-top:4px;display:flex;flex-direction:column;gap:3px">
+          <div style="font-size:9px;color:#8b929a;font-style:italic">Cued on startup. Agents will hunt Polymarket contracts & orderbooks automatically.</div>
+        </div>
+      </div>
       <!-- Range & Strike Viability Card -->
       <div id="adRangeCard" style="margin:8px 0 4px 0;padding:6px 8px;background:#06080a;border:1px solid #1f2a38;border-radius:6px">
         <div style="display:flex;justify-content:space-between;align-items:center;font-size:10px;font-weight:700;color:#00d4ff;margin-bottom:4px">
@@ -320,6 +347,9 @@
         setMode: 'asi1:desk-mode',
         infer: 'asi1:desk-infer',
         chat: 'asi1:desk-chat',
+        hunt: 'asi1:agentverse-hunt',
+        auditAgents: 'asi1:agentverse-audit',
+        agentverseStatus: 'asi1:agentverse-status',
         'ai:run-inference': 'ai:run-inference',
       };
       return window.electron.invoke(map[name] || name, payload);
@@ -620,6 +650,81 @@
     }
   }
 
+  let _avCuedSecondsLeft = 0;
+  function paintAgentverseHunter(st) {
+    if (!st) return;
+    const badge = document.getElementById('adAvStatusBadge');
+    const macroEl = document.getElementById('adAvMacro');
+    const whaleEl = document.getElementById('adAvWhale');
+    const divEl = document.getElementById('adAvDivergence');
+    const oppsEl = document.getElementById('adAvOpportunities');
+
+    const status = st.status || 'IDLE';
+    _avCuedSecondsLeft = Number(st.cuedSecondsLeft || 0);
+
+    if (badge) {
+      if (status === 'CUED') {
+        badge.textContent = `CUED (${_avCuedSecondsLeft}s)`;
+        badge.style.background = '#003344';
+        badge.style.color = '#00e5ff';
+      } else if (status === 'HUNTING') {
+        badge.textContent = 'HUNTING (Planner)…';
+        badge.style.background = '#332000';
+        badge.style.color = '#ffb74d';
+      } else if (status === 'COMPLETED') {
+        const ageSec = st.latestHunt?.timestamp ? Math.round((Date.now() - st.latestHunt.timestamp) / 1000) : 0;
+        const ageStr = ageSec < 60 ? `${ageSec}s ago` : `${Math.round(ageSec / 60)}m ago`;
+        badge.textContent = `LIVE INTEL (${ageStr})`;
+        badge.style.background = '#002810';
+        badge.style.color = '#00e676';
+      } else if (status === 'ERROR') {
+        badge.textContent = 'HUNT ERR';
+        badge.style.background = '#280000';
+        badge.style.color = '#ff5252';
+      } else {
+        badge.textContent = status;
+        badge.style.background = '#0a1018';
+        badge.style.color = '#8b929a';
+      }
+    }
+
+    const hunt = st.latestHunt;
+    if (hunt) {
+      if (macroEl) {
+        macroEl.textContent = hunt.macroRegime || '—';
+        macroEl.style.color = hunt.macroRegime === 'RISK_ON' ? '#00e676' : hunt.macroRegime === 'RISK_OFF' ? '#ff5252' : '#8ab4f8';
+      }
+      if (whaleEl) {
+        const w = hunt.whaleRadar || {};
+        whaleEl.textContent = w.bias ? `${w.bias.replace(/_/g, ' ')}` : '—';
+        whaleEl.style.color = (w.bias || '').includes('BULL') ? '#00e676' : (w.bias || '').includes('BEAR') ? '#ff5252' : '#8b929a';
+      }
+      if (divEl) {
+        const d = hunt.sentimentDivergence || {};
+        divEl.textContent = d.verdict ? d.verdict.slice(0, 42) : '—';
+        divEl.style.color = d.edgeDirection === 'UP' ? '#00e676' : d.edgeDirection === 'DOWN' ? '#ff5252' : '#8ab4f8';
+      }
+
+      if (oppsEl && Array.isArray(hunt.scoutedOpportunities) && hunt.scoutedOpportunities.length > 0) {
+        oppsEl.innerHTML = hunt.scoutedOpportunities.slice(0, 3).map((op) => {
+          const actColor = op.action === 'BUY_UP' ? '#00e676' : op.action === 'BUY_DOWN' ? '#ff5252' : '#ffb74d';
+          const strikeStr = op.targetStrike ? `$${Number(op.targetStrike).toLocaleString()}` : '';
+          const edgeStr = op.edgePct ? ` (${op.edgePct})` : '';
+          const pinBadge = op.pinRiskSafe === false ? '<span style="color:#ff5252;margin-left:4px">⚠ PIN</span>' : '';
+          return `<div style="display:flex;justify-content:space-between;align-items:center;font-size:9px;background:#03080e;padding:3px 5px;border-radius:4px;border-left:2px solid ${actColor}">
+            <div style="display:flex;align-items:center;gap:4px">
+              <span style="font-weight:700;color:#e6e8eb">${op.symbol} ${op.horizon || '15m'}</span>
+              <span style="color:${actColor};font-weight:700">${op.action}</span>
+              <span style="color:#8ab4f8">${strikeStr}${edgeStr}</span>
+              ${pinBadge}
+            </div>
+            <span style="color:#00d4ff;font-weight:600">${op.confidence != null ? Math.round(op.confidence * 100) + '%' : ''}</span>
+          </div>`;
+        }).join('');
+      }
+    }
+  }
+
   let _isRefreshing = false;
   async function refreshStatus() {
     if (_isRefreshing) return;
@@ -632,6 +737,11 @@
       paintAccounts(st?.diagnostics || {});
       paintConnectivity(st?.diagnostics || {});
       paintNextHorizon();
+
+      const avSt = await invoke('agentverseStatus').catch(() => null);
+      if (avSt?.status) {
+        paintAgentverseHunter(avSt.status);
+      }
     } catch (_) {
       paintAccounts({});
       paintConnectivity({});
@@ -820,6 +930,88 @@
   // click — actual trade-signal inference (ask()) stays manual/on-demand.
   // Relaxed to 15s to keep UI / IPC bus instantaneous and avoid polling churn.
   setInterval(refreshStatus, 15000);
+
+  // ───────────────────────────────────────────────────────────────────────
+  //  AGENTVERSE AUTONOMOUS HUNTER — HUD wiring & 1s cue ticker
+  // ───────────────────────────────────────────────────────────────────────
+  setInterval(() => {
+    if (_avCuedSecondsLeft > 0) {
+      _avCuedSecondsLeft -= 1;
+      const badge = document.getElementById('adAvStatusBadge');
+      if (badge && badge.textContent.startsWith('CUED')) {
+        badge.textContent = `CUED (${_avCuedSecondsLeft}s)`;
+      }
+    }
+  }, 1000);
+
+  const avHuntBtn = document.getElementById('adAvHuntBtn');
+  if (avHuntBtn) {
+    avHuntBtn.addEventListener('click', async () => {
+      avHuntBtn.disabled = true;
+      avHuntBtn.textContent = '⚡…';
+      const badge = document.getElementById('adAvStatusBadge');
+      if (badge) {
+        badge.textContent = 'HUNTING (Planner)…';
+        badge.style.background = '#332000';
+        badge.style.color = '#ffb74d';
+      }
+      try {
+        const packet = buildPacket();
+        const res = await invoke('hunt', {
+          marketContext: {
+            coins: ['BTC', 'ETH', 'SOL'],
+            [packet.sym || 'BTC']: {
+              spot: packet.spot,
+              ptb15m: packet.priceToBeatNum,
+              pinRisk: packet.pinRisk,
+            },
+          },
+        });
+        if (res?.result) {
+          paintAgentverseHunter({ status: 'COMPLETED', latestHunt: res.result });
+        }
+      } catch (_) {
+        if (badge) { badge.textContent = 'HUNT ERR'; badge.style.color = '#ff5252'; }
+      } finally {
+        avHuntBtn.disabled = false;
+        avHuntBtn.textContent = '⚡ HUNT';
+      }
+    });
+  }
+
+  const avAuditBtn = document.getElementById('adAvAuditBtn');
+  if (avAuditBtn) {
+    avAuditBtn.addEventListener('click', async () => {
+      avAuditBtn.disabled = true;
+      avAuditBtn.textContent = '🔍…';
+      try {
+        const res = await invoke('auditAgents');
+        const count = res?.audit?.onlineCount ?? 0;
+        const total = res?.audit?.totalAgents ?? 0;
+        const badge = document.getElementById('adAvStatusBadge');
+        if (badge) {
+          badge.textContent = `AUDITED ${count}/${total} OK`;
+          badge.style.background = '#002810';
+          badge.style.color = '#00e676';
+          setTimeout(() => refreshStatus(), 5000);
+        }
+      } catch (_) {
+        avAuditBtn.textContent = 'ERR';
+      } finally {
+        avAuditBtn.disabled = false;
+        avAuditBtn.textContent = '🔍 AUDIT';
+      }
+    });
+  }
+
+  if (window.electron?.asi1?.onHuntCompleted) {
+    window.electron.asi1.onHuntCompleted((hunt) => {
+      paintAgentverseHunter({ status: 'COMPLETED', latestHunt: hunt });
+    });
+  }
+  window.addEventListener('asi1:agentverse-hunt-completed', (e) => {
+    if (e?.detail) paintAgentverseHunter({ status: 'COMPLETED', latestHunt: e.detail });
+  });
 
   // ───────────────────────────────────────────────────────────────────────
   //  ORBITAL FORESIGHT ENGINE — HUD wiring

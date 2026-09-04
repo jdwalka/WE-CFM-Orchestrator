@@ -2819,6 +2819,36 @@ ipcMain.handle('asi1:precontract-brief', async (_event, args = {}) => {
   }
 });
 
+// ── IPC: ASI1 Agentverse Autonomous Hunter & Agent Audit ──────────────────
+ipcMain.handle('asi1:agentverse-hunt', async (_event, args = {}) => {
+  try {
+    const AgentverseHunter = require('../src/llm/agentverse-hunter');
+    const result = await AgentverseHunter.runAutonomousHunt(args.marketContext || {});
+    return { ok: true, result };
+  } catch (err) {
+    return { ok: false, error: err?.message || 'asi1-agentverse-hunt-error' };
+  }
+});
+
+ipcMain.handle('asi1:agentverse-audit', async () => {
+  try {
+    const AgentverseHunter = require('../src/llm/agentverse-hunter');
+    const audit = await AgentverseHunter.auditAgentverseRoster();
+    return { ok: true, audit };
+  } catch (err) {
+    return { ok: false, error: err?.message || 'asi1-agentverse-audit-error' };
+  }
+});
+
+ipcMain.handle('asi1:agentverse-status', async () => {
+  try {
+    const AgentverseHunter = require('../src/llm/agentverse-hunter');
+    return { ok: true, status: AgentverseHunter.getHunterStatus() };
+  } catch (err) {
+    return { ok: false, error: err?.message || 'asi1-agentverse-status-error' };
+  }
+});
+
 // ── IPC: Coinbase Authentication ───────────────────────────────────────────
 ipcMain.handle('coinbase:generate-jwt', async (_, options = {}) => {
   try {
@@ -4521,6 +4551,20 @@ app.whenReady().then(async () => {
     }
     logStartupHealth('post-pyth-init');
   })();
+
+  // Proactive Agentverse Hunter: cues 60s after window is ready, non-blocking
+  try {
+    const AgentverseHunter = require('../src/llm/agentverse-hunter');
+    AgentverseHunter.onHuntCompleted((huntResult) => {
+      if (mainWin && !mainWin.isDestroyed()) {
+        mainWin.webContents.send('asi1:agentverse-hunt-completed', huntResult);
+      }
+    });
+    AgentverseHunter.startAutonomousScheduler({ bootDelayMs: 60_000, intervalMs: 300_000 });
+    console.log('[AgentverseHunter] Autonomous multi-agent scheduler initialized; cued to hunt in 60s');
+  } catch (err) {
+    console.warn('[AgentverseHunter] initialization deferred:', err.message);
+  }
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
