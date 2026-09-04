@@ -165,8 +165,11 @@ const PYTH_FEEDS = {
 const fs = require('fs');
 const path = require('path');
 
+let _cachedPythProKey = null;
+
 function readPythProKeyDirect() {
   if (process.env.PYTH_PRO_API_KEY) return process.env.PYTH_PRO_API_KEY;
+  if (_cachedPythProKey != null) return _cachedPythProKey;
   const paths = [
     path.join(__dirname, '../../secrets/PYTH_PRO_API_KEY.txt'),
     path.join(__dirname, '../secrets/PYTH_PRO_API_KEY.txt'),
@@ -180,11 +183,15 @@ function readPythProKeyDirect() {
         const raw = fs.readFileSync(p, 'utf8').trim();
         const lines = raw.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
         const k = lines.find(l => !l.startsWith('#') && !l.includes('PYTH_PRO_API_KEY') && l.length > 20) || lines.at(-1);
-        if (k) return k;
+        if (k) {
+          _cachedPythProKey = k;
+          return _cachedPythProKey;
+        }
       }
     } catch (_) {}
   }
-  return '';
+  _cachedPythProKey = '';
+  return _cachedPythProKey;
 }
 
 async function fetchPythSpotDirect(coin) {
@@ -311,6 +318,10 @@ async function deskInfer(packet, mode, options = {}) {
       packet.spotSource = 'pyth-hermes-direct';
       packet.spotAgeSec = Math.max(0, Math.round((Date.now() - livePyth.publishTime) / 1000));
     }
+    if (directPtb && directPtb > 0) {
+      packet.priceToBeatNum = directPtb;
+      packet.priceToBeatSource = 'polymarket-contract';
+    }
   }
 
   const isLookahead = packet.horizon === 'anytime' || String(packet.horizon || '').toLowerCase().includes('lookahead');
@@ -319,8 +330,8 @@ async function deskInfer(packet, mode, options = {}) {
     packet.priceToBeatSource = 'lookahead-pre-open-forecast';
   }
 
-  // If PTB is missing or zero, hydrate the immutable contract opening strike (not live TWAP)
-  if (!isLookahead && (!packet.priceToBeatNum || packet.priceToBeatNum <= 0)) {
+  // If PTB is still missing or zero, and not already queried in the parallel step above
+  if (!isLookahead && (!packet.priceToBeatNum || packet.priceToBeatNum <= 0) && !needPtb) {
     const directPtb = await fetchPolymarketPtbDirect(packet.sym, packet.horizon);
     if (directPtb && directPtb > 0) {
       packet.priceToBeatNum = directPtb;

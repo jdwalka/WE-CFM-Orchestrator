@@ -261,7 +261,6 @@
         nextTitle.textContent = 'NEXT HORIZON (T+1) · AUTO-HONED [EXPIRING PIN RISK]';
         nextTitle.style.color = '#00e676';
       }
-      paintNextHorizon();
     } else {
       if (pinBanner && pinBanner.dataset.persisted !== '1') {
         pinBanner.style.display = 'none';
@@ -621,7 +620,11 @@
     }
   }
 
+  let _isRefreshing = false;
   async function refreshStatus() {
+    if (_isRefreshing) return;
+    if (minimized || (typeof document !== 'undefined' && document.hidden)) return;
+    _isRefreshing = true;
     try {
       const st = await invoke('status');
       if (st?.mode) mode = st.mode;
@@ -633,6 +636,8 @@
       paintAccounts({});
       paintConnectivity({});
       paintNextHorizon();
+    } finally {
+      _isRefreshing = false;
     }
   }
 
@@ -807,23 +812,14 @@
     }
   } catch (_) {}
 
-  document.getElementById('adModelChoice')?.addEventListener('change', (e) => {
-    try { window.localStorage.setItem(MODEL_KEY, e.target.value); } catch (_) {}
-  });
-  document.getElementById('adReasoningEffort')?.addEventListener('change', (e) => {
-    try { window.localStorage.setItem(REASONING_KEY, e.target.value); } catch (_) {}
-  });
-  document.getElementById('adWebSearch')?.addEventListener('change', (e) => {
-    try { window.localStorage.setItem(WEBSEARCH_KEY, e.target.checked ? '1' : '0'); } catch (_) {}
-  });
-
   setMinimized(minimized);
   paintMode();
   applyMode(mode);
   refreshStatus();
   // Auto-refresh connectivity (free diagnostics probe) without requiring a
   // click — actual trade-signal inference (ask()) stays manual/on-demand.
-  setInterval(refreshStatus, 3000);
+  // Relaxed to 15s to keep UI / IPC bus instantaneous and avoid polling churn.
+  setInterval(refreshStatus, 15000);
 
   // ───────────────────────────────────────────────────────────────────────
   //  ORBITAL FORESIGHT ENGINE — HUD wiring
@@ -986,23 +982,20 @@
     });
   }
 
-  // Auto-start the OSL scanner when the desk loads (deferred to avoid blocking)
+  // Initialize OFE panel from existing scan (if present) without auto-spamming background LLM completions.
+  // Full scans can be triggered on-demand via the Force Scan button.
   setTimeout(() => {
     try {
       const OFE = window.OrbitalForesightEngine;
-      if (!OFE || typeof OFE.startOsl !== 'function') return;
+      if (!OFE) return;
       const sym = document.getElementById('adCoin')?.value || 'BTC';
-      OFE.startOsl({
-        symbols: [sym],
-        horizon: '15m',
-        model: 'asi1-mini',
-        webSearch: false,
-        useAgentverse: false,
-        verbose: false,
-      });
+      const existingScan = typeof OFE.getLatestScan === 'function' ? OFE.getLatestScan(sym) : null;
+      if (existingScan) {
+        paintOfePanel(existingScan);
+      }
       // Poll scan age every 30 s to keep the age counter live
       setInterval(() => {
-        const scan = OFE.getLatestScan(document.getElementById('adCoin')?.value || 'BTC');
+        const scan = typeof OFE.getLatestScan === 'function' ? OFE.getLatestScan(document.getElementById('adCoin')?.value || 'BTC') : null;
         if (scan) {
           const ageEl = document.getElementById('ofeScanAge');
           if (ageEl && scan.epochMs) {
@@ -1011,9 +1004,9 @@
           }
           // Update status freshness
           const coinNow = document.getElementById('adCoin')?.value || 'BTC';
-          const rhc = OFE.getRhcStatus(coinNow);
+          const rhc = typeof OFE.getRhcStatus === 'function' ? OFE.getRhcStatus(coinNow) : null;
           const statusEl = document.getElementById('ofeStatus');
-          if (statusEl) {
+          if (statusEl && rhc) {
             if (rhc.stale || rhc.dead) {
               statusEl.textContent = rhc.dead ? '⚠ DEAD' : '◈ STALE';
               statusEl.style.color = '#ffb74d';

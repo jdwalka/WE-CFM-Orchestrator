@@ -213,7 +213,15 @@ const _deadAsi1Keys = new Set([
   'sk_4dab599663b94db09603f3f4f73aa3f92e8a14aefbf84524a2b21db691b56e2a', // gitgoin 401
 ]);
 
-function resolveAsi1ApiKeys() {
+let _cachedAsi1Keys = null;
+let _cachedAsi1KeysTs = 0;
+const KEYS_CACHE_TTL_MS = 60_000;
+
+function resolveAsi1ApiKeys(force = false) {
+  const now = Date.now();
+  if (!force && _cachedAsi1Keys && (now - _cachedAsi1KeysTs < KEYS_CACHE_TTL_MS)) {
+    return _cachedAsi1Keys;
+  }
   const keys = [];
   const seen = new Set();
   for (const spec of KEY_ENV_NAMES) {
@@ -254,6 +262,8 @@ function resolveAsi1ApiKeys() {
     return 0;
   });
 
+  _cachedAsi1Keys = keys;
+  _cachedAsi1KeysTs = now;
   return keys;
 }
 
