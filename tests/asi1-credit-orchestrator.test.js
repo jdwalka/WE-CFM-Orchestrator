@@ -42,5 +42,41 @@ test('planner/reasoning mode is available on non-5m horizons when explicitly ena
   orch.setMode(restore);
 });
 
-console.log(`\n${passed} passed, ${failed} failed`);
-process.exit(failed ? 1 : 0);
+test('hourly horizon spec maps to 3600s interval and tags', () => {
+  const spec = orch._horizonSpec('1h');
+  assert.strictEqual(spec.intervalSec, 3600);
+  assert.deepStrictEqual(spec.tags, ['1h', '60m']);
+});
+
+(async () => {
+  try {
+    const hourlyPkt = {
+      sym: 'BTC',
+      horizon: '1h',
+      isHourly: true,
+      spot: 68450.25,
+      hourlyLadder: [
+        { low: 68300, high: 68400, yesAsk: 0.20, prob: 0.20 },
+        { low: 68400, high: 68500, yesAsk: 0.50, prob: 0.50 },
+        { low: 68500, high: 68600, yesAsk: 0.25, prob: 0.25 },
+      ],
+      spotBucket: { low: 68400, high: 68500, yesProb: 0.50 },
+      secondsToClose: 1800,
+    };
+    const res = await orch.deskInfer(hourlyPkt, 'asi1_only');
+    assert.ok(res.ok, 'Expected ok: true');
+    assert.ok(res.contract, 'Expected contract in res');
+    assert.ok(hourlyPkt.priceToBeatNum > 0, 'Hourly PTB should be anchored');
+    assert.strictEqual(hourlyPkt.priceToBeatSource, 'hourly-range-ladder');
+    assert.strictEqual(hourlyPkt.priceToBeatNum, 68450);
+    passed += 1;
+    console.log('PASS deskInfer resolves hourly packet without waiting for binary PTB');
+  } catch (err) {
+    failed += 1;
+    console.error('FAIL deskInfer resolves hourly packet without waiting for binary PTB');
+    console.error(err);
+  }
+
+  console.log(`\n${passed} passed, ${failed} failed`);
+  process.exit(failed ? 1 : 0);
+})();

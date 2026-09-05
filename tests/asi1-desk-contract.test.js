@@ -173,5 +173,33 @@ test('XRP 4-decimal precision handles sub-cent spot, PTB, delta, and duration', 
   assert.ok(c.notes.includes('$1,523.50'), `Expected $1,523.50 in notes, got: ${c.notes}`);
 });
 
+test('Hourly contract resolves using hourly range ladder without binary PTB', () => {
+  const hourlyPkt = {
+    sym: 'BTC',
+    horizon: '1h',
+    isHourly: true,
+    spot: 68450.25,
+    hourlyLadder: [
+      { low: 68200, high: 68300, yesAsk: 0.08, prob: 0.08 },
+      { low: 68300, high: 68400, yesAsk: 0.22, prob: 0.22 },
+      { low: 68400, high: 68500, yesAsk: 0.42, prob: 0.42 },
+      { low: 68500, high: 68600, yesAsk: 0.20, prob: 0.20 },
+      { low: 68600, high: 68700, yesAsk: 0.08, prob: 0.08 },
+    ],
+    spotBucket: { low: 68400, high: 68500, yesProb: 0.42 },
+    targetCloseTime: '2026-09-05T13:00:00.000Z',
+    targetCloseHourUtc: 'Sat, 05 Sep 2026 13:00:00 GMT',
+    secondsToClose: 1800,
+  };
+  const c = Desk.inferLocal(hourlyPkt, 'asi1_only');
+  assert.ok(c.action !== 'HOLD_FLAT' || c.warnings.length === 0, 'Should not fail on missing binary PTB');
+  assert.ok(c.notes.includes('HOURLY RANGE'), `Expected HOURLY RANGE in notes, got: ${c.notes}`);
+  assert.ok(c.notes.includes('68,400'), `Expected bracket low in notes, got: ${c.notes}`);
+  assert.ok(c.notes.includes('68,500'), `Expected bracket high in notes, got: ${c.notes}`);
+  assert.ok(c.notes.includes('13:00:00 GMT') || c.notes.includes('top of the hour'), `Expected close time in notes, got: ${c.notes}`);
+  assert.ok(!c.notes.includes('02 contract expiry'), 'Should never reference stale 02 contract expiry');
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);
+

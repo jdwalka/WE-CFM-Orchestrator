@@ -538,29 +538,50 @@
     const cache = (typeof window !== 'undefined' && window.candleCache?.[coin]) || {};
     const forecast = window.PredictionEngine?.getPreOpenForecast?.(coin, hMin);
 
+    const nowMs = Date.now();
+    const hourlyCloseMs = Math.ceil(nowMs / 3600000) * 3600000;
+    const hourlyTtc = Math.max(0, Math.round((hourlyCloseMs - nowMs) / 1000));
+    const targetCloseTime = new Date(hourlyCloseMs).toISOString();
+    const targetCloseHourUtc = new Date(hourlyCloseMs).toUTCString();
+
+    const hourlyRanges = (typeof window !== 'undefined' && window.HourlyRangesPanel?.getRanges?.(coin))
+      || pkt.hourlyLadder
+      || [];
+
     const pythPrice = Number(window.PythBrowser?.getPrice?.(coin) || window._pythPrices?.[coin] || 0);
     const rawSpot = Number(pkt.spot || (pythPrice > 0 ? pythPrice : 0) || pred.price || pred.currentPrice || cache.ticker?.usd || cache.candles?.[cache.candles.length - 1]?.c || 0);
+    const spot = Number.isFinite(rawSpot) && rawSpot > 0 ? rawSpot : null;
+
+    let spotBucket = (spot != null && hourlyRanges.length)
+      ? (hourlyRanges.find(r => spot >= Number(r.low) && spot <= Number(r.high)) || null)
+      : (pkt.spotBucket || null);
 
     let rawPtb = Number(pkt.priceToBeatNum || poly.priceToBeatNum || poly.targetPriceNum || 0);
     if ((!rawPtb || isNaN(rawPtb)) && isLookahead && forecast?.projectedOpenPtb) {
       rawPtb = forecast.projectedOpenPtb;
     }
-
-    const spot = Number.isFinite(rawSpot) && rawSpot > 0 ? rawSpot : null;
+    if ((!rawPtb || isNaN(rawPtb)) && isHourly) {
+      if (spotBucket) rawPtb = (Number(spotBucket.low) + Number(spotBucket.high)) / 2;
+      else if (hourlyRanges[0]) rawPtb = (Number(hourlyRanges[0].low) + Number(hourlyRanges[0].high)) / 2;
+      else if (spot != null) rawPtb = spot;
+    }
     const ptb = Number.isFinite(rawPtb) && rawPtb > 0 ? rawPtb : null;
+
     const yesProb = Number.isFinite(Number(pkt.yesProb))
       ? Number(pkt.yesProb)
       : (Number.isFinite(Number(poly.probability))
         ? Number(poly.probability)
-        : (isLookahead && forecast?.pUp != null ? forecast.pUp : 0.50));
+        : (isHourly && spotBucket?.yesProb != null ? Number(spotBucket.yesProb) : (isLookahead && forecast?.pUp != null ? forecast.pUp : 0.50)));
     const mid = Number.isFinite(Number(pkt.mid)) ? Number(pkt.mid) : (Number.isFinite(Number(poly.mid)) ? Number(poly.mid) : yesProb);
-    const ttc = isLookahead && forecast?.msToNextBoundary != null
-      ? Math.max(1, Math.round(forecast.msToNextBoundary / 1000))
-      : (Number.isFinite(Number(pkt.secondsToClose))
-        ? Number(pkt.secondsToClose)
-        : (Number.isFinite(Number(poly.secondsToClose))
-          ? Number(poly.secondsToClose)
-          : (isHourly ? 3600 : 180)));
+    const ttc = isHourly
+      ? hourlyTtc
+      : (isLookahead && forecast?.msToNextBoundary != null
+        ? Math.max(1, Math.round(forecast.msToNextBoundary / 1000))
+        : (Number.isFinite(Number(pkt.secondsToClose))
+          ? Number(pkt.secondsToClose)
+          : (Number.isFinite(Number(poly.secondsToClose))
+            ? Number(poly.secondsToClose)
+            : 180)));
 
     const delta = (spot != null && ptb != null) ? (spot - ptb) : 0;
     const pathDir = delta > 0 ? 'UP' : delta < 0 ? 'DOWN' : 'FLAT';
@@ -596,11 +617,19 @@
       }
     }
 
+    const activeSlug = pkt.slug || poly.slug || (isHourly ? `${coin.toLowerCase()}-hourly-ranges-${targetCloseTime}` : (is5m ? `${coin.toLowerCase()}-updown-5m` : `${coin.toLowerCase()}-updown-15m`));
+
     return {
-      ...(Desk?.SAMPLE_PACKET || {}),
-      ...pkt,
       sym: coin,
       horizon,
+      slug: activeSlug,
+      isHourly,
+      marketType: isHourly ? 'hourly_ranges' : 'updown_binary',
+      hourlyRanges,
+      hourlyLadder: hourlyRanges,
+      spotBucket,
+      targetCloseTime,
+      targetCloseHourUtc,
       spot,
       spotSource: pkt.spotSource || (pythPrice > 0 ? 'pyth-browser' : 'pyth'),
       spotAgeSec: spotAgeSec ?? null,
@@ -617,7 +646,7 @@
       ...(isLookahead && forecast?.msToNextBoundary ? { msToNextBoundary: forecast.msToNextBoundary } : {}),
       ...(binaryIV !== null ? { binaryIV_5m: binaryIV } : {}),
       ...(binaryIV_15m !== null ? { binaryIV_15m: binaryIV_15m } : {}),
-      pinRisk: (spot > 0 && ptb > 0)
+      pinRisk: (spot > 0 && ptb > 0 && !isHourly)
         ? (window.PredictionEngine?.getPinRisk?.(coin, spot, ptb, ttc, Number(pkt.depthImbalance) || 0) || null)
         : null,
       rangeViability: (spot > 0)
@@ -631,6 +660,14 @@
         sniperAction: forecast.sniperAction,
         msToNextBoundary: forecast.msToNextBoundary,
       } : null,
+      ...pkt,
+      sym: coin,
+      horizon,
+      slug: activeSlug,
+      isHourly,
+      spot,
+      priceToBeatNum: ptb,
+      secondsToClose: ttc,
     };
   }
 
@@ -871,11 +908,20 @@
       }
       const ptbEl = document.getElementById('adPtb');
       if (ptbEl) {
-        ptbEl.textContent = packet?.priceToBeatNum != null
-          ? (window.CoinPrecision?.formatCoinStrike
-              ? window.CoinPrecision.formatCoinStrike(coin, packet.priceToBeatNum, { prefix: '' })
-              : Number(packet.priceToBeatNum).toLocaleString('en-US', { minimumFractionDigits: (coin === 'XRP' || coin === 'DOGE') ? 4 : 2, maximumFractionDigits: (coin === 'XRP' || coin === 'DOGE') ? 4 : 2 }))
-          : '—';
+        if (packet?.isHourly && packet?.spotBucket) {
+          const bLabel = typeof packet.spotBucket === 'string'
+            ? packet.spotBucket
+            : (packet.spotBucket.label || packet.spotBucket.bracket || (packet.spotBucket.low != null && packet.spotBucket.high != null ? `$${packet.spotBucket.low}–$${packet.spotBucket.high}` : 'Range'));
+          ptbEl.textContent = bLabel;
+        } else if (packet?.isHourly) {
+          ptbEl.textContent = packet.targetCloseHourUtc ? `${packet.targetCloseHourUtc}:00 UTC Range` : 'Hourly Range';
+        } else {
+          ptbEl.textContent = packet?.priceToBeatNum != null
+            ? (window.CoinPrecision?.formatCoinStrike
+                ? window.CoinPrecision.formatCoinStrike(coin, packet.priceToBeatNum, { prefix: '' })
+                : Number(packet.priceToBeatNum).toLocaleString('en-US', { minimumFractionDigits: (coin === 'XRP' || coin === 'DOGE') ? 4 : 2, maximumFractionDigits: (coin === 'XRP' || coin === 'DOGE') ? 4 : 2 }))
+            : '—';
+        }
       }
       const askedEl = document.getElementById('adAskedAt');
 
@@ -944,6 +990,22 @@
 
     try {
       const packet = buildPacket();
+      const isHourlyQuery = /close|hour|expiry|range|settle|what price/i.test(query);
+      if (isHourlyQuery && !packet.isHourly) {
+        packet.isHourly = true;
+        packet.marketType = 'hourly_ranges';
+        const hourlyCloseMs = Math.ceil(Date.now() / 3600000) * 3600000;
+        packet.secondsToClose = Math.max(1, Math.round((hourlyCloseMs - Date.now()) / 1000));
+        packet.targetCloseTime = new Date(hourlyCloseMs).toISOString().replace(/\.\d{3}Z$/, 'Z');
+        packet.targetCloseHourUtc = new Date(hourlyCloseMs).getUTCHours();
+        if (!packet.hourlyLadder?.length) {
+          packet.hourlyLadder = window.HourlyRangesPanel?.getRanges?.(packet.sym) || [];
+          packet.hourlyRanges = packet.hourlyLadder;
+          if (packet.spot != null && packet.hourlyLadder.length) {
+            packet.spotBucket = packet.hourlyLadder.find(r => packet.spot >= Number(r.low) && packet.spot <= Number(r.high)) || null;
+          }
+        }
+      }
       const modelChoice = document.getElementById('adModelChoice')?.value || 'auto';
       const effortChoice = document.getElementById('adReasoningEffort')?.value || 'auto';
       const webSearch = document.getElementById('adWebSearch')?.checked || false;
@@ -963,9 +1025,14 @@
           prompt: query,
           context: {
             coin: packet.sym,
-            horizon: packet.horizon === 'anytime' ? 'anytime' : (packet.horizon === '5m' || packet.horizon === 'lookahead-5m' ? 5 : ((packet.horizon === '1h' || packet.horizon === '60m' || packet.horizon === 'lookahead-1h') ? 60 : 15)),
+            horizon: packet.isHourly ? 60 : (packet.horizon === 'anytime' ? 'anytime' : (packet.horizon === '5m' || packet.horizon === 'lookahead-5m' ? 5 : 15)),
             spot: packet.spot,
             ptb: packet.priceToBeatNum,
+            isHourly: packet.isHourly,
+            hourlyLadder: packet.hourlyLadder,
+            spotBucket: packet.spotBucket,
+            targetCloseTime: packet.targetCloseTime,
+            targetCloseHourUtc: packet.targetCloseHourUtc,
             model: modelChoice !== 'auto' ? modelChoice : 'asi1-mini',
             reasoning_effort: effortChoice !== 'auto' ? effortChoice : 'low',
             web_search: webSearch,

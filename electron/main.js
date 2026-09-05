@@ -2737,7 +2737,32 @@ ipcMain.handle('asi1:desk-chat', async (_event, args = {}) => {
       return { ok: false, error: 'ASI1 API key not configured in secrets/ASI1_ICLOUD.txt or environment' };
     }
 
-    const systemPrompt = `You are ASI1, an institutional cryptocurrency prediction and market microstructure expert assistant.
+    const isHourly = !!(
+      packet.isHourly ||
+      packet.horizon === '1h' ||
+      packet.horizon === '60m' ||
+      packet.horizon === 'hourly' ||
+      packet.horizon === 'lookahead-1h' ||
+      packet.marketType === 'hourly_ranges' ||
+      (Array.isArray(packet.hourlyLadder) && packet.hourlyLadder.length > 0) ||
+      /close|hour|range|settle|what price/i.test(prompt)
+    );
+
+    const now = new Date();
+    const hourlyCloseMs = Math.ceil(now.getTime() / 3600000) * 3600000;
+    const hourlyCloseDate = new Date(hourlyCloseMs);
+    const targetCloseTime = packet.targetCloseTime || hourlyCloseDate.toISOString().replace(/\.\d{3}Z$/, 'Z');
+    const targetCloseHourUtc = packet.targetCloseHourUtc != null ? packet.targetCloseHourUtc : hourlyCloseDate.getUTCHours();
+    const secondsToHourlyClose = Math.max(0, Math.round((hourlyCloseMs - now.getTime()) / 1000));
+    const minutesToHourlyClose = Math.max(0, Math.round(secondsToHourlyClose / 60));
+
+    const systemPrompt = isHourly
+      ? `You are ASI1, an institutional cryptocurrency prediction and market microstructure expert assistant embedded inside the WE|||CRYPTO terminal HUD.
+HOURLY CONTRACTS RESOLUTION RULE:
+Hourly contracts on this desk refer strictly to the upcoming top-of-the-hour HOURLY PRICE RANGE ladder (settling at ${targetCloseHourUtc}:00:00 UTC / ${targetCloseTime}).
+They do NOT refer to 5m/15m binary Up/Down contracts, nor any past or legacy contract expiries (such as an old "02 contract expiry").
+When asked what price or range the asset will close at, evaluate the provided Hourly Range Ladder brackets, current spot price, momentum, and time to close. State clearly which specific price range bracket the asset is projected to settle in at the hourly close (${targetCloseHourUtc}:00 UTC), and the estimated probability.`
+      : `You are ASI1, an institutional cryptocurrency prediction and market microstructure expert assistant.
 You are embedded inside the WE|||CRYPTO terminal HUD.
 Provide ultra-concise, authoritative, actionable trading intelligence. Ground all conclusions in the provided live market context (Spot, Polymarket PTB strike, time to close, orderbook depth).`;
 
@@ -2745,13 +2770,13 @@ Provide ultra-concise, authoritative, actionable trading intelligence. Ground al
       const orch = require('../src/llm/asi1-credit-orchestrator');
       if (!packet.spot || packet.spot <= 0) {
         if (typeof orch.fetchPythSpotDirect === 'function') {
-          const live = await orch.fetchPythSpotDirect(packet.sym);
+          const live = await orch.fetchPythSpotDirect(packet.sym || 'BTC');
           if (live && live.price > 0) {
             packet.spot = live.price;
           }
         }
       }
-      if (!packet.priceToBeatNum || packet.priceToBeatNum <= 0) {
+      if (!isHourly && (!packet.priceToBeatNum || packet.priceToBeatNum <= 0)) {
         if (typeof orch.fetchPolymarketPtbDirect === 'function') {
           const ptb = await orch.fetchPolymarketPtbDirect(packet.sym, packet.horizon);
           if (ptb && ptb > 0) {
@@ -2766,12 +2791,52 @@ Provide ultra-concise, authoritative, actionable trading intelligence. Ground al
       }
     } catch (_) {}
 
-    const ptbDisplay = packet.priceToBeatNum > 0 ? `$${packet.priceToBeatNum}` : 'Awaiting immutable Polymarket contract push...';
-    const deltaDisplay = packet.priceToBeatNum > 0 ? `${packet.deltaVsPtb >= 0 ? '+' : ''}$${packet.deltaVsPtb || 0}` : 'Pending contract PTB';
-    const tapeDirDisplay = packet.priceToBeatNum > 0 ? (packet.liveDirection || 'NEUTRAL') : 'AWAITING_PTB';
+    let hourlyInfo = '';
+    if (isHourly) {
+      const ladder = (Array.isArray(packet.hourlyLadder) && packet.hourlyLadder.length)
+        ? packet.hourlyLadder
+        : (Array.isArray(packet.hourlyRanges) ? packet.hourlyRanges : []);
+
+      let activeBucket = packet.spotBucket;
+      if (!activeBucket && packet.spot > 0 && ladder.length) {
+        activeBucket = ladder.find(r => packet.spot >= Number(r.low) && packet.spot <= Number(r.high)) || null;
+      }
+
+      let ladderLines = '';
+      if (ladder.length) {
+        ladderLines = ladder.map(b => {
+          const bLow = b.low != null ? b.low : '';
+          const bHigh = b.high != null ? b.high : '';
+          const bLabel = b.label || b.bracket || (bLow && bHigh ? `$${bLow}–$${bHigh}` : 'Range');
+          const isCurrent = (packet.spot > 0 && bLow !== '' && bHigh !== '' && packet.spot >= Number(bLow) && packet.spot <= Number(bHigh));
+          const probStr = b.yesProb != null ? ` (Prob: ${(Number(b.yesProb) * 100).toFixed(1)}%)` : '';
+          return `  • [${bLabel}]${probStr}${isCurrent ? '  <-- CURRENT SPOT BRACKET' : ''}`;
+        }).join('\n');
+      }
+
+      const spotBracketLabel = activeBucket
+        ? (typeof activeBucket === 'string' ? activeBucket : (activeBucket.label || activeBucket.bracket || (activeBucket.low != null && activeBucket.high != null ? `$${activeBucket.low}–$${activeBucket.high}` : 'Range')))
+        : (packet.spot > 0 ? `Around $${packet.spot}` : 'Awaiting spot');
+
+      hourlyInfo = `\n- Contract Architecture: HOURLY PRICE RANGES (Settles at top-of-hour close: ${targetCloseHourUtc}:00:00 UTC / ${targetCloseTime})
+- Time to Hourly Close: ${minutesToHourlyClose}m (${secondsToHourlyClose}s)
+- Current Spot Bracket: [${spotBracketLabel}]
+${ladderLines ? `- Active Hourly Range Ladder:\n${ladderLines}` : ''}`;
+    }
+
+    const ptbDisplay = isHourly
+      ? (packet.spotBucket ? (typeof packet.spotBucket === 'string' ? packet.spotBucket : (packet.spotBucket.label || `$${packet.spotBucket.low}–$${packet.spotBucket.high}`)) : `Hourly Range Ladder (${targetCloseHourUtc}:00 UTC Close)`)
+      : (packet.priceToBeatNum > 0 ? `$${packet.priceToBeatNum}` : 'Awaiting immutable Polymarket contract push...');
+    const deltaDisplay = isHourly
+      ? 'Inside hourly range bracket'
+      : (packet.priceToBeatNum > 0 ? `${packet.deltaVsPtb >= 0 ? '+' : ''}$${packet.deltaVsPtb || 0}` : 'Pending contract PTB');
+    const tapeDirDisplay = isHourly
+      ? (packet.liveDirection || 'RANGE_BOUND')
+      : (packet.priceToBeatNum > 0 ? (packet.liveDirection || 'NEUTRAL') : 'AWAITING_PTB');
+    const expirySecDisplay = isHourly ? secondsToHourlyClose : (packet.secondsToClose || 0);
 
     let pinInfo = '';
-    if (packet.pinRisk?.isDefendedPinZone || (packet.secondsToClose <= 90 && Math.abs(packet.deltaVsPtb || 0) < ((packet.spot || 1) * 0.0008))) {
+    if (!isHourly && (packet.pinRisk?.isDefendedPinZone || (packet.secondsToClose <= 90 && Math.abs(packet.deltaVsPtb || 0) < ((packet.spot || 1) * 0.0008)))) {
       pinInfo = `\n- ⚠ Pin Risk Status: ACTIVE PIN DEFENSE DETECTED (spot within 8 bps of strike with ${packet.secondsToClose || 0}s left). MM defense risks 1-2s late post-expiry snap.`;
     }
     let t1Info = '';
@@ -2779,7 +2844,7 @@ Provide ultra-concise, authoritative, actionable trading intelligence. Ground al
       t1Info = `\n- Future Window T+1: Projected Opening PTB $${packet.futureWindowT1.projectedOpenPtb}, Stance: ${packet.futureWindowT1.sniperAction || 'STANDBY'}, Direction: ${packet.futureWindowT1.forecastDirection || '—'} (${packet.futureWindowT1.confidence || 0}%)`;
     }
 
-    const userPrompt = `${prompt}\n\nLive Market Context:\n- Coin: ${packet.sym || 'BTC'}\n- Horizon: ${packet.horizon || '5m'}\n- Live Spot: $${packet.spot || 'N/A'}\n- Polymarket PTB Strike: ${ptbDisplay}\n- Delta vs PTB: ${deltaDisplay}\n- Live Tape Direction: ${tapeDirDisplay}\n- Polymarket Yes Prob: ${((packet.yesProb || 0.5) * 100).toFixed(1)}%\n- Seconds to Expiry: ${packet.secondsToClose || 0}s\n- Depth Imbalance: ${((packet.depthImbalance || 0) * 100).toFixed(1)}%${pinInfo}${t1Info}`;
+    const userPrompt = `${prompt}\n\nLive Market Context:\n- Coin: ${packet.sym || 'BTC'}\n- Horizon: ${isHourly ? '1h (Hourly Range)' : (packet.horizon || '5m')}\n- Live Spot: $${packet.spot || 'N/A'}\n- Polymarket Target / Strike: ${ptbDisplay}\n- Delta vs Target: ${deltaDisplay}\n- Live Tape Direction: ${tapeDirDisplay}\n- Polymarket Prob: ${((packet.yesProb || 0.5) * 100).toFixed(1)}%\n- Seconds to Expiry / Settlement: ${expirySecDisplay}s\n- Depth Imbalance: ${((packet.depthImbalance || 0) * 100).toFixed(1)}%${hourlyInfo}${pinInfo}${t1Info}`;
 
     const result = await Asi1Client.chatCompletion(
       [
