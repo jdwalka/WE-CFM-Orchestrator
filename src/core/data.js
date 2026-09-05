@@ -141,21 +141,36 @@ const PREDICTION_COINS = [
       'https://cdn.jsdelivr.net/gh/spothq/cryptocurrency-icons@master/svg/color/xrp.svg',
     ],
   },
+  {
+    sym: 'DOGE', name: 'Dogecoin', instrument: 'DOGEUSD', geckoId: 'dogecoin',
+    color: '#c2a633', icon: 'Ð',
+    iconSources: [
+      'https://assets.coingecko.com/coins/images/5/small/dogecoin.png',
+      'https://cdn.jsdelivr.net/gh/spothq/cryptocurrency-icons@master/svg/color/doge.svg',
+    ],
+  },
+  {
+    sym: 'BNB', name: 'BNB', instrument: 'BNBUSD', geckoId: 'binancecoin',
+    color: '#f3ba2f', icon: 'B',
+    iconSources: [
+      'https://assets.coingecko.com/coins/images/825/small/bnb-icon2_2x.png',
+      'https://cdn.jsdelivr.net/gh/spothq/cryptocurrency-icons@master/svg/color/bnb.svg',
+    ],
+  },
+  {
+    sym: 'HYPE', name: 'Hyperliquid', instrument: 'HYPEUSD', geckoId: 'hyperliquid',
+    color: '#50e3c2', icon: 'H',
+    iconSources: [
+      'https://assets.coingecko.com/coins/images/50882/small/hyperliquid.png',
+    ],
+  },
 ];
 window.PREDICTION_COINS = PREDICTION_COINS;
 
-// ---- AGGRESSIVE 4-COIN FOCUS ────────────────────────────────────────────────
-// DOGE, BNB, HYPE removed from PREDICTION_COINS 2026-08-22 to cut LLM inference
-// volume (ASI1 daily request quota exhausted early) and converge tuning faster
-// on fewer strong signals. Prior per-coin win rates when last tracked: HYPE 48%
-// (losing money), DOGE 62%, BNB 64% -- all below the core-4 bar.
-//
-// CORE 4: BTC, ETH, SOL, XRP
-// Still present in market-data/backtest coin lists elsewhere (cfm-engine.js,
-// run-hyper-sweep.js, validator-15m.js, render-layer.js's 5m coin lists) --
-// this only trims the list runAll()/inference iterate over. Re-add entries
-// above (color/icon/geckoId already defined in COIN_COLORS/COIN_SHORT) to
-// bring a coin back into inference.
+// ---- 7 MAJORS FOCUS (CORE 4 FIRST) ──────────────────────────────────────────
+// 7 MAJORS: BTC, ETH, SOL, XRP, DOGE, BNB, HYPE
+// Primary traded 4: BTC, ETH, SOL, XRP (prioritized in UI display and inference)
+// Secondary 3: DOGE, BNB, HYPE (active for 5m/15m contract monitoring & screening)
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ---- Market Universe display groups (used by renderUniverse / Periodic Table view) ----

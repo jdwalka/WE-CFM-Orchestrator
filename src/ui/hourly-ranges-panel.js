@@ -18,10 +18,10 @@
   const COINBASE_EXCH_BASE = 'https://api.exchange.coinbase.com';
   const INSTRUMENTS = {
     BTC: 'BTCUSD', ETH: 'ETHUSD', SOL: 'SOLUSD',
-    XRP: 'XRPUSD', DOGE: 'DOGEUSD',
+    XRP: 'XRPUSD', DOGE: 'DOGEUSD', BNB: 'BNBUSD', HYPE: 'HYPEUSD',
   };
 
-  const COINS = ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE'];
+  const COINS = ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'BNB', 'HYPE'];
 
   const CB_PRODUCTS = {
     BTC: 'BTC-USD', ETH: 'ETH-USD', SOL: 'SOL-USD',
@@ -37,7 +37,7 @@
 
   const COIN_COLORS = {
     BTC: '#f7931a', ETH: '#627eea', SOL: '#00d4aa',
-    XRP: '#00aae4', DOGE: '#c2a633',
+    XRP: '#00aae4', DOGE: '#c2a633', BNB: '#f3ba2f', HYPE: '#50e3c2',
   };
   const VISIBLE_BUCKETS = 11;   // 5 above + current + 5 below
   const POLL_NORMAL_MS  = 10000;  // First 30 mins (10s)
@@ -106,6 +106,7 @@
     if (sym === 'ETH' || (refPrice >= 1000 && refPrice < 20000)) return 10;
     if (sym === 'SOL' || (refPrice >= 50 && refPrice < 1000)) return 0.5;
     if (sym === 'BNB') return 2;
+    if (sym === 'HYPE') return 0.25;
     if (sym === 'XRP' || (refPrice >= 0.5 && refPrice < 50)) return 0.01;
     if (sym === 'DOGE' || refPrice < 0.5) return 0.005;
     return refPrice * 0.002;
@@ -312,10 +313,10 @@
 
   // ── Build HTML for one coin card ───────────────────────────────
   function buildCoinCard(sym) {
-    const ranges  = safeGet(_ranges, sym) || [];
-    const price   = safeGet(_prices, sym);
+    let ranges  = safeGet(_ranges, sym) || [];
+    const price   = safeGet(_prices, sym) || readLivePrice(sym);
     const color   = safeGet(COIN_COLORS, sym) || '#888';
-    const ctISO   = safeGet(_closeTimes, sym) || (ranges.at(0)?.closeTime);
+    const ctISO   = safeGet(_closeTimes, sym) || (ranges.at(0)?.closeTime) || new Date(Math.ceil(Date.now() / 3600000) * 3600000).toISOString();
     const ttc     = ctISO ? timeToClose(ctISO) : null;
     const ttcMs   = ctISO ? Date.parse(ctISO) - Date.now() : null;
     const isFinal = ttcMs !== null && ttcMs < FAST_WINDOW_MS;
@@ -329,6 +330,11 @@
 
     let body;
     let topBuckets = [];
+
+    if (!ranges.length && price) {
+      ranges = buildSpotCenteredRanges(sym, price, ctISO);
+      Object.defineProperty(_ranges, sym, { value: ranges, writable: true, enumerable: true, configurable: true });
+    }
 
     if (!ranges.length) {
       body = `<div class="hr-empty">Loading market data…</div>`;

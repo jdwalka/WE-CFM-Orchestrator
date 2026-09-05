@@ -10,6 +10,16 @@
     return n > 1 ? n / 100 : n;
   }
 
+  function _safePredictionDirection(pred, fallback = 0) {
+    if (typeof predictionDirection === 'function') return predictionDirection(pred, fallback);
+    if (typeof window !== 'undefined' && typeof window.predictionDirection === 'function') {
+      return window.predictionDirection(pred, fallback);
+    }
+    const score = Number(pred?.score);
+    if (!Number.isFinite(score)) return fallback;
+    return score > 0.02 ? 1 : score < -0.02 ? -1 : fallback;
+  }
+
 function predictionCard(p) {
     if (!p || !p.sym) {
       console.warn('[predictionCard] Missing prediction object or sym:', p);
@@ -311,8 +321,9 @@ function predictionCard(p) {
           </span>
         `).join('')}
       </div>` : '';
-    const expanded = !predictionCollapsed.has(p.sym);
-    const horizonRows = PREDICTION_HORIZONS.map(horizonMin => ({
+    const expanded = typeof predictionCollapsed !== 'undefined' && predictionCollapsed?.has ? !predictionCollapsed.has(p.sym) : true;
+    const horizonsList = typeof PREDICTION_HORIZONS !== 'undefined' ? PREDICTION_HORIZONS : (window?.PREDICTION_HORIZONS || [1, 5, 10, 15]);
+    const horizonRows = horizonsList.map(horizonMin => ({
       horizonMin,
       label: `${horizonMin}m`,
       stats: p.backtest?.[`h${horizonMin}`] || null,
@@ -393,7 +404,11 @@ function predictionCard(p) {
         return `<div class="ind-item"><span class="ind-name">CFM Context</span><span class="ind-val ${dir}">${String(cfmData.bias).toUpperCase()} · ${mktContext}</span></div>`;
       })();
 
-      if (_kProb === null && !_poly15m) return '';
+      const coinPrefix = (window.PredictionMarkets?.POLY_5M_COIN_SLUGS?.[p.sym] || p.sym.toLowerCase());
+      const nowSec = Math.floor(Date.now() / 1000);
+      const windowTs = nowSec - (nowSec % 900);
+      const activeSlug = _poly15m?.slug || `${coinPrefix}-updown-15m-${windowTs}`;
+      const defaultCloseMs = (windowTs + 900) * 1000;
 
       // Polymarket Up/Down has no variable strike direction like Kalshi did --
       // it's always "beat the opening price" -- so default to 'above' unless
@@ -409,7 +424,7 @@ function predictionCard(p) {
       const refVerb = _rowStrikeDir === 'below' ? 'Below' : 'Beat';
       const refLine = refTarget
         ? ` <span class="k15-target">${refVerb} ${refTarget}</span>`
-        : '';
+        : (p.price > 0 ? ` <span class="k15-target" style="opacity:0.75" title="Live spot anchor while PTB benchmark locks">Live ${fmtPrice(p.price, p.sym)}</span>` : '');
 
       // Gap from current price to reference — show dollar amount + % + BORDERLINE warning
       const _gapRaw = _kAlign?.gapPct ?? (_refStrikeNum != null && p.price > 0 ? ((p.price - _refStrikeNum) / _refStrikeNum) * 100 : null);
@@ -434,19 +449,18 @@ function predictionCard(p) {
       // Countdown to settlement
       let countdown = '';
       const _closeTimeRow = _poly15m?.closeTime ?? _k15m?.closeTime;
-      if (_closeTimeRow) {
-        const msl = new Date(_closeTimeRow).getTime() - Date.now();
-        const closeUtc4 = formatUtc4Time(_closeTimeRow);
-        if (msl > 0) {
-          const ts = Math.floor(msl / 1000);
-          countdown = ` <span class="k15-expiry" data-close-ms="${new Date(_closeTimeRow).getTime()}">⏱ ${Math.floor(ts / 60)}m${String(ts % 60).padStart(2, '0')}s · UTC-4 ${closeUtc4}</span>`;
-        } else {
-          countdown = ` <span class="k15-expiry k15-settling">⏱ SETTLING</span>`;
-        }
+      const closeMs = _closeTimeRow ? new Date(_closeTimeRow).getTime() : defaultCloseMs;
+      const msl = closeMs - Date.now();
+      const closeUtc4 = formatUtc4Time(closeMs);
+      if (msl > 0) {
+        const ts = Math.floor(msl / 1000);
+        countdown = ` <span class="k15-expiry" data-close-ms="${closeMs}">⏱ ${Math.floor(ts / 60)}m${String(ts % 60).padStart(2, '0')}s · UTC-4 ${closeUtc4}</span>`;
+      } else {
+        countdown = ` <span class="k15-expiry k15-settling">⏱ SETTLING</span>`;
       }
 
       if (_kProb === null) {
-        return `<div class="ind-item k15m-row"><span class="ind-name">${_rowLabel}</span><span class="ind-val flat"><span class="k15-side-label" style="opacity:0.6">15M</span>${refLine ? refLine : '<span class="k15-target">Awaiting 15M target</span>'}<span class="k15-gap" style="opacity:0.6">⏱ odds loading</span>${countdown}</span></div>${cfmRow}`;
+        return `<div class="ind-item k15m-row"><span class="ind-name">${_rowLabel}</span><span class="ind-val flat"><span class="k15-side-label" style="opacity:0.6">15M</span>${refLine ? refLine : '<span class="k15-target">Awaiting PTB lock</span>'}<span class="k15-gap" style="opacity:0.6">⏱ odds loading</span>${countdown}</span></div>${cfmRow}`;
       }
 
       // YES and NO are complementary — always sum to 100%
@@ -587,7 +601,7 @@ function predictionCard(p) {
 
         <!-- Header: always visible -->
         <div class="pred-header">
-          <div class="pred-coin-icon" style="background:${p.color}22;color:${p.color}">${coinIcon(p.sym)}</div>
+          <div class="pred-coin-icon" style="background:${p.color}22;color:${p.color}">${typeof coinIcon === 'function' ? coinIcon(p.sym) : (typeof window !== 'undefined' && typeof window.coinIcon === 'function' ? window.coinIcon(p.sym) : (p.icon || p.sym?.slice(0, 3)))}</div>
           <div class="pred-coin-info">
             <div class="pred-coin-sym">${p.sym}</div>
             <div class="pred-coin-name">${p.name}</div>
@@ -1374,7 +1388,7 @@ function buildQuickDecisionPanel(predArr) {
     let upCount = 0, downCount = 0, neutralCount = 0;
 
     const cards = ordered.map(pred => {
-      const dir = predictionDirection(pred);
+      const dir = _safePredictionDirection(pred);
       const dirClass = dir > 0 ? 'up' : dir < 0 ? 'down' : 'neutral';
       const arrow = dir > 0 ? '▲' : dir < 0 ? '▼' : '→';
       const label = dir > 0 ? 'UP' : dir < 0 ? 'DOWN' : 'FLAT';
@@ -1455,7 +1469,7 @@ function buildQuickDecisionPanel(predArr) {
 
 function getDecisionRationale(pred) {
     const ind = pred?.indicators || {};
-    const dir = predictionDirection(pred);
+    const dir = _safePredictionDirection(pred);
     const rsi = ind.rsi?.value;
     const adx = ind.adx?.adx;
     const bbPos = ind.bands?.position;
@@ -2376,7 +2390,7 @@ function buildFifteenMinuteMovePlan(ki) {
 function countConfirmingSignals(coin, cfm, pred) {
     const ind = pred?.indicators || {};
     let count = 0;
-    const dir = predictionDirection(pred, (cfm.momentum || 0) >= 0 ? 1 : -1);
+    const dir = _safePredictionDirection(pred, (cfm.momentum || 0) >= 0 ? 1 : -1);
     if (dir === 0) return 0;
 
     const rsi = ind.rsi?.value ?? 50;
@@ -2466,7 +2480,7 @@ function calcEdge(coin, cfm, pred) {
       tierDesc = `Signals align but backtest reliability ${Math.round((pred.backtest.summary.reliability || 0) * 100)}% < 55% gate \u2014 wait for confirmation`;
     }
 
-    const dirBias = predictionDirection(pred, (cfm.momentum || 0) >= 0 ? 1 : -1);
+    const dirBias = _safePredictionDirection(pred, (cfm.momentum || 0) >= 0 ? 1 : -1);
     const dir = dirBias >= 0 ? 'up' : 'down';
     const entryPrice = dir === 'up'
       ? price * (1 - atrPct / 200)
@@ -2510,7 +2524,7 @@ function buildNarrativeCallouts(verdicts, allSignals, cfmAll, predAll) {
       const verdict = verdicts.find(v => v.sym === sym);
       const confirming = verdict?.edge?.signalCount ?? 0;
       const funding = deriv?.funding ?? 0;
-      const predDir = predictionDirection(pred, 0);
+      const predDir = _safePredictionDirection(pred, 0);
       const predDirLabel = predDir > 0 ? 'UP' : predDir < 0 ? 'DOWN' : 'NEUTRAL';
       const agreement = pred.diagnostics?.agreement ?? 0;
       const conflict = pred.diagnostics?.conflict ?? 0;
