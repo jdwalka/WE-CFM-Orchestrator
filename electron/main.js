@@ -2982,10 +2982,12 @@ ${ladderLines ? `- Active Hourly Range Ladder:\n${ladderLines}` : ''}`;
 
     // ── Cognitive Metacognition & Gospel Persona ──
     const effectiveModel = model !== 'auto' ? model : 'asi1-mini';
-    const contractRule = isHourly
-      ? `3. HOURLY CONTRACTS RESOLUTION RULE:
+   const contractRule = isHourly
+     ? `3. HOURLY CONTRACTS RESOLUTION RULE:
    - This inquiry is for the top-of-the-hour HOURLY PRICE RANGE ladder (settling at ${targetCloseHourUtc}:00:00 UTC / ${targetCloseTime}).
-   - When asked what price or range the asset will close at, evaluate the active Hourly Range Ladder brackets, current spot price, momentum, and time to close. State clearly which specific price range bracket the asset is projected to settle in at the hourly close (${targetCloseHourUtc}:00 UTC) and the estimated probability.`
+   - When asked what price or range the asset will close at, evaluate the active Hourly Range Ladder brackets, current spot price, momentum, and time to close. State clearly which specific price range bracket the asset is projected to settle in at the hourly close (${targetCloseHourUtc}:00 UTC) and the estimated probability.
+   - If the trader asks for the price at a named future settlement time (for example "6:00 PM EST" or "22:00 UTC"), NEVER say the future price is unknowable or lecture them about future uncertainty. Interpret that as a request for the projected settlement quote.
+   - Answer settlement-price requests in this order: (1) state the current live spot, (2) identify the exact settlement time in both UTC and UTC-4, (3) give the projected close bracket and probability, and (4) briefly state the primary driver and risk. Make the live quote unmistakably current and the settlement projection unmistakably a forecast.`
       : `3. BINARY UP/DOWN CONTRACT RESOLUTION RULE (${packet.horizon || '5m/15m'} HORIZON):
    - This inquiry is strictly for the binary UP/DOWN contract settling at the end of the ${packet.horizon || 'active micro'} window (${expirySecDisplay}s remaining) against the Target Strike / PTB (${ptbDisplay}).
    - DO NOT anchor onto hourly range ladders, top-of-the-hour decay, or 1-hour settlement. Evaluate whether the asset will settle UP (above PTB) or DOWN (below PTB) at the expiration of this specific ${packet.horizon || 'micro'} window.
