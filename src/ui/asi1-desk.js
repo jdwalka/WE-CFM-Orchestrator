@@ -290,6 +290,13 @@
       const dist = (spotNum > 0 && ptbNum > 0) ? Math.abs(spotNum - ptbNum) : null;
       const distBps = (dist != null && ptbNum > 0) ? (dist / ptbNum) * 10000 : null;
 
+      if (isPinTrapped && pinBanner) {
+        const coin = document.getElementById('adCoin')?.value || 'BTC';
+        const distStr = window.CoinPrecision?.formatCoinDelta
+          ? window.CoinPrecision.formatCoinDelta(coin, dist, { showSign: false })
+          : `$${dist.toFixed((coin === 'XRP' || coin === 'DOGE') ? 4 : 2)}`;
+        pinBanner.style.display = 'block';
+        pinBanner.textContent = `⚠ PIN RISK DEFENSE DETECTED: Spot within ${distStr} (${distBps.toFixed(1)} bps) of PTB with ${remainingSec}s left. MM defense walls active; high probability of 1-2s post-expiry snap. Focus automatically honed on T+1 Pre-Open below.`;
       const isPinTrapped = distBps != null && distBps <= 8;
       if (isPinTrapped && pinBanner) {
         pinBanner.style.display = 'block';
@@ -482,6 +489,12 @@
     const rangeData = window.PredictionEngine?.getRangeViability?.(coin, hMin, Number(document.getElementById('adPtb')?.textContent?.replace(/,/g, '')));
     if (rangeData) {
       const coneEl = document.getElementById('adRangeCone');
+      if (coneEl) {
+        const fmtCone = (v) => window.CoinPrecision?.formatCoinPrice
+          ? window.CoinPrecision.formatCoinPrice(coin, v)
+          : `$${Number(v).toLocaleString('en-US', { minimumFractionDigits: (coin === 'XRP' || coin === 'DOGE') ? 4 : 2, maximumFractionDigits: (coin === 'XRP' || coin === 'DOGE') ? 4 : 2 })}`;
+        coneEl.textContent = `${fmtCone(rangeData.safeBoundLower)} — ${fmtCone(rangeData.safeBoundUpper)} (±${fmtCone(rangeData.expectedMoveDollar)})`;
+      }
       if (coneEl) coneEl.textContent = `$${rangeData.safeBoundLower?.toLocaleString()} — $${rangeData.safeBoundUpper?.toLocaleString()} (±$${rangeData.expectedMoveDollar?.toLocaleString()})`;
       const zoneEl = document.getElementById('adActiveStrikeZone');
       if (zoneEl) {
@@ -493,6 +506,13 @@
       }
       const optEl = document.getElementById('adOptimalTarget');
       if (optEl && rangeData.bestTarget) {
+        const optStrike = window.CoinPrecision?.formatCoinStrike
+          ? window.CoinPrecision.formatCoinStrike(coin, rangeData.bestTarget.strike)
+          : `$${Number(rangeData.bestTarget.strike).toLocaleString('en-US', { minimumFractionDigits: (coin === 'XRP' || coin === 'DOGE') ? 4 : 2, maximumFractionDigits: (coin === 'XRP' || coin === 'DOGE') ? 4 : 2 })}`;
+        optEl.textContent = `${optStrike} (${rangeData.bestTarget.name})`;
+      }
+    }
+
         optEl.textContent = `$${rangeData.bestTarget.strike.toLocaleString()} (${rangeData.bestTarget.name})`;
       }
     }
@@ -646,7 +666,13 @@
     }
 
     const ptbEl = document.getElementById('adNextPtb');
-    if (ptbEl) ptbEl.textContent = forecast.projectedOpenPtb != null ? `$${forecast.projectedOpenPtb.toLocaleString()}` : '—';
+    if (ptbEl) {
+      ptbEl.textContent = forecast.projectedOpenPtb != null
+        ? (window.CoinPrecision?.formatCoinStrike
+            ? window.CoinPrecision.formatCoinStrike(coin, forecast.projectedOpenPtb)
+            : `$${Number(forecast.projectedOpenPtb).toLocaleString('en-US', { minimumFractionDigits: (coin === 'XRP' || coin === 'DOGE') ? 4 : 2, maximumFractionDigits: (coin === 'XRP' || coin === 'DOGE') ? 4 : 2 })}`)
+        : '—';
+    }
 
     const callEl = document.getElementById('adNextCall');
     if (callEl) {
@@ -728,6 +754,13 @@
       if (oppsEl && Array.isArray(hunt.scoutedOpportunities) && hunt.scoutedOpportunities.length > 0) {
         oppsEl.innerHTML = hunt.scoutedOpportunities.slice(0, 3).map((op) => {
           const actColor = op.action === 'BUY_UP' ? '#00e676' : op.action === 'BUY_DOWN' ? '#ff5252' : '#ffb74d';
+          const strikeStr = op.targetStrike
+            ? (window.CoinPrecision?.formatCoinStrike
+                ? window.CoinPrecision.formatCoinStrike(op.symbol, op.targetStrike)
+                : `$${Number(op.targetStrike).toLocaleString()}`)
+            : '';
+          const edgeStr = op.edgePct ? ` (${op.edgePct})` : '';
+
           const strikeStr = op.targetStrike ? `$${Number(op.targetStrike).toLocaleString()}` : '';
           const edgeStr = op.edgePct ? ` (${op.edgePct})` : '';
           const pinBadge = op.pinRiskSafe === false ? '<span style="color:#ff5252;margin-left:4px">⚠ PIN</span>' : '';
@@ -794,6 +827,51 @@
     // Write phase: single DOM update pass without layout thrashing
     const spotEl = document.getElementById('adSpot');
     if (spotEl) {
+      spotEl.textContent = window.CoinPrecision?.formatCoinPrice
+        ? window.CoinPrecision.formatCoinPrice(coin, price, { prefix: '' })
+        : (price >= 1000
+            ? price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+            : price.toFixed((coin === 'XRP' || coin === 'DOGE') ? 4 : 2));
+    }
+
+    const ptbTxt = document.getElementById('adPtb')?.textContent?.replace(/,/g, '');
+    const ptbNum = Number(ptbTxt);
+    if (Number.isFinite(ptbNum) && ptbNum > 0) {
+      const delta = price - ptbNum;
+      const dist = Math.abs(delta);
+      const distBps = (dist / ptbNum) * 10000;
+      const isDefended = distBps <= 8;
+      const pinBanner = document.getElementById('adPinRiskBanner');
+      if (pinBanner) {
+        if (isDefended) {
+          const distStr = window.CoinPrecision?.formatCoinDelta
+            ? window.CoinPrecision.formatCoinDelta(coin, dist, { showSign: false })
+            : `$${dist.toFixed((coin === 'XRP' || coin === 'DOGE') ? 4 : 2)}`;
+          pinBanner.style.display = 'block';
+          pinBanner.textContent = `⚠ PIN RISK DEFENSE DETECTED: Spot within ${distStr} (${distBps.toFixed(1)} bps) of PTB. MM defense walls active.`;
+        } else if (pinBanner.dataset.persisted !== '1') {
+          pinBanner.style.display = 'none';
+        }
+      }
+    }
+  }
+
+    }
+  }
+
+  // ── rAF-Batched HUD Tile & Spot Update (pyth-batch) ──────────────────────────
+  function renderDeskBatch(syms) {
+    if (!Array.isArray(syms) || !syms.length) return;
+    const coin = document.getElementById('adCoin')?.value || 'BTC';
+    if (!syms.includes(coin)) return;
+
+    // Read phase
+    const price = window._pythPrices?.[coin];
+    if (!Number.isFinite(price) || price <= 0) return;
+
+    // Write phase: single DOM update pass without layout thrashing
+    const spotEl = document.getElementById('adSpot');
+    if (spotEl) {
       spotEl.textContent = price >= 1000
         ? price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
         : price.toFixed(2);
@@ -837,10 +915,23 @@
       const packet = buildPacket();
 
       const spotEl = document.getElementById('adSpot');
-      if (spotEl) spotEl.textContent = packet?.spot != null ? Number(packet.spot).toLocaleString() : '—';
+      if (spotEl) {
+        spotEl.textContent = packet?.spot != null
+          ? (window.CoinPrecision?.formatCoinPrice
+              ? window.CoinPrecision.formatCoinPrice(coin, packet.spot, { prefix: '' })
+              : Number(packet.spot).toLocaleString('en-US', { minimumFractionDigits: (coin === 'XRP' || coin === 'DOGE') ? 4 : 2, maximumFractionDigits: (coin === 'XRP' || coin === 'DOGE') ? 4 : 2 }))
+          : '—';
+      }
       const ptbEl = document.getElementById('adPtb');
-      if (ptbEl) ptbEl.textContent = packet?.priceToBeatNum != null ? Number(packet.priceToBeatNum).toLocaleString() : '—';
+      if (ptbEl) {
+        ptbEl.textContent = packet?.priceToBeatNum != null
+          ? (window.CoinPrecision?.formatCoinStrike
+              ? window.CoinPrecision.formatCoinStrike(coin, packet.priceToBeatNum, { prefix: '' })
+              : Number(packet.priceToBeatNum).toLocaleString('en-US', { minimumFractionDigits: (coin === 'XRP' || coin === 'DOGE') ? 4 : 2, maximumFractionDigits: (coin === 'XRP' || coin === 'DOGE') ? 4 : 2 }))
+          : '—';
+      }
       const askedEl = document.getElementById('adAskedAt');
+
       if (askedEl) askedEl.textContent = new Date().toLocaleTimeString();
 
       if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; }

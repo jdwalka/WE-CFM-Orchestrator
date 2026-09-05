@@ -320,7 +320,12 @@
     const ttcMs   = ctISO ? Date.parse(ctISO) - Date.now() : null;
     const isFinal = ttcMs !== null && ttcMs < FAST_WINDOW_MS;
 
-    const priceStr = price ? `$${price.toLocaleString('en-US', { maximumFractionDigits: 2 })}` : '—';
+    const priceStr = price
+      ? (window.CoinPrecision?.formatCoinPrice
+          ? window.CoinPrecision.formatCoinPrice(sym, price)
+          : `$${Number(price).toLocaleString('en-US', { minimumFractionDigits: (sym === 'XRP' || sym === 'DOGE') ? 4 : 2, maximumFractionDigits: (sym === 'XRP' || sym === 'DOGE') ? 4 : 2 })}`)
+      : '—';
+
 
     let body;
     let topBuckets = [];
@@ -416,7 +421,12 @@
           const slug = g.contractSlug || (peg15 && peg15.slug) || '';
           const side = peg15 && peg15.side ? peg15.side : (call === 'UP' ? 'Up' : 'Down');
           const ptb = peg15 && peg15.priceToBeatNum;
-          const ptbLabel = ptb ? `$${Number(ptb).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : (priceStr !== '—' ? priceStr : '');
+          const ptbLabel = ptb
+            ? (window.CoinPrecision?.formatCoinStrike
+                ? window.CoinPrecision.formatCoinStrike(sym, ptb)
+                : `$${Number(ptb).toLocaleString('en-US', { minimumFractionDigits: (sym === 'XRP' || sym === 'DOGE') ? 4 : 2, maximumFractionDigits: (sym === 'XRP' || sym === 'DOGE') ? 4 : 2 })}`)
+            : (priceStr !== '—' ? priceStr : '');
+
           if (slug) metaLine += ` · id: ${escapeHTML(slug.length > 20 ? slug.substring(0, 12) + '...' : slug)}`;
           if (slug) metaLine += ` · buy ${side}`;
           if (ptbLabel) metaLine += ` · PTB ${ptbLabel}`;
@@ -491,8 +501,12 @@
         const col = call === 'UP' ? 'var(--color-green,#26a69a)' : call === 'DOWN' ? 'var(--color-red,#ef5350)' : 'var(--color-text-faint)';
         const ptbNum = Number(p15.priceToBeatNum ?? p15.targetPriceNum);
         const ptbLabel = p15.targetPrice || (Number.isFinite(ptbNum) && ptbNum > 0
-          ? `$${ptbNum.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 6 })}` : 'pending');
+          ? (window.CoinPrecision?.formatCoinStrike
+              ? window.CoinPrecision.formatCoinStrike(sym, ptbNum)
+              : `$${ptbNum.toLocaleString('en-US', { minimumFractionDigits: (sym === 'XRP' || sym === 'DOGE') ? 4 : 2, maximumFractionDigits: (sym === 'XRP' || sym === 'DOGE') ? 4 : 2 })}`)
+          : 'pending');
         const closeLabel15 = p15.closeTime ? timeToClose(p15.closeTime) : null;
+
         poly15mHtml = `<div class="hr-poly15m" style="margin-bottom:8px;">
           <div class="hr-grok-hdr" style="display:flex;justify-content:space-between;">
             <span>Polymarket 15m Up/Down</span>

@@ -482,13 +482,13 @@ class OrbitalIngestor {
     // ─── s + p orbital: Pyth Lazer / Hermes WebSocket ───────────────────────────
     connectPythLazer() {
         if (this._stopped) return;
-        const token = process.env.PYTH_LAZER_TOKEN || '4XYJeYbsqoqu7dWPBXhkaWmHc7c8Hutkk3e6AGsoJkJ6';
+        const token = process.env.PYTH_LAZER_TOKEN || process.env.LAZER_TOKEN || process.env.PYTH_API || '4XYJeYbsqoqu7dWPBXhkaWmHc7c8Hutkk3e6AGsoJkJ6';
         const wsUrl = `wss://pyth-lazer-1.dourolabs.app/v1/stream`;
         const ws = new WebSocket(wsUrl, { headers: { Authorization: `Bearer ${token}` } });
         this.connections.set('pyth_lazer', ws);
 
         const pythIds = {
-            1: 'BTC', 2: 'ETH', 6: 'SOL', 10: 'DOGE', 14: 'XRP', 15: 'BNB', 110: 'HYPE'
+            1: 'BTC', 2: 'ETH', 6: 'SOL', 10: 'DOGE', 13: 'DOGE', 14: 'XRP', 15: 'BNB'
         };
 
         ws.on('open', () => {
@@ -497,22 +497,27 @@ class OrbitalIngestor {
                 ws.send(JSON.stringify({
                     type: 'subscribe',
                     subscriptionId: 1,
-                    feedIds: Object.keys(pythIds).map(Number)
+                    priceFeedIds: [1, 2, 6, 13, 14, 15],
+                    properties: ["price", "bestBidPrice", "bestAskPrice", "confidence", "exponent"],
+                    channel: 'fixed_rate@200ms',
+                    deliveryFormat: 'json',
+                    parsed: true,
+                    ignoreInvalidFeeds: true
                 }));
             } catch (_) {}
         });
 
         ws.on('message', (data) => {
             try {
-                const msg = JSON.parse(data);
-                if (msg.type === 'stream_update' && msg.data) {
+                const msg = JSON.parse(data.toString());
+                if (msg.type === 'streamUpdated' && msg.parsed?.priceFeeds) {
                     const ts = Date.now();
-                    for (const feedId in msg.data) {
-                        const asset = pythIds[feedId];
+                    for (const feed of msg.parsed.priceFeeds) {
+                        const asset = pythIds[feed.priceFeedId];
                         if (!asset || !ASSETS.includes(asset)) continue;
                         
-                        const update = msg.data[feedId];
-                        const price = Number(update.price) * Math.pow(10, update.exponent);
+                        const exp = feed.exponent ?? -8;
+                        const price = Number(feed.price) * Math.pow(10, exp);
                         
                         if (Number.isFinite(price) && price > 0) {
                             publishOrbitalTick('s', asset, {
@@ -542,8 +547,6 @@ class OrbitalIngestor {
         ws.on('error', () => {});
     }
 }
-
-module.exports = new OrbitalIngestor();
 
 module.exports = new OrbitalIngestor();
 

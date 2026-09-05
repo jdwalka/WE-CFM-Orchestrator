@@ -9,6 +9,8 @@
 'use strict';
 
 const Asi1Client = require('../infra/asi1-client');
+const CoinPrecision = require('../shared/coin-precision');
+
 
 /**
  * Curated, audited Agentverse agents verified live on the Fetch.ai registry.
@@ -164,6 +166,12 @@ function buildHuntPrompt(marketContext = {}) {
   const coins = marketContext.coins || ['BTC', 'ETH', 'SOL'];
   const snapshotLines = coins.map((c) => {
     const data = marketContext[c] || {};
+    const spotStr = data.spot ? CoinPrecision.formatCoinPrice(c, data.spot) : 'live';
+    const ptb15m = data.ptb15m ? CoinPrecision.formatCoinStrike(c, data.ptb15m) : 'forming';
+    const ptb1h = data.ptb1h ? CoinPrecision.formatCoinStrike(c, data.ptb1h) : 'forming';
+    const pinRisk = data.pinRisk ? `[PIN RISK DEFENDED: ${data.pinRisk.distanceBps?.toFixed(1)} bps]` : '[CLEAR]';
+    return `- ${c}: Spot=${spotStr} | 15m PTB=${ptb15m} | 1h PTB=${ptb1h} | Strike Status=${pinRisk}`;
+
     const spotStr = data.spot ? `$${Number(data.spot).toLocaleString()}` : 'live';
     const ptb15m = data.ptb15m ? `$${Number(data.ptb15m).toLocaleString()}` : 'forming';
     const ptb1h = data.ptb1h ? `$${Number(data.ptb1h).toLocaleString()}` : 'forming';

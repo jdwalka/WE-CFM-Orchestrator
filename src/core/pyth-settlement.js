@@ -39,14 +39,27 @@ class PythSettlementValidator {
     console.log('[PythSettlementValidator] Initialized');
   }
 
+  _getPythKey() {
+    try {
+      if (typeof window !== 'undefined' && typeof window.resolveRuntimeKey === 'function') {
+        const k = window.resolveRuntimeKey('PYTH_PRO_API_KEY') || window.resolveRuntimeKey('PYTH_API_KEY');
+        if (k) return k;
+      }
+    } catch (_) {}
+    return (typeof process !== 'undefined' && (process.env?.PYTH_PRO_API_KEY || process.env?.PYTH_API_KEY || process.env?.PYTH_LAZER_TOKEN)) || '';
+  }
+
   async fetchJsonWithTimeout(url, timeoutMs = this.requestTimeoutMs) {
     const fetchImpl =
       (typeof window !== 'undefined' && (window.resilientFetch || window.throttledFetch))
         ? (window.resilientFetch || window.throttledFetch).bind(window)
         : fetch;
 
+    const token = this._getPythKey();
+    const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
+
     if (typeof AbortController === 'undefined') {
-      const response = await fetchImpl(url);
+      const response = await fetchImpl(url, { headers });
       if (!response.ok) throw new Error(`Pyth API error: ${response.status}`);
       return response.json();
     }
@@ -61,7 +74,7 @@ class PythSettlementValidator {
     }, timeoutMs);
 
     try {
-      const response = await fetchImpl(url, { signal: controller.signal });
+      const response = await fetchImpl(url, { signal: controller.signal, headers });
       if (!response.ok) throw new Error(`Pyth API error: ${response.status}`);
       return await response.json();
     } catch (err) {
@@ -72,7 +85,7 @@ class PythSettlementValidator {
         try { proxyController.abort(new DOMException(`Pyth proxy timed out after ${timeoutMs}ms`, 'TimeoutError')); } catch (_) { }
       }, timeoutMs);
       try {
-        const proxied = await window.proxyFetch(url, { signal: proxyController.signal });
+        const proxied = await window.proxyFetch(url, { signal: proxyController.signal, headers });
         if (!proxied.ok) throw new Error(`Pyth proxy error: ${proxied.status}`);
         return await proxied.json();
       } finally {
@@ -88,7 +101,7 @@ class PythSettlementValidator {
   // ──────────────────────────────────────────────────────────────
 
   /**
-   * Fetch current price for a coin from Pyth Hermes
+   * Fetch current price for a coin from Pyth Hermes or Lazer proxy
    * @param {string} sym - Coin symbol (BTC, ETH, SOL, etc.)
    * @returns {Promise<object>} { price, confidence, publishTime, age_ms }
    */
@@ -98,12 +111,23 @@ class PythSettlementValidator {
       throw new Error(`[PythSettlementValidator] Unknown coin: ${sym}`);
     }
 
-    // Check cache
+    // 1. Check local instance cache
     const cached = this.priceCache[sym];
     if (cached && Date.now() - cached.fetchTime < this.cacheExpiry) {
       return cached.data;
     }
 
+    // 2. Check window._pythPrices or memory store before network round trip
+    if (typeof window !== 'undefined' && window._pythPrices && window._pythPrices[sym]) {
+      const p = Number(window._pythPrices[sym]);
+      if (Number.isFinite(p) && p > 0) {
+        const data = { price: p, confidence: 0, publishTime: Date.now(), age_ms: 0 };
+        this.priceCache[sym] = { data, fetchTime: Date.now() };
+        return data;
+      }
+    }
+
+    // 3. Query Hermes with Pro key
     try {
       let json = null;
       let lastError = null;
@@ -117,12 +141,47 @@ class PythSettlementValidator {
           lastError = err;
         }
       }
-      if (!json) throw lastError || new Error('Pyth API returned no response');
 
-      const feed = json.parsed?.[0];
+      const feed = json?.parsed?.[0];
+      if (feed && feed.price) {
+        const rawPrice = feed.price.price;
+        const expo = feed.price.expo;
+        const conf = feed.price.conf;
+        const publishTime = feed.price.publish_time * 1000;
+        const price = Number(rawPrice) * Math.pow(10, expo);
+        const data = {
+          price,
+          confidence: Number(conf) * Math.pow(10, expo),
+          publishTime,
+          age_ms: Date.now() - publishTime,
+        };
+        this.priceCache[sym] = { data, fetchTime: Date.now() };
+        return data;
+      }
+    } catch (_) {}
 
-      if (!feed || !feed.price) {
-        throw new Error(`No price data for ${sym}`);
+    // 4. Fallback to Douro Labs Lazer proxy (public, fast)
+    const lazerIdMap = { BTC: 1, ETH: 2, SOL: 6, DOGE: 13, XRP: 14, BNB: 15 };
+    const lazerId = lazerIdMap[sym];
+    if (lazerId) {
+      for (const host of ['pyth-lazer-proxy-1.dourolabs.app', 'pyth-lazer-proxy-2.dourolabs.app']) {
+        try {
+          const u = `https://${host}/v1/latest_price?price_feed_ids=${lazerId}`;
+          const res = await this.fetchJsonWithTimeout(u, 2500);
+          const feeds = res?.priceFeeds || res?.parsed?.priceFeeds || [];
+          const found = feeds.find(f => Number(f.priceFeedId) === lazerId);
+          if (found && found.price) {
+            const exp = found.exponent ?? -8;
+            const price = Number(found.price) * Math.pow(10, exp);
+            const data = { price, confidence: 0, publishTime: Date.now(), age_ms: 0 };
+            this.priceCache[sym] = { data, fetchTime: Date.now() };
+            return data;
+          }
+        } catch (_) {}
+      }
+    }
+
+    throw new Error(`No price data available for ${sym}`);
       }
 
       const price = parseFloat(feed.price.price);

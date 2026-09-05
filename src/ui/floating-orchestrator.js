@@ -1170,7 +1170,7 @@
     var venueBearish = venueDirHint === 'DOWN';
     var venueNeutral = venueDirHint === null;
     var nowMs = Date.now();
-    var closeTimeMs = pmMarket && pmMarket.closeTime ? new Date(pmMarket.closeTime).getTime() : null;
+    var closeTimeMs = polyMarket && polyMarket.closeTime ? new Date(polyMarket.closeTime).getTime() : null;
     var msLeft = closeTimeMs != null ? Math.max(0, closeTimeMs - nowMs) : null;
     var secsLeft = msLeft != null ? msLeft / 1000 : null;
     var minsLeft = msLeft != null ? msLeft / 60000 : null;
@@ -1190,7 +1190,7 @@
       var transport = window.NetworkHealth && window.NetworkHealth.getTransport
         ? window.NetworkHealth.getTransport()
         : null;
-      transportMode = (pmMarket && pmMarket._liveTransport) || transport?.preferred?.polymarket || transport?.preferred?.poly || null;
+      transportMode = (polyMarket && polyMarket._liveTransport) || transport?.preferred?.polymarket || transport?.preferred?.poly || null;
     } catch (_) {}
     var schedulerCooldownRemainingMs = 0;
     var schedulerCircuitRemainingMs = 0;
@@ -1204,7 +1204,7 @@
         schedulerCircuitRemainingMs = Math.max(0, (Number(polyScheduler.circuitUntil) || 0) - nowMs);
       }
     } catch (_) {}
-    var is15mTicker = !pmMarket || !pmMarket.ticker || /15M/i.test(String(pmMarket.ticker));
+    var is15mTicker = !polyMarket || !polyMarket.ticker || /15M/i.test(String(polyMarket.ticker));
     var hasValid15mWindow = Number.isFinite(secsLeft) && secsLeft > 0 && secsLeft <= MAX_SECONDS_LEFT;
     pruneContractState(nowMs);
     var tooLate = msLeft != null && msLeft < MIN_SECONDS_LEFT * 1000;
@@ -1266,8 +1266,8 @@
         : [])
       .concat(hasBinaryCdf && !cdfActive ? ['15m binary CDF neutral (' + Math.round(modelYesProb * 100) + '% YES)'] : [])
       .concat(stalePrediction ? ['prediction stale ' + Math.round(predictionAgeMs / 1000) + 's'] : []));
-    addStage('market_window', !tooLate && (!polymarketActive || hasValid15mWindow), {
-      polymarketActive: polymarketActive,
+    addStage('market_window', !tooLate && (!polyActive || hasValid15mWindow), {
+      polymarketActive: polyActive,
       hasValid15mWindow: hasValid15mWindow,
       is15mTicker: is15mTicker,
       tooLate: tooLate,
@@ -1280,8 +1280,8 @@
       schedulerCooldownRemainingMs: schedulerCooldownRemainingMs,
       schedulerCircuitRemainingMs: schedulerCircuitRemainingMs,
     }, [
-      (polymarketActive && (!is15mTicker || !hasValid15mWindow))
-        ? ('window mismatch: ticker=' + (pmMarket && pmMarket.ticker ? pmMarket.ticker : 'n/a')
+      (polyActive && (!is15mTicker || !hasValid15mWindow))
+        ? ('window mismatch: ticker=' + (polyMarket && polyMarket.ticker ? polyMarket.ticker : 'n/a')
           + ', secsLeft=' + (secsLeft != null ? Math.round(secsLeft) : 'n/a'))
         : null,
       tooLate ? ('settlement < ' + MIN_SECONDS_LEFT + 's') : null,
@@ -1297,43 +1297,43 @@
       return withStageDiagnostics({
         sym: sym, action: 'hold', side: null, direction: null, alignment: 'SHELL_EVAL',
         confidence: 0, msLeft: msLeft ? Math.round(msLeft) : null, secsLeft: secsLeft ? parseFloat(secsLeft.toFixed(1)) : null,
-        minsLeft: minsLeft, lastCall: lastCall, closeTimeMs: closeTimeMs, closeTime: pmMarket ? pmMarket.closeTime : null,
-        contractTicker: pmMarket ? pmMarket.ticker : null,
+        minsLeft: minsLeft, lastCall: lastCall, closeTimeMs: closeTimeMs, closeTime: polyMarket ? polyMarket.closeTime : null,
+        contractTicker: polyMarket ? polyMarket.ticker : null,
         reason: 'Shell wall evaluating (' + (vetoSt.evalTick || '?') + '/3) — data collection'
       });
     }
     if (vetoSt && vetoSt.phase === 'confirmed')
-      return withStageDiagnostics(_earlyExit(sym, pmMarket, msLeft, secsLeft, minsLeft, lastCall, 'Shell wall confirmed — stand aside'));
+      return withStageDiagnostics(_earlyExit(sym, polyMarket, msLeft, secsLeft, minsLeft, lastCall, 'Shell wall confirmed — stand aside'));
     var earlyExit = pred && pred.diagnostics && pred.diagnostics.earlyExit;
-    if (modelHardVeto && (!polymarketActive || polymarketDirHint === null)) {
+    if (modelHardVeto && (!polyActive || venueDirHint === null)) {
       addStage('decision_route', false, {
         earlyExit: false,
-        polymarketIndependentEdge: !!(polymarketActive && polymarketDirHint !== null),
+        polymarketIndependentEdge: !!(polyActive && venueDirHint !== null),
       }, ['model veto with no independent market edge']);
       return withStageDiagnostics(_skip(sym, 'Model vetoed' + (modelVetoReason ? ' — ' + modelVetoReason : '') + '; no independent market edge'));
     }
-    if (!polymarketActive && !modelActive)
+    if (!polyActive && !modelActive)
       return withStageDiagnostics(_skip(sym, 'No signal — score ' + modelScore.toFixed(3) + ', no Polymarket data'));
-    if (polymarketActive && (!is15mTicker || !hasValid15mWindow))
+    if (polyActive && (!is15mTicker || !hasValid15mWindow))
       return withStageDiagnostics(_skip(sym, 'Invalid contract window for 15m execution'));
     if (tooLate)
       return withStageDiagnostics(_skip(sym, 'Settlement < ' + MIN_SECONDS_LEFT + 's — too late to fill'));
     if (earlyExit)
-      return withStageDiagnostics(_earlyExit(sym, pmMarket, msLeft, secsLeft, minsLeft, lastCall));
+      return withStageDiagnostics(_earlyExit(sym, polyMarket, msLeft, secsLeft, minsLeft, lastCall));
     var direction, alignment;
-    if (polymarketActive && modelActive) {
-      var sameDir = (modelBullish && polymarketBullish) || (!modelBullish && polymarketBearish);
+    if (polyActive && modelActive) {
+      var sameDir = (modelBullish && venueBullish) || (!modelBullish && venueBearish);
       if (sameDir) { direction = modelDir; alignment = 'ALIGNED'; }
-      else if (polymarketNeutral) { direction = modelDir; alignment = 'MODEL_LEADS'; }
+      else if (venueNeutral) { direction = modelDir; alignment = 'MODEL_LEADS'; }
       else { direction = modelDir; alignment = 'DIVERGENT'; }
     } else if (modelActive) {
       direction = modelDir; alignment = 'MODEL_ONLY';
     } else {
-      if (polymarketNeutral)
+      if (venueNeutral)
         return _skip(sym, (modelVetoed
           ? 'Model vetoed' + (modelVetoReason ? ' — ' + modelVetoReason : '')
           : 'Polymarket ~50/50, model below threshold (' + modelScore.toFixed(3) + ')'));
-      direction = polymarketYesPrice >= 0.5 ? dirs.yesDir : dirs.noDir;
+      direction = polyYesPrice >= 0.5 ? dirs.yesDir : dirs.noDir;
       alignment = 'POLYMARKET_ONLY';
     }
     var regimeTag = extractRegimeTag(pred, cfm);
