@@ -2917,6 +2917,7 @@ ${ladderLines ? `- Active Hourly Range Ladder:\n${ladderLines}` : ''}`;
     }
 
     // ── Cognitive Metacognition & Gospel Persona ──
+    const effectiveModel = model !== 'auto' ? model : 'asi1-mini';
     const contractRule = isHourly
       ? `3. HOURLY CONTRACTS RESOLUTION RULE:
    - This inquiry is for the top-of-the-hour HOURLY PRICE RANGE ladder (settling at ${targetCloseHourUtc}:00:00 UTC / ${targetCloseTime}).
