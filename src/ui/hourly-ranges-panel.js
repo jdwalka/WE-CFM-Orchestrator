@@ -486,8 +486,14 @@
     let poly15mHtml = '';
     try {
       const p15 = window.PredictionMarkets?.getCoin?.(sym)?.poly15m;
-      if (p15 && p15.slug) {
-        const upProb = Number(p15.probability);
+      const coinPrefix = (window.PredictionMarkets?.POLY_5M_COIN_SLUGS?.[sym] || sym.toLowerCase());
+      const nowSec = Math.floor(Date.now() / 1000);
+      const windowTs = nowSec - (nowSec % 900);
+      const fallbackSlug = `${coinPrefix}-updown-15m-${windowTs}`;
+      const activeSlug = p15?.slug || fallbackSlug;
+
+      if (activeSlug) {
+        const upProb = Number(p15?.probability);
         const hasProb = Number.isFinite(upProb);
         const livePathApi = (typeof window !== 'undefined' && window.LivePath15m) || null;
         const live = livePathApi
@@ -496,25 +502,25 @@
               : livePathApi.resolve(sym, { spot: price, poly15m: p15 }))
           : null;
         const call = (live && live.dir)
-          || (p15.liveDirection === 'UP' || p15.liveDirection === 'DOWN' ? p15.liveDirection : null)
+          || (p15?.liveDirection === 'UP' || p15?.liveDirection === 'DOWN' ? p15.liveDirection : null)
           || (hasProb ? (upProb >= 0.5 ? 'UP' : 'DOWN') : null);
         const col = call === 'UP' ? 'var(--color-green,#26a69a)' : call === 'DOWN' ? 'var(--color-red,#ef5350)' : 'var(--color-text-faint)';
-        const ptbNum = Number(p15.priceToBeatNum ?? p15.targetPriceNum);
-        const ptbLabel = p15.targetPrice || (Number.isFinite(ptbNum) && ptbNum > 0
+        const ptbNum = Number(p15?.priceToBeatNum ?? p15?.targetPriceNum);
+        const ptbLabel = p15?.targetPrice || (Number.isFinite(ptbNum) && ptbNum > 0
           ? (window.CoinPrecision?.formatCoinStrike
               ? window.CoinPrecision.formatCoinStrike(sym, ptbNum)
               : `$${ptbNum.toLocaleString('en-US', { minimumFractionDigits: (sym === 'XRP' || sym === 'DOGE') ? 4 : 2, maximumFractionDigits: (sym === 'XRP' || sym === 'DOGE') ? 4 : 2 })}`)
           : 'pending');
-        const closeLabel15 = p15.closeTime ? timeToClose(p15.closeTime) : null;
+        const closeLabel15 = p15?.closeTime ? timeToClose(p15.closeTime) : null;
 
         poly15mHtml = `<div class="hr-poly15m" style="margin-bottom:8px;">
           <div class="hr-grok-hdr" style="display:flex;justify-content:space-between;">
             <span>Polymarket 15m Up/Down</span>
-            <span style="opacity:0.5;font-family:monospace;font-size:9px;" title="Market Slug">${p15.slug}</span>
+            <span style="opacity:0.5;font-family:monospace;font-size:9px;" title="Market Slug">${activeSlug}</span>
           </div>
           <iframe
             title="${sym} Up or Down 15m — Polymarket"
-            src="https://embed.polymarket.com/market?market=${encodeURIComponent(p15.slug)}&theme=dark&border=false&creator=JohnDaWalka&height=220"
+            src="https://embed.polymarket.com/market?market=${encodeURIComponent(activeSlug)}&theme=dark&border=false&creator=JohnDaWalka&height=220"
             style="width:100%;height:220px;border:0;border-radius:6px;display:block;margin-top:4px;"
             frameborder="0"
             allowtransparency="true"
@@ -523,7 +529,7 @@
             <span class="hr-grok-call" style="color:${col}">${hasProb ? `${call === 'UP' ? '▲' : '▼'} ${Math.round(upProb * 100)}% YES` : 'awaiting odds'}</span>
             <span class="hr-grok-meta">PTB ${ptbLabel}${closeLabel15 ? ` · closes ${closeLabel15}` : ''}</span>
           </div>
-          <a href="https://polymarket.com/event/${encodeURIComponent(p15.slug)}" target="_blank" rel="noopener" style="display:inline-block;margin-top:3px;font-size:10px;color:var(--color-text-faint);text-decoration:none;">Open on Polymarket ↗</a>
+          <a href="https://polymarket.com/event/${encodeURIComponent(activeSlug)}" target="_blank" rel="noopener" style="display:inline-block;margin-top:3px;font-size:10px;color:var(--color-text-faint);text-decoration:none;">Open on Polymarket ↗</a>
         </div>`;
       }
     } catch (_) { poly15mHtml = ''; }

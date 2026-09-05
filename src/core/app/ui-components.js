@@ -1,5 +1,15 @@
 // UI Components
 (function() {
+  function _safeNormalizeConfidence(v) {
+    if (typeof _normalizeConfidence === 'function') return _normalizeConfidence(v);
+    if (typeof window !== 'undefined' && typeof window._normalizeConfidence === 'function') {
+      return window._normalizeConfidence(v);
+    }
+    const n = Number(v);
+    if (!Number.isFinite(n)) return 0;
+    return n > 1 ? n / 100 : n;
+  }
+
 function predictionCard(p) {
     if (!p || !p.sym) {
       console.warn('[predictionCard] Missing prediction object or sym:', p);
@@ -25,8 +35,8 @@ function predictionCard(p) {
     // Kalshi fetching is disabled (user no longer trades there) -- _k15mV is
     // always null now. Prefer the Polymarket 15m Up/Down market directly
     // (fresher/more precise than the blended combinedProb fallback).
-    const _poly15mV = _k15mCV?.poly15m ?? null;
-    const polymarketProb = _poly15mV?.probability ?? _k15mV?.probability ?? _k15mCV?.combinedProb ?? null;
+    const _poly15mV = p.poly15m ?? _k15mCV?.poly15m ?? null;
+    const polymarketProb = _poly15mV?.probability ?? _poly15mV?.upProbability ?? _poly15mV?.clobProbability ?? _poly15mV?.yesProb ?? _k15mV?.probability ?? _k15mCV?.combinedProb ?? null;
     const polymarketPct = polymarketProb !== null ? Math.round(polymarketProb * 100) : null;
     const polymarketEdge = polymarketProb !== null ? Math.abs(polymarketProb - 0.5) : null;
     let _kAlignEarly = p.projections?.p15?.polyAlign ?? null;
@@ -126,7 +136,7 @@ function predictionCard(p) {
     }
 
     // Targeted guard (ultra-late only)
-    const confNorm = _normalizeConfidence(p.confidence) ?? 0;
+    const confNorm = _safeNormalizeConfidence(p.confidence) ?? 0;
     const isSemiConfidence = confNorm >= 0.40 && confNorm < 0.70;
     const isCrowdConflict =
       polymarketDir !== null && modelDir !== 'wait' && modelDir !== polymarketDir;
@@ -360,8 +370,8 @@ function predictionCard(p) {
     // "beat the opening price" (no variable strike direction like Kalshi had).
     const _k15mCoin = window.PredictionMarkets?.getCoin(p.sym);
     const _k15m = _k15mCoin?.kalshi15m ?? null;
-    const _poly15m = _k15mCoin?.poly15m ?? null;
-    const _kProb = ind.mktSentiment?.kalshi ?? _poly15m?.probability ?? _k15m?.probability ?? _k15mCoin?.combinedProb ?? null;
+    const _poly15m = p.poly15m ?? _k15mCoin?.poly15m ?? null;
+    const _kProb = ind.mktSentiment?.kalshi ?? _poly15m?.probability ?? _poly15m?.upProbability ?? _poly15m?.clobProbability ?? _poly15m?.yesProb ?? _k15m?.probability ?? _k15mCoin?.combinedProb ?? null;
     let _kAlign = p.projections?.p15?.polyAlign ?? null;
     if (_kAlign && _k15m && _kAlign.ticker && _k15m.ticker && _kAlign.ticker !== _k15m.ticker) {
       _kAlign = null;
@@ -374,17 +384,74 @@ function predictionCard(p) {
     }
 
     const polymarket15mRow = (() => {
-      if (_kProb === null) return '';
+      const _rowLabel = 'Polymarket 15M';
+      const cfmRow = (() => {
+        const cfmData = window.CFMEngine?.getAll ? window.CFMEngine.getAll()[p.sym] : null;
+        if (!cfmData || !cfmData.bias) return '';
+        const dir = cfmData.bias === 'up' ? 'bull' : cfmData.bias === 'down' ? 'bear' : 'flat';
+        const mktContext = window.tickers?.[p.sym] ? `5m Δ ${((window.tickers[p.sym].close - window.tickers[p.sym].open) / window.tickers[p.sym].open * 100).toFixed(2)}%` : '';
+        return `<div class="ind-item"><span class="ind-name">CFM Context</span><span class="ind-val ${dir}">${String(cfmData.bias).toUpperCase()} · ${mktContext}</span></div>`;
+      })();
 
-      // YES and NO are complementary — always sum to 100%
-      const kYesPct = Math.round(_kProb * 100);
-      const kNoPct = 100 - kYesPct;
+      if (_kProb === null && !_poly15m) return '';
+
       // Polymarket Up/Down has no variable strike direction like Kalshi did --
       // it's always "beat the opening price" -- so default to 'above' unless
       // an actual Kalshi alignment object is still present with one set.
       const _rowStrikeDir = _poly15m ? 'above' : ((_kAlign?.strikeDir ?? _k15m?.strikeDir ?? _strikeDirEarly) === 'below' ? 'below' : 'above');
       const _rowYesDir = _rowStrikeDir === 'below' ? 'down' : 'up';
       const _rowNoDir = _rowYesDir === 'up' ? 'down' : 'up';
+
+      // Reference threshold — "Beat $85.32" for above, "Below $85.32" for below.
+      // Prefer the raw API string (targetPrice) to avoid rounding.
+      const _refStrikeNum = _kAlign?.ref ?? _poly15m?.priceToBeatNum ?? _poly15m?.targetPriceNum ?? null;
+      const refTarget = _poly15m?.targetPrice ?? _k15m?.targetPrice ?? (_refStrikeNum != null ? (window.CoinPrecision?.formatCoinStrike ? window.CoinPrecision.formatCoinStrike(p.sym, _refStrikeNum) : fmtPrice(_refStrikeNum, p.sym)) : null);
+      const refVerb = _rowStrikeDir === 'below' ? 'Below' : 'Beat';
+      const refLine = refTarget
+        ? ` <span class="k15-target">${refVerb} ${refTarget}</span>`
+        : '';
+
+      // Gap from current price to reference — show dollar amount + % + BORDERLINE warning
+      const _gapRaw = _kAlign?.gapPct ?? (_refStrikeNum != null && p.price > 0 ? ((p.price - _refStrikeNum) / _refStrikeNum) * 100 : null);
+      const _gapDollar = (_refStrikeNum != null && p.price > 0)
+        ? (_refStrikeNum - p.price) : null;
+      const _gapDec = window.CoinPrecision?.getCoinDeltaDecimals
+        ? window.CoinPrecision.getCoinDeltaDecimals(p.sym)
+        : (/^DOGE$/i.test(p.sym) ? 4 : /^XRP$/i.test(p.sym) ? 4 : 2);
+      const _gapDollarStr = _gapDollar !== null
+        ? (window.CoinPrecision?.formatCoinDelta
+            ? window.CoinPrecision.formatCoinDelta(p.sym, Math.abs(_gapDollar), { showSign: false })
+            : `$${Math.abs(_gapDollar).toFixed(_gapDec)}`)
+        : '';
+      const _borderline = _gapRaw !== null && Math.abs(_gapRaw) < 0.12; // within 0.12% of strike
+      const gapLine = _gapRaw !== null && Math.abs(_gapRaw) > 0.001
+        ? ` <span class="k15-gap ${_gapRaw > 0 ? 'k15-gap-up' : 'k15-gap-down'} ${_borderline ? 'k15-borderline' : ''}">` +
+        `${_gapRaw > 0 ? '▲' : '▼'} ${_gapDollarStr ? _gapDollarStr + ' ' : ''}` +
+        `(${_gapRaw > 0 ? '+' : ''}${_gapRaw.toFixed(3)}%)` +
+        `${_borderline ? ' ⚠ BORDERLINE' : ''}</span>`
+        : (_gapRaw !== null ? ` <span class="k15-gap k15-gap-down k15-borderline">✓ AT STRIKE</span>` : '');
+
+      // Countdown to settlement
+      let countdown = '';
+      const _closeTimeRow = _poly15m?.closeTime ?? _k15m?.closeTime;
+      if (_closeTimeRow) {
+        const msl = new Date(_closeTimeRow).getTime() - Date.now();
+        const closeUtc4 = formatUtc4Time(_closeTimeRow);
+        if (msl > 0) {
+          const ts = Math.floor(msl / 1000);
+          countdown = ` <span class="k15-expiry" data-close-ms="${new Date(_closeTimeRow).getTime()}">⏱ ${Math.floor(ts / 60)}m${String(ts % 60).padStart(2, '0')}s · UTC-4 ${closeUtc4}</span>`;
+        } else {
+          countdown = ` <span class="k15-expiry k15-settling">⏱ SETTLING</span>`;
+        }
+      }
+
+      if (_kProb === null) {
+        return `<div class="ind-item k15m-row"><span class="ind-name">${_rowLabel}</span><span class="ind-val flat"><span class="k15-side-label" style="opacity:0.6">15M</span>${refLine ? refLine : '<span class="k15-target">Awaiting 15M target</span>'}<span class="k15-gap" style="opacity:0.6">⏱ odds loading</span>${countdown}</span></div>${cfmRow}`;
+      }
+
+      // YES and NO are complementary — always sum to 100%
+      const kYesPct = Math.round(_kProb * 100);
+      const kNoPct = 100 - kYesPct;
       const kDir = _kProb >= 0.5 ? _rowYesDir : _rowNoDir;
       const kCls = kDir === 'up' ? 'bull' : 'bear';
 
@@ -428,57 +495,6 @@ function predictionCard(p) {
           ` ${agBadge}`;
       }
 
-      // Reference threshold — "Beat $85.32" for above, "Below $85.32" for below.
-      // Prefer the raw API string (targetPrice) to avoid rounding.
-      const refTarget = _poly15m?.targetPrice ?? _k15m?.targetPrice ?? (_kAlign?.ref != null ? fmtPrice(_kAlign.ref, p.sym) : null);
-      const refVerb = _rowStrikeDir === 'below' ? 'Below' : 'Beat';
-      const refLine = refTarget
-        ? ` <span class="k15-target">${refVerb} ${refTarget}</span>`
-        : '';
-
-      // Gap from current price to reference — show dollar amount + % + BORDERLINE warning
-      const _gapRaw = _kAlign?.gapPct ?? null;
-      const _gapDollar = (_kAlign?.ref != null && p.price > 0)
-        ? (_kAlign.ref - p.price) : null;
-      const _gapDec = window.CoinPrecision?.getCoinDeltaDecimals
-        ? window.CoinPrecision.getCoinDeltaDecimals(p.sym)
-        : (/^DOGE$/i.test(p.sym) ? 4 : /^XRP$/i.test(p.sym) ? 4 : 2);
-      const _borderline = _gapRaw !== null && Math.abs(_gapRaw) < 0.12; // within 0.12% of strike
-      const gapLine = _gapRaw !== null && Math.abs(_gapRaw) > 0.001
-        ? ` <span class="k15-gap ${_gapRaw > 0 ? 'k15-gap-up' : 'k15-gap-down'} ${_borderline ? 'k15-borderline' : ''}">` +
-        `${_gapRaw > 0 ? '▲' : '▼'} ${_gapDollar !== null ? '$' + Math.abs(_gapDollar).toFixed(_gapDec) + ' ' : ''}` +
-        `(${_gapRaw > 0 ? '+' : ''}${_gapRaw.toFixed(3)}%)` +
-        `${_borderline ? ' ⚠ BORDERLINE' : ''}</span>`
-        : (_gapRaw !== null ? ` <span class="k15-gap k15-gap-down k15-borderline">✓ AT STRIKE</span>` : '');
-
-
-      // Countdown to settlement
-      let countdown = '';
-      const _closeTimeRow = _poly15m?.closeTime ?? _k15m?.closeTime;
-      if (_closeTimeRow) {
-        const msl = new Date(_closeTimeRow).getTime() - Date.now();
-        const closeUtc4 = formatUtc4Time(_closeTimeRow);
-        if (msl > 0) {
-          const ts = Math.floor(msl / 1000);
-          countdown = ` <span class="k15-expiry" data-close-ms="${new Date(_closeTimeRow).getTime()}">⏱ ${Math.floor(ts / 60)}m${String(ts % 60).padStart(2, '0')}s · UTC-4 ${closeUtc4}</span>`;
-        } else {
-          countdown = ` <span class="k15-expiry k15-settling">⏱ SETTLING</span>`;
-        }
-      }
-
-      const cfmRow = (() => {
-        const cfmData = window.CFMEngine?.getAll ? window.CFMEngine.getAll()[p.sym] : null;
-        if (!cfmData || !cfmData.bias) return '';
-        const dir = cfmData.bias === 'up' ? 'bull' : cfmData.bias === 'down' ? 'bear' : 'flat';
-        const mktContext = window.tickers?.[p.sym] ? `5m Δ ${((window.tickers[p.sym].close - window.tickers[p.sym].open) / window.tickers[p.sym].open * 100).toFixed(2)}%` : '';
-        return `<div class="ind-item"><span class="ind-name">CFM Context</span><span class="ind-val ${dir}">${String(cfmData.bias).toUpperCase()} · ${mktContext}</span></div>`;
-      })();
-
-      // Kalshi fetching is disabled -- never show "Kalshi" here, that was the
-      // label flickering back and forth whenever poly15m was momentarily null
-      // between its own refresh cycles (a data gap, not evidence of Kalshi
-      // data existing).
-      const _rowLabel = 'Polymarket 15M';
       return `<div class="ind-item k15m-row"><span class="ind-name">${_rowLabel}</span><span class="ind-val ${kCls}">${probLine}${refLine}${gapLine}${countdown}</span></div>${cfmRow}`;
     })();
 
@@ -488,13 +504,17 @@ function predictionCard(p) {
       const dir = p5.target > p.price ? 'UP' : 'DOWN';
       const cls = dir === 'UP' ? 'bull' : 'bear';
       const gapPct = ((p5.target - p.price) / p.price) * 100;
+      const gapDollar = Math.abs(p5.target - p.price);
       const gapDec = window.CoinPrecision?.getCoinDeltaDecimals
         ? window.CoinPrecision.getCoinDeltaDecimals(p.sym)
         : (/^DOGE$/i.test(p.sym) ? 4 : /^XRP$/i.test(p.sym) ? 4 : 2);
       const targetStr = window.CoinPrecision?.formatCoinStrike
         ? window.CoinPrecision.formatCoinStrike(p.sym, p5.target)
         : fmtPrice(p5.target, p.sym);
-      const gapLine = ` <span class="k15-gap ${gapPct > 0 ? 'k15-gap-up' : 'k15-gap-down'}">${gapPct > 0 ? '▲' : '▼'} $${gapDollar.toFixed(gapDec)} (${gapPct > 0 ? '+' : ''}${gapPct.toFixed(3)}%)</span>`;
+      const gapDollarStr = window.CoinPrecision?.formatCoinDelta
+        ? window.CoinPrecision.formatCoinDelta(p.sym, gapDollar, { showSign: false })
+        : `$${gapDollar.toFixed(gapDec)}`;
+      const gapLine = ` <span class="k15-gap ${gapPct > 0 ? 'k15-gap-up' : 'k15-gap-down'}">${gapPct > 0 ? '▲' : '▼'} ${gapDollarStr} (${gapPct > 0 ? '+' : ''}${gapPct.toFixed(3)}%)</span>`;
       return `<div class="ind-item k15m-row" style="background:rgba(255,255,255,0.03); border-left:2px solid var(--color-${dir === 'UP' ? 'green' : 'red'}); padding-left: 6px;"><span class="ind-name">Model 5M</span><span class="ind-val ${cls}"><span class="k15-side-label" style="opacity:0.6">PROJ</span><span class="k15-${dir.toLowerCase()}" style="font-weight:700">${dir}</span><span class="k15-target"> ≥ ${targetStr}</span>${gapLine}</span></div>`;
 
     })();
@@ -657,7 +677,7 @@ function predictionCard(p) {
           ${lazerRow}
           ${model5mRow}
           ${polymarket15mRow}
-          ${_k15mCoin ? renderFifteenMinuteMovePlan(_k15mCoin, true) : ''}
+          ${_k15mCoin ? (typeof renderFifteenMinuteMovePlan === 'function' ? renderFifteenMinuteMovePlan(_k15mCoin, true) : (typeof window !== 'undefined' && typeof window.renderFifteenMinuteMovePlan === 'function' ? window.renderFifteenMinuteMovePlan(_k15mCoin, true) : '')) : ''}
           ${(() => {
         // ── Market Divergence row ─────────────────────────────────────
         const _md = window._marketDivergence?.[p.sym];
