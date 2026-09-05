@@ -205,7 +205,7 @@ const PYTH_ID_TO_INSTRUMENT = Object.fromEntries(
     Object.entries(PYTH_FEEDS).map(([instr, id]) => [id, instr])
   );
 
-const LAZER_ID_INSTR = { 1: 'BTCUSD', 2: 'ETHUSD', 6: 'SOLUSD', 10: 'DOGEUSD', 14: 'XRPUSD', 15: 'BNBUSD' };
+const LAZER_ID_INSTR = { 1: 'BTCUSD', 2: 'ETHUSD', 6: 'SOLUSD', 10: 'DOGEUSD', 13: 'DOGEUSD', 14: 'XRPUSD', 15: 'BNBUSD' };
 
 const INSTR_TO_PYTH_SYM = {
     'BTCUSD': 'Crypto.BTC/USD', 'ETHUSD': 'Crypto.ETH/USD', 'SOLUSD': 'Crypto.SOL/USD',
@@ -631,82 +631,7 @@ async function fetchCoinbaseTickers() {
   }
 
 async function fetchPythTickers() {
-    const pythWsTimeoutMs = Number(
-      (window.__WECRYPTO_CONFIG__ && window.__WECRYPTO_CONFIG__.pythWsTimeoutMs) ||
-      localStorage.getItem('pyth.ws.timeout.ms') ||
-      2500
-    );
-
-    const freshPyth = window._signalScheduler?.getFreshSourceSnapshot('pyth-lazer', 3500);
-    if (freshPyth && typeof freshPyth === 'object') {
-      const mapped = mapPythLazerPricesToTickers(freshPyth);
-      if (mapped.length) {
-        if (window.NetworkHealth) {
-          window.NetworkHealth.update('Pyth', {
-            status: 'healthy',
-            lastFetch: Date.now(),
-            fallback: false,
-            reason: '',
-          });
-        }
-        return mapped;
-      }
-    }
-
-    // ★ NEW: Try Pyth Lazer WS stream first (sub-100ms, from IPC)
-    if (window.pythLazer?.onTickers) {
-      try {
-        let received = false;
-        let unsubscribe = null;
-        return await new Promise((resolve, reject) => {
-          const timeout = setTimeout(() => {
-            if (!received) {
-              if (typeof unsubscribe === 'function') unsubscribe();
-              reject(new Error(`Pyth Lazer WS timeout (${pythWsTimeoutMs}ms)`));
-            }
-          }, pythWsTimeoutMs);
-
-          // onTickers() returns an unsubscribe fn (see electron/preload.js) — capture and
-          // call it once we're done so each fetchAll() cycle doesn't leak another permanent
-          // ipcRenderer 'pyth:tickers' listener (previously unbounded, one per call, never removed).
-          unsubscribe = window.pythLazer.onTickers((prices) => {
-            clearTimeout(timeout);
-            received = true;
-            if (typeof unsubscribe === 'function') unsubscribe();
-            window._signalScheduler?.markSourceFresh('pyth-lazer', prices, Date.now());
-            if (window.NetworkHealth) {
-              window.NetworkHealth.update('Pyth', {
-                status: 'healthy',
-                lastFetch: Date.now(),
-                fallback: false,
-                reason: '',
-              });
-            }
-            resolve(mapPythLazerPricesToTickers(prices));
-          });
-        });
-      } catch (e) {
-        console.warn('[PythTickers] WS stream failed:', e.message);
-      }
-    }
-
-    // ★ FALLBACK 1: Try Lazer proxy REST (no-auth, faster than Hermes)
-    try {
-      const result = await fetchPythLazerProxyTickers();
-      if (window.NetworkHealth) {
-        window.NetworkHealth.update('Pyth', {
-          status: 'degraded',
-          lastFetch: Date.now(),
-          fallback: true,
-          reason: 'Using Lazer proxy fallback',
-        });
-      }
-      return result;
-    } catch (e) {
-      console.warn('[PythTickers] Lazer proxy failed:', e.message);
-    }
-
-    // ★ FALLBACK 2: Pyth browser client memory cache (from pyth-browser-client.js)
+    // 1. FAST PATH: Check memory cache first (0ms latency, zero blocking)
     if (window._pythPrices && typeof window._pythPrices === 'object' && Object.keys(window._pythPrices).length >= 4) {
       const result = [];
       for (const [sym, price] of Object.entries(window._pythPrices)) {
@@ -736,18 +661,96 @@ async function fetchPythTickers() {
             status: 'healthy',
             lastFetch: Date.now(),
             fallback: false,
-            reason: 'Browser client live',
+            reason: 'Memory cache hit',
           });
         }
         return result;
       }
     }
 
-    // ★ FALLBACK 3: Pyth Hermes (standard, wider coin coverage)
+    const freshPyth = window._signalScheduler?.getFreshSourceSnapshot('pyth-lazer', 3500);
+    if (freshPyth && typeof freshPyth === 'object') {
+      const mapped = mapPythLazerPricesToTickers(freshPyth);
+      if (mapped.length >= 4) {
+        if (window.NetworkHealth) {
+          window.NetworkHealth.update('Pyth', {
+            status: 'healthy',
+            lastFetch: Date.now(),
+            fallback: false,
+            reason: '',
+          });
+        }
+        return mapped;
+      }
+    }
+
+    // 2. FAST IPC WS stream check (cap timeout at 800ms)
+    const pythWsTimeoutMs = Math.min(
+      Number((window.__WECRYPTO_CONFIG__ && window.__WECRYPTO_CONFIG__.pythWsTimeoutMs) || 800),
+      1000
+    );
+
+    if (window.pythLazer?.onTickers) {
+      try {
+        let received = false;
+        let unsubscribe = null;
+        return await new Promise((resolve, reject) => {
+          const timeout = setTimeout(() => {
+            if (!received) {
+              if (typeof unsubscribe === 'function') unsubscribe();
+              reject(new Error(`Pyth Lazer WS timeout (${pythWsTimeoutMs}ms)`));
+            }
+          }, pythWsTimeoutMs);
+
+          unsubscribe = window.pythLazer.onTickers((prices) => {
+            clearTimeout(timeout);
+            received = true;
+            if (typeof unsubscribe === 'function') unsubscribe();
+            window._signalScheduler?.markSourceFresh('pyth-lazer', prices, Date.now());
+            if (window.NetworkHealth) {
+              window.NetworkHealth.update('Pyth', {
+                status: 'healthy',
+                lastFetch: Date.now(),
+                fallback: false,
+                reason: '',
+              });
+            }
+            resolve(mapPythLazerPricesToTickers(prices));
+          });
+        });
+      } catch (e) {
+        // Continue to fallback
+      }
+    }
+
+    // 3. FALLBACK 1: Parallel Douro Labs Lazer REST proxies (sub-100ms, no auth required)
+    try {
+      const result = await fetchPythLazerProxyTickers();
+      if (window.NetworkHealth) {
+        window.NetworkHealth.update('Pyth', {
+          status: 'degraded',
+          lastFetch: Date.now(),
+          fallback: true,
+          reason: 'Using Lazer proxy fallback',
+        });
+      }
+      return result;
+    } catch (e) {
+      console.warn('[PythTickers] Lazer proxy race failed:', e.message);
+    }
+
+    // 4. FALLBACK 2: Pyth Hermes v2 with Pro Bearer auth (capped at 2500ms)
     try {
       const feedIds = Object.values(PYTH_FEEDS);
       const params = feedIds.map(id => `ids[]=${id}`).join('&');
-      const res = await fetchWithTimeout(`${PYTH_HERMES}/v2/updates/price/latest?${params}`, 8000);
+      const pythKey = resolveRuntimeKeyLocal('PYTH_PRO_API_KEY') ||
+        resolveRuntimeKeyLocal('PYTH_HERMES_TOKEN') ||
+        resolveRuntimeKeyLocal('PYTH_HERMES_PRO_KEY') ||
+        '9AowRQwEELKpsMosei146CTHcxeNoHuSUWuDhGfFxkXZ';
+      const headers = { 'Accept': 'application/json' };
+      if (pythKey) headers['Authorization'] = `Bearer ${pythKey}`;
+
+      const res = await fetchWithTimeout(`${PYTH_HERMES}/v2/updates/price/latest?${params}`, 2500, { headers });
       if (res.ok) {
         const json = await res.json();
         const result = [];
@@ -788,39 +791,45 @@ async function fetchPythTickers() {
     } catch (e) {
       console.warn('[PythTickers] Hermes fetch failed:', e.message);
     }
+
     throw new Error('All Pyth ticker sources failed');
   }
 
 async function fetchPythLazerProxyTickers() {
-    const qs = 'price_feed_ids=1&price_feed_ids=2&price_feed_ids=6&price_feed_ids=10&price_feed_ids=14&price_feed_ids=15';
-    for (const host of PYTH_LAZER_PROXIES) {
-      try {
-        const res = await fetchWithTimeout(`https://${host}/v1/latest_price?${qs}`, 4000);
-        if (!res.ok) continue;
-        const j = await res.json();
-        const result = [];
-        for (const f of j.priceFeeds || []) {
-          const instr = LAZER_ID_INSTR[f.priceFeedId];
-          if (!instr) continue;
-          const exp = f.exponent ?? -8;
-          const scale = Math.pow(10, exp);
-          const px = Number(f.price) * scale;
-          if (!px || px <= 0 || isNaN(px)) continue;
-          result.push({
-            instrument_name: instr, last: px,
-            high: px, low: px, change: 0,
-            best_bid: f.bestBidPrice != null ? Number(f.bestBidPrice) * scale : null,
-            best_ask: f.bestAskPrice != null ? Number(f.bestAskPrice) * scale : null,
-            best_bid_size: '', best_ask_size: '',
-            volume: 0, volume_value: 0,
-            timestamp: Date.now(),
-            source: 'pyth-lazer',
-          });
-        }
-        if (result.length >= 4) return result;
-      } catch (err) { console.error('[Error caught]', err);  }
+    const qs = 'price_feed_ids=1&price_feed_ids=2&price_feed_ids=6&price_feed_ids=10&price_feed_ids=13&price_feed_ids=14&price_feed_ids=15';
+    
+    const queryHost = async (host) => {
+      const res = await fetchWithTimeout(`https://${host}/v1/latest_price?${qs}`, 1500);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const j = await res.json();
+      const result = [];
+      for (const f of j.priceFeeds || []) {
+        const instr = LAZER_ID_INSTR[f.priceFeedId];
+        if (!instr) continue;
+        const exp = f.exponent ?? -8;
+        const scale = Math.pow(10, exp);
+        const px = Number(f.price) * scale;
+        if (!px || px <= 0 || isNaN(px)) continue;
+        result.push({
+          instrument_name: instr, last: px,
+          high: px, low: px, change: 0,
+          best_bid: f.bestBidPrice != null ? Number(f.bestBidPrice) * scale : null,
+          best_ask: f.bestAskPrice != null ? Number(f.bestAskPrice) * scale : null,
+          best_bid_size: '', best_ask_size: '',
+          volume: 0, volume_value: 0,
+          timestamp: Date.now(),
+          source: 'pyth-lazer',
+        });
+      }
+      if (result.length < 4) throw new Error('Insufficient feeds returned');
+      return result;
+    };
+
+    try {
+      return await Promise.any(PYTH_LAZER_PROXIES.map(host => queryHost(host)));
+    } catch (err) {
+      throw new Error('Pyth Lazer proxies unavailable');
     }
-    throw new Error('Pyth Lazer proxies unavailable');
   }
 
 async function fetchHyperliquidMids() {
@@ -1449,16 +1458,16 @@ function liveTickerSources(cdcPromise = null) {
     }
     sources.push(
       { source: 'pyth-lazer', run: fetchPythLazerProxyTickers },
-      { source: 'pyth', run: fetchPythTickers },
       { source: 'hyperliquid', run: fetchHyperliquidMids },
       { source: 'binance', run: fetchBinanceTickers },
+      { source: 'pyth', run: fetchPythTickers },
       { source: 'kraken', run: fetchKrakenTickers },
       { source: 'coinbase', run: fetchCoinbaseTickers },
     );
     return sources;
   }
 
-async function raceTickerSources(sources, batchSize = 2) {
+async function raceTickerSources(sources, batchSize = 3) {
     const errors = [];
     for (let i = 0; i < sources.length; i += batchSize) {
       const batch = sources.slice(i, i + batchSize);

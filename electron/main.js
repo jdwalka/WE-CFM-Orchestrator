@@ -4433,9 +4433,28 @@ function createWindow() {
 
   win.loadFile(path.join(__dirname, '../public/index.html'));
 
+  const consoleMsgHistory = new Map();
   win.webContents.on('console-message', (event, level, message, line, sourceId) => {
+    const now = Date.now();
+    const key = `${line}:${sourceId}:${message}`;
+    const prev = consoleMsgHistory.get(key);
+    if (prev && (now - prev.ts < 2000)) {
+      prev.count++;
+      return;
+    }
     const levelName = ['DEBUG', 'INFO', 'WARN', 'ERROR'][level] || 'LOG';
-    console.log(`[RENDERER ${levelName}] ${message} (${sourceId}:${line})`);
+    if (prev && prev.count > 1) {
+      console.log(`[RENDERER ${levelName}] (suppressed ${prev.count - 1} duplicates) ${message} (${sourceId}:${line})`);
+    } else {
+      console.log(`[RENDERER ${levelName}] ${message} (${sourceId}:${line})`);
+    }
+    consoleMsgHistory.set(key, { ts: now, count: 1 });
+
+    if (consoleMsgHistory.size > 200) {
+      for (const [k, v] of consoleMsgHistory) {
+        if (now - v.ts > 10000) consoleMsgHistory.delete(k);
+      }
+    }
   });
 
   // Inject the live proxy port so proxy-fetch.js can correct itself if it
