@@ -77,6 +77,10 @@
     'If binaryIV_5m or binaryIV_15m are present, use them to spot contract mispricings. Extreme IV ' +
       '(e.g. > 150%) may indicate the contract is overpriced relative to the time to expiry and spot distance, ' +
       'while very low IV might indicate a cheap contract. Adjust confidence/edge accordingly.',
+    'Hourly Contracts & Ranges: Hourly contracts refer specifically to HOURLY PRICE RANGES (the Hourly Ranges Ladder). ' +
+      'For hourly contracts, settlement is determined by which range bracket price closes within at the upcoming top-of-hour close (e.g. 13:00 UTC). ' +
+      'Evaluate spot position relative to the active range ladder brackets and identify the projected closing bracket. ' +
+      'Never confuse hourly contracts with 5m/15m Up/Down PTB strikes or invent/reference legacy or expired contract expiries (such as an old "02 contract expiry").',
     'Return ONLY JSON matching the desk contract schema.',
   ].join(' ');
 
@@ -185,6 +189,7 @@
       return holdContract(m, ['Invalid packet'], 'HOLD_FLAT. Invalid packet structure.');
     }
     const isLookahead = packet.horizon === 'anytime' || String(packet.horizon || '').toLowerCase().includes('lookahead');
+    const isHourly = packet.isHourly || packet.horizon === '1h' || packet.horizon === '60m' || packet.horizon === 'hourly' || packet.horizon === 'lookahead-1h' || (Array.isArray(packet.hourlyLadder) && packet.hourlyLadder.length > 0);
     const sym = String(packet.sym || packet.coin || '').toUpperCase() || 'BTC';
     const coinName = CP?.getCoinDisplayName ? CP.getCoinDisplayName(sym) : sym;
 
@@ -192,8 +197,31 @@
     const rawPtb = num(packet.priceToBeatNum);
     const spot = (rawSpot != null && rawSpot > 0 && CP?.roundCoinPrice) ? CP.roundCoinPrice(sym, rawSpot) : rawSpot;
     const ptb = (rawPtb != null && rawPtb > 0 && CP?.roundCoinPrice) ? CP.roundCoinPrice(sym, rawPtb) : rawPtb;
+
+    const rawProjectedPtb = num(packet.projectedOpenPtb);
+    const projectedPtb = (rawProjectedPtb != null && rawProjectedPtb > 0 && CP?.roundCoinPrice)
+      ? CP.roundCoinPrice(sym, rawProjectedPtb)
+      : rawProjectedPtb;
+    let effectivePtb = ptb || (isLookahead && projectedPtb) || null;
+
+    // For hourly contracts, anchor to the active range bracket or spot ONLY if no PTB / projected PTB exists
+    let activeSpotBucket = packet.spotBucket || null;
+    if (isHourly && Array.isArray(packet.hourlyLadder) && packet.hourlyLadder.length > 0 && !activeSpotBucket && spot != null) {
+      activeSpotBucket = packet.hourlyLadder.find((b) => spot >= Number(b.low) && spot <= Number(b.high)) || null;
+    }
+    if (isHourly && (effectivePtb == null || effectivePtb <= 0) && spot != null) {
+      effectivePtb = activeSpotBucket ? ((Number(activeSpotBucket.low) + Number(activeSpotBucket.high)) / 2) : spot;
+      if (CP?.roundCoinPrice) effectivePtb = CP.roundCoinPrice(sym, effectivePtb);
+    }
+
+    let yes = num(packet.yesProb);
+    if (isHourly && yes == null && activeSpotBucket?.yesProb != null) {
+      yes = num(activeSpotBucket.yesProb);
+    }
+    const effectiveYes = yes ?? (isLookahead && num(packet.pUp) != null ? num(packet.pUp) : (isHourly ? 0.50 : null));
     const yes = num(packet.yesProb);
     const mid = num(packet.mid);
+    const effectiveMid = mid ?? effectiveYes;
     const spread = num(packet.spread);
     const imb = num(packet.depthImbalance) || 0;
     const rawNotional = num(packet.nearTouchNotional) || 0;
@@ -212,13 +240,14 @@
     if (spot == null || spot <= 0 || effectivePtb == null || effectivePtb <= 0 || effectiveYes == null || effectiveMid == null) {
       const missing = [];
       if (!spot || spot <= 0) missing.push('spot');
-      if (!effectivePtb || effectivePtb <= 0) missing.push('priceToBeatNum (Awaiting immutable Polymarket contract push)');
+      if (!effectivePtb || effectivePtb <= 0) missing.push(isHourly ? 'hourlyRanges' : 'priceToBeatNum (Awaiting immutable Polymarket contract push)');
       if (effectiveYes == null) missing.push('yesProb');
       if (effectiveMid == null) missing.push('mid');
       return holdContract(
         m,
         missing,
         (!effectivePtb || effectivePtb <= 0)
+          ? (isHourly ? 'HOLD_FLAT. Awaiting Hourly Range Ladder synchronization.' : 'HOLD_FLAT. Awaiting immutable Polymarket Up/Down contract target strike (PTB).')
           ? 'HOLD_FLAT. Awaiting immutable Polymarket Up/Down contract target strike (PTB).'
           : 'HOLD_FLAT. Missing required oracle feeds.'
       );
@@ -343,6 +372,17 @@
     }
 
     let notes;
+    if (isHourly) {
+      const bucketStr = activeSpotBucket
+        ? (CP?.formatCoinPrice ? `${CP.formatCoinPrice(sym, activeSpotBucket.low)}–${CP.formatCoinPrice(sym, activeSpotBucket.high)}` : `$${activeSpotBucket.low}–$${activeSpotBucket.high}`)
+        : (CP?.formatCoinPrice ? `around ${CP.formatCoinPrice(sym, spot)}` : `around $${spot}`);
+      const bucketProbPct = activeSpotBucket?.yesProb != null ? Math.round(Number(activeSpotBucket.yesProb) * 100) : yesProbPct;
+      const targetTimeStr = packet.targetCloseHourUtc
+        ? packet.targetCloseHourUtc
+        : (packet.targetCloseTime ? new Date(packet.targetCloseTime).toUTCString() : 'top of the hour');
+      const biasLabel = call === 'UP' ? 'upper range brackets' : (call === 'DOWN' ? 'lower range brackets' : 'current spot bracket');
+      notes = `HOURLY RANGE. ${coinName} spot (${spotStr}) is inside the [${bucketStr}] bracket (${bucketProbPct}% prob) with ${ttcStr} to close at ${targetTimeStr}. Projected close leans toward ${biasLabel}.${graviTag}${ofeTag}`;
+    } else if (isPinDefended) {
     if (isPinDefended) {
       const t1 = packet.futureWindowT1 || {};
       const t1PtbFormatted = t1.projectedOpenPtb
@@ -412,8 +452,12 @@
   }
 
   function userPrompt(packet) {
+    const isHourly = packet?.isHourly || packet?.horizon === '1h' || packet?.horizon === '60m' || packet?.horizon === 'hourly' || (Array.isArray(packet?.hourlyLadder) && packet.hourlyLadder.length > 0);
+    const header = isHourly
+      ? 'Analyze this authoritative HOURLY RANGE packet. For hourly contracts, evaluate the Hourly Range Ladder brackets and predict the closing range bracket at the upcoming top-of-hour close. Do not change the numbers.'
+      : 'Analyze this authoritative packet. Do not change the numbers.';
     return [
-      'Analyze this authoritative packet. Do not change the numbers.',
+      header,
       JSON.stringify(packet || {}, null, 2),
     ].join('\n');
   }
@@ -422,6 +466,7 @@
     const o = oracle || {};
     const w = o.active || {};
     const sym = String(extras.sym || o.coin || o.sym || '').toUpperCase();
+    const isHourly = !!(extras.horizon === '1h' || extras.horizon === '60m' || extras.horizon === 'hourly' || extras.horizon === 'lookahead-1h' || o.horizon === '1h' || o.horizon === '60m' || o.horizon === 'hourly');
     const spotTs = num(o.spotTs);
     // Guard: spotTs must be a realistic unix-ms timestamp (after 2020-01-01).
     // If spotTs=0 or very small, Date.now()-spotTs blows up to ~56 years stale.
@@ -447,6 +492,10 @@
       sym,
       horizon: String(extras.horizon || o.horizon || w.horizon || '15m'),
       slug: o.slug || w.slug || null,
+      isHourly,
+      hourlyLadder: o.hourlyLadder || [],
+      spotBucket: o.spotBucket || null,
+      hourlySource: o.hourlySource || null,
       // spot=0 is invalid (same as missing) — treat as null so inferLocal() HOLD_FLATs correctly.
       spot: cleanSpot,
       spotSource: o.spotSource || 'pyth',

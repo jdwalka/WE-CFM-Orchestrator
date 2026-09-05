@@ -312,9 +312,11 @@ async function deskInfer(packet, mode, options = {}) {
   if (mode) setMode(mode);
   const m = getMode();
 
+  const isHourly = packet.isHourly || packet.horizon === '1h' || packet.horizon === '60m' || packet.horizon === 'hourly' || String(packet.horizon || '').toLowerCase().includes('hourly') || (Array.isArray(packet.hourlyLadder) && packet.hourlyLadder.length > 0);
+
   // Hydrate spot + PTB in parallel instead of sequential to reduce latency
   const needSpot = !packet.spot || packet.spot <= 0;
-  const needPtb = packet.horizon !== 'anytime' && (!packet.priceToBeatNum || packet.priceToBeatNum <= 0);
+  const needPtb = !isHourly && packet.horizon !== 'anytime' && (!packet.priceToBeatNum || packet.priceToBeatNum <= 0);
   if (needSpot || needPtb) {
     const [livePyth, directPtb] = await Promise.all([
       needSpot ? fetchPythSpotDirect(packet.sym) : Promise.resolve(null),
@@ -337,6 +339,15 @@ async function deskInfer(packet, mode, options = {}) {
     packet.priceToBeatSource = 'lookahead-pre-open-forecast';
   }
 
+  // If hourly range contract and PTB is not explicitly set, anchor to range bracket or spot
+  if (isHourly && (!packet.priceToBeatNum || packet.priceToBeatNum <= 0) && packet.spot > 0) {
+    const bucket = packet.spotBucket || (Array.isArray(packet.hourlyLadder) ? packet.hourlyLadder.find(b => packet.spot >= Number(b.low) && packet.spot <= Number(b.high)) : null);
+    packet.priceToBeatNum = bucket ? ((Number(bucket.low) + Number(bucket.high)) / 2) : packet.spot;
+    packet.priceToBeatSource = 'hourly-range-ladder';
+  }
+
+  // If PTB is still missing or zero, and not already queried in the parallel step above
+  if (!isLookahead && !isHourly && (!packet.priceToBeatNum || packet.priceToBeatNum <= 0) && !needPtb) {
   // If PTB is still missing or zero, and not already queried in the parallel step above
   if (!isLookahead && (!packet.priceToBeatNum || packet.priceToBeatNum <= 0) && !needPtb) {
     const directPtb = await fetchPolymarketPtbDirect(packet.sym, packet.horizon);
@@ -347,7 +358,7 @@ async function deskInfer(packet, mode, options = {}) {
   }
 
   // If PTB is still missing, PAUSE AND WAIT: do not fire model inference without immutable Polymarket PTB
-  if (!isLookahead && (!packet.priceToBeatNum || packet.priceToBeatNum <= 0)) {
+  if (!isLookahead && !isHourly && (!packet.priceToBeatNum || packet.priceToBeatNum <= 0)) {
     const local = Desk.inferLocal(packet, m);
     local.notes = 'HOLD_FLAT. Awaiting immutable Polymarket Up/Down contract PTB push.';
     local.warnings = [...(local.warnings || []), 'Awaiting immutable Polymarket PTB'];
@@ -481,4 +492,5 @@ module.exports = {
   shouldSkipTokenmix,
   markTokenmixExhausted,
   reshapeCascade,
+  _horizonSpec,
 };

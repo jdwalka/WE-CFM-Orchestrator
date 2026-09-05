@@ -401,12 +401,14 @@ function updateMarketSummary() {
   }
 
 function updateMarkets5MLivePrices(prices) {
+    const horizon = window._marketsHorizon || '5m';
+    const is15m = horizon === '15m';
     const markets = window.PredictionMarkets?.getAll?.() || {};
     for (const sym of ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'BNB', 'HYPE']) {
       const ticker = prices?.[`${sym}USD`];
       const current = Number(ticker?.last);
-      const p5 = markets[sym]?.poly5m;
-      const target = Number(p5?.targetPriceNum ?? p5?.priceToBeatNum);
+      const mkt = is15m ? (markets[sym]?.poly15m || markets[sym]?.poly5m) : markets[sym]?.poly5m;
+      const target = Number(mkt?.targetPriceNum ?? mkt?.priceToBeatNum);
       if (!Number.isFinite(current) || current <= 0) continue;
 
       const currentEl = document.getElementById(`p5-current-${sym}`);
@@ -419,7 +421,7 @@ function updateMarkets5MLivePrices(prices) {
       // shown direction on cents-margin contracts — so prefer the Chainlink
       // current price when we have one and only fall back to the raw tick
       // before Chainlink has reported for this window.
-      const chainlinkCurrent = Number(p5?.chainlinkCurrentPriceNum);
+      const chainlinkCurrent = Number(mkt?.chainlinkCurrentPriceNum);
       const settlementCurrent = Number.isFinite(chainlinkCurrent) && chainlinkCurrent > 0 ? chainlinkCurrent : current;
 
       const delta = settlementCurrent - target;
@@ -440,8 +442,17 @@ function updateMarkets5MLivePrices(prices) {
   }
 
   window.updateMarkets5MLivePrices = updateMarkets5MLivePrices;
+  window.setMarketsHorizon = function(h) {
+    window._marketsHorizon = h;
+    window._markets5mLastFingerprint = null;
+    if (typeof renderMarkets5M === 'function') {
+      renderMarkets5M();
+    }
+  };
 
 function renderMarkets5M() {
+    const horizon = window._marketsHorizon || '5m';
+    const is15m = horizon === '15m';
     const pm = window.PredictionMarkets?.getAll() || {};
     const COINS_5M = ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'BNB', 'HYPE'];
 
@@ -456,8 +467,9 @@ function renderMarkets5M() {
     // holds a different view's markup -- checked via the container's own
     // dataset, which survives other views overwriting content.innerHTML).
     const fingerprint = COINS_5M.map(s => {
-      const b = window.Asi1PreContract?.get?.(s, '5m');
-      return `${s}:${pm[s]?.poly5m?.slug || ''}:${pm[s]?.poly5m?.priceToBeatNum ?? pm[s]?.poly5m?.targetPriceNum ?? ''}:${b?.ts || 0}:${b?.call || ''}`;
+      const b = window.Asi1PreContract?.get?.(s, horizon);
+      const mkt = is15m ? (pm[s]?.poly15m || pm[s]?.poly5m) : pm[s]?.poly5m;
+      return `${s}:${horizon}:${mkt?.slug || ''}:${mkt?.priceToBeatNum ?? mkt?.targetPriceNum ?? ''}:${b?.ts || 0}:${b?.call || ''}`;
     }).join('|');
     const _now5m = Date.now();
     const stillMounted = content?.dataset?.wecryptoView === 'markets5m';
@@ -472,7 +484,7 @@ function renderMarkets5M() {
     const pred = window.PredictionEngine?.getAll() || {};
     const snipes = window.PredictionMarkets?.getSnipes?.() || [];
     const hasMarketData = Object.values(pm).some((coin) =>
-      coin?.kalshi15m || coin?.poly != null || coin?.poly5m || coin?.kalshi5m
+      coin?.kalshi15m || coin?.poly != null || coin?.poly5m || coin?.kalshi5m || coin?.poly15m
     );
     console.log('[5mMarkets] hasMarketData=', hasMarketData, 'pm keys sample', Object.keys(pm).slice(0,3), 'poly5m sample', Object.values(pm).map(c=>!!c?.poly5m).slice(0,3));
     if (!hasMarketData && window.PredictionMarkets?.fetchAll && Date.now() - _markets5mFetchKickTs > 10_000) {
@@ -760,7 +772,7 @@ function renderMarkets5M() {
 
     function _modelOdds5m(sym) {
       const p = pred[sym];
-      const p5 = pm[sym]?.poly5m;
+      const p5 = is15m ? (pm[sym]?.poly15m || pm[sym]?.poly5m) : pm[sym]?.poly5m;
       const ptb = Number(p5?.targetPriceNum ?? p5?.priceToBeatNum);
       
       // Real-time live price: prioritize live Chainlink 30s TWAP streamed by Polymarket RTDS
@@ -769,15 +781,18 @@ function renderMarkets5M() {
 
       if (Number.isFinite(ptb) && ptb > 0 && Number.isFinite(liveTwap) && liveTwap > 0) {
         const closeMs = p5?.closeTime ? new Date(p5.closeTime).getTime() : null;
+        const windowDurationMs = is15m ? 15 * 60_000 : 5 * 60_000;
         const remainingFrac = Number.isFinite(closeMs)
-          ? Math.max(0.08, Math.min(1, (closeMs - Date.now()) / (5 * 60_000)))
+          ? Math.max(0.08, Math.min(1, (closeMs - Date.now()) / windowDurationMs))
           : 0.6;
-        const atrPct = p?.volatility?.atrPct ? (p.volatility.atrPct / 100) : 0.0035;
+        const atrPct = p?.volatility?.atrPct ? (p.volatility.atrPct / 100) : (is15m ? 0.0055 : 0.0035);
         const atrDollar = liveTwap * atrPct;
         const sigma = Math.max(liveTwap * 0.0015, atrDollar * Math.sqrt(remainingFrac));
         
-        // 5M momentum score
-        const h5Score = p?.horizonScores?.h5 ?? p?.diagnostics?.fastTiming?.horizonScores?.h5 ?? (Number.isFinite(Number(p?.score)) ? Number(p.score) * 0.5 : 0);
+        // Momentum score for active horizon
+        const hScore = is15m
+          ? (p?.horizonScores?.h15 ?? (Number.isFinite(Number(p?.score)) ? Number(p.score) * 0.6 : 0))
+          : (p?.horizonScores?.h5 ?? p?.diagnostics?.fastTiming?.horizonScores?.h5 ?? (Number.isFinite(Number(p?.score)) ? Number(p.score) * 0.5 : 0));
         const gap = liveTwap - ptb;
         
         // Micro-momentum from HUD
@@ -785,7 +800,7 @@ function renderMarkets5M() {
         const momDir = microSnap?.momentum?.dir; // 'UP', 'DOWN', or null
         const driftPct = microSnap?.momentum?.pct30 ?? 0;
         
-        let expectedMove = h5Score * atrDollar * 0.40 * remainingFrac;
+        let expectedMove = hScore * atrDollar * 0.40 * remainingFrac;
         if (gap < 0 && expectedMove > 0 && (momDir !== 'UP' || driftPct <= 0)) {
           // If currently below PTB and not actively breaking up on tape, expected move cannot cross PTB
           expectedMove = Math.min(expectedMove, Math.abs(gap) * 0.2);
@@ -800,10 +815,10 @@ function renderMarkets5M() {
         // Strict real-time state anchor against live TWAP:
         if (remainingFrac < 0.22 && gap < 0) {
           prob = Math.min(prob, 0.16);
-        } else if (gap < 0 && (momDir !== 'UP' || h5Score <= 0)) {
+        } else if (gap < 0 && (momDir !== 'UP' || hScore <= 0)) {
           // Live TWAP is BELOW PTB and tape is not breaking upward -> MUST be <= 40% YES (>= 60% NO)
           prob = Math.min(prob, 0.40);
-        } else if (gap > 0 && (momDir !== 'DOWN' || h5Score >= 0)) {
+        } else if (gap > 0 && (momDir !== 'DOWN' || hScore >= 0)) {
           // Live TWAP is ABOVE PTB and tape is not breaking downward -> MUST be >= 60% YES
           prob = Math.max(prob, 0.60);
         }
@@ -811,12 +826,14 @@ function renderMarkets5M() {
         return _clamp(prob, 0.02, 0.98);
       }
       
-      // Fallback if no PTB yet: Anchor to real-time 5m tape, NEVER lagging 15m/1h score
+      // Fallback if no PTB yet: Anchor to real-time tape
       const microSnapFallback = window.Microstructure?.getSnapshot?.(sym);
       const momDirFallback = microSnapFallback?.momentum?.dir;
       const driftPctFallback = microSnapFallback?.momentum?.pct30 ?? (microSnapFallback?.momentum?.pct60 ?? 0);
       
-      let fallbackScore = p?.horizonScores?.h5 ?? (Number.isFinite(Number(p?.score)) ? Number(p.score) * 0.3 : 0);
+      let fallbackScore = is15m
+        ? (p?.horizonScores?.h15 ?? (Number.isFinite(Number(p?.score)) ? Number(p.score) * 0.4 : 0))
+        : (p?.horizonScores?.h5 ?? (Number.isFinite(Number(p?.score)) ? Number(p.score) * 0.3 : 0));
       if (momDirFallback === 'DOWN' || driftPctFallback < -0.0002) {
         fallbackScore = Math.min(fallbackScore, -0.30);
       } else if (momDirFallback === 'UP' || driftPctFallback > 0.0002) {
@@ -829,7 +846,7 @@ function renderMarkets5M() {
     // Polymarket PTB, or is the PTB-independent directional-lean fallback (path 4).
     // Purely a labeling signal for the UI -- does not change the odds computation.
     function _modelOdds5mIsPtbAnchored(sym) {
-      const p5 = pm[sym]?.poly5m;
+      const p5 = is15m ? (pm[sym]?.poly15m || pm[sym]?.poly5m) : pm[sym]?.poly5m;
       const ptb = Number(p5?.targetPriceNum ?? p5?.priceToBeatNum);
       return Number.isFinite(ptb) && ptb > 0;
     }
@@ -880,12 +897,14 @@ function renderMarkets5M() {
     function _render5mIndicators(sym) {
       const p = pred[sym];
       if (!p) return '';
-      const p5 = pm[sym]?.poly5m;
+      const p5 = is15m ? (pm[sym]?.poly15m || pm[sym]?.poly5m) : pm[sym]?.poly5m;
       const ft = p.diagnostics?.fastTiming;
       if (!ft) return '';
       
       const fd = ft.diagnostics || {};
-      const h5Score = p.horizonScores?.h5 ?? ft.horizonScores?.h5 ?? 0;
+      const h5Score = is15m
+        ? (p.horizonScores?.h15 ?? (Number.isFinite(Number(p?.score)) ? Number(p.score) * 0.6 : 0))
+        : (p.horizonScores?.h5 ?? ft.horizonScores?.h5 ?? 0);
       const driftDir5 = fd.driftDir5 ?? 0;
       const streak5 = fd.streak5 ?? 0;
       const last5Aligned = fd.last5Aligned ?? false;
@@ -900,8 +919,9 @@ function renderMarkets5M() {
       const streakLabel = streak5 > 0 ? `${streak5} ${dirText} candles` : '0 candles';
       const rtdsLive = window.PredictionMarkets?.getFreshRtdsTwap?.(sym, 15_000);
       const liveTwap = rtdsLive?.price ?? (Number.isFinite(p5?.currentPriceNum) && p5.currentPriceNum > 0 ? p5.currentPriceNum : null) ?? window.Microstructure?.getTwap?.(sym, 30_000) ?? Number(p?.price);
-      const atrPctVal = p?.volatility?.atrPct ? (p.volatility.atrPct / 100) : 0.0035;
+      const atrPctVal = p?.volatility?.atrPct ? (p.volatility.atrPct / 100) : (is15m ? 0.0055 : 0.0035);
       const expectedMoveVal = (h5Score || 0) * (liveTwap || 1) * atrPctVal * 0.40;
+      const target5m = (liveTwap && Number.isFinite(liveTwap)) ? (liveTwap + expectedMoveVal) : (is15m ? p.projections?.p15?.target : p.projections?.p5?.target);
       const target5m = (liveTwap && Number.isFinite(liveTwap)) ? (liveTwap + expectedMoveVal) : p.projections?.p5?.target;
       const targetLabel = target5m != null
         ? (window.CoinPrecision?.formatCoinPrice ? window.CoinPrecision.formatCoinPrice(sym, target5m) : fmtPrice(target5m, sym))
@@ -911,10 +931,10 @@ function renderMarkets5M() {
       return `
         <div class="rationale-block" style="margin-top:8px;background:var(--color-surface-2);border-radius:6px;padding:10px;">
           <div style="font-size:10px;color:var(--color-text-faint);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:6px;font-weight:700;">
-            5M Live Micro-indicators
+            ${is15m ? '15M' : '5M'} Live Micro-indicators
           </div>
           <div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:4px;">
-            <span style="color:var(--color-text-muted)">5M Momentum Dir:</span>
+            <span style="color:var(--color-text-muted)">${is15m ? '15M' : '5M'} Momentum Dir:</span>
             <span style="color:${dirColor};font-weight:800">${dirText}</span>
           </div>
           <div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:4px;">
@@ -930,23 +950,24 @@ function renderMarkets5M() {
             <span>${purity}</span>
           </div>
           <div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:4px;">
-            <span style="color:var(--color-text-muted)">5M Proj Target:</span>
+            <span style="color:var(--color-text-muted)">${is15m ? '15M' : '5M'} Proj Target:</span>
             <span style="font-weight:700;color:var(--color-text)">${targetLabel}</span>
           </div>
           <div style="display:flex;justify-content:space-between;font-size:11px;border-top:1px dashed var(--color-border);padding-top:4px;margin-top:4px;">
-            <span style="color:var(--color-text-muted)">5M Horizon Score:</span>
+            <span style="color:var(--color-text-muted)">${is15m ? '15M' : '5M'} Horizon Score:</span>
             <span style="font-weight:800;color:${h5Score > 0 ? 'var(--color-green)' : h5Score < 0 ? 'var(--color-red)' : 'var(--color-text)'}">${h5Score.toFixed(3)}</span>
           </div>
           ${(() => {
-             const proj5 = p.projections?.p5;
-             const proj10 = p.projections?.p10;
+             const proj5 = is15m ? p.projections?.p15 : p.projections?.p5;
+             const proj10 = is15m ? p.projections?.p30 : p.projections?.p10;
              const currentOdds = _modelOdds5m(sym);
              
              const coin = pm[sym] || {};
-             const p5 = coin.poly5m;
-             const poly5mMkts = coin.poly5mMkts || [];
+             const p5 = is15m ? (coin.poly15m || coin.poly5m) : coin.poly5m;
+             const poly5mMkts = is15m ? (coin.poly15mMkts || coin.polyMarkets || []) : (coin.poly5mMkts || []);
+             const stepSec = is15m ? 900 : 300;
              const nextPolyMkt = p5?._windowTs
-               ? poly5mMkts.find(m => m.isFuture && m.ts === p5._windowTs + 300)
+               ? poly5mMkts.find(m => m.isFuture && m.ts === p5._windowTs + stepSec)
                : poly5mMkts.find(m => m.isFuture);
 
              const hasModelOdds = proj5 && proj10 && currentOdds != null;
@@ -1206,9 +1227,9 @@ function renderMarkets5M() {
     // ── Per-coin cards ──────────────────────────────────────────────────
     const cards = COINS_5M.map(sym => {
       const coin = pm[sym] || {};
-      const p5 = coin.poly5m;
+      const p5 = is15m ? (coin.poly15m || coin.poly5m) : coin.poly5m;
       const polyAll = coin.polyMarkets || [];   // all Poly markets for coin
-      const poly5m = coin.poly5mMkts || [];   // short-term Poly markets
+      const poly5m = is15m ? (coin.poly15mMkts || coin.polyMarkets || []) : (coin.poly5mMkts || []);   // short-term Poly markets
       const tick = tickers[WATCHLIST.find(w => w.sym === sym)?.instrument] || null;
       const curPx = tick ? price(tick) : null;
       const proj = _modelProj(sym);
@@ -1228,7 +1249,7 @@ function renderMarkets5M() {
         ? fastCurrentPx - Number(p5.chainlinkCurrentPriceNum)
         : p5?.oracleBasisNum;
       const primaryMarketProb = p5prob;
-      const primaryMarketLabel = 'Poly 5M';
+      const primaryMarketLabel = is15m ? 'Poly 15M' : 'Poly 5M';
 
       let combined5m = null;
       if (p5prob != null) combined5m = p5prob;
@@ -1334,14 +1355,17 @@ function renderMarkets5M() {
                    from prediction-markets.js, independent of what this widget shows. -->
               ${(() => {
                 const nowSec = Math.floor(Date.now() / 1000);
-                const windowTs = nowSec - (nowSec % 300);
+                const stepSec = is15m ? 900 : 300;
+                const windowTs = nowSec - (nowSec % stepSec);
                 const coinPrefix = (window.PredictionMarkets?.POLY_5M_COIN_SLUGS?.[sym] || sym.toLowerCase());
-                const activeSlug = p5?.slug || `${coinPrefix}-updown-5m-${windowTs}`;
+                const horizonSlugPart = is15m ? '15m' : '5m';
+                const activeSlug = p5?.slug || `${coinPrefix}-updown-${horizonSlugPart}-${windowTs}`;
+                const embedTitle = `${sym} Up or Down ${is15m ? '15m' : '5m'} — Polymarket`;
                 return activeSlug ? `
                 <div id="p5hudwrap-${sym}" style="position:absolute;top:16px;left:16px;z-index:5;pointer-events:none;">${_renderMicroHudInner(sym)}</div>
                 <iframe
                   id="p5emb-${sym}"
-                  title="${sym} Up or Down 5m — Polymarket"
+                  title="${embedTitle}"
                   src="https://embed.polymarket.com/market?market=${encodeURIComponent(activeSlug)}&theme=dark&border=false&creator=JohnDaWalka&height=300"
                   style="width:100%;height:300px;border:0;border-radius:6px;display:block;"
                   frameborder="0"
@@ -1349,7 +1373,7 @@ function renderMarkets5M() {
                   loading="lazy"></iframe>
                 <a href="https://polymarket.com/event/${encodeURIComponent(activeSlug)}" target="_blank" rel="noopener"
                    style="display:inline-block;margin-top:5px;font-size:10px;color:var(--color-text-faint);text-decoration:none;">Open on Polymarket ↗</a>
-              ` : `<div style="color:var(--color-text-faint);font-size:11px">No Poly 5M market</div>`;
+              ` : `<div style="color:var(--color-text-faint);font-size:11px">No Poly ${is15m ? '15M' : '5M'} market</div>`;
               })()}
             </div>
 
@@ -1365,10 +1389,10 @@ function renderMarkets5M() {
             <div id="p5modelwrap-${sym}">${_renderModelBoxBlock(sym, p5, p5prob, live5m, displayPolyMkts, rationaleBlockHtml, divergenceAlertHtml)}</div>
           </div>
 
-          <!-- Upcoming 5M contract queue -->
+          <!-- Upcoming contract queue -->
           ${displayPolyMkts.length > 1 ? `
           <div style="background:var(--color-surface-2);border-radius:6px;padding:10px;margin-top:8px;">
-            <div style="font-size:10px;color:var(--color-text-faint);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:8px;">5M Contract Queue (25m)</div>
+            <div style="font-size:10px;color:var(--color-text-faint);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:8px;">${is15m ? '15M Contract Queue (45m)' : '5M Contract Queue (25m)'}</div>
             <div style="display:flex;gap:8px;overflow-x:auto;padding-bottom:4px;">
               ${displayPolyMkts.map(m => {
                 const isCurrent = m.slug === p5?.slug;
@@ -1406,11 +1430,17 @@ function renderMarkets5M() {
     }).join('');
 
     content.innerHTML = `
-      <div class="section-header">
-        <span class="section-title">Fast Markets (5m)</span>
-        <span style="font-size:11px;color:var(--color-text-faint);">
-          Polycool/Polymarket 5m (Chainlink PTB) · Grok xAI analysis
-        </span>
+      <div class="section-header" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+        <div>
+          <span class="section-title">Fast Markets (${is15m ? '15m' : '5m'})</span>
+          <span style="font-size:11px;color:var(--color-text-faint);margin-left:8px;">
+            Polycool/Polymarket ${is15m ? '15m' : '5m'} (Chainlink PTB) · Grok xAI analysis
+          </span>
+        </div>
+        <div style="display:inline-flex;background:var(--color-surface-2);border:1px solid var(--color-border);border-radius:6px;padding:2px;gap:2px;">
+          <button class="btn btn-sm ${!is15m ? 'btn-primary' : 'btn-ghost'}" style="padding:3px 12px;font-size:11px;font-weight:700;border-radius:4px;cursor:pointer;" onclick="window.setMarketsHorizon('5m')">5-Min</button>
+          <button class="btn btn-sm ${is15m ? 'btn-primary' : 'btn-ghost'}" style="padding:3px 12px;font-size:11px;font-weight:700;border-radius:4px;cursor:pointer;" onclick="window.setMarketsHorizon('15m')">15-Min</button>
+        </div>
       </div>
       ${snipeBanner}
       ${grokBroader}
@@ -1460,11 +1490,14 @@ function renderMarkets5M() {
           }
         }
       });
-      if (expiredPoly5m && window.PredictionMarkets?.refreshPoly5M && Date.now() - _markets5mPolyRefreshKickTs > 8_000) {
+      if (expiredPoly5m && Date.now() - _markets5mPolyRefreshKickTs > 8_000) {
         _markets5mPolyRefreshKickTs = Date.now();
-        window.PredictionMarkets.refreshPoly5M('panel-expiry')
+        const refreshPromise = is15m
+          ? (window.PredictionMarkets?.refreshPoly15M ? window.PredictionMarkets.refreshPoly15M('panel-expiry') : Promise.resolve())
+          : (window.PredictionMarkets?.refreshPoly5M ? window.PredictionMarkets.refreshPoly5M('panel-expiry') : Promise.resolve());
+        refreshPromise
           .then(() => { if (currentView === 'markets5m') renderMarkets5M(); })
-          .catch((err) => console.warn('[Markets5M] Poly5M refresh failed:', err?.message || err));
+          .catch((err) => console.warn('[Markets5M] Refresh failed:', err?.message || err));
       }
     }, 1000);
   }

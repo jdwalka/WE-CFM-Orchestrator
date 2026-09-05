@@ -3676,8 +3676,24 @@ function polymarketSentiment(markets, sym) {
       refreshPoly15M('start').catch(() => {});
       refreshPoly60M('start').catch(() => {});
     },
-    getAll() { return cache; },
-    getCoin(sym) { return cache[sym] ?? null; },
+    getAll() {
+      const result = {};
+      const keys = new Set([...Object.keys(cache), ...Object.keys(POLY_5M_COIN_SLUGS)]);
+      for (const sym of keys) {
+        const c = cache[sym];
+        const p15 = c?.poly15m || _poly15mCache[sym]?.data || null;
+        if (c || p15) {
+          result[sym] = { ...(c || {}), poly15m: p15 };
+        }
+      }
+      return result;
+    },
+    getCoin(sym) {
+      const c = cache[sym];
+      const p15 = c?.poly15m || _poly15mCache[sym]?.data || null;
+      if (!c && !p15) return null;
+      return { ...(c || {}), poly15m: p15 };
+    },
     getSnipes() { return detectSnipes(cache); },
     // Funding-rate bias for a coin: { avg, bias, strength, sources } or null.
     // Populated by cfm-engine.js _computeFundingBias() after each poll cycle.
