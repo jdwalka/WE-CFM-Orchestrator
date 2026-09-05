@@ -172,11 +172,6 @@ function buildHuntPrompt(marketContext = {}) {
     const pinRisk = data.pinRisk ? `[PIN RISK DEFENDED: ${data.pinRisk.distanceBps?.toFixed(1)} bps]` : '[CLEAR]';
     return `- ${c}: Spot=${spotStr} | 15m PTB=${ptb15m} | 1h PTB=${ptb1h} | Strike Status=${pinRisk}`;
 
-    const spotStr = data.spot ? `$${Number(data.spot).toLocaleString()}` : 'live';
-    const ptb15m = data.ptb15m ? `$${Number(data.ptb15m).toLocaleString()}` : 'forming';
-    const ptb1h = data.ptb1h ? `$${Number(data.ptb1h).toLocaleString()}` : 'forming';
-    const pinRisk = data.pinRisk ? `[PIN RISK DEFENDED: ${data.pinRisk.distanceBps?.toFixed(1)} bps]` : '[CLEAR]';
-    return `- ${c}: Spot=${spotStr} | 15m PTB=${ptb15m} | 1h PTB=${ptb1h} | Strike Status=${pinRisk}`;
   }).join('\n');
 
   return `AUTONOMOUS CONTRACT & INTEL HUNT MISSION:

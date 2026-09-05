@@ -348,8 +348,6 @@ async function deskInfer(packet, mode, options = {}) {
 
   // If PTB is still missing or zero, and not already queried in the parallel step above
   if (!isLookahead && !isHourly && (!packet.priceToBeatNum || packet.priceToBeatNum <= 0) && !needPtb) {
-  // If PTB is still missing or zero, and not already queried in the parallel step above
-  if (!isLookahead && (!packet.priceToBeatNum || packet.priceToBeatNum <= 0) && !needPtb) {
     const directPtb = await fetchPolymarketPtbDirect(packet.sym, packet.horizon);
     if (directPtb && directPtb > 0) {
       packet.priceToBeatNum = directPtb;
@@ -390,20 +388,6 @@ async function deskInfer(packet, mode, options = {}) {
   }
   if (packet.nearTouchNotional != null) {
     packet.nearTouchNotional = Math.round(packet.nearTouchNotional * 100) / 100;
-  }
-
-  // Hydrate pinRisk state if not already present on late-window packets
-  if (!packet.pinRisk && packet.spot > 0 && packet.priceToBeatNum > 0 && packet.secondsToClose != null && packet.secondsToClose <= 90) {
-    const dist = Math.abs(packet.spot - packet.priceToBeatNum);
-    const distBps = (dist / packet.priceToBeatNum) * 10000;
-    const isDefended = distBps <= 8;
-    packet.pinRisk = {
-      isDefendedPinZone: isDefended,
-      distance: dist,
-      distanceBps: distBps,
-      warning: isDefended ? 'PIN_RISK_DEFENDED: Spot within 8 bps of PTB in late window (<90s). MM defense risks 1-2s post-expiry snap.' : null,
-      recommendedAction: isDefended ? 'HOLD_FLAT_ROLL_T1' : 'PROCEED',
-    };
   }
 
   // Hydrate pinRisk state if not already present on late-window packets

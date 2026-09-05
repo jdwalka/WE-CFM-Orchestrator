@@ -2837,8 +2837,6 @@ ${ladderLines ? `- Active Hourly Range Ladder:\n${ladderLines}` : ''}`;
 
     let pinInfo = '';
     if (!isHourly && (packet.pinRisk?.isDefendedPinZone || (packet.secondsToClose <= 90 && Math.abs(packet.deltaVsPtb || 0) < ((packet.spot || 1) * 0.0008)))) {
-    let pinInfo = '';
-    if (packet.pinRisk?.isDefendedPinZone || (packet.secondsToClose <= 90 && Math.abs(packet.deltaVsPtb || 0) < ((packet.spot || 1) * 0.0008))) {
       pinInfo = `\n- ⚠ Pin Risk Status: ACTIVE PIN DEFENSE DETECTED (spot within 8 bps of strike with ${packet.secondsToClose || 0}s left). MM defense risks 1-2s late post-expiry snap.`;
     }
     let t1Info = '';
@@ -2847,7 +2845,6 @@ ${ladderLines ? `- Active Hourly Range Ladder:\n${ladderLines}` : ''}`;
     }
 
     const userPrompt = `${prompt}\n\nLive Market Context:\n- Coin: ${packet.sym || 'BTC'}\n- Horizon: ${isHourly ? '1h (Hourly Range)' : (packet.horizon || '5m')}\n- Live Spot: $${packet.spot || 'N/A'}\n- Polymarket Target / Strike: ${ptbDisplay}\n- Delta vs Target: ${deltaDisplay}\n- Live Tape Direction: ${tapeDirDisplay}\n- Polymarket Prob: ${((packet.yesProb || 0.5) * 100).toFixed(1)}%\n- Seconds to Expiry / Settlement: ${expirySecDisplay}s\n- Depth Imbalance: ${((packet.depthImbalance || 0) * 100).toFixed(1)}%${hourlyInfo}${pinInfo}${t1Info}`;
-    const userPrompt = `${prompt}\n\nLive Market Context:\n- Coin: ${packet.sym || 'BTC'}\n- Horizon: ${packet.horizon || '5m'}\n- Live Spot: $${packet.spot || 'N/A'}\n- Polymarket PTB Strike: ${ptbDisplay}\n- Delta vs PTB: ${deltaDisplay}\n- Live Tape Direction: ${tapeDirDisplay}\n- Polymarket Yes Prob: ${((packet.yesProb || 0.5) * 100).toFixed(1)}%\n- Seconds to Expiry: ${packet.secondsToClose || 0}s\n- Depth Imbalance: ${((packet.depthImbalance || 0) * 100).toFixed(1)}%${pinInfo}${t1Info}`;
 
     const result = await Asi1Client.chatCompletion(
       [

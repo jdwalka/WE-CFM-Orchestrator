@@ -297,10 +297,6 @@
           : `$${dist.toFixed((coin === 'XRP' || coin === 'DOGE') ? 4 : 2)}`;
         pinBanner.style.display = 'block';
         pinBanner.textContent = `⚠ PIN RISK DEFENSE DETECTED: Spot within ${distStr} (${distBps.toFixed(1)} bps) of PTB with ${remainingSec}s left. MM defense walls active; high probability of 1-2s post-expiry snap. Focus automatically honed on T+1 Pre-Open below.`;
-      const isPinTrapped = distBps != null && distBps <= 8;
-      if (isPinTrapped && pinBanner) {
-        pinBanner.style.display = 'block';
-        pinBanner.textContent = `⚠ PIN RISK DEFENSE DETECTED: Spot within $${dist.toFixed(1)} (${distBps.toFixed(1)} bps) of PTB with ${remainingSec}s left. MM defense walls active; high probability of 1-2s post-expiry snap. Focus automatically honed on T+1 Pre-Open below.`;
       }
 
       if (nextBox) {
@@ -495,7 +491,6 @@
           : `$${Number(v).toLocaleString('en-US', { minimumFractionDigits: (coin === 'XRP' || coin === 'DOGE') ? 4 : 2, maximumFractionDigits: (coin === 'XRP' || coin === 'DOGE') ? 4 : 2 })}`;
         coneEl.textContent = `${fmtCone(rangeData.safeBoundLower)} — ${fmtCone(rangeData.safeBoundUpper)} (±${fmtCone(rangeData.expectedMoveDollar)})`;
       }
-      if (coneEl) coneEl.textContent = `$${rangeData.safeBoundLower?.toLocaleString()} — $${rangeData.safeBoundUpper?.toLocaleString()} (±$${rangeData.expectedMoveDollar?.toLocaleString()})`;
       const zoneEl = document.getElementById('adActiveStrikeZone');
       if (zoneEl) {
         const atm = rangeData.strikes?.find(s => s.type === 'ATM');
@@ -652,7 +647,6 @@
       ...(binaryIV !== null ? { binaryIV_5m: binaryIV } : {}),
       ...(binaryIV_15m !== null ? { binaryIV_15m: binaryIV_15m } : {}),
       pinRisk: (spot > 0 && ptb > 0 && !isHourly)
-      pinRisk: (spot > 0 && ptb > 0)
         ? (window.PredictionEngine?.getPinRisk?.(coin, spot, ptb, ttc, Number(pkt.depthImbalance) || 0) || null)
         : null,
       rangeViability: (spot > 0)
@@ -796,8 +790,6 @@
             : '';
           const edgeStr = op.edgePct ? ` (${op.edgePct})` : '';
 
-          const strikeStr = op.targetStrike ? `$${Number(op.targetStrike).toLocaleString()}` : '';
-          const edgeStr = op.edgePct ? ` (${op.edgePct})` : '';
           const pinBadge = op.pinRiskSafe === false ? '<span style="color:#ff5252;margin-left:4px">⚠ PIN</span>' : '';
           return `<div style="display:flex;justify-content:space-between;align-items:center;font-size:9px;background:#03080e;padding:3px 5px;border-radius:4px;border-left:2px solid ${actColor}">
             <div style="display:flex;align-items:center;gap:4px">
@@ -836,9 +828,6 @@
         requestIdleCallback(pollAv);
       } else {
         setTimeout(pollAv, 0);
-      const avSt = await invoke('agentverseStatus').catch(() => null);
-      if (avSt?.status) {
-        paintAgentverseHunter(avSt.status);
       }
     } catch (_) {
       paintAccounts({});
@@ -891,91 +880,6 @@
     }
   }
 
-    }
-  }
-
-  // ── rAF-Batched HUD Tile & Spot Update (pyth-batch) ──────────────────────────
-  function renderDeskBatch(syms) {
-    if (!Array.isArray(syms) || !syms.length) return;
-    const coin = document.getElementById('adCoin')?.value || 'BTC';
-    if (!syms.includes(coin)) return;
-
-    // Read phase
-    const price = window._pythPrices?.[coin];
-    if (!Number.isFinite(price) || price <= 0) return;
-
-    // Write phase: single DOM update pass without layout thrashing
-    const spotEl = document.getElementById('adSpot');
-    if (spotEl) {
-      spotEl.textContent = window.CoinPrecision?.formatCoinPrice
-        ? window.CoinPrecision.formatCoinPrice(coin, price, { prefix: '' })
-        : (price >= 1000
-            ? price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-            : price.toFixed((coin === 'XRP' || coin === 'DOGE') ? 4 : 2));
-    }
-
-    const ptbTxt = document.getElementById('adPtb')?.textContent?.replace(/,/g, '');
-    const ptbNum = Number(ptbTxt);
-    if (Number.isFinite(ptbNum) && ptbNum > 0) {
-      const delta = price - ptbNum;
-      const dist = Math.abs(delta);
-      const distBps = (dist / ptbNum) * 10000;
-      const isDefended = distBps <= 8;
-      const pinBanner = document.getElementById('adPinRiskBanner');
-      if (pinBanner) {
-        if (isDefended) {
-          const distStr = window.CoinPrecision?.formatCoinDelta
-            ? window.CoinPrecision.formatCoinDelta(coin, dist, { showSign: false })
-            : `$${dist.toFixed((coin === 'XRP' || coin === 'DOGE') ? 4 : 2)}`;
-          pinBanner.style.display = 'block';
-          pinBanner.textContent = `⚠ PIN RISK DEFENSE DETECTED: Spot within ${distStr} (${distBps.toFixed(1)} bps) of PTB. MM defense walls active.`;
-        } else if (pinBanner.dataset.persisted !== '1') {
-          pinBanner.style.display = 'none';
-        }
-      }
-    }
-  }
-
-    }
-  }
-
-  // ── rAF-Batched HUD Tile & Spot Update (pyth-batch) ──────────────────────────
-  function renderDeskBatch(syms) {
-    if (!Array.isArray(syms) || !syms.length) return;
-    const coin = document.getElementById('adCoin')?.value || 'BTC';
-    if (!syms.includes(coin)) return;
-
-    // Read phase
-    const price = window._pythPrices?.[coin];
-    if (!Number.isFinite(price) || price <= 0) return;
-
-    // Write phase: single DOM update pass without layout thrashing
-    const spotEl = document.getElementById('adSpot');
-    if (spotEl) {
-      spotEl.textContent = price >= 1000
-        ? price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-        : price.toFixed(2);
-    }
-
-    const ptbTxt = document.getElementById('adPtb')?.textContent?.replace(/,/g, '');
-    const ptbNum = Number(ptbTxt);
-    if (Number.isFinite(ptbNum) && ptbNum > 0) {
-      const delta = price - ptbNum;
-      const dist = Math.abs(delta);
-      const distBps = (dist / ptbNum) * 10000;
-      const isDefended = distBps <= 8;
-      const pinBanner = document.getElementById('adPinRiskBanner');
-      if (pinBanner) {
-        if (isDefended) {
-          pinBanner.style.display = 'block';
-          pinBanner.textContent = `⚠ PIN RISK DEFENSE DETECTED: Spot within $${dist.toFixed(1)} (${distBps.toFixed(1)} bps) of PTB. MM defense walls active.`;
-        } else if (pinBanner.dataset.persisted !== '1') {
-          pinBanner.style.display = 'none';
-        }
-      }
-    }
-  }
-
   window.addEventListener('pyth-batch', (e) => {
     if (e?.detail?.syms) renderDeskBatch(e.detail.syms);
   });
@@ -1018,11 +922,6 @@
                 : Number(packet.priceToBeatNum).toLocaleString('en-US', { minimumFractionDigits: (coin === 'XRP' || coin === 'DOGE') ? 4 : 2, maximumFractionDigits: (coin === 'XRP' || coin === 'DOGE') ? 4 : 2 }))
             : '—';
         }
-        ptbEl.textContent = packet?.priceToBeatNum != null
-          ? (window.CoinPrecision?.formatCoinStrike
-              ? window.CoinPrecision.formatCoinStrike(coin, packet.priceToBeatNum, { prefix: '' })
-              : Number(packet.priceToBeatNum).toLocaleString('en-US', { minimumFractionDigits: (coin === 'XRP' || coin === 'DOGE') ? 4 : 2, maximumFractionDigits: (coin === 'XRP' || coin === 'DOGE') ? 4 : 2 }))
-          : '—';
       }
       const askedEl = document.getElementById('adAskedAt');
 

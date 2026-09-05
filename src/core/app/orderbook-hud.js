@@ -578,68 +578,6 @@ function initOBHud() {
         ctx.fillStyle = '#555d68';
         ctx.fillText(agoStr, w - 24, y);
       }
-      }
-      ctx.save();
-      ctx.scale(dpr, dpr);
-
-      // Canvas background
-      ctx.fillStyle = '#07090e';
-      ctx.fillRect(0, 0, w, h);
-
-      const fmtP = (p, coinSym) => {
-        if (window.CoinPrecision?.formatCoinPrice) {
-          return window.CoinPrecision.formatCoinPrice(coinSym, p, { prefix: '' });
-        }
-        const s = String(coinSym || '').toUpperCase();
-        const d = (s === 'XRP' || s === 'DOGE') ? 4 : 2;
-        return Number(p).toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
-      };
-      const fmtP = (p) => p >= 1000
-        ? p.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-        : (p >= 1 ? p.toFixed(3) : p.toFixed(5));
-
-      const rowH = 19;
-      ctx.textBaseline = 'middle';
-      const now = Date.now();
-
-      for (let i = 0; i < shown.length; i++) {
-        const a = shown[i];
-        const y = 11 + i * rowH;
-        if (y + rowH / 2 > h) break;
-
-        const isBull = (a.bias || '').toLowerCase().includes('bull') || a.side === 'BUY' || a.bias === 'BULL';
-        const color = isBull ? '#00e676' : '#ff5252';
-
-        // Bias indicator dot
-        ctx.fillStyle = color;
-        ctx.beginPath();
-        ctx.arc(9, y, 3, 0, Math.PI * 2);
-        ctx.fill();
-
-        // Symbol
-        ctx.fillStyle = '#e6e8eb';
-        ctx.font = 'bold 10px monospace';
-        ctx.fillText(a.sym, 18, y);
-
-        // Side + Type
-        ctx.font = '10px -apple-system, sans-serif';
-        ctx.fillStyle = '#8b929a';
-        ctx.fillText(`${a.side || ''} ${a.type || ''}`.slice(0, 14), 54, y);
-
-        // Price
-        ctx.font = '10px monospace';
-        ctx.fillStyle = color;
-        ctx.fillText(`$${fmtP(a.price, a.sym)}`, w - 74, y);
-
-        ctx.fillText(`$${fmtP(a.price)}`, w - 74, y);
-
-        // Age
-        const ago = Math.round((now - a.ts) / 1000);
-        const agoStr = ago < 60 ? `${ago}s` : `${Math.round(ago / 60)}m`;
-        ctx.font = '9px monospace';
-        ctx.fillStyle = '#555d68';
-        ctx.fillText(agoStr, w - 24, y);
-      }
       ctx.restore();
     }
 

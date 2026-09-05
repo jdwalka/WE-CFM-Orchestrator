@@ -219,7 +219,6 @@
       yes = num(activeSpotBucket.yesProb);
     }
     const effectiveYes = yes ?? (isLookahead && num(packet.pUp) != null ? num(packet.pUp) : (isHourly ? 0.50 : null));
-    const yes = num(packet.yesProb);
     const mid = num(packet.mid);
     const effectiveMid = mid ?? effectiveYes;
     const spread = num(packet.spread);
@@ -228,14 +227,6 @@
     const notional = Math.round(rawNotional * 100) / 100;
     const ttc = num(packet.secondsToClose);
     const live = String(packet.liveDirection || packet.pathDir || '').toUpperCase();
-
-    const rawProjectedPtb = num(packet.projectedOpenPtb);
-    const projectedPtb = (rawProjectedPtb != null && rawProjectedPtb > 0 && CP?.roundCoinPrice)
-      ? CP.roundCoinPrice(sym, rawProjectedPtb)
-      : rawProjectedPtb;
-    const effectivePtb = ptb || (isLookahead && projectedPtb) || null;
-    const effectiveYes = yes ?? (isLookahead && num(packet.pUp) != null ? num(packet.pUp) : null);
-    const effectiveMid = mid ?? effectiveYes;
 
     if (spot == null || spot <= 0 || effectivePtb == null || effectivePtb <= 0 || effectiveYes == null || effectiveMid == null) {
       const missing = [];
@@ -248,7 +239,6 @@
         missing,
         (!effectivePtb || effectivePtb <= 0)
           ? (isHourly ? 'HOLD_FLAT. Awaiting Hourly Range Ladder synchronization.' : 'HOLD_FLAT. Awaiting immutable Polymarket Up/Down contract target strike (PTB).')
-          ? 'HOLD_FLAT. Awaiting immutable Polymarket Up/Down contract target strike (PTB).'
           : 'HOLD_FLAT. Missing required oracle feeds.'
       );
     }
@@ -359,7 +349,6 @@
       urgency = 'late_window';
       confidence = Math.min(confidence, 0.40);
       warnings.push(`PIN_RISK_DEFENDED: ${coinName} spot is within ${deltaStr} (${deltaBpsStr} bps) of target strike ${ptbStr} in late window (<90s). Market maker defense risks whipsaws; pivot to T+1.`);
-      warnings.push('PIN_RISK_DEFENDED: Spot within 0.5σ noise margin of strike in late window (<90s). MM defense risks 1-2s post-expiry snap. Do NOT chase wire; pivot to T+1.');
     }
 
     let invalidation = 'no path';
@@ -383,7 +372,6 @@
       const biasLabel = call === 'UP' ? 'upper range brackets' : (call === 'DOWN' ? 'lower range brackets' : 'current spot bracket');
       notes = `HOURLY RANGE. ${coinName} spot (${spotStr}) is inside the [${bucketStr}] bracket (${bucketProbPct}% prob) with ${ttcStr} to close at ${targetTimeStr}. Projected close leans toward ${biasLabel}.${graviTag}${ofeTag}`;
     } else if (isPinDefended) {
-    if (isPinDefended) {
       const t1 = packet.futureWindowT1 || {};
       const t1PtbFormatted = t1.projectedOpenPtb
         ? (CP?.formatCoinStrike ? CP.formatCoinStrike(sym, t1.projectedOpenPtb) : `$${t1.projectedOpenPtb}`)
@@ -394,12 +382,6 @@
       notes = `HOLD_FLAT. PIN_RISK_DEFENDED. ${coinName} spot (${spotStr}) is within ${deltaStr} (${deltaBpsStr} bps) of PTB ${ptbStr} with ${ttcStr} to close. MM defense walls risk pinning strike until snapshot and snapping 1-2s post-expiry.${t1Guidance}`;
     } else if (call === 'UP') {
       notes = `UP. ${coinName} spot ${spotStr} is ${deltaStr} above target strike ${ptbStr} with ${ttcStr} to close. Market probability is ${yesProbPct}% (mid ${midFormatted}), favoring upside. Order book depth shows imbalance of ${imbStr} with ${notionalStr} in near-touch liquidity supporting buying momentum.${graviTag}${ofeTag} Invalidate if spot drops below ${ptbStr}.`;
-      const t1Guidance = t1.projectedOpenPtb
-        ? ` Pivot to T+1 horizon: Projected PTB $${t1.projectedOpenPtb}, Forward Call ${t1.forecastDirection || '—'} (${t1.confidence || 0}%), Stance: ${t1.sniperAction || 'STANDBY'}.`
-        : '';
-      notes = `HOLD_FLAT. PIN_RISK_DEFENDED. Spot ${spot} is within ${Math.abs(delta).toFixed(1)} (${Math.abs(deltaBps).toFixed(1)} bps) of PTB ${effectivePtb} with ${ttc ?? '?'}s to close. MM defense walls risk pinning strike until snapshot and snapping 1-2s post-expiry.${t1Guidance}`;
-    } else if (call === 'UP') {
-      notes = `UP. Spot ${spot} sits ${delta.toFixed(1)} above PTB ${effectivePtb} with ${ttc ?? '?'}s to close. YesProb ${effectiveYes.toFixed(2)} and mid ${effectiveMid.toFixed(3)} align upward. Depth imbalance ${imb.toFixed(2)} and near-touch notional ${notional} support buying.${graviTag}${ofeTag} Fade only if spot pierces PTB.`;
     } else if (call === 'DOWN') {
       notes = `DOWN. ${coinName} spot ${spotStr} is ${deltaStr} below target strike ${ptbStr} with ${ttcStr} to close. Market probability is ${yesProbPct}% (mid ${midFormatted}), suggesting downside. Order book depth shows imbalance of ${imbStr} with ${notionalStr} in near-touch liquidity confirming selling flow.${graviTag}${ofeTag} Invalidate if spot rises above ${ptbStr}.`;
     } else {

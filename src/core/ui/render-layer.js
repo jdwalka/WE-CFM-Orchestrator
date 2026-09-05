@@ -922,7 +922,6 @@ function renderMarkets5M() {
       const atrPctVal = p?.volatility?.atrPct ? (p.volatility.atrPct / 100) : (is15m ? 0.0055 : 0.0035);
       const expectedMoveVal = (h5Score || 0) * (liveTwap || 1) * atrPctVal * 0.40;
       const target5m = (liveTwap && Number.isFinite(liveTwap)) ? (liveTwap + expectedMoveVal) : (is15m ? p.projections?.p15?.target : p.projections?.p5?.target);
-      const target5m = (liveTwap && Number.isFinite(liveTwap)) ? (liveTwap + expectedMoveVal) : p.projections?.p5?.target;
       const targetLabel = target5m != null
         ? (window.CoinPrecision?.formatCoinPrice ? window.CoinPrecision.formatCoinPrice(sym, target5m) : fmtPrice(target5m, sym))
         : '—';

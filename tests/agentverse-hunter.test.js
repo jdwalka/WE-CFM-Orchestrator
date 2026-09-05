@@ -54,8 +54,6 @@ test('buildHuntPrompt includes market snapshot and structured schema', () => {
   assert.ok(prompt.includes('BTC: Spot=$81,200.00 | 15m PTB=$81,000.00 | 1h PTB=$80,500.00 | Strike Status=[PIN RISK DEFENDED: 4.2 bps]'));
   assert.ok(prompt.includes('ETH: Spot=$2,450.00 | 15m PTB=$2,440.00'));
 
-  assert.ok(prompt.includes('BTC: Spot=$81,200 | 15m PTB=$81,000 | 1h PTB=$80,500 | Strike Status=[PIN RISK DEFENDED: 4.2 bps]'));
-  assert.ok(prompt.includes('ETH: Spot=$2,450 | 15m PTB=$2,440'));
   assert.ok(prompt.includes('Polymarket Live Data Agent'));
   assert.ok(prompt.includes('Crypto Whale Radar'));
   assert.ok(prompt.includes('Vedetta Sentiment & Divergence'));

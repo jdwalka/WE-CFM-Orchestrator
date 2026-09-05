@@ -513,14 +513,11 @@
         const col = call === 'UP' ? 'var(--color-green,#26a69a)' : call === 'DOWN' ? 'var(--color-red,#ef5350)' : 'var(--color-text-faint)';
         const ptbNum = Number(p15?.priceToBeatNum ?? p15?.targetPriceNum);
         const ptbLabel = p15?.targetPrice || (Number.isFinite(ptbNum) && ptbNum > 0
-        const ptbNum = Number(p15.priceToBeatNum ?? p15.targetPriceNum);
-        const ptbLabel = p15.targetPrice || (Number.isFinite(ptbNum) && ptbNum > 0
           ? (window.CoinPrecision?.formatCoinStrike
               ? window.CoinPrecision.formatCoinStrike(sym, ptbNum)
               : `$${ptbNum.toLocaleString('en-US', { minimumFractionDigits: (sym === 'XRP' || sym === 'DOGE') ? 4 : 2, maximumFractionDigits: (sym === 'XRP' || sym === 'DOGE') ? 4 : 2 })}`)
           : 'pending');
         const closeLabel15 = p15?.closeTime ? timeToClose(p15.closeTime) : null;
-        const closeLabel15 = p15.closeTime ? timeToClose(p15.closeTime) : null;
 
         poly15mHtml = `<div class="hr-poly15m" style="margin-bottom:8px;">
           <div class="hr-grok-hdr" style="display:flex;justify-content:space-between;">

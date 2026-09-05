@@ -129,18 +129,19 @@ class PythSettlementValidator {
 
     // 3. Query Hermes with Pro key
     try {
-      let json = null;
-      let lastError = null;
-      for (const base of this.pythBases) {
-        try {
-          const url = `${base.replace(/\/+$/, '')}/v2/updates/price/latest?ids[]=${encodeURIComponent(feedId)}`;
-          json = await this.fetchJsonWithTimeout(url, this.requestTimeoutMs);
-          this.pythBase = base;
-          break;
-        } catch (err) {
-          lastError = err;
+      try {
+        let json = null;
+        let lastError = null;
+        for (const base of this.pythBases) {
+          try {
+            const url = `${base.replace(/\/+$/, '')}/v2/updates/price/latest?ids[]=${encodeURIComponent(feedId)}`;
+            json = await this.fetchJsonWithTimeout(url, this.requestTimeoutMs);
+            this.pythBase = base;
+            break;
+          } catch (err) {
+            lastError = err;
+          }
         }
-      }
 
       const feed = json?.parsed?.[0];
       if (feed && feed.price) {
@@ -182,31 +183,7 @@ class PythSettlementValidator {
     }
 
     throw new Error(`No price data available for ${sym}`);
-      }
-
-      const price = parseFloat(feed.price.price);
-      const confidence = parseFloat(feed.price.conf);
-      const publishTime = parseInt(feed.price.publish_time) * 1000; // Convert to ms
-      const age_ms = Date.now() - publishTime;
-
-      const result = {
-        price,
-        confidence,
-        publishTime,
-        age_ms,
-        feedId: feed.id,
-      };
-
-      // Cache result
-      this.priceCache[sym] = { data: result, fetchTime: Date.now() };
-
-      // Update window timestamp for adaptive tuner's staleness check
-      if (typeof window !== 'undefined') {
-        window.PYTH_HERMES_LAST_UPDATE = Date.now();
-      }
-
-      return result;
-    } catch (err) {
+  } catch (err) {
       if (cached?.data) {
         console.warn(`[PythSettlementValidator] ${sym} fetch failed, serving stale cache:`, err.message);
         return {

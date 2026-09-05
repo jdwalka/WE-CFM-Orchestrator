@@ -509,57 +509,6 @@ function predictionCard(p) {
           ` ${agBadge}`;
       }
 
-      // Reference threshold — "Beat $85.32" for above, "Below $85.32" for below.
-      // Prefer the raw API string (targetPrice) to avoid rounding.
-      const refTarget = _poly15m?.targetPrice ?? _k15m?.targetPrice ?? (_kAlign?.ref != null ? fmtPrice(_kAlign.ref, p.sym) : null);
-      const refVerb = _rowStrikeDir === 'below' ? 'Below' : 'Beat';
-      const refLine = refTarget
-        ? ` <span class="k15-target">${refVerb} ${refTarget}</span>`
-        : '';
-
-      // Gap from current price to reference — show dollar amount + % + BORDERLINE warning
-      const _gapRaw = _kAlign?.gapPct ?? null;
-      const _gapDollar = (_kAlign?.ref != null && p.price > 0)
-        ? (_kAlign.ref - p.price) : null;
-      const _gapDec = window.CoinPrecision?.getCoinDeltaDecimals
-        ? window.CoinPrecision.getCoinDeltaDecimals(p.sym)
-        : (/^DOGE$/i.test(p.sym) ? 4 : /^XRP$/i.test(p.sym) ? 4 : 2);
-      const _borderline = _gapRaw !== null && Math.abs(_gapRaw) < 0.12; // within 0.12% of strike
-      const gapLine = _gapRaw !== null && Math.abs(_gapRaw) > 0.001
-        ? ` <span class="k15-gap ${_gapRaw > 0 ? 'k15-gap-up' : 'k15-gap-down'} ${_borderline ? 'k15-borderline' : ''}">` +
-        `${_gapRaw > 0 ? '▲' : '▼'} ${_gapDollar !== null ? '$' + Math.abs(_gapDollar).toFixed(_gapDec) + ' ' : ''}` +
-        `(${_gapRaw > 0 ? '+' : ''}${_gapRaw.toFixed(3)}%)` +
-        `${_borderline ? ' ⚠ BORDERLINE' : ''}</span>`
-        : (_gapRaw !== null ? ` <span class="k15-gap k15-gap-down k15-borderline">✓ AT STRIKE</span>` : '');
-
-
-      // Countdown to settlement
-      let countdown = '';
-      const _closeTimeRow = _poly15m?.closeTime ?? _k15m?.closeTime;
-      if (_closeTimeRow) {
-        const msl = new Date(_closeTimeRow).getTime() - Date.now();
-        const closeUtc4 = formatUtc4Time(_closeTimeRow);
-        if (msl > 0) {
-          const ts = Math.floor(msl / 1000);
-          countdown = ` <span class="k15-expiry" data-close-ms="${new Date(_closeTimeRow).getTime()}">⏱ ${Math.floor(ts / 60)}m${String(ts % 60).padStart(2, '0')}s · UTC-4 ${closeUtc4}</span>`;
-        } else {
-          countdown = ` <span class="k15-expiry k15-settling">⏱ SETTLING</span>`;
-        }
-      }
-
-      const cfmRow = (() => {
-        const cfmData = window.CFMEngine?.getAll ? window.CFMEngine.getAll()[p.sym] : null;
-        if (!cfmData || !cfmData.bias) return '';
-        const dir = cfmData.bias === 'up' ? 'bull' : cfmData.bias === 'down' ? 'bear' : 'flat';
-        const mktContext = window.tickers?.[p.sym] ? `5m Δ ${((window.tickers[p.sym].close - window.tickers[p.sym].open) / window.tickers[p.sym].open * 100).toFixed(2)}%` : '';
-        return `<div class="ind-item"><span class="ind-name">CFM Context</span><span class="ind-val ${dir}">${String(cfmData.bias).toUpperCase()} · ${mktContext}</span></div>`;
-      })();
-
-      // Kalshi fetching is disabled -- never show "Kalshi" here, that was the
-      // label flickering back and forth whenever poly15m was momentarily null
-      // between its own refresh cycles (a data gap, not evidence of Kalshi
-      // data existing).
-      const _rowLabel = 'Polymarket 15M';
       return `<div class="ind-item k15m-row"><span class="ind-name">${_rowLabel}</span><span class="ind-val ${kCls}">${probLine}${refLine}${gapLine}${countdown}</span></div>${cfmRow}`;
     })();
 
@@ -580,7 +529,6 @@ function predictionCard(p) {
         ? window.CoinPrecision.formatCoinDelta(p.sym, gapDollar, { showSign: false })
         : `$${gapDollar.toFixed(gapDec)}`;
       const gapLine = ` <span class="k15-gap ${gapPct > 0 ? 'k15-gap-up' : 'k15-gap-down'}">${gapPct > 0 ? '▲' : '▼'} ${gapDollarStr} (${gapPct > 0 ? '+' : ''}${gapPct.toFixed(3)}%)</span>`;
-      const gapLine = ` <span class="k15-gap ${gapPct > 0 ? 'k15-gap-up' : 'k15-gap-down'}">${gapPct > 0 ? '▲' : '▼'} $${gapDollar.toFixed(gapDec)} (${gapPct > 0 ? '+' : ''}${gapPct.toFixed(3)}%)</span>`;
       return `<div class="ind-item k15m-row" style="background:rgba(255,255,255,0.03); border-left:2px solid var(--color-${dir === 'UP' ? 'green' : 'red'}); padding-left: 6px;"><span class="ind-name">Model 5M</span><span class="ind-val ${cls}"><span class="k15-side-label" style="opacity:0.6">PROJ</span><span class="k15-${dir.toLowerCase()}" style="font-weight:700">${dir}</span><span class="k15-target"> ≥ ${targetStr}</span>${gapLine}</span></div>`;
 
     })();
