@@ -29,18 +29,22 @@ echo.
 echo    [4] Launch WE-CRYPTO Desktop Directly
 echo        Runs launch-wecrypto.bat immediately.
 echo.
-echo    [5] Exit
+echo    [5] Fast Build Fresh Windows Binaries (.exe)
+echo        Compiles the fresh NSIS installer and portable executable into dist/.
+echo.
+echo    [6] Exit
 echo.
 echo ==============================================================================
 set "CHOICE="
-set /p "CHOICE=Select [1-5] (Default is 1): "
+set /p "CHOICE=Select [1-6] (Default is 1): "
 
 if "%CHOICE%"=="" set "CHOICE=1"
 if "%CHOICE%"=="1" goto opt_installer
 if "%CHOICE%"=="2" goto opt_pipeline
 if "%CHOICE%"=="3" goto opt_diagnostic
 if "%CHOICE%"=="4" goto opt_launch
-if "%CHOICE%"=="5" goto opt_exit
+if "%CHOICE%"=="5" goto opt_build
+if "%CHOICE%"=="6" goto opt_exit
 
 :opt_installer
 echo.
@@ -64,6 +68,13 @@ goto end
 echo.
 echo [*] Starting WE-CRYPTO Desktop...
 call "%SCRIPT_DIR%\launch-wecrypto.bat"
+goto end
+
+:opt_build
+echo.
+echo [*] Compiling fresh Windows installer and portable binaries (.exe)...
+call npm run build:quant
+call npm run build:installer
 goto end
 
 :opt_exit
