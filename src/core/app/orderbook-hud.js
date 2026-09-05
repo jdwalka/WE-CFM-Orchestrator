@@ -58,9 +58,12 @@ function updateDepthBook(sym) {
     const wallThresh = Math.max(minQty, avgQty * (window.OB?.WALL_MULTI || 3.5));
 
     const fmtPrice = (p) => {
-      if (p >= 1000) return p.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-      if (p >= 1) return p.toFixed(4);
-      return p.toFixed(6);
+      if (window.CoinPrecision?.formatCoinPrice) {
+        return window.CoinPrecision.formatCoinPrice(sym, p, { prefix: '' });
+      }
+      const s = String(sym || '').toUpperCase();
+      const d = (s === 'XRP' || s === 'DOGE') ? 4 : 2;
+      return Number(p).toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
     };
     const fmtQty = (q) => window.OB?.formatQty?.(sym, q) ?? q.toFixed(2);
 
@@ -77,11 +80,15 @@ function updateDepthBook(sym) {
 
     const askHTML = book.asks.slice(0, MAX_LEVELS).reverse().map(([p, q]) => makeRow(p, q, 'ask')).join('');
     const bidHTML = book.bids.slice(0, MAX_LEVELS).map(([p, q]) => makeRow(p, q, 'bid')).join('');
+    const midFormatted = window.CoinPrecision?.formatCoinPrice
+      ? window.CoinPrecision.formatCoinPrice(sym, book.mid || 0)
+      : `$${fmtPrice(book.mid || 0)}`;
     const spreadHTML = `<div class="ob-spread-row">
       <span>Spread: ${fmtPrice(book.spread || 0)}</span>
       <span>${book.spreadPct?.toFixed(4) || ''}%</span>
-      <span class="ob-mid">$${fmtPrice(book.mid || 0)}</span>
+      <span class="ob-mid">${midFormatted}</span>
     </div>`;
+
 
     ladder.innerHTML = `
       <div class="ob-section-label ask">ASK / RESISTANCE</div>
@@ -393,9 +400,13 @@ function drawLiqMap(sym) {
     // Price axis labels
     ctx.fillStyle = 'rgba(255,255,255,0.5)';
     ctx.font = '9px monospace';
-    ctx.textAlign = 'right';
-    const fmtP = (p) => p >= 1000 ? '$' + (p / 1000).toFixed(1) + 'K' : p >= 1 ? '$' + p.toFixed(2) : '$' + p.toFixed(4);
+    const fmtP = (p) => {
+      if (p >= 1000) return '$' + (p / 1000).toFixed(1) + 'K';
+      if (window.CoinPrecision?.formatCoinPrice) return window.CoinPrecision.formatCoinPrice(sym, p);
+      return (sym === 'XRP' || sym === 'DOGE') ? '$' + p.toFixed(4) : '$' + p.toFixed(2);
+    };
     for (let i = 0; i <= 4; i++) {
+
       const price = priceLo + (i / 4) * (priceHi - priceLo);
       const y = mapH - (i / 4) * mapH;
       ctx.fillText(fmtP(price), PRICE_AXIS_W - 2, y + 3);
@@ -415,6 +426,7 @@ function initOBHud() {
     if (!hud) return;
     let minimized = false;
     let hudFilter = 'ALL';
+    let soundOn = false;
     let shellBuilt = false;
     let renderScheduled = false;
 
@@ -516,9 +528,14 @@ function initOBHud() {
       ctx.fillStyle = '#07090e';
       ctx.fillRect(0, 0, w, h);
 
-      const fmtP = (p) => p >= 1000
-        ? p.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-        : (p >= 1 ? p.toFixed(3) : p.toFixed(5));
+      const fmtP = (p, coinSym) => {
+        if (window.CoinPrecision?.formatCoinPrice) {
+          return window.CoinPrecision.formatCoinPrice(coinSym, p, { prefix: '' });
+        }
+        const s = String(coinSym || '').toUpperCase();
+        const d = (s === 'XRP' || s === 'DOGE') ? 4 : 2;
+        return Number(p).toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
+      };
 
       const rowH = 19;
       ctx.textBaseline = 'middle';
@@ -551,7 +568,8 @@ function initOBHud() {
         // Price
         ctx.font = '10px monospace';
         ctx.fillStyle = color;
-        ctx.fillText(`$${fmtP(a.price)}`, w - 74, y);
+        ctx.fillText(`$${fmtP(a.price, a.sym)}`, w - 74, y);
+
 
         // Age
         const ago = Math.round((now - a.ts) / 1000);

@@ -430,7 +430,7 @@ function predictionCard(p) {
 
       // Reference threshold — "Beat $85.32" for above, "Below $85.32" for below.
       // Prefer the raw API string (targetPrice) to avoid rounding.
-      const refTarget = _poly15m?.targetPrice ?? _k15m?.targetPrice ?? (_kAlign?.ref != null ? fmtPrice(_kAlign.ref) : null);
+      const refTarget = _poly15m?.targetPrice ?? _k15m?.targetPrice ?? (_kAlign?.ref != null ? fmtPrice(_kAlign.ref, p.sym) : null);
       const refVerb = _rowStrikeDir === 'below' ? 'Below' : 'Beat';
       const refLine = refTarget
         ? ` <span class="k15-target">${refVerb} ${refTarget}</span>`
@@ -440,7 +440,9 @@ function predictionCard(p) {
       const _gapRaw = _kAlign?.gapPct ?? null;
       const _gapDollar = (_kAlign?.ref != null && p.price > 0)
         ? (_kAlign.ref - p.price) : null;
-      const _gapDec = /^DOGE$/i.test(p.sym) ? 6 : /^XRP$/i.test(p.sym) ? 4 : 2;
+      const _gapDec = window.CoinPrecision?.getCoinDeltaDecimals
+        ? window.CoinPrecision.getCoinDeltaDecimals(p.sym)
+        : (/^DOGE$/i.test(p.sym) ? 4 : /^XRP$/i.test(p.sym) ? 4 : 2);
       const _borderline = _gapRaw !== null && Math.abs(_gapRaw) < 0.12; // within 0.12% of strike
       const gapLine = _gapRaw !== null && Math.abs(_gapRaw) > 0.001
         ? ` <span class="k15-gap ${_gapRaw > 0 ? 'k15-gap-up' : 'k15-gap-down'} ${_borderline ? 'k15-borderline' : ''}">` +
@@ -448,6 +450,7 @@ function predictionCard(p) {
         `(${_gapRaw > 0 ? '+' : ''}${_gapRaw.toFixed(3)}%)` +
         `${_borderline ? ' ⚠ BORDERLINE' : ''}</span>`
         : (_gapRaw !== null ? ` <span class="k15-gap k15-gap-down k15-borderline">✓ AT STRIKE</span>` : '');
+
 
       // Countdown to settlement
       let countdown = '';
@@ -485,10 +488,15 @@ function predictionCard(p) {
       const dir = p5.target > p.price ? 'UP' : 'DOWN';
       const cls = dir === 'UP' ? 'bull' : 'bear';
       const gapPct = ((p5.target - p.price) / p.price) * 100;
-      const gapDollar = Math.abs(p5.target - p.price);
-      const gapDec = /^DOGE$/i.test(p.sym) ? 6 : /^XRP$/i.test(p.sym) ? 4 : 2;
+      const gapDec = window.CoinPrecision?.getCoinDeltaDecimals
+        ? window.CoinPrecision.getCoinDeltaDecimals(p.sym)
+        : (/^DOGE$/i.test(p.sym) ? 4 : /^XRP$/i.test(p.sym) ? 4 : 2);
+      const targetStr = window.CoinPrecision?.formatCoinStrike
+        ? window.CoinPrecision.formatCoinStrike(p.sym, p5.target)
+        : fmtPrice(p5.target, p.sym);
       const gapLine = ` <span class="k15-gap ${gapPct > 0 ? 'k15-gap-up' : 'k15-gap-down'}">${gapPct > 0 ? '▲' : '▼'} $${gapDollar.toFixed(gapDec)} (${gapPct > 0 ? '+' : ''}${gapPct.toFixed(3)}%)</span>`;
-      return `<div class="ind-item k15m-row" style="background:rgba(255,255,255,0.03); border-left:2px solid var(--color-${dir === 'UP' ? 'green' : 'red'}); padding-left: 6px;"><span class="ind-name">Model 5M</span><span class="ind-val ${cls}"><span class="k15-side-label" style="opacity:0.6">PROJ</span><span class="k15-${dir.toLowerCase()}" style="font-weight:700">${dir}</span><span class="k15-target"> ≥ $${fmtPrice(p5.target)}</span>${gapLine}</span></div>`;
+      return `<div class="ind-item k15m-row" style="background:rgba(255,255,255,0.03); border-left:2px solid var(--color-${dir === 'UP' ? 'green' : 'red'}); padding-left: 6px;"><span class="ind-name">Model 5M</span><span class="ind-val ${cls}"><span class="k15-side-label" style="opacity:0.6">PROJ</span><span class="k15-${dir.toLowerCase()}" style="font-weight:700">${dir}</span><span class="k15-target"> ≥ ${targetStr}</span>${gapLine}</span></div>`;
+
     })();
 
     const lazerRow = (() => {
@@ -565,8 +573,9 @@ function predictionCard(p) {
             <div class="pred-coin-name">${p.name}</div>
           </div>
           <div>
-            <div class="pred-coin-price">${fmtPrice(p.price)}</div>
+            <div class="pred-coin-price">${fmtPrice(p.price, p.sym)}</div>
             <div class="pred-coin-src">${p.source === 'error'
+
         ? `<span style="color:var(--color-orange,#f90);font-size:9px">⚠ ${p.error ? p.error.slice(0, 50) : 'compute error'} — will retry</span>`
         : p.source === 'loading'
           ? `<span style="color:var(--color-text-muted,#888);font-size:9px">⏳ loading 15m pooled candles…</span>`
@@ -777,13 +786,14 @@ function predictionCard(p) {
             ${horizonRows.filter(horizon => horizon.projection).map(horizon => `
               <div class="proj-row">
                 <span class="proj-label">${horizon.label}</span>
-                <span style="color:var(--color-red);font-size:10px">${fmtPrice(horizon.projection.low)}</span>
+                <span style="color:var(--color-red);font-size:10px">${fmtPrice(horizon.projection.low, p.sym)}</span>
                 <div class="proj-range">
                   <div class="proj-target ${confClass}" style="left:50%"></div>
                 </div>
-                <span style="color:var(--color-green);font-size:10px">${fmtPrice(horizon.projection.high)}</span>
-                <span class="proj-val" style="color:${p.score >= 0 ? 'var(--color-green)' : 'var(--color-red)'}">${fmtPrice(horizon.projection.target)}</span>
+                <span style="color:var(--color-green);font-size:10px">${fmtPrice(horizon.projection.high, p.sym)}</span>
+                <span class="proj-val" style="color:${p.score >= 0 ? 'var(--color-green)' : 'var(--color-red)'}">${fmtPrice(horizon.projection.target, p.sym)}</span>
               </div>
+
             `).join('')}
           </div>
 
@@ -910,7 +920,18 @@ function buildMarketDebugPanel() {
       const resLog = (window._15mResolutionLog || []).slice(-10).reverse();
       const orchLog = (window._orchLog || []).slice(-15).reverse();
 
-      const fmtPrice = v => v != null && v > 0 ? `$${Number(v).toLocaleString(undefined, { maximumFractionDigits: 2 })}` : '–';
+      const fmtPrice = (v, sym) => {
+        if (v == null || v === '') return '–';
+        if (window.CoinPrecision?.formatCoinPrice) {
+          return window.CoinPrecision.formatCoinPrice(sym, v);
+        }
+        const n = Number(v);
+        if (!Number.isFinite(n) || n <= 0) return '–';
+        const s = String(sym || '').toUpperCase();
+        const d = (s === 'XRP' || s === 'DOGE') ? 4 : (n < 1 ? 4 : 2);
+        return `$${n.toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d })}`;
+      };
+
       const fmtPct = v => v != null ? `${v}%` : '–';
       const fmtTime = ms => ms ? new Date(ms).toISOString().slice(11, 19) : '–';
       const fmtScore = v => v != null ? (v > 0 ? '+' : '') + Number(v).toFixed(3) : '–';
@@ -1102,7 +1123,7 @@ function buildMarketDebugPanel() {
             : '<span style="color:#ffc107">~fade</span>') : '';
         return `<tr>
           <td style="${tdBase};color:#fff;font-weight:600">${sym}</td>
-          <td style="${tdBase}">${fmtPrice(s.floorPrice || s.ref)}</td>
+          <td style="${tdBase}">${fmtPrice(s.floorPrice || s.ref, sym)}</td>
           <td style="${tdBase};${s.strikeDir === 'below' ? 'color:#f44336' : 'color:#4caf50'}">${s.strikeDir || 'above'}</td>
           <td style="${tdBase};${colDir(s.modelDir)}">${s.modelDir || '–'}</td>
           <td style="${tdBase}">${fmtPct(s.mYesPct)}</td>
@@ -1134,7 +1155,7 @@ function buildMarketDebugPanel() {
         return `<tr>
           <td style="${tdBase};color:#fff;font-weight:700">${e.sym}</td>
           <td style="${tdBase};${e.outcome === 'YES' ? 'color:#4caf50' : 'color:#f44336'}">${e.outcome || '–'}</td>
-          <td style="${tdBase};color:#888;font-size:10px">${fmtPrice(e.ref)}</td>
+          <td style="${tdBase};color:#888;font-size:10px">${fmtPrice(e.ref, e.sym)}</td>
           <td style="${tdBase};color:#aaa;font-size:10px">${e.refDiffPct != null ? e.refDiffPct.toFixed(3) + '%' : '–'}</td>
           <td style="${tdBase};${colDir(e.modelDir)}">${fmtScore(e.modelScore)}</td>
           <td style="${tdBase}">${betTag}</td>
@@ -1158,10 +1179,11 @@ function buildMarketDebugPanel() {
           <td style="${tdBase}">${r.modelDir || '–'} ${ok(r.modelCorrect)}</td>
           <td style="${tdBase};${colAct(r.orchestratorAction)};font-size:10px">${r.orchestratorAction || '–'} ${orchTag}${missedTag}</td>
           <td style="${tdBase};color:${(r.edgeCents ?? 0) >= 8 ? '#4caf50' : '#888'}">${fmtEdge(r.edgeCents)}</td>
-          <td style="${tdBase};font-size:10px;color:#aaa">${r.cbSettlePrice ? '$' + Number(r.cbSettlePrice).toLocaleString() : fmtPrice(r.floorPrice || r.refPrice)}</td>
+          <td style="${tdBase};font-size:10px;color:#aaa">${r.cbSettlePrice ? fmtPrice(r.cbSettlePrice, r.sym) : fmtPrice(r.floorPrice || r.refPrice, r.sym)}</td>
           <td style="${tdBase};color:${(r.confidence ?? 0) >= 90 ? '#4caf50' : '#ffc107'};font-size:10px">${r.confidence != null ? r.confidence + '%' : '–'}</td>
           <td style="${tdBase};color:#888;font-size:10px">${fmtTime(r.settledTs)}</td>
         </tr>`;
+
       }).join('') || `<tr><td colspan="9" style="${tdBase};color:#666;text-align:center">No settled contracts yet — first settlement fires ~2 min after contract close_time</td></tr>`;
 
       // ── 6. ORCHESTRATOR HISTORY ──────────────────────────────────────────

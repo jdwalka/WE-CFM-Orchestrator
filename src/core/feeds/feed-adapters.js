@@ -1114,11 +1114,12 @@ async function fetchCandlesticks(instrument, timeframe) {
 
 async function fetchPythHistoryCandles(instrument, timeframe) {
     const sym = INSTR_TO_PYTH_SYM[instrument];
+    const tf = exchangeInterval(timeframe);
     const TF_RES = {
       '1m': '1', '3m': '5', '5m': '5', '15m': '15', '30m': '30',
       '1h': '60', '2h': '120', '4h': '240', '6h': '360', '12h': '720', '1d': 'D', '1w': 'W'
     };
-    const res = TF_RES[timeframe];
+    const res = TF_RES[tf];
     if (!sym || !res) throw new Error(`No Pyth History mapping for ${instrument}/${timeframe}`);
     const SEC = {
       '1': 60, '5': 300, '15': 900, '30': 1800, '60': 3600, '120': 7200,

@@ -198,15 +198,28 @@ function fmt(n, dp = 2) {
     return n.toFixed(dp);
   }
 
-function fmtPrice(n) {
+function fmtPrice(n, sym) {
     if (n === undefined || n === null || isNaN(n) || !isFinite(n)) return '—';
+    if (window.CoinPrecision?.formatCoinPrice) {
+      return window.CoinPrecision.formatCoinPrice(sym, n);
+    }
     n = Number(n);
+    if (sym) {
+      const s = String(sym).toUpperCase();
+      if (s === 'XRP' || s === 'DOGE') {
+        return '$' + n.toLocaleString('en-US', { minimumFractionDigits: 4, maximumFractionDigits: 4 });
+      }
+      if (s === 'BTC' || s === 'ETH' || s === 'SOL' || s === 'BNB' || s === 'HYPE') {
+        return '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      }
+    }
     if (n >= 1000) return '$' + fmt(n, 2);
     if (n >= 1) return '$' + fmt(n, 2);
     if (n >= 0.01) return '$' + fmt(n, 4);
     if (n > 0) return '$' + n.toFixed(8);
     return '—';  // price of 0 means unavailable, not truly zero
   }
+
 
 function fmtPct(n) {
     if (n === undefined || n === null || isNaN(n) || !isFinite(n)) return '—';
@@ -379,10 +392,10 @@ function updateMarketSummary() {
           : 'WS…') +
         `</span></div>`
         : '',
-      btc ? `<div class="ms-item"><span>BTC</span> <span class="ms-val">${fmtPrice(price(btc))}</span> <span class="ms-chg ${posneg(change(btc))}">${fmtPct(change(btc))}</span></div>` : '',
-      sol ? `<div class="ms-item"><span>SOL</span> <span class="ms-val">${fmtPrice(price(sol))}</span> <span class="ms-chg ${posneg(change(sol))}">${fmtPct(change(sol))}</span></div>` : '',
-      xrp ? `<div class="ms-item"><span>XRP</span> <span class="ms-val">${fmtPrice(price(xrp))}</span> <span class="ms-chg ${posneg(change(xrp))}">${fmtPct(change(xrp))}</span></div>` : '',
-      doge ? `<div class="ms-item"><span>DOGE</span> <span class="ms-val">${fmtPrice(price(doge))}</span> <span class="ms-chg ${posneg(change(doge))}">${fmtPct(change(doge))}</span></div>` : '',
+      btc ? `<div class="ms-item"><span>BTC</span> <span class="ms-val">${fmtPrice(price(btc), 'BTC')}</span> <span class="ms-chg ${posneg(change(btc))}">${fmtPct(change(btc))}</span></div>` : '',
+      sol ? `<div class="ms-item"><span>SOL</span> <span class="ms-val">${fmtPrice(price(sol), 'SOL')}</span> <span class="ms-chg ${posneg(change(sol))}">${fmtPct(change(sol))}</span></div>` : '',
+      xrp ? `<div class="ms-item"><span>XRP</span> <span class="ms-val">${fmtPrice(price(xrp), 'XRP')}</span> <span class="ms-chg ${posneg(change(xrp))}">${fmtPct(change(xrp))}</span></div>` : '',
+      doge ? `<div class="ms-item"><span>DOGE</span> <span class="ms-val">${fmtPrice(price(doge), 'DOGE')}</span> <span class="ms-chg ${posneg(change(doge))}">${fmtPct(change(doge))}</span></div>` : '',
       stalePart,
     ].join('');
   }
@@ -397,7 +410,7 @@ function updateMarkets5MLivePrices(prices) {
       if (!Number.isFinite(current) || current <= 0) continue;
 
       const currentEl = document.getElementById(`p5-current-${sym}`);
-      if (currentEl) currentEl.textContent = `$${fmtPrice(current)}`;
+      if (currentEl) currentEl.textContent = fmtPrice(current, sym);
       if (!Number.isFinite(target) || target <= 0) continue;
 
       // This handler is fed by the raw Pyth Lazer tick stream, but settlement is
@@ -412,7 +425,9 @@ function updateMarkets5MLivePrices(prices) {
       const delta = settlementCurrent - target;
       const direction = delta >= 0 ? 'UP' : 'DOWN';
       const state = delta >= 0 ? 'above' : 'below';
-      const deltaLabel = `$${fmtPrice(Math.abs(delta))}`;
+      const deltaLabel = window.CoinPrecision?.formatCoinDelta
+        ? window.CoinPrecision.formatCoinDelta(sym, Math.abs(delta), { showSign: false })
+        : fmtPrice(Math.abs(delta), sym);
       const color = delta >= 0 ? 'var(--color-green)' : 'var(--color-red)';
       const liveEl = document.getElementById(`p5-live-${sym}`);
       if (liveEl) {
@@ -423,6 +438,7 @@ function updateMarkets5MLivePrices(prices) {
       if (headerEl) headerEl.textContent = `${direction} ${deltaLabel} vs PTB`;
     }
   }
+
   window.updateMarkets5MLivePrices = updateMarkets5MLivePrices;
 
 function renderMarkets5M() {
@@ -526,13 +542,13 @@ function renderMarkets5M() {
     }
     function _fmtSignedPriceDelta(v, sym) {
       if (!Number.isFinite(v)) return '—';
-      // fmtPrice() picks decimals by magnitude, not by coin -- for a tiny
-      // delta near zero that always falls into its 8-decimal fallback branch
-      // regardless of coin. Use the same per-coin precision (DOGE=6, XRP=4,
-      // else=2) applied everywhere else PTB is shown instead.
-      const dp = /^DOGE$/i.test(sym) ? 6 : /^XRP$/i.test(sym) ? 4 : 2;
+      if (window.CoinPrecision?.formatCoinDelta) {
+        return window.CoinPrecision.formatCoinDelta(sym, v);
+      }
+      const dp = /^DOGE$/i.test(sym) ? 4 : /^XRP$/i.test(sym) ? 4 : 2;
       return `${v >= 0 ? '+' : '-'}$${Math.abs(v).toFixed(dp)}`;
     }
+
     function _confBar(prob) {
       if (prob == null) return '';
       const pct = Math.round(prob * 100);
@@ -887,7 +903,10 @@ function renderMarkets5M() {
       const atrPctVal = p?.volatility?.atrPct ? (p.volatility.atrPct / 100) : 0.0035;
       const expectedMoveVal = (h5Score || 0) * (liveTwap || 1) * atrPctVal * 0.40;
       const target5m = (liveTwap && Number.isFinite(liveTwap)) ? (liveTwap + expectedMoveVal) : p.projections?.p5?.target;
-      const targetLabel = target5m != null ? `$${fmtPrice(target5m)}` : '—';
+      const targetLabel = target5m != null
+        ? (window.CoinPrecision?.formatCoinPrice ? window.CoinPrecision.formatCoinPrice(sym, target5m) : fmtPrice(target5m, sym))
+        : '—';
+
       
       return `
         <div class="rationale-block" style="margin-top:8px;background:var(--color-surface-2);border-radius:6px;padding:10px;">
@@ -1199,7 +1218,9 @@ function renderMarkets5M() {
       const liveCurrentSource = live5m?.source === 'polymarket-chainlink'
         ? 'polymarket-chainlink'
         : (tick?.source === 'pyth-lazer' ? 'pyth-lazer' : (p5?.currentPriceSource || 'polymarket-chainlink'));
-      const liveCurrentLabel = live5m ? `$${fmtPrice(live5m.current)}` : p5?.currentPrice;
+      const liveCurrentLabel = live5m
+        ? (window.CoinPrecision?.formatCoinPrice ? window.CoinPrecision.formatCoinPrice(sym, live5m.current) : fmtPrice(live5m.current, sym))
+        : p5?.currentPrice;
       // Basis footnote compares the fast spot tick against Chainlink for
       // transparency — independent of which one live5m actually used above.
       const fastCurrentPx = Number.isFinite(curPx) && curPx > 0 ? Number(curPx) : Number(p5?.currentPriceNum);
@@ -1230,8 +1251,9 @@ function renderMarkets5M() {
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
             <div style="display:flex;align-items:center;gap:8px;">
               <span style="font-size:1.15em;font-weight:800;color:${coinColor}">${sym}</span>
-              ${curPx != null ? `<span style="color:var(--color-text-muted);font-size:13px">$${fmtPrice(curPx)}</span>` : ''}
+              ${curPx != null ? `<span style="color:var(--color-text-muted);font-size:13px">${window.CoinPrecision?.formatCoinPrice ? window.CoinPrecision.formatCoinPrice(sym, curPx) : fmtPrice(curPx, sym)}</span>` : ''}
             </div>
+
             <div style="display:flex;align-items:center;gap:8px;">
               ${p5 ? _liveSide(live5m, true) : ''}
               ${live5m ? `<span id="p5-header-delta-${sym}" style="font-size:12px;color:var(--color-text-muted)">${_fmtSignedPriceDelta(live5m.delta, sym)} vs PTB</span>` : combined5m != null ? `<span style="font-size:12px;color:var(--color-text-muted)">${_pct(combined5m)} UP odds</span>` : ''}
@@ -2632,6 +2654,17 @@ function ensureChart(container) {
     chartResizeObserver.observe(container);
   }
 
+function applyChartPriceFormat() {
+    const coin = WATCHLIST.find(c => c.instrument === chartCoin) || (typeof findCoinByInstrument === 'function' ? findCoinByInstrument(chartCoin) : null);
+    const sym = coin?.sym || chartCoin;
+    const decimals = window.CoinPrecision?.getCoinDecimals?.(sym, 1) ?? (sym === 'XRP' || sym === 'DOGE' ? 4 : 2);
+    const minMove = Math.pow(10, -decimals);
+    const priceFormat = { type: 'price', precision: decimals, minMove };
+    ['candles', 'ema9', 'ema21', 'vwap', 'support', 'resistance', 'trend'].forEach(key => {
+      chartSeries[key]?.applyOptions({ priceFormat });
+    });
+  }
+
 function updateChartOverlays() {
     if (!chartRawCandles.length || !chartSeries.candles) return;
     const closes = chartRawCandles.map(c => c.close);
@@ -2665,13 +2698,13 @@ function updateChartMarketPanels() {
       const support = recent.length ? Math.min(...recent.map(c => c.low)) : 0;
       const resistance = recent.length ? Math.max(...recent.map(c => c.high)) : 0;
       ohlcRow.innerHTML = `
-        <div class="ohlc-item"><div class="ohlc-label">Open</div><div class="ohlc-val">${fmtPrice(last.open)}</div></div>
-        <div class="ohlc-item"><div class="ohlc-label">High</div><div class="ohlc-val" style="color:var(--color-green)">${fmtPrice(last.high)}</div></div>
-        <div class="ohlc-item"><div class="ohlc-label">Low</div><div class="ohlc-val" style="color:var(--color-red)">${fmtPrice(last.low)}</div></div>
-        <div class="ohlc-item"><div class="ohlc-label">Close</div><div class="ohlc-val">${fmtPrice(last.close)}</div></div>
+        <div class="ohlc-item"><div class="ohlc-label">Open</div><div class="ohlc-val">${fmtPrice(last.open, coin?.sym)}</div></div>
+        <div class="ohlc-item"><div class="ohlc-label">High</div><div class="ohlc-val" style="color:var(--color-green)">${fmtPrice(last.high, coin?.sym)}</div></div>
+        <div class="ohlc-item"><div class="ohlc-label">Low</div><div class="ohlc-val" style="color:var(--color-red)">${fmtPrice(last.low, coin?.sym)}</div></div>
+        <div class="ohlc-item"><div class="ohlc-label">Close</div><div class="ohlc-val">${fmtPrice(last.close, coin?.sym)}</div></div>
         <div class="ohlc-item"><div class="ohlc-label">Change</div><div class="ohlc-val ${posneg(last.close - last.open)}">${fmtPct(((last.close - last.open) / last.open) * 100)}</div></div>
-        <div class="ohlc-item"><div class="ohlc-label">Support</div><div class="ohlc-val">${fmtPrice(support)}</div></div>
-        <div class="ohlc-item"><div class="ohlc-label">Resistance</div><div class="ohlc-val">${fmtPrice(resistance)}</div></div>
+        <div class="ohlc-item"><div class="ohlc-label">Support</div><div class="ohlc-val">${fmtPrice(support, coin?.sym)}</div></div>
+        <div class="ohlc-item"><div class="ohlc-label">Resistance</div><div class="ohlc-val">${fmtPrice(resistance, coin?.sym)}</div></div>
         ${coin ? `<div class="ohlc-item"><div class="ohlc-label">Coin</div><div class="ohlc-val" style="color:${coinColor(coin.sym)}">${coin.sym}</div></div>` : ''}
         <div class="ohlc-item"><div class="ohlc-label">Feed</div><div class="ohlc-val">${t?.source === 'coingecko' ? 'Gecko' : 'CDC'}</div></div>
       `;
@@ -2816,6 +2849,10 @@ function refreshChainScanUI() {
     const syms = ['BTC', 'ETH', 'SOL', 'XRP', 'BNB', 'DOGE', 'HYPE'];
     if (!Object.keys(all).length) {
       if (age) age.textContent = 'Waiting for data…';
+      // Panel opened before the first background poll landed (or missed the
+      // last one while on another view) — kick a fetch now instead of
+      // leaving the cards on their placeholder until the next 60s tick.
+      window.BlockchainScan?.fetchAll().then(refreshChainScanUI).catch(() => {});
       return;
     }
     // Update each card individually to avoid full re-render flicker

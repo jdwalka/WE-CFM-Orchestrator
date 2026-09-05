@@ -482,7 +482,12 @@
     const rangeData = window.PredictionEngine?.getRangeViability?.(coin, hMin, Number(document.getElementById('adPtb')?.textContent?.replace(/,/g, '')));
     if (rangeData) {
       const coneEl = document.getElementById('adRangeCone');
-      if (coneEl) coneEl.textContent = `$${rangeData.safeBoundLower?.toLocaleString()} — $${rangeData.safeBoundUpper?.toLocaleString()} (±$${rangeData.expectedMoveDollar?.toLocaleString()})`;
+      if (coneEl) {
+        const fmtCone = (v) => window.CoinPrecision?.formatCoinPrice
+          ? window.CoinPrecision.formatCoinPrice(coin, v)
+          : `$${Number(v).toLocaleString('en-US', { minimumFractionDigits: (coin === 'XRP' || coin === 'DOGE') ? 4 : 2, maximumFractionDigits: (coin === 'XRP' || coin === 'DOGE') ? 4 : 2 })}`;
+        coneEl.textContent = `${fmtCone(rangeData.safeBoundLower)} — ${fmtCone(rangeData.safeBoundUpper)} (±${fmtCone(rangeData.expectedMoveDollar)})`;
+      }
       const zoneEl = document.getElementById('adActiveStrikeZone');
       if (zoneEl) {
         const atm = rangeData.strikes?.find(s => s.type === 'ATM');
@@ -493,9 +498,13 @@
       }
       const optEl = document.getElementById('adOptimalTarget');
       if (optEl && rangeData.bestTarget) {
-        optEl.textContent = `$${rangeData.bestTarget.strike.toLocaleString()} (${rangeData.bestTarget.name})`;
+        const optStrike = window.CoinPrecision?.formatCoinStrike
+          ? window.CoinPrecision.formatCoinStrike(coin, rangeData.bestTarget.strike)
+          : `$${Number(rangeData.bestTarget.strike).toLocaleString('en-US', { minimumFractionDigits: (coin === 'XRP' || coin === 'DOGE') ? 4 : 2, maximumFractionDigits: (coin === 'XRP' || coin === 'DOGE') ? 4 : 2 })}`;
+        optEl.textContent = `${optStrike} (${rangeData.bestTarget.name})`;
       }
     }
+
   }
 
   function buildPacket() {
@@ -646,7 +655,13 @@
     }
 
     const ptbEl = document.getElementById('adNextPtb');
-    if (ptbEl) ptbEl.textContent = forecast.projectedOpenPtb != null ? `$${forecast.projectedOpenPtb.toLocaleString()}` : '—';
+    if (ptbEl) {
+      ptbEl.textContent = forecast.projectedOpenPtb != null
+        ? (window.CoinPrecision?.formatCoinStrike
+            ? window.CoinPrecision.formatCoinStrike(coin, forecast.projectedOpenPtb)
+            : `$${Number(forecast.projectedOpenPtb).toLocaleString('en-US', { minimumFractionDigits: (coin === 'XRP' || coin === 'DOGE') ? 4 : 2, maximumFractionDigits: (coin === 'XRP' || coin === 'DOGE') ? 4 : 2 })}`)
+        : '—';
+    }
 
     const callEl = document.getElementById('adNextCall');
     if (callEl) {
@@ -728,8 +743,13 @@
       if (oppsEl && Array.isArray(hunt.scoutedOpportunities) && hunt.scoutedOpportunities.length > 0) {
         oppsEl.innerHTML = hunt.scoutedOpportunities.slice(0, 3).map((op) => {
           const actColor = op.action === 'BUY_UP' ? '#00e676' : op.action === 'BUY_DOWN' ? '#ff5252' : '#ffb74d';
-          const strikeStr = op.targetStrike ? `$${Number(op.targetStrike).toLocaleString()}` : '';
+          const strikeStr = op.targetStrike
+            ? (window.CoinPrecision?.formatCoinStrike
+                ? window.CoinPrecision.formatCoinStrike(op.symbol, op.targetStrike)
+                : `$${Number(op.targetStrike).toLocaleString()}`)
+            : '';
           const edgeStr = op.edgePct ? ` (${op.edgePct})` : '';
+
           const pinBadge = op.pinRiskSafe === false ? '<span style="color:#ff5252;margin-left:4px">⚠ PIN</span>' : '';
           return `<div style="display:flex;justify-content:space-between;align-items:center;font-size:9px;background:#03080e;padding:3px 5px;border-radius:4px;border-left:2px solid ${actColor}">
             <div style="display:flex;align-items:center;gap:4px">
@@ -791,9 +811,11 @@
     // Write phase: single DOM update pass without layout thrashing
     const spotEl = document.getElementById('adSpot');
     if (spotEl) {
-      spotEl.textContent = price >= 1000
-        ? price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-        : price.toFixed(2);
+      spotEl.textContent = window.CoinPrecision?.formatCoinPrice
+        ? window.CoinPrecision.formatCoinPrice(coin, price, { prefix: '' })
+        : (price >= 1000
+            ? price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+            : price.toFixed((coin === 'XRP' || coin === 'DOGE') ? 4 : 2));
     }
 
     const ptbTxt = document.getElementById('adPtb')?.textContent?.replace(/,/g, '');
@@ -806,8 +828,11 @@
       const pinBanner = document.getElementById('adPinRiskBanner');
       if (pinBanner) {
         if (isDefended) {
+          const distStr = window.CoinPrecision?.formatCoinDelta
+            ? window.CoinPrecision.formatCoinDelta(coin, dist, { showSign: false })
+            : `$${dist.toFixed((coin === 'XRP' || coin === 'DOGE') ? 4 : 2)}`;
           pinBanner.style.display = 'block';
-          pinBanner.textContent = `⚠ PIN RISK DEFENSE DETECTED: Spot within $${dist.toFixed(1)} (${distBps.toFixed(1)} bps) of PTB. MM defense walls active.`;
+          pinBanner.textContent = `⚠ PIN RISK DEFENSE DETECTED: Spot within ${distStr} (${distBps.toFixed(1)} bps) of PTB. MM defense walls active.`;
         } else if (pinBanner.dataset.persisted !== '1') {
           pinBanner.style.display = 'none';
         }
@@ -834,10 +859,23 @@
       const packet = buildPacket();
 
       const spotEl = document.getElementById('adSpot');
-      if (spotEl) spotEl.textContent = packet?.spot != null ? Number(packet.spot).toLocaleString() : '—';
+      if (spotEl) {
+        spotEl.textContent = packet?.spot != null
+          ? (window.CoinPrecision?.formatCoinPrice
+              ? window.CoinPrecision.formatCoinPrice(coin, packet.spot, { prefix: '' })
+              : Number(packet.spot).toLocaleString('en-US', { minimumFractionDigits: (coin === 'XRP' || coin === 'DOGE') ? 4 : 2, maximumFractionDigits: (coin === 'XRP' || coin === 'DOGE') ? 4 : 2 }))
+          : '—';
+      }
       const ptbEl = document.getElementById('adPtb');
-      if (ptbEl) ptbEl.textContent = packet?.priceToBeatNum != null ? Number(packet.priceToBeatNum).toLocaleString() : '—';
+      if (ptbEl) {
+        ptbEl.textContent = packet?.priceToBeatNum != null
+          ? (window.CoinPrecision?.formatCoinStrike
+              ? window.CoinPrecision.formatCoinStrike(coin, packet.priceToBeatNum, { prefix: '' })
+              : Number(packet.priceToBeatNum).toLocaleString('en-US', { minimumFractionDigits: (coin === 'XRP' || coin === 'DOGE') ? 4 : 2, maximumFractionDigits: (coin === 'XRP' || coin === 'DOGE') ? 4 : 2 }))
+          : '—';
+      }
       const askedEl = document.getElementById('adAskedAt');
+
       if (askedEl) askedEl.textContent = new Date().toLocaleTimeString();
 
       if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; }

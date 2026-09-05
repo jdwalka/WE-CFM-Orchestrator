@@ -36,5 +36,32 @@
     return String(s || '').toUpperCase().trim();
   }
 
-  return { clamp, num, toFiniteNumber, normCall, normSym };
+  // Coin Precision Bridge
+  let _coinPrec = null;
+  try {
+    if (typeof root !== 'undefined' && root.CoinPrecision) {
+      _coinPrec = root.CoinPrecision;
+    } else if (typeof require === 'function') {
+      _coinPrec = require('./coin-precision');
+    }
+  } catch (_) { /* */ }
+
+  const formatCoinPrice = (coin, val, opts) => _coinPrec ? _coinPrec.formatCoinPrice(coin, val, opts) : `$${Number(val).toFixed(2)}`;
+  const formatCoinDelta = (coin, val, opts) => _coinPrec ? _coinPrec.formatCoinDelta(coin, val, opts) : `${val >= 0 ? '+' : '-'}$${Math.abs(Number(val)).toFixed(2)}`;
+  const formatCoinStrike = (coin, val, opts) => _coinPrec ? _coinPrec.formatCoinStrike(coin, val, opts) : `$${Number(val).toFixed(2)}`;
+  const getCoinDecimals = (coin, val) => _coinPrec ? _coinPrec.getCoinDecimals(coin, val) : 2;
+
+  return {
+    clamp,
+    num,
+    toFiniteNumber,
+    normCall,
+    normSym,
+    CoinPrecision: _coinPrec,
+    formatCoinPrice,
+    formatCoinDelta,
+    formatCoinStrike,
+    getCoinDecimals,
+  };
 }));
+

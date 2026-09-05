@@ -545,5 +545,3 @@ class OrbitalIngestor {
 
 module.exports = new OrbitalIngestor();
 
-module.exports = new OrbitalIngestor();
-
