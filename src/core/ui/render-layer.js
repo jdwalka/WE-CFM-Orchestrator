@@ -974,12 +974,22 @@ function renderMarkets5M() {
 
              if (!hasModelOdds && !hasPolyOdds) return '';
 
+             const proj5Target = Number(proj5?.target);
+             const proj10Target = Number(proj10?.target);
+             const lastPriceNum = Number(p?.price);
+             const hasModelTargets = Number.isFinite(proj5Target)
+               && Number.isFinite(proj10Target)
+               && proj5Target > 0
+               && proj10Target > 0
+               && Number.isFinite(lastPriceNum)
+               && lastPriceNum > 0;
+
              let modelColumnHtml = '';
-             if (hasModelOdds) {
+             if (hasModelOdds && hasModelTargets) {
                const expectedMovePct = p.volatility?.atrPct ? (p.volatility.atrPct / 100) : 0.0017;
-               const lastPrice = p.price || proj5.target;
+               const lastPrice = lastPriceNum;
                const sigma = lastPrice * expectedMovePct * Math.max(0.12, Math.sqrt(5 / 15) * 0.5);
-               const z = (proj10.target - proj5.target) / (sigma || 1);
+               const z = (proj10Target - proj5Target) / (sigma || 1);
                const nextOdds = _clamp(normalCDF(z), 0.02, 0.98);
                
                const currentPct = Math.round(currentOdds * 100);

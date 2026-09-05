@@ -3098,7 +3098,12 @@ function polymarketSentiment(markets, sym) {
       const marketSlug = m.slug || slug;
 
       // Subscribe poly15m tokens on the shared PolymarketWS (same owner as poly5m).
-      const clobSnapshot = await fetchPolymarketClobMarketSnapshot(sym, m);
+      let clobSnapshot = null;
+      try {
+        clobSnapshot = await fetchPolymarketClobMarketSnapshot(sym, m);
+      } catch (clobErr) {
+        console.warn(`[PredictionMarkets] Poly15M CLOB snapshot unavailable for ${sym} ${marketSlug}:`, clobErr?.message || clobErr);
+      }
       const clobProb = Number(clobSnapshot?.upProbability);
       const liveUpProb = Number.isFinite(clobProb) && clobProb >= 0.01 && clobProb <= 0.99
         ? clobProb
