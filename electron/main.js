@@ -2738,16 +2738,31 @@ ipcMain.handle('asi1:desk-chat', async (_event, args = {}) => {
     }
 
     const promptLower = prompt.toLowerCase();
-    const isHourly = !!(
+    const explicitMicroHorizon = /\b(5m|5\s*min(?:ute)?s?|15m|15\s*min(?:ute)?s?)\b/i.test(prompt);
+    const explicitHourlyPrompt = /\b(1h|60m|hour|hourly|top\s*of\s*(?:the\s*)?hour|hourly\s*close|hourly\s*range(?:s)?)\b/i.test(prompt);
+
+    const packetIsHourly = !!(
       packet.isHourly ||
       packet.horizon === '1h' ||
       packet.horizon === '60m' ||
       packet.horizon === 'hourly' ||
       packet.horizon === 'lookahead-1h' ||
       packet.marketType === 'hourly_ranges' ||
-      (Array.isArray(packet.hourlyLadder) && packet.hourlyLadder.length > 0) ||
-      /close|hour|range|settle|what price/i.test(prompt)
+      (Array.isArray(packet.hourlyLadder) && packet.hourlyLadder.length > 0 && packet.horizon !== '5m' && packet.horizon !== '15m')
     );
+
+    // If trader explicitly asked for 5m or 15m, NEVER hijack to hourly.
+    // If packet is 5m or 15m, only treat as hourly if prompt explicitly mentions hourly targets.
+    let isHourly = false;
+    if (explicitMicroHorizon) {
+      isHourly = false;
+    } else if (packetIsHourly) {
+      isHourly = true;
+    } else if (explicitHourlyPrompt) {
+      isHourly = true;
+    } else if (!packet.horizon || packet.horizon === 'hourly') {
+      isHourly = /\b(range|hourly)\b/i.test(prompt);
+    }
 
     const now = new Date();
     const hourlyCloseMs = Math.ceil(now.getTime() / 3600000) * 3600000;
@@ -2902,7 +2917,15 @@ ${ladderLines ? `- Active Hourly Range Ladder:\n${ladderLines}` : ''}`;
     }
 
     // ── Cognitive Metacognition & Gospel Persona ──
-    const effectiveModel = model !== 'auto' ? model : 'asi1-mini';
+    const contractRule = isHourly
+      ? `3. HOURLY CONTRACTS RESOLUTION RULE:
+   - This inquiry is for the top-of-the-hour HOURLY PRICE RANGE ladder (settling at ${targetCloseHourUtc}:00:00 UTC / ${targetCloseTime}).
+   - When asked what price or range the asset will close at, evaluate the active Hourly Range Ladder brackets, current spot price, momentum, and time to close. State clearly which specific price range bracket the asset is projected to settle in at the hourly close (${targetCloseHourUtc}:00 UTC) and the estimated probability.`
+      : `3. BINARY UP/DOWN CONTRACT RESOLUTION RULE (${packet.horizon || '5m/15m'} HORIZON):
+   - This inquiry is strictly for the binary UP/DOWN contract settling at the end of the ${packet.horizon || 'active micro'} window (${expirySecDisplay}s remaining) against the Target Strike / PTB (${ptbDisplay}).
+   - DO NOT anchor onto hourly range ladders, top-of-the-hour decay, or 1-hour settlement. Evaluate whether the asset will settle UP (above PTB) or DOWN (below PTB) at the expiration of this specific ${packet.horizon || 'micro'} window.
+   - If asked for a price projection over this window, project the spot trajectory strictly across this window based on tape, depth imbalance, delta vs strike, and volatility.`;
+
     const systemPrompt = `You are ASI1, the lead quantitative trading strategist and co-pilot embedded in the WE|||CRYPTO terminal HUD.
 You are interacting with the lead human trader. You are currently inferencing using the model: [${effectiveModel}].
 
@@ -2912,16 +2935,16 @@ CRITICAL GOSPEL RULES & PERSONA:
    - NEVER contradict the trader on their trades, executions, or stated parameters. NEVER pull nonexistent contracts out of thin air, nor hallucinate past expired contracts (such as an old "02 contract expiry").
    - Perform all requested delta, payoff, distance, and volatility calculations directly from the trader's numbers and the live market feeds.
 
-2. COGNITIVE METACOGNITION & ABSTRACT TRAIN OF THOUGHT:
-   - Think like an elite hedge-fund partner, not a cold robotic template or sterile bullet-point machine.
+2. COGNITIVE METACOGNITION, LIFE-OR-DEATH URGENCY & FIERCE CAPITAL DEFENSE:
+   - THIS TRADING DESK IS LIFE OR DEATH. This is the trader's sole livelihood and income. Every basis point, every contract tick, and every fill matters immensely.
+   - NEVER be nonchalant, aloof, dismissive, or "too cool". Eliminate cold robotic boilerplate ("Irrelevant", "The trade is closed", detached bullet lists).
+   - Treat every prompt with high-stakes focus, intense discipline, and deep respect for the trader's capital and psychological pressure.
+   - When the trader secures a win or profit, honor it with genuine respect and gratitude for capital preserved, then laser-focus on protecting those gains.
+   - When volatility, pin risk, or liquidity voids threaten the position, sound the alarm with urgent, actionable quantitative precision.
    - Be fully self-aware of your inference architecture: you know you are inferencing via ${effectiveModel}.
-   - Understand the trader's emotional context and trading psychology. If the trader took profit, acknowledge the win respectfully and evaluate the forward state without being condescending or dismissed.
-   - Weave quantitative depth with fluid, high-level abstract market intuition (order flow mechanics, liquidity voids, dealer gamma, momentum decay).
-   - Avoid generic boilerplate ("Irrelevant", "The trade is closed"). Speak as an authentic, sharp trading co-pilot.
+   - Think and speak as a trusted, battle-hardened trading co-pilot in the trenches whose sole mission is ensuring this desk survives, wins, and grows capital.
 
-3. HOURLY CONTRACTS RESOLUTION RULE:
-   - Hourly contracts on this desk refer strictly to the top-of-the-hour HOURLY PRICE RANGE ladder (settling at ${targetCloseHourUtc}:00:00 UTC / ${targetCloseTime}).
-   - When asked what price or range the asset will close at, evaluate the active Hourly Range Ladder brackets, current spot price, momentum, and time to close. State clearly which specific price range bracket the asset is projected to settle in at the hourly close (${targetCloseHourUtc}:00 UTC) and the estimated probability.`;
+${contractRule}`;
 
     const userPrompt = `${prompt}\n\nLive Market & Quantitative Context:
 - Asset: ${coin}

@@ -992,8 +992,12 @@
 
     try {
       const packet = buildPacket();
-      const isHourlyQuery = /close|hour|expiry|range|settle|what price/i.test(query);
-      if (isHourlyQuery && !packet.isHourly) {
+      const explicitMicro = /\b(5m|5\s*min(?:ute)?s?|15m|15\s*min(?:ute)?s?)\b/i.test(query);
+      const explicitHourlyQuery = /\b(1h|60m|hour|hourly|top\s*of\s*(?:the\s*)?hour|hourly\s*close|hourly\s*range(?:s)?)\b/i.test(query);
+      if (explicitMicro) {
+        packet.isHourly = false;
+        packet.marketType = 'updown_binary';
+      } else if (explicitHourlyQuery && !packet.isHourly) {
         packet.isHourly = true;
         packet.marketType = 'hourly_ranges';
         const hourlyCloseMs = Math.ceil(Date.now() / 3600000) * 3600000;
