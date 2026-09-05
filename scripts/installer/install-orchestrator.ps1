@@ -5,7 +5,8 @@
 param(
     [string]$WorkspaceRoot = "",
     [switch]$SkipDocker = $false,
-    [switch]$SkipTests = $false
+    [switch]$SkipTests = $false,
+    [switch]$LaunchInstaller = $false
 )
 
 $ErrorActionPreference = "Continue"
@@ -304,4 +305,18 @@ Write-Host "  The WE-CFM-Orchestrator environment is fully installed and verifie
 Write-Host "  You can launch it anytime by:" -ForegroundColor White
 Write-Host "    1. Double-clicking the 'WE-CRYPTO Orchestrator' icon on your Desktop." -ForegroundColor Yellow
 Write-Host "    2. Or running: $WorkspaceRoot\launch-wecrypto.bat" -ForegroundColor Yellow
+
+$distDir = Join-Path $WorkspaceRoot "dist"
+$installers = Get-ChildItem -Path $distDir -Filter "*installer*x64.exe" -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending
+if ($installers -and $installers.Count -gt 0) {
+    $latestExe = $installers[0]
+    Write-Host ""
+    Write-Host "  [OPTIONAL] Packaged Windows Setup Wizard Available:" -ForegroundColor Cyan
+    Write-Host "    $($latestExe.FullName) ($([math]::Round($latestExe.Length / 1MB, 2)) MB)" -ForegroundColor Gray
+    
+    if ($LaunchInstaller) {
+        Write-Host "  Launching Windows Setup Wizard as requested..." -ForegroundColor Cyan
+        & "$PSScriptRoot\launch-windows-installer.ps1" -WorkspaceRoot $WorkspaceRoot
+    }
+}
 Write-Host ""
