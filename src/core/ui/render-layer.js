@@ -495,6 +495,16 @@ function renderMarkets5M() {
         })
         .catch((err) => console.warn('[Markets5M] PredictionMarkets fetch failed:', err?.message || err));
     }
+    if (is15m && window.PredictionMarkets?.refreshPoly15M
+      && Date.now() - (window._markets15mHydrationKickTs || 0) > 8_000) {
+      const hasAnyPoly15m = Object.values(pm).some(coin => coin?.poly15m);
+      if (!hasAnyPoly15m) {
+        window._markets15mHydrationKickTs = Date.now();
+        window.PredictionMarkets.refreshPoly15M('panel-mount')
+          .then(() => { if (currentView === 'markets5m') renderMarkets5M(); })
+          .catch((err) => console.warn('[Markets5M] Poly15M mount hydration failed:', err?.message || err));
+      }
+    }
 
     function _pct(v) {
       if (v == null) return '—';
