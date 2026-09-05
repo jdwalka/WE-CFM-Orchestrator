@@ -992,8 +992,12 @@
 
     try {
       const packet = buildPacket();
-      const isHourlyQuery = /close|hour|expiry|range|settle|what price/i.test(query);
-      if (isHourlyQuery && !packet.isHourly) {
+      const explicitMicro = /\b(5m|5\s*min(?:ute)?s?|15m|15\s*min(?:ute)?s?)\b/i.test(query);
+      const explicitHourlyQuery = /\b(1h|60m|hour|hourly|top\s*of\s*(?:the\s*)?hour|hourly\s*close|hourly\s*range(?:s)?)\b/i.test(query);
+      if (explicitMicro) {
+        packet.isHourly = false;
+        packet.marketType = 'updown_binary';
+      } else if (explicitHourlyQuery && !packet.isHourly) {
         packet.isHourly = true;
         packet.marketType = 'hourly_ranges';
         const hourlyCloseMs = Math.ceil(Date.now() / 3600000) * 3600000;
@@ -1042,28 +1046,38 @@
         });
       }
 
-      const rawOut = res?.content || res?.output?.suggestions?.notes || res?.output?.ai_wording?.primary_rationale || res?.output?.notes || res?.output?.content || res?.output || res?.error || 'Analysis complete.';
-      const cleanOut = typeof rawOut === 'object' ? JSON.stringify(rawOut, null, 2) : String(rawOut);
+      let cleanOut = '';
+      let isError = false;
+      if (res && res.ok === false) {
+        cleanOut = res.error || 'ASI1 Chat request failed';
+        isError = true;
+      } else {
+        const rawOut = res?.content || res?.output?.suggestions?.notes || res?.output?.ai_wording?.primary_rationale || res?.output?.notes || res?.output?.content || res?.output || (res?.error ? `Error: ${res.error}` : 'Analysis complete.');
+        cleanOut = typeof rawOut === 'object' ? JSON.stringify(rawOut, null, 2) : String(rawOut);
+        if (res?.error && !res?.content) isError = true;
+      }
       const usedModel = res?.model || modelChoice;
 
-      // Persist in localStorage for instant reload & persistence across sessions
-      try {
-        window.localStorage.setItem(PROMPT_CACHE_KEY, query);
-        window.localStorage.setItem(ANSWER_CACHE_KEY, JSON.stringify({
-          model: usedModel,
-          content: cleanOut,
-          ts: Date.now(),
-        }));
-      } catch (_) {}
+      // Only persist successful responses in localStorage
+      if (!isError) {
+        try {
+          window.localStorage.setItem(PROMPT_CACHE_KEY, query);
+          window.localStorage.setItem(ANSWER_CACHE_KEY, JSON.stringify({
+            model: usedModel,
+            content: cleanOut,
+            ts: Date.now(),
+          }));
+        } catch (_) {}
+      }
 
       if (answerEl) {
         answerEl.textContent = '';
         const titleDiv = document.createElement('div');
-        titleDiv.style.cssText = 'color:#00e676;font-weight:700;margin-bottom:4px';
-        titleDiv.textContent = `ASI1 Intelligence (${usedModel}):`;
+        titleDiv.style.cssText = isError ? 'color:#ff5252;font-weight:700;margin-bottom:4px' : 'color:#00e676;font-weight:700;margin-bottom:4px';
+        titleDiv.textContent = isError ? `ASI1 Error (${usedModel}):` : `ASI1 Intelligence (${usedModel}):`;
 
         const bodyDiv = document.createElement('div');
-        bodyDiv.style.cssText = 'color:#e6e8eb;font-size:11px;white-space:pre-wrap';
+        bodyDiv.style.cssText = isError ? 'color:#ff8a80;font-size:11px;white-space:pre-wrap' : 'color:#e6e8eb;font-size:11px;white-space:pre-wrap';
         bodyDiv.textContent = cleanOut;
 
         answerEl.appendChild(titleDiv);

@@ -231,7 +231,56 @@ test('Gospel Directives: User-provided PTB, Range, and Spot override defaults an
   assert.strictEqual(inRange, true);
 });
 
+test('Micro Horizon Protection: 15m and 5m queries with close/settle do not hijack to hourly ladder', () => {
+  function checkIsHourly(prompt, packet) {
+    const explicitMicroHorizon = /\b(5m|5\s*min(?:ute)?s?|15m|15\s*min(?:ute)?s?)\b/i.test(prompt);
+    const explicitHourlyPrompt = /\b(1h|60m|hour|hourly|top\s*of\s*(?:the\s*)?hour|hourly\s*close|hourly\s*range(?:s)?)\b/i.test(prompt);
+
+    const packetIsHourly = !!(
+      packet.isHourly ||
+      packet.horizon === '1h' ||
+      packet.horizon === '60m' ||
+      packet.horizon === 'hourly' ||
+      packet.horizon === 'lookahead-1h' ||
+      packet.marketType === 'hourly_ranges' ||
+      (Array.isArray(packet.hourlyLadder) && packet.hourlyLadder.length > 0 && packet.horizon !== '5m' && packet.horizon !== '15m')
+    );
+
+    let isHourly = false;
+    if (explicitMicroHorizon) {
+      isHourly = false;
+    } else if (packetIsHourly) {
+      isHourly = true;
+    } else if (explicitHourlyPrompt) {
+      isHourly = true;
+    } else if (!packet.horizon || packet.horizon === 'hourly') {
+      isHourly = /\b(range|hourly)\b/i.test(prompt);
+    }
+    return isHourly;
+  }
+
+  // 15m projection query with "close" and "what price"
+  const q1 = "what price will SOL close at in 15m?";
+  assert.strictEqual(checkIsHourly(q1, { sym: 'SOL', horizon: '15m' }), false);
+
+  // 15-minute horizon projection query with ladder present in packet
+  const q2 = "give me a 15-minute horizon projection for BTC close";
+  assert.strictEqual(checkIsHourly(q2, { sym: 'BTC', horizon: '15m', hourlyLadder: [{ low: 79000, high: 80000 }] }), false);
+
+  // 5m query asking about settle
+  const q3 = "will ETH settle above PTB in 5 mins?";
+  assert.strictEqual(checkIsHourly(q3, { sym: 'ETH', horizon: '5m' }), false);
+
+  // Explicit hourly queries still trigger isHourly = true
+  const q4 = "where will BTC settle at the hourly close?";
+  assert.strictEqual(checkIsHourly(q4, { sym: 'BTC', horizon: '1h' }), true);
+
+  const q5 = "what is the 1h top of the hour range bracket?";
+  assert.strictEqual(checkIsHourly(q5, { sym: 'BTC', horizon: '15m' }), true);
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);
+
 
 
