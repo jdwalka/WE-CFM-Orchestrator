@@ -167,6 +167,19 @@ const PREDICTION_COINS = [
 ];
 window.PREDICTION_COINS = PREDICTION_COINS;
 
+const COIN_WEIGHT = {
+  BTC: 'heavy', ETH: 'heavy',
+  SOL: 'mid', XRP: 'mid', BNB: 'mid',
+  DOGE: 'light', HYPE: 'light',
+};
+window.COIN_WEIGHT = COIN_WEIGHT;
+
+const WEIGHT_RANK = { heavy: 3, mid: 2, light: 1 };
+window.WEIGHT_RANK = WEIGHT_RANK;
+
+const ORBITAL_ACCESS = { all: 1, mid: 2, heavy: 3 };
+window.ORBITAL_ACCESS = ORBITAL_ACCESS;
+
 // ---- 7 MAJORS FOCUS (CORE 4 FIRST) ──────────────────────────────────────────
 // 7 MAJORS: BTC, ETH, SOL, XRP, DOGE, BNB, HYPE
 // Primary traded 4: BTC, ETH, SOL, XRP (prioritized in UI display and inference)

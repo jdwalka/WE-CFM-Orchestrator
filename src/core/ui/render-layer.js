@@ -81,7 +81,9 @@ function startCountdownTicker() {
   }
 
 function updateAccuracyBadge() {
-    const stats = getPredAccuracy(null, 50);
+    const getAccFn = typeof getPredAccuracy === 'function' ? getPredAccuracy : (typeof window.getPredAccuracy === 'function' ? window.getPredAccuracy : null);
+    if (!getAccFn) return;
+    const stats = getAccFn(null, 50);
     const el = document.getElementById('pred-accuracy-badge');
     if (!el || !stats) return;
     const color = stats.accuracy >= 60 ? 'var(--color-up)' : stats.accuracy >= 45 ? 'var(--color-gold)' : 'var(--color-down)';
@@ -495,6 +497,16 @@ function renderMarkets5M() {
         })
         .catch((err) => console.warn('[Markets5M] PredictionMarkets fetch failed:', err?.message || err));
     }
+    if (is15m && window.PredictionMarkets?.refreshPoly15M
+      && Date.now() - (window._markets15mHydrationKickTs || 0) > 8_000) {
+      const hasAnyPoly15m = Object.values(pm).some(coin => coin?.poly15m);
+      if (!hasAnyPoly15m) {
+        window._markets15mHydrationKickTs = Date.now();
+        window.PredictionMarkets.refreshPoly15M('panel-mount')
+          .then(() => { if (currentView === 'markets5m') renderMarkets5M(); })
+          .catch((err) => console.warn('[Markets5M] Poly15M mount hydration failed:', err?.message || err));
+      }
+    }
 
     function _pct(v) {
       if (v == null) return '—';
@@ -902,9 +914,10 @@ function renderMarkets5M() {
       if (!ft) return '';
       
       const fd = ft.diagnostics || {};
-      const h5Score = is15m
-        ? (p.horizonScores?.h15 ?? (Number.isFinite(Number(p?.score)) ? Number(p.score) * 0.6 : 0))
+      const rawH5 = is15m
+        ? (p.horizonScores?.h15 ?? ft.horizonScores?.h15 ?? (Number.isFinite(Number(p?.score)) ? Number(p.score) * 0.6 : 0))
         : (p.horizonScores?.h5 ?? ft.horizonScores?.h5 ?? 0);
+      const h5Score = Number.isFinite(Number(rawH5)) ? Number(rawH5) : 0;
       const driftDir5 = fd.driftDir5 ?? 0;
       const streak5 = fd.streak5 ?? 0;
       const last5Aligned = fd.last5Aligned ?? false;
@@ -974,12 +987,22 @@ function renderMarkets5M() {
 
              if (!hasModelOdds && !hasPolyOdds) return '';
 
+             const proj5Target = Number(proj5?.target);
+             const proj10Target = Number(proj10?.target);
+             const lastPriceNum = Number(p?.price || proj5Target);
+             const hasModelTargets = Number.isFinite(proj5Target)
+               && Number.isFinite(proj10Target)
+               && proj5Target > 0
+               && proj10Target > 0
+               && Number.isFinite(lastPriceNum)
+               && lastPriceNum > 0;
+
              let modelColumnHtml = '';
-             if (hasModelOdds) {
+             if (hasModelOdds && hasModelTargets) {
                const expectedMovePct = p.volatility?.atrPct ? (p.volatility.atrPct / 100) : 0.0017;
-               const lastPrice = p.price || proj5.target;
+               const lastPrice = lastPriceNum;
                const sigma = lastPrice * expectedMovePct * Math.max(0.12, Math.sqrt(5 / 15) * 0.5);
-               const z = (proj10.target - proj5.target) / (sigma || 1);
+               const z = (proj10Target - proj5Target) / (sigma || 1);
                const nextOdds = _clamp(normalCDF(z), 0.02, 0.98);
                
                const currentPct = Math.round(currentOdds * 100);
@@ -1225,7 +1248,8 @@ function renderMarkets5M() {
 
     // ── Per-coin cards ──────────────────────────────────────────────────
     const cards = COINS_5M.map(sym => {
-      const coin = pm[sym] || {};
+      try {
+        const coin = pm[sym] || {};
       const p5 = is15m ? (coin.poly15m || coin.poly5m) : coin.poly5m;
       const polyAll = coin.polyMarkets || [];   // all Poly markets for coin
       const poly5m = is15m ? (coin.poly15mMkts || coin.polyMarkets || []) : (coin.poly5mMkts || []);   // short-term Poly markets
@@ -1426,6 +1450,15 @@ function renderMarkets5M() {
 
         </div>
       `;
+      } catch (cardErr) {
+        console.warn(`[renderMarkets5M] Error rendering coin ${sym}:`, cardErr);
+        return `
+          <div class="card" style="border: 1px solid rgba(255,255,255,0.08); background: var(--color-surface); border-radius: 8px; padding: 14px; display:flex; flex-direction:column; justify-content:space-between;">
+            <div style="font-weight:700; color:var(--color-text-muted);">${sym} (${is15m ? '15m' : '5m'})</div>
+            <div style="font-size:12px; color:var(--color-text-faint); margin: 8px 0;">Market data initializing...</div>
+          </div>
+        `;
+      }
     }).join('');
 
     content.innerHTML = `
@@ -3318,7 +3351,7 @@ async function renderCFM() {
       // Also kick off predictions in background
       if (!predsLoaded) {
         startPredictionRun()
-          .then(() => { predsLoaded = true; _lastPredictionRunTs = Date.now(); snapshotPredictions(); })
+          .then(() => { predsLoaded = true; _lastPredictionRunTs = Date.now(); (typeof snapshotPredictions === 'function' ? snapshotPredictions : window?.snapshotPredictions)?.(); })
           .catch(() => { });
       }
     }
@@ -3619,7 +3652,7 @@ async function renderPredictions() {
             _predictionEngineRetryTimer = null;
           }
           predsLoaded = true;
-          snapshotPredictions();
+          (typeof snapshotPredictions === 'function' ? snapshotPredictions : window?.snapshotPredictions)?.();
           if (currentView === 'predictions') render();
         })
         .catch(e => {
@@ -3659,9 +3692,16 @@ async function renderPredictions() {
       cleanupPredScrollListener();
       return;
     }
-    const coinOrder = new Map(PREDICTION_COINS.map((coin, index) => [coin.sym, index]));
+    const pCoins = (typeof PREDICTION_COINS !== 'undefined' && Array.isArray(PREDICTION_COINS))
+      ? PREDICTION_COINS
+      : (Array.isArray(window?.PREDICTION_COINS) ? window.PREDICTION_COINS : []);
+    const pHorizons = (typeof PREDICTION_HORIZONS !== 'undefined' && Array.isArray(PREDICTION_HORIZONS))
+      ? PREDICTION_HORIZONS
+      : (Array.isArray(window?.PREDICTION_HORIZONS) ? window.PREDICTION_HORIZONS : [5, 15]);
+
+    const coinOrder = new Map(pCoins.map((coin, index) => [coin.sym, index]));
     const predBySym = new Map();
-    PREDICTION_COINS.forEach(coin => {
+    pCoins.forEach(coin => {
       predBySym.set(
         coin.sym,
         normalizePredictionCardData({ ...coin, ...(preds?.[coin.sym] || {}), sym: coin.sym }, coin.sym)
@@ -3709,12 +3749,12 @@ async function renderPredictions() {
       return acc;
     }, {});
     const dominantAdvancedRegime = Object.entries(regimeCounts).sort((a, b) => b[1] - a[1])[0]?.[0] || (avgReliability >= 55 ? 'NORMAL' : 'CALM');
-    const preferredHorizonCounts = PREDICTION_HORIZONS.map(horizonMin => ({
+    const preferredHorizonCounts = pHorizons.map(horizonMin => ({
       horizonMin,
       count: backtests.filter(bt => (bt.summary?.preferredHorizon || 5) === horizonMin).length,
     }));
     const preferredLeader = preferredHorizonCounts.slice().sort((a, b) => b.count - a.count)[0] || { horizonMin: 5, count: 0 };
-    const horizonSummaries = PREDICTION_HORIZONS.map(horizonMin => {
+    const horizonSummaries = pHorizons.map(horizonMin => {
       const key = `h${horizonMin}`;
       const active = backtests
         .map(bt => bt[key])
@@ -3745,6 +3785,10 @@ async function renderPredictions() {
     // Save collapsible state before wiping DOM
     const _debugOpen = document.getElementById('market-debug-panel')?.open ?? false;
 
+    const currentSession = session?.current || { scalp: false, label: 'Standard Session', desc: 'Market open' };
+    const nextScalp = session?.nextScalp || { label: 'Active', desc: 'Continuous trading' };
+    const minsToNext = session?.minsToNext ?? 0;
+
     content.innerHTML = `
       ${!predsLoaded ? `<div style="display:flex;align-items:center;gap:10px;padding:8px 16px;background:rgba(255,193,7,0.1);border:1px solid rgba(255,193,7,0.3);border-radius:6px;margin-bottom:12px;font-size:13px;color:#ffc107"><div style="width:16px;height:16px;border:2px solid rgba(255,193,7,0.3);border-top-color:#ffc107;border-radius:50%;animation:spin 0.8s linear infinite;flex-shrink:0"></div><span>Scoring UP/DOWN markets\u2026</span></div>` : ''}
       ${buildQuickDecisionPanel(predArr)}
@@ -3756,15 +3800,15 @@ async function renderPredictions() {
 
       <!-- Session + Scalp Timing Bar -->
       <div class="kpi-bar" style="margin-bottom:14px">
-        <div class="kpi-card" style="border-left:3px solid ${session.current.scalp ? 'var(--color-green)' : 'var(--color-text-faint)'}">
+        <div class="kpi-card" style="border-left:3px solid ${currentSession.scalp ? 'var(--color-green)' : 'var(--color-text-faint)'}">
           <div class="kpi-label">Current Session</div>
-          <div class="kpi-val ${session.current.scalp ? 'green' : ''}" style="font-size:15px">${session.current.label}</div>
-          <div class="kpi-sub">${session.current.desc}</div>
+          <div class="kpi-val ${currentSession.scalp ? 'green' : ''}" style="font-size:15px">${escapeHtml(currentSession.label || 'Active')}</div>
+          <div class="kpi-sub">${escapeHtml(currentSession.desc || '')}</div>
         </div>
         <div class="kpi-card">
           <div class="kpi-label">Next Scalp Window</div>
-          <div class="kpi-val blue" style="font-size:15px">${session.nextScalp.label}</div>
-          <div class="kpi-sub">in ${session.minsToNext} min &middot; ${session.nextScalp.desc.split('\u2014')[0]}</div>
+          <div class="kpi-val blue" style="font-size:15px">${escapeHtml(nextScalp.label || 'Active')}</div>
+          <div class="kpi-sub">in ${minsToNext} min &middot; ${escapeHtml(String(nextScalp.desc || '').split('\u2014')[0])}</div>
         </div>
         <div class="kpi-card">
           <div class="kpi-label">Market Sentiment</div>
