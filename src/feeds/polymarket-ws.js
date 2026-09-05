@@ -100,7 +100,7 @@
       const lv = levels[i];
       sum += lv.price * lv.size;
     }
-    return sum;
+    return Math.round(sum * 100) / 100;
   }
 
   function _sumSize(levels, n) {
@@ -108,7 +108,7 @@
     let sum = 0;
     const lim = Math.min(n, levels.length);
     for (let i = 0; i < lim; i++) sum += levels[i].size;
-    return sum;
+    return Math.round(sum * 100) / 100;
   }
 
   /**
@@ -136,7 +136,7 @@
     const depthImbalance = total > 0 ? (bidN - askN) / total : null;
 
     const nearTouchNotional =
-      _sumNotional(bids, NEAR_TOUCH_LEVELS) + _sumNotional(asks, NEAR_TOUCH_LEVELS);
+      Math.round((_sumNotional(bids, NEAR_TOUCH_LEVELS) + _sumNotional(asks, NEAR_TOUCH_LEVELS)) * 100) / 100;
     const nearTouchBidSize = _sumSize(bids, NEAR_TOUCH_LEVELS);
     const nearTouchAskSize = _sumSize(asks, NEAR_TOUCH_LEVELS);
 

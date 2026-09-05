@@ -74,3 +74,33 @@ test('CoinPrecision: SignalMath integration', () => {
   assert.equal(SignalMath.getCoinDecimals('ETH'), 2);
   assert.equal(SignalMath.getCoinDecimals('XRP'), 4);
 });
+
+test('CoinPrecision: getCoinDisplayName handles 7 majors and fallback', () => {
+  assert.equal(CoinPrecision.getCoinDisplayName('BTC'), 'Bitcoin');
+  assert.equal(CoinPrecision.getCoinDisplayName('ETH'), 'Ethereum');
+  assert.equal(CoinPrecision.getCoinDisplayName('SOL'), 'Solana');
+  assert.equal(CoinPrecision.getCoinDisplayName('XRP'), 'XRP');
+  assert.equal(CoinPrecision.getCoinDisplayName('DOGE'), 'Dogecoin');
+  assert.equal(CoinPrecision.getCoinDisplayName('BNB'), 'BNB');
+  assert.equal(CoinPrecision.getCoinDisplayName('HYPE'), 'Hyperliquid');
+  assert.equal(CoinPrecision.getCoinDisplayName('btc-updown-15m'), 'Bitcoin');
+});
+
+test('CoinPrecision: formatNotional eliminates IEEE-754 noise and formats currency', () => {
+  // Exact user case: 2572.4642000000003
+  assert.equal(CoinPrecision.formatNotional(2572.4642000000003), '$2,572.46');
+  assert.equal(CoinPrecision.formatNotional(15000), '$15,000');
+  assert.equal(CoinPrecision.formatNotional(1234.5), '$1,234.50');
+  assert.equal(CoinPrecision.formatNotional(0), '$0.00');
+  assert.equal(CoinPrecision.formatNotional(null), '$0.00');
+});
+
+test('CoinPrecision: formatTtc converts seconds to clean duration strings', () => {
+  // Exact user case: 627s -> 10m 27s
+  assert.equal(CoinPrecision.formatTtc(627), '10m 27s');
+  assert.equal(CoinPrecision.formatTtc(45), '45s');
+  assert.equal(CoinPrecision.formatTtc(120), '2m');
+  assert.equal(CoinPrecision.formatTtc(0), 'closed');
+  assert.equal(CoinPrecision.formatTtc(-5), 'closed');
+  assert.equal(CoinPrecision.formatTtc(null), 'unknown time');
+});

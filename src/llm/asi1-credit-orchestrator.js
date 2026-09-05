@@ -10,6 +10,7 @@
 
 const Asi1Client = require('../infra/asi1-client');
 const Desk = require('./asi1-desk-contract');
+const CoinPrecision = require('../shared/coin-precision');
 
 const ASI1_ALL_MODELS = Asi1Client.ASI1_ALL_MODELS || Object.freeze([
   'asi1-ultra',
@@ -366,8 +367,18 @@ async function deskInfer(packet, mode, options = {}) {
 
   // Ensure deltaVsPtb and liveDirection are precisely computed if both spot and PTB exist
   if (packet.spot && packet.spot > 0 && packet.priceToBeatNum && packet.priceToBeatNum > 0) {
-    packet.deltaVsPtb = packet.spot - packet.priceToBeatNum;
+    const sym = packet.sym || packet.coin || 'BTC';
+    if (CoinPrecision?.roundCoinPrice) {
+      packet.spot = CoinPrecision.roundCoinPrice(sym, packet.spot);
+      packet.priceToBeatNum = CoinPrecision.roundCoinPrice(sym, packet.priceToBeatNum);
+      packet.deltaVsPtb = CoinPrecision.roundCoinPrice(sym, packet.spot - packet.priceToBeatNum);
+    } else {
+      packet.deltaVsPtb = packet.spot - packet.priceToBeatNum;
+    }
     packet.liveDirection = packet.deltaVsPtb > 0 ? 'UP' : (packet.deltaVsPtb < 0 ? 'DOWN' : 'FLAT');
+  }
+  if (packet.nearTouchNotional != null) {
+    packet.nearTouchNotional = Math.round(packet.nearTouchNotional * 100) / 100;
   }
 
   // Hydrate pinRisk state if not already present on late-window packets

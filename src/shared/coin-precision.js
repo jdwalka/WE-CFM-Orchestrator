@@ -183,14 +183,79 @@
     return formatCoinPrice(coinOrSlug, strike, options);
   }
 
+  /**
+   * Human-friendly full display name for the 7 majors.
+   */
+  const COIN_NAMES = {
+    BTC: 'Bitcoin',
+    ETH: 'Ethereum',
+    SOL: 'Solana',
+    XRP: 'XRP',
+    DOGE: 'Dogecoin',
+    BNB: 'BNB',
+    HYPE: 'Hyperliquid',
+  };
+
+  function getCoinDisplayName(coinOrSlug) {
+    const sym = normalizeCoinSymbol(coinOrSlug);
+    return COIN_NAMES[sym] || sym;
+  }
+
+  /**
+   * Formats notional dollar volume / liquidity cleanly without IEEE-754 floating-point noise.
+   * e.g. 2572.4642000000003 -> "$2,572.46"
+   * e.g. 15000 -> "$15,000"
+   */
+  function formatNotional(value, options = {}) {
+    const { prefix = '$', fallback = '$0.00', decimals } = options;
+    if (value === null || value === undefined || value === '') return fallback;
+    const n = typeof value === 'string' ? parseFloat(value.replace(/[^0-9.-]+/g, '')) : Number(value);
+    if (!Number.isFinite(n) || n === 0) return fallback;
+
+    const abs = Math.abs(n);
+    let d = 2;
+    if (decimals !== undefined) {
+      d = decimals;
+    } else if (abs >= 1000 && Math.abs(n - Math.round(n)) < 0.001) {
+      d = 0;
+    }
+
+    const formatted = n.toLocaleString('en-US', {
+      minimumFractionDigits: d,
+      maximumFractionDigits: d,
+      useGrouping: true,
+    });
+    return `${prefix}${formatted}`;
+  }
+
+  /**
+   * Formats time-to-close (TTC) in seconds to clean human-readable duration.
+   * e.g. 627 -> "10m 27s"
+   * e.g. 45 -> "45s"
+   */
+  function formatTtc(seconds) {
+    if (seconds === null || seconds === undefined) return 'unknown time';
+    const s = Number(seconds);
+    if (!Number.isFinite(s)) return 'unknown time';
+    if (s <= 0) return 'closed';
+    if (s < 60) return `${Math.round(s)}s`;
+    const mins = Math.floor(s / 60);
+    const secs = Math.round(s % 60);
+    return secs > 0 ? `${mins}m ${secs}s` : `${mins}m`;
+  }
+
   return {
     COIN_PRECISION_CONFIG,
+    COIN_NAMES,
     normalizeCoinSymbol,
+    getCoinDisplayName,
     getCoinDecimals,
     getCoinDeltaDecimals,
     roundCoinPrice,
     formatCoinPrice,
     formatCoinDelta,
     formatCoinStrike,
+    formatNotional,
+    formatTtc,
   };
 }));

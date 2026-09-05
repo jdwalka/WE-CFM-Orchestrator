@@ -105,5 +105,73 @@ test('late-window boundary pin-risk forces HOLD_FLAT and warns of MM defense', (
   assert.ok(c.notes.includes('Pivot to T+1 horizon'));
 });
 
+test('BTC DOWN note formatting eliminates float noise, formats TTC and currency cleanly, and removes jargon', () => {
+  // User's exact test case:
+  // Spot 79566.58335682 sits 13.4 below PTB 79579.95 with 627s to close. YesProb 0.39 and mid 0.385.
+  // Depth imbalance 0.74 and near-touch notional 2572.4642000000003.
+  const btcPkt = {
+    sym: 'BTC',
+    horizon: '15m',
+    spot: 79566.58335682,
+    priceToBeatNum: 79579.95,
+    yesProb: 0.39,
+    mid: 0.385,
+    spread: 0.01,
+    depthImbalance: 0.74,
+    nearTouchNotional: 2572.4642000000003,
+    secondsToClose: 627,
+    graviharmonic: {
+      resonantRegime: 'STANDING_WAVE_RESONANCE',
+      harmonicCoherence: 84,
+      escapeRatio: 0,
+      isEscaped: false,
+    },
+  };
+  const c = Desk.inferLocal(btcPkt, 'asi1_only');
+  assert.strictEqual(c.call, 'DOWN');
+  assert.strictEqual(c.action, 'SIZE_DOWN');
+  // Formatted spot: $79,566.58
+  assert.ok(c.notes.includes('$79,566.58'), `Expected $79,566.58 in notes, got: ${c.notes}`);
+  // Formatted target strike: $79,579.95
+  assert.ok(c.notes.includes('$79,579.95'), `Expected $79,579.95 in notes, got: ${c.notes}`);
+  // Formatted delta: $13.37
+  assert.ok(c.notes.includes('$13.37'), `Expected $13.37 in notes, got: ${c.notes}`);
+  // Formatted duration: 10m 27s
+  assert.ok(c.notes.includes('10m 27s'), `Expected 10m 27s in notes, got: ${c.notes}`);
+  // Formatted notional: $2,572.46
+  assert.ok(c.notes.includes('$2,572.46'), `Expected $2,572.46 in notes, got: ${c.notes}`);
+  // Formatted Wave: [Wave: Standing Wave Resonance · 84% Coherence]
+  assert.ok(c.notes.includes('[Wave: Standing Wave Resonance · 84% Coherence]'), `Expected clean wave tag, got: ${c.notes}`);
+  // No dark pool / insider jargon
+  assert.ok(!c.notes.includes('sits 13.4 below'), 'Should not contain "sits 13.4 below"');
+  assert.ok(!c.notes.includes('Fade only if'), 'Should not contain "Fade only if"');
+  assert.ok(!c.notes.includes('pierces PTB'), 'Should not contain "pierces PTB"');
+  assert.ok(!c.notes.includes('2572.4642000000003'), 'Should not leak float trail');
+  assert.ok(!c.notes.includes('Escape: 0x'), 'Should not contain Escape: 0x');
+});
+
+test('XRP 4-decimal precision handles sub-cent spot, PTB, delta, and duration', () => {
+  const xrpPkt = {
+    sym: 'XRP',
+    horizon: '15m',
+    spot: 0.58421,
+    priceToBeatNum: 0.5850,
+    yesProb: 0.42,
+    mid: 0.415,
+    spread: 0.001,
+    depthImbalance: -0.60,
+    nearTouchNotional: 1523.501,
+    secondsToClose: 185,
+  };
+  const c = Desk.inferLocal(xrpPkt, 'asi1_only');
+  assert.strictEqual(c.call, 'DOWN');
+  assert.ok(c.notes.includes('$0.5842'), `Expected $0.5842 in notes, got: ${c.notes}`);
+  assert.ok(c.notes.includes('$0.5850'), `Expected $0.5850 in notes, got: ${c.notes}`);
+  assert.ok(c.notes.includes('$0.0008'), `Expected $0.0008 in notes, got: ${c.notes}`);
+  assert.ok(!c.notes.includes('0.0 below'), 'Should not truncate delta to 0.0');
+  assert.ok(c.notes.includes('3m 5s'), `Expected 3m 5s in notes, got: ${c.notes}`);
+  assert.ok(c.notes.includes('$1,523.50'), `Expected $1,523.50 in notes, got: ${c.notes}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

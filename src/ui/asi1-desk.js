@@ -290,10 +290,13 @@
       const dist = (spotNum > 0 && ptbNum > 0) ? Math.abs(spotNum - ptbNum) : null;
       const distBps = (dist != null && ptbNum > 0) ? (dist / ptbNum) * 10000 : null;
 
-      const isPinTrapped = distBps != null && distBps <= 8;
       if (isPinTrapped && pinBanner) {
+        const coin = document.getElementById('adCoin')?.value || 'BTC';
+        const distStr = window.CoinPrecision?.formatCoinDelta
+          ? window.CoinPrecision.formatCoinDelta(coin, dist, { showSign: false })
+          : `$${dist.toFixed((coin === 'XRP' || coin === 'DOGE') ? 4 : 2)}`;
         pinBanner.style.display = 'block';
-        pinBanner.textContent = `⚠ PIN RISK DEFENSE DETECTED: Spot within $${dist.toFixed(1)} (${distBps.toFixed(1)} bps) of PTB with ${remainingSec}s left. MM defense walls active; high probability of 1-2s post-expiry snap. Focus automatically honed on T+1 Pre-Open below.`;
+        pinBanner.textContent = `⚠ PIN RISK DEFENSE DETECTED: Spot within ${distStr} (${distBps.toFixed(1)} bps) of PTB with ${remainingSec}s left. MM defense walls active; high probability of 1-2s post-expiry snap. Focus automatically honed on T+1 Pre-Open below.`;
       }
 
       if (nextBox) {
