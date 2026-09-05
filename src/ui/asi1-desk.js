@@ -16,6 +16,8 @@
   const REASONING_KEY = 'wecrypto.asi1Desk.reasoningEffort';
   const WEBSEARCH_KEY = 'wecrypto.asi1Desk.webSearch';
   const HORIZON_KEY = 'wecrypto.asi1Desk.horizon';
+  const PROMPT_CACHE_KEY = 'wecrypto.asi1Desk.customPrompt';
+  const ANSWER_CACHE_KEY = 'wecrypto.asi1Desk.customAnswer';
 
   const dash = document.createElement('div');
   dash.id = 'asi1-desk';
@@ -1042,11 +1044,23 @@
 
       const rawOut = res?.content || res?.output?.suggestions?.notes || res?.output?.ai_wording?.primary_rationale || res?.output?.notes || res?.output?.content || res?.output || res?.error || 'Analysis complete.';
       const cleanOut = typeof rawOut === 'object' ? JSON.stringify(rawOut, null, 2) : String(rawOut);
+      const usedModel = res?.model || modelChoice;
+
+      // Persist in localStorage for instant reload & persistence across sessions
+      try {
+        window.localStorage.setItem(PROMPT_CACHE_KEY, query);
+        window.localStorage.setItem(ANSWER_CACHE_KEY, JSON.stringify({
+          model: usedModel,
+          content: cleanOut,
+          ts: Date.now(),
+        }));
+      } catch (_) {}
+
       if (answerEl) {
         answerEl.textContent = '';
         const titleDiv = document.createElement('div');
         titleDiv.style.cssText = 'color:#00e676;font-weight:700;margin-bottom:4px';
-        titleDiv.textContent = `ASI1 Intelligence (${res?.model || modelChoice}):`;
+        titleDiv.textContent = `ASI1 Intelligence (${usedModel}):`;
 
         const bodyDiv = document.createElement('div');
         bodyDiv.style.cssText = 'color:#e6e8eb;font-size:11px;white-space:pre-wrap';
@@ -1077,6 +1091,9 @@
   document.getElementById('adMin')?.addEventListener('click', () => setMinimized(!minimized));
   document.getElementById('adAsk')?.addEventListener('click', ask);
   document.getElementById('adSendPrompt')?.addEventListener('click', sendCustomPrompt);
+  document.getElementById('adCustomPrompt')?.addEventListener('input', (e) => {
+    try { window.localStorage.setItem(PROMPT_CACHE_KEY, e.target.value); } catch (_) {}
+  });
   document.getElementById('adCustomPrompt')?.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -1089,9 +1106,21 @@
       const input = document.getElementById('adCustomPrompt');
       if (input && q) {
         input.value = q;
+        try { window.localStorage.setItem(PROMPT_CACHE_KEY, q); } catch (_) {}
         sendCustomPrompt();
       }
     });
+  });
+
+  // Model & Reasoning parameter change persistence
+  document.getElementById('adModelChoice')?.addEventListener('change', (e) => {
+    try { window.localStorage.setItem(MODEL_KEY, e.target.value); } catch (_) {}
+  });
+  document.getElementById('adReasoningEffort')?.addEventListener('change', (e) => {
+    try { window.localStorage.setItem(REASONING_KEY, e.target.value); } catch (_) {}
+  });
+  document.getElementById('adWebSearch')?.addEventListener('change', (e) => {
+    try { window.localStorage.setItem(WEBSEARCH_KEY, e.target.checked ? '1' : '0'); } catch (_) {}
   });
 
   try {
@@ -1106,6 +1135,33 @@
     const savedWeb = window.localStorage.getItem(WEBSEARCH_KEY);
     if (savedWeb != null && document.getElementById('adWebSearch')) {
       document.getElementById('adWebSearch').checked = savedWeb === '1';
+    }
+
+    // Restore cached custom prompt and cached previous response
+    const cachedPrompt = window.localStorage.getItem(PROMPT_CACHE_KEY);
+    if (cachedPrompt && document.getElementById('adCustomPrompt')) {
+      document.getElementById('adCustomPrompt').value = cachedPrompt;
+    }
+    const cachedAnsStr = window.localStorage.getItem(ANSWER_CACHE_KEY);
+    if (cachedAnsStr && document.getElementById('adCustomAnswer')) {
+      try {
+        const cachedAns = JSON.parse(cachedAnsStr);
+        if (cachedAns?.content) {
+          const ansEl = document.getElementById('adCustomAnswer');
+          ansEl.style.display = 'block';
+          ansEl.textContent = '';
+          const titleDiv = document.createElement('div');
+          titleDiv.style.cssText = 'color:#00e676;font-weight:700;margin-bottom:4px';
+          titleDiv.textContent = `ASI1 Intelligence (${cachedAns.model || 'cached'}):`;
+
+          const bodyDiv = document.createElement('div');
+          bodyDiv.style.cssText = 'color:#e6e8eb;font-size:11px;white-space:pre-wrap';
+          bodyDiv.textContent = cachedAns.content;
+
+          ansEl.appendChild(titleDiv);
+          ansEl.appendChild(bodyDiv);
+        }
+      } catch (_) {}
     }
   } catch (_) {}
 

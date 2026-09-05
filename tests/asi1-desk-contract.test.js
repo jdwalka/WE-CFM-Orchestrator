@@ -200,6 +200,38 @@ test('Hourly contract resolves using hourly range ladder without binary PTB', ()
   assert.ok(!c.notes.includes('02 contract expiry'), 'Should never reference stale 02 contract expiry');
 });
 
+test('Gospel Directives: User-provided PTB, Range, and Spot override defaults and calculate correctly', () => {
+  const CoinPrecision = require('../src/shared/coin-precision');
+  const prompt = 'PTB is 79625 and range is 79500-80000 what is the delta from current spot 79800?';
+
+  const ptbMatch = prompt.match(/\b(?:ptb|strike|price to beat|target)\s*(?:is|at|of|=)?\s*\$?([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]+)?|[0-9]+(?:\.[0-9]+)?)\b/i);
+  assert.ok(ptbMatch, 'PTB regex should match');
+  const userPtb = parseFloat(ptbMatch[1].replace(/,/g, ''));
+  assert.equal(userPtb, 79625);
+
+  const rangeMatch = prompt.match(/(?:range\s*(?:is|of|=)?\s*|between\s*)\$?([0-9,]+(?:\.[0-9]+)?)\s*(?:-|–|—|to|\band\b)\s*\$?([0-9,]+(?:\.[0-9]+)?)/i);
+  assert.ok(rangeMatch, 'Range regex should match');
+  const low = parseFloat(rangeMatch[1].replace(/,/g, ''));
+  const high = parseFloat(rangeMatch[2].replace(/,/g, ''));
+  assert.equal(low, 79500);
+  assert.equal(high, 80000);
+
+  const spotMatch = prompt.match(/\bspot\s*(?:is|at|=)?\s*\$?([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]+)?|[0-9]+(?:\.[0-9]+)?)\b/i);
+  assert.ok(spotMatch, 'Spot regex should match');
+  const userSpot = parseFloat(spotMatch[1].replace(/,/g, ''));
+  assert.equal(userSpot, 79800);
+
+  const delta = userSpot - userPtb;
+  const deltaBps = (delta / userPtb) * 10000;
+  assert.equal(delta, 175);
+  assert.equal(deltaBps.toFixed(2), '21.98');
+  assert.equal(CoinPrecision.formatCoinPrice('BTC', delta), '$175.00');
+
+  const inRange = userSpot >= low && userSpot <= high;
+  assert.strictEqual(inRange, true);
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);
+
 
