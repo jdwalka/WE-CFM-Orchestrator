@@ -104,7 +104,7 @@ echo [7/8] Checking Docker infrastructure...
 docker info >nul 2>&1
 if %errorlevel% equ 0 (
     echo [INFO] Docker daemon detected. Starting Redpanda and Redis...
-    docker compose up -d --no-recreate redis redpanda redpanda-console >nul 2>&1
+    docker compose -p wecryp up -d --no-recreate redis redpanda redpanda-console >nul 2>&1
     if %errorlevel% equ 0 (
         echo [INFO] Docker containers online.
         set "WECRYPTO_SKIP_ORBITAL=0"
