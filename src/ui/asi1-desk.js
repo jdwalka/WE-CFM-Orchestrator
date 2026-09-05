@@ -18,6 +18,7 @@
   const HORIZON_KEY = 'wecrypto.asi1Desk.horizon';
   const PROMPT_CACHE_KEY = 'wecrypto.asi1Desk.customPrompt';
   const ANSWER_CACHE_KEY = 'wecrypto.asi1Desk.customAnswer';
+  const SESSION_ID_KEY = 'wecrypto.asi1Desk.sessionId';
 
   const dash = document.createElement('div');
   dash.id = 'asi1-desk';
@@ -206,6 +207,7 @@
         <div style="display:flex;gap:4px">
           <textarea id="adCustomPrompt" placeholder="Ask ASI1 anything with live market context..." rows="2" style="flex:1;background:#06080a;color:#e6e8eb;border:1px solid #1f2a38;border-radius:6px;padding:6px;font-size:11px;resize:none;outline:none;font-family:inherit"></textarea>
           <button id="adSendPrompt" type="button" style="background:#00d4ff;color:#06080a;font-weight:700;border:0;border-radius:6px;padding:0 10px;font-size:11px;cursor:pointer">Send</button>
+          <button id="adResetMemory" type="button" title="Clear conversation memory and start a new session" style="background:#1c2530;color:#ff8a80;font-weight:700;border:1px solid #ff5252;border-radius:6px;padding:0 8px;font-size:11px;cursor:pointer">Reset</button>
         </div>
         <div id="adCustomAnswer" style="display:none;background:#06080a;border:1px solid #1f2a38;border-radius:6px;padding:8px;font-size:11px;line-height:1.45;color:#e6e8eb;max-height:160px;overflow-y:auto"></div>
       </div>
@@ -1017,9 +1019,16 @@
       const webSearch = document.getElementById('adWebSearch')?.checked || false;
 
       let res = null;
+      let sessionId = null;
+      try { sessionId = window.localStorage.getItem(SESSION_ID_KEY); } catch (_) {}
+      if (!sessionId) {
+        sessionId = `asi1-desk-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+        try { window.localStorage.setItem(SESSION_ID_KEY, sessionId); } catch (_) {}
+      }
       try {
         res = await invoke('chat', {
           prompt: query,
+          sessionId,
           packet,
           model: modelChoice !== 'auto' ? modelChoice : 'asi1-mini',
           reasoning_effort: effortChoice !== 'auto' ? effortChoice : 'low',
@@ -1105,6 +1114,40 @@
   document.getElementById('adMin')?.addEventListener('click', () => setMinimized(!minimized));
   document.getElementById('adAsk')?.addEventListener('click', ask);
   document.getElementById('adSendPrompt')?.addEventListener('click', sendCustomPrompt);
+  document.getElementById('adResetMemory')?.addEventListener('click', async () => {
+    try {
+      let sessionId = null;
+      try { sessionId = window.localStorage.getItem(SESSION_ID_KEY); } catch (_) {}
+      if (window.electron?.asi1?.resetChatMemory) {
+        await window.electron.asi1.resetChatMemory({ sessionId });
+      } else if (window.electron?.invoke) {
+        await window.electron.invoke('asi1:desk-chat-reset', { sessionId });
+      }
+      const newSessionId = `asi1-desk-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+      try { window.localStorage.setItem(SESSION_ID_KEY, newSessionId); } catch (_) {}
+      const answerEl = document.getElementById('adAnswer');
+      if (answerEl) {
+        answerEl.textContent = '';
+        const titleDiv = document.createElement('div');
+        titleDiv.style.cssText = 'color:#00e676;font-weight:700;margin-bottom:4px';
+        titleDiv.textContent = 'ASI1 Memory Reset:';
+        const bodyDiv = document.createElement('div');
+        bodyDiv.style.cssText = 'color:#e6e8eb;font-size:11px;white-space:pre-wrap';
+        bodyDiv.textContent = 'Conversation memory cleared. New session started. Ask me anything.';
+        answerEl.appendChild(titleDiv);
+        answerEl.appendChild(bodyDiv);
+      }
+    } catch (err) {
+      const answerEl = document.getElementById('adAnswer');
+      if (answerEl) {
+        answerEl.textContent = '';
+        const errorSpan = document.createElement('span');
+        errorSpan.style.color = '#ff5252';
+        errorSpan.textContent = `Reset Error: ${err?.message || String(err)}`;
+        answerEl.appendChild(errorSpan);
+      }
+    }
+  });
   document.getElementById('adCustomPrompt')?.addEventListener('input', (e) => {
     try { window.localStorage.setItem(PROMPT_CACHE_KEY, e.target.value); } catch (_) {}
   });

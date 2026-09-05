@@ -2729,6 +2729,8 @@ ipcMain.handle('asi1:desk-chat', async (_event, args = {}) => {
     const Asi1Client = require('../src/infra/asi1-client');
     const prompt = String(args.prompt || '').trim();
     const packet = args.packet || {};
+    const sessionId = String(args.sessionId || args.contractId || packet.contractId || packet.id || 'default');
+    const resetContext = !!args.resetContext;
     const model = args.model || 'asi1-mini';
     const reasoning_effort = args.reasoning_effort || 'medium';
     const web_search = !!args.web_search;
@@ -2736,6 +2738,68 @@ ipcMain.handle('asi1:desk-chat', async (_event, args = {}) => {
     if (!Asi1Client.hasAsi1Credentials()) {
       return { ok: false, error: 'ASI1 API key not configured in secrets/ASI1_ICLOUD.txt or environment' };
     }
+
+    if (!globalThis.asi1DeskConversationMemory) {
+      globalThis.asi1DeskConversationMemory = new Map();
+    }
+    const conversationMemory = globalThis.asi1DeskConversationMemory;
+
+    if (resetContext || !conversationMemory.has(sessionId)) {
+      conversationMemory.set(sessionId, {
+        history: [],
+        positions: [],
+        createdAt: Date.now(),
+        lastActivityAt: Date.now(),
+      });
+    }
+
+    const sessionMemory = conversationMemory.get(sessionId);
+    const compactHistory = sessionMemory.history.slice(-12);
+
+    const traderPositionContext = {
+      contractId: packet.contractId || packet.id || null,
+      horizon: packet.horizon || (isHourly ? '1h' : null),
+      side: packet.action || packet.side || null,
+      strike: packet.priceToBeatNum || packet.strike || null,
+      range: packet.spotBucket || userRangeOverride || null,
+      spot: packet.spot || null,
+      expirySec: packet.expirySec || null,
+    };
+
+    const lastPosition = sessionMemory.positions[sessionMemory.positions.length - 1] || null;
+    const positionUnchanged =
+      lastPosition &&
+      traderPositionContext.contractId === lastPosition.contractId &&
+      traderPositionContext.horizon === lastPosition.horizon &&
+      traderPositionContext.side === lastPosition.side &&
+      traderPositionContext.strike === lastPosition.strike &&
+      traderPositionContext.range === lastPosition.range;
+
+    if (!positionUnchanged) {
+      sessionMemory.positions.push({ ...traderPositionContext, ts: Date.now() });
+      if (sessionMemory.positions.length > 10) sessionMemory.positions.shift();
+    } else {
+      lastPosition.spot = traderPositionContext.spot;
+      lastPosition.expirySec = traderPositionContext.expirySec;
+      lastPosition.ts = Date.now();
+    }
+
+    const memoryContext = compactHistory.length > 0
+      ? `\nCONVERSATION MEMORY (most recent last):\n${compactHistory.map((entry, index) => `${index + 1}. Trader: ${entry.user}\n   ASI1: ${entry.assistant}`).join('\n')}`
+      : '\nCONVERSATION MEMORY: This is the first message in this session.';
+
+    const positionContextBlock = sessionMemory.positions.length > 0
+      ? `\nACTIVE POSITION TRACKING:\n${sessionMemory.positions.slice(-3).map((position) => {
+          const details = [
+            position.contractId ? `contract=${position.contractId}` : null,
+            position.horizon ? `horizon=${position.horizon}` : null,
+            position.side ? `side=${position.side}` : null,
+            position.strike ? `strike/PTB=${position.strike}` : null,
+            position.range ? `range=${position.range}` : null,
+          ].filter(Boolean).join(', ');
+          return `- ${details}`;
+        }).join('\n')}`
+      : '';
 
     const promptLower = prompt.toLowerCase();
     const explicitMicroHorizon = /\b(5m|5\s*min(?:ute)?s?|15m|15\s*min(?:ute)?s?)\b/i.test(prompt);
@@ -2930,6 +2994,14 @@ ${ladderLines ? `- Active Hourly Range Ladder:\n${ladderLines}` : ''}`;
     const systemPrompt = `You are ASI1, the lead quantitative trading strategist and co-pilot embedded in the WE|||CRYPTO terminal HUD.
 You are interacting with the lead human trader. You are currently inferencing using the model: [${effectiveModel}].
 
+CONVERSATION CONTINUITY RULE:
+   - You have persistent memory of this trading session. Use the CONVERSATION MEMORY and ACTIVE POSITION TRACKING below to continue the discussion naturally.
+   - NEVER re-ask for information the trader already provided. NEVER restart the analysis from scratch when the trader is asking a follow-up.
+   - If the trader says "this position", "that trade", "same contract", "still in it", or references prior context, resolve it from memory.
+   - Track state changes between turns: spot movement, delta shifts, probability changes, time decay, and whether the position moved ITM/OTM.
+   - Explicitly compare current values against the previous turn's values when contextually relevant.
+   - If the trader explicitly asks to "reset", "new session", "forget", or "start over", acknowledge the reset and clear prior context from your reasoning.
+
 CRITICAL GOSPEL RULES & PERSONA:
 1. THE TRADER'S DIRECTIVES AND NUMBERS ARE GOSPEL:
    - If the trader states or specifies a PTB (price to beat), a strike price, a range bracket, spot price, or trade outcome (e.g. "i sold in profit", "PTB is 79625", "range is 68000-68500"), you MUST accept their statement as absolute mathematical truth.
@@ -2945,7 +3017,9 @@ CRITICAL GOSPEL RULES & PERSONA:
    - Be fully self-aware of your inference architecture: you know you are inferencing via ${effectiveModel}.
    - Think and speak as a trusted, battle-hardened trading co-pilot in the trenches whose sole mission is ensuring this desk survives, wins, and grows capital.
 
-${contractRule}`;
+${contractRule}
+${memoryContext}
+${positionContextBlock}`;
 
     const userPrompt = `${prompt}\n\nLive Market & Quantitative Context:
 - Asset: ${coin}
@@ -2961,7 +3035,11 @@ ${contractRule}`;
 
     const result = await Asi1Client.chatCompletion(
       [
-        { role: 'system', content: systemPrompt },
+        ...compactHistory.flatMap((entry) => [
+          { role: 'user', content: entry.user },
+          { role: 'assistant', content: entry.assistant },
+        ]),
+        { role: 'system', content: memoryContext + positionContextBlock },
         { role: 'user', content: userPrompt }
       ],
       {
@@ -2975,9 +3053,18 @@ ${contractRule}`;
       }
     );
 
+    sessionMemory.history.push({
+      user: prompt,
+      assistant: result.content,
+      ts: Date.now(),
+    });
+    if (sessionMemory.history.length > 24) sessionMemory.history.shift();
+    sessionMemory.lastActivityAt = Date.now();
+
     return {
       ok: true,
       content: result.content,
+      sessionId,
       model: result.model || effectiveModel,
       account: result.account,
       latencyMs: result.latencyMs,
@@ -2987,6 +3074,18 @@ ${contractRule}`;
     };
   } catch (err) {
     return { ok: false, error: err?.message || 'ASI1 Chat request failed' };
+  }
+});
+
+ipcMain.handle('asi1:desk-chat-reset', async (_event, args = {}) => {
+  try {
+    const sessionId = String(args.sessionId || args.contractId || args.packet?.contractId || args.packet?.id || 'default');
+    if (globalThis.asi1DeskConversationMemory) {
+      globalThis.asi1DeskConversationMemory.delete(sessionId);
+    }
+    return { ok: true, sessionId, cleared: true };
+  } catch (err) {
+    return { ok: false, error: err?.message || 'Failed to reset conversation memory' };
   }
 });
 
