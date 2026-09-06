@@ -3632,6 +3632,18 @@ function renderSuborbital(orb, vals, coinColor) {
 
 async function renderPredictions() {
     ensurePredictionsScrollTracker();
+
+    // 15m Hydration Kick
+    // Ensure 15m Polymarket odds fetch immediately if missing, rather than waiting for boundary clock
+    if (window.PredictionMarkets?.refreshPoly15M && Date.now() - (window._pred15mHydrationKickTs || 0) > 8_000) {
+      const pm = window.PredictionMarkets.getAll() || {};
+      const hasAnyPoly15m = Object.values(pm).some(coin => coin?.poly15m);
+      if (!hasAnyPoly15m) {
+        window._pred15mHydrationKickTs = Date.now();
+        window.PredictionMarkets.refreshPoly15M('pred-mount').catch(() => {});
+      }
+    }
+
     const _myRV = _rv; // capture version — bail after any await if stale
     const nowTs = Date.now();
     const scrollTopSnapshot = content?.scrollTop || 0;

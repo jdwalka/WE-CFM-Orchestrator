@@ -2074,13 +2074,17 @@ function computeGroundState(vals, pred, weightClass) {
   }
 
 function buildOpportunitiesPanel(cfmAll, predAll) {
+    const pCoins = (typeof PREDICTION_COINS !== 'undefined' && Array.isArray(PREDICTION_COINS))
+      ? PREDICTION_COINS
+      : (Array.isArray(window?.PREDICTION_COINS) ? window.PREDICTION_COINS : []);
+
     const allSignals = [];
     const coinEdges = {};
 
     const polymarketIntents = window.PolymarketOrchestrator?.update(predAll, cfmAll) ?? {};
 
     try {
-      PREDICTION_COINS.forEach(coin => {
+      pCoins.forEach(coin => {
         const ki = polymarketIntents[coin.sym];
         if (!ki) return;
         maybePlayContractArrivalBell(coin.sym, ki);
@@ -2127,7 +2131,7 @@ function buildOpportunitiesPanel(cfmAll, predAll) {
     } catch (orchLogErr) { console.warn('[orchLog]', orchLogErr.message); }
 
     if (window.DataLogger) {
-      PREDICTION_COINS.forEach(coin => {
+      pCoins.forEach(coin => {
         const pred = predAll[coin.sym];
         const cfm = cfmAll[coin.sym];
         if (!pred || !cfm || cfm.cfmRate === 0) return;
