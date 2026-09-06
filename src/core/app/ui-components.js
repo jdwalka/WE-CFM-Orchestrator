@@ -216,11 +216,12 @@ function predictionCard(p) {
       !verdictSource.startsWith('safety-') &&
       confNorm >= hcConfThreshold &&
       compositeEdge >= hcEdgeThreshold;
-    const hcBadge = isHighConfidenceOverlayOn()
+    const _isHcOn = typeof isHighConfidenceOverlayOn === 'function' ? isHighConfidenceOverlayOn() : (window.isHighConfidenceOverlayOn?.() ?? false);
+    const hcBadge = _isHcOn
       ? `<span class="pred-source-badge ${hcPass ? 'polymarket-align' : 'polymarket-fade'}" title="Advisory overlay only; does not alter model verdict routing">${hcPass ? '✅ HC PASS' : '⏸ HC HOLD'}</span>`
       : '';
     const hcRationale = (() => {
-      if (!isHighConfidenceOverlayOn()) return '';
+      if (!_isHcOn) return '';
       if (hcPass) {
         return `High-confidence overlay: PASS (conf ${Math.round(confNorm * 100)}%, edge ${compositeEdge.toFixed(2)}).`;
       }
@@ -351,10 +352,11 @@ function predictionCard(p) {
     const liquidityMeta = ind.liquidityDepth?.meta || null;
     const fmtDepthImb = value => Number.isFinite(Number(value)) ? `${Number(value) >= 0 ? '+' : ''}${(Number(value) * 100).toFixed(0)}%` : '—';
     const depthClass = value => Number(value) > 0.12 ? 'bull' : Number(value) < -0.12 ? 'bear' : 'flat';
+    const _fmtUsd = typeof fmtCompactUsd === 'function' ? fmtCompactUsd : (window.fmtCompactUsd || (n => '$' + Number(n||0).toLocaleString()));
     const depthRows = depthMeta ? `
       <div class="ind-item"><span class="ind-name">Depth 10/20</span><span class="ind-val ${depthClass(depthMeta.rawImbalance)}">10L ${fmtDepthImb(depth10?.imbalance)} / 20L ${fmtDepthImb(depth20?.imbalance)}</span></div>
       <div class="ind-item"><span class="ind-name">Imb Velocity</span><span class="ind-val ${depthClass(velocityMeta?.value)}">${velocityMeta?.band || 'stable'} · ${fmtDepthImb(velocityMeta?.value)}</span></div>
-      <div class="ind-item"><span class="ind-name">Liquidity</span><span class="ind-val ${liquidityMeta?.band === 'fragile' || liquidityMeta?.band === 'thin' ? 'bear' : liquidityMeta?.band === 'deep' ? 'bull' : 'flat'}">${liquidityMeta?.band || 'unknown'} · 20L ${fmtCompactUsd(liquidityMeta?.notional20)}</span></div>
+      <div class="ind-item"><span class="ind-name">Liquidity</span><span class="ind-val ${liquidityMeta?.band === 'fragile' || liquidityMeta?.band === 'thin' ? 'bear' : liquidityMeta?.band === 'deep' ? 'bull' : 'flat'}">${liquidityMeta?.band || 'unknown'} · 20L ${_fmtUsd(liquidityMeta?.notional20)}</span></div>
     ` : '';
 
     function indClass(sig) { return sig > 0.15 ? 'bull' : sig < -0.15 ? 'bear' : 'flat'; }
@@ -451,7 +453,11 @@ function predictionCard(p) {
       const _closeTimeRow = _poly15m?.closeTime ?? _k15m?.closeTime;
       const closeMs = _closeTimeRow ? new Date(_closeTimeRow).getTime() : defaultCloseMs;
       const msl = closeMs - Date.now();
-      const closeUtc4 = formatUtc4Time(closeMs);
+      const _fmtUtc4 = typeof formatUtc4Time === 'function' ? formatUtc4Time : (window.formatUtc4Time || ((input) => {
+        const ms = typeof input === 'number' ? input : new Date(input).getTime();
+        return Number.isFinite(ms) ? new Date(ms - 14400000).toISOString().slice(11, 19) : '—';
+      }));
+      const closeUtc4 = _fmtUtc4(closeMs);
       if (msl > 0) {
         const ts = Math.floor(msl / 1000);
         countdown = ` <span class="k15-expiry" data-close-ms="${closeMs}">⏱ ${Math.floor(ts / 60)}m${String(ts % 60).padStart(2, '0')}s · UTC-4 ${closeUtc4}</span>`;
@@ -1895,14 +1901,17 @@ function buildCoinPeriodicTable(coin, cfm, pred) {
             ${partitionCards}
             ${sourceCards}
           </div>
-          ${cfm.dexMeta ? `
+          ${cfm.dexMeta ? (() => {
+            const _fmtUsd = typeof fmtCompactUsd === 'function' ? fmtCompactUsd : (window.fmtCompactUsd || (n => '$' + Number(n||0).toLocaleString()));
+            return `
             <div class="cfm-detail-strip">
               <span class="screener-chip">${cfm.dexMeta.chain || 'dex'} / ${cfm.dexMeta.dex || 'aggregated'}</span>
               <span class="screener-chip">${cfm.dexMeta.pair || 'pair n/a'}</span>
-              <span class="screener-chip">DEX Vol ${fmtCompactUsd(cfm.dexMeta.vol)}</span>
-              <span class="screener-chip">DEX Liq ${fmtCompactUsd(cfm.dexMeta.liq)}</span>
+              <span class="screener-chip">DEX Vol ${_fmtUsd(cfm.dexMeta.vol)}</span>
+              <span class="screener-chip">DEX Liq ${_fmtUsd(cfm.dexMeta.liq)}</span>
             </div>
-          ` : ''}
+          `;
+          })() : ''}
         </div>
       </div>
     `;

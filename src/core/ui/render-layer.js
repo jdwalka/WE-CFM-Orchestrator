@@ -246,26 +246,31 @@ function posneg(n) { return n >= 0 ? 'pos' : 'neg'; }
 function coinColor(sym) { return COIN_COLORS[sym] || '#7880a0'; }
 
 function coinIcon(sym) {
-    if (_iconCache.has(sym)) return _iconCache.get(sym);
+    const iconCache = window._iconCache || (typeof _iconCache !== 'undefined' ? _iconCache : null);
+    const iconFetchQueue = window._iconFetchQueue || (typeof _iconFetchQueue !== 'undefined' ? _iconFetchQueue : null);
 
-    const pc = PREDICTION_COINS?.find(c => c.sym === sym);
-    const hold = typeof PORTFOLIO_HOLDINGS !== 'undefined' ? PORTFOLIO_HOLDINGS?.find(h => h.sym === sym) : null;
-    const textFb = pc?.icon || hold?.icon || sym.slice(0, 2);
+    if (iconCache?.has(sym)) return iconCache.get(sym);
+
+    const coinsList = window.PREDICTION_COINS || (typeof PREDICTION_COINS !== 'undefined' ? PREDICTION_COINS : []);
+    const holdingsList = window.PORTFOLIO_HOLDINGS || (typeof PORTFOLIO_HOLDINGS !== 'undefined' ? PORTFOLIO_HOLDINGS : []);
+    const pc = coinsList?.find(c => c.sym === sym);
+    const hold = holdingsList?.find(h => h.sym === sym);
+    const textFb = pc?.icon || hold?.icon || (sym ? sym.slice(0, 2) : '??');
 
     // Waterfall: CoinGecko small (best quality) → CoinCap (Coinbase-affiliated, no rate limit)
     const sources = [
       ...(pc?.iconSources || []),
-      `https://assets.coincap.io/assets/icons/${sym.toLowerCase()}@2x.png`,
+      `https://assets.coincap.io/assets/icons/${sym?.toLowerCase()}@2x.png`,
     ].filter(Boolean);
 
     // Always render text fallback immediately — zero-dependency, works offline
     const html = `<span class="ci-wrap" data-sym="${sym}"><span class="ci-text">${textFb}</span></span>`;
-    _iconCache.set(sym, html);
+    if (iconCache) iconCache.set(sym, html);
 
     // Async: fetch image via window.fetch (goes through proxy shim in Electron)
     // Once resolved, inject blob URL into all live DOM nodes and update cache
-    if (sources.length && !_iconFetchQueue.has(sym)) {
-      _iconFetchQueue.add(sym);
+    if (sources.length && iconFetchQueue && !iconFetchQueue.has(sym)) {
+      iconFetchQueue.add(sym);
       (async () => {
         for (const src of sources) {
           try {
@@ -285,19 +290,19 @@ function coinIcon(sym) {
               }
             });
             // Update cache: future renders get the img straight away
-            _iconCache.set(sym,
-              `<span class="ci-wrap" data-sym="${sym}">` +
-              `<span class="ci-text">${textFb}</span>` +
-              `<img class="ci-img ci-loaded" src="${blobUrl}" alt="${sym}">` +
-              `</span>`
-            );
+            if (iconCache) {
+              iconCache.set(sym,
+                `<span class="ci-wrap" data-sym="${sym}">` +
+                `<span class="ci-text">${textFb}</span>` +
+                `<img class="ci-img ci-loaded" src="${blobUrl}" alt="${sym}">` +
+                `</span>`
+              );
+            }
             return; // done — skip remaining sources
           } catch { /* try next source */ }
         }
-
-})();
+      })();
     }
-
     return html;
   }
 
@@ -514,9 +519,11 @@ function renderMarkets5M() {
     }
     function _countdown(iso) {
       if (!iso) return '—';
-      const closeMs = new Date(iso).getTime();
-      const ms = closeMs - Date.now();
-      const closeUtc4 = formatUtc4Time(closeMs);
+      const _fmtUtc4 = typeof formatUtc4Time === 'function' ? formatUtc4Time : (window.formatUtc4Time || ((input) => {
+        const ms = typeof input === 'number' ? input : new Date(input).getTime();
+        return Number.isFinite(ms) ? new Date(ms - 14400000).toISOString().slice(11, 19) : '—';
+      }));
+      const closeUtc4 = _fmtUtc4(closeMs);
       if (ms <= 0) return 'Settling…';
       const s = Math.floor(ms / 1000);
       const m = Math.floor(s / 60);
@@ -3916,7 +3923,7 @@ async function renderPredictions() {
           })()}
         </div>
         <div style="display:flex;align-items:center;gap:8px">
-          <button class="btn-sm" id="toggleHighConfidenceOverlay" style="font-size:10px;padding:4px 10px">HC Overlay: ${isHighConfidenceOverlayOn() ? 'ON' : 'OFF'}</button>
+          <button class="btn-sm" id="toggleHighConfidenceOverlay" style="font-size:10px;padding:4px 10px">HC Overlay: ${(typeof isHighConfidenceOverlayOn === 'function' ? isHighConfidenceOverlayOn() : (window.isHighConfidenceOverlayOn?.() ?? false)) ? 'ON' : 'OFF'}</button>
           <button class="btn-sm" id="rerunPreds" style="font-size:10px;padding:4px 10px">Refresh Analysis</button>
         </div>
       </div>
@@ -3961,8 +3968,10 @@ async function renderPredictions() {
     const hcToggleBtn = document.getElementById('toggleHighConfidenceOverlay');
     if (hcToggleBtn) {
       hcToggleBtn.addEventListener('click', () => {
-        const next = !isHighConfidenceOverlayOn();
-        setHighConfidenceOverlayOn(next);
+        const _hcGet = typeof isHighConfidenceOverlayOn === 'function' ? isHighConfidenceOverlayOn : (window.isHighConfidenceOverlayOn || (() => false));
+        const _hcSet = typeof setHighConfidenceOverlayOn === 'function' ? setHighConfidenceOverlayOn : (window.setHighConfidenceOverlayOn || (() => {}));
+        const next = !_hcGet();
+        _hcSet(next);
         renderPredictions();
       });
     }

@@ -180,6 +180,30 @@ window.WEIGHT_RANK = WEIGHT_RANK;
 const ORBITAL_ACCESS = { all: 1, mid: 2, heavy: 3 };
 window.ORBITAL_ACCESS = ORBITAL_ACCESS;
 
+// Defensive fallbacks for cross-script helpers before secondary scripts finish loading
+if (typeof window.formatUtc4Time !== 'function') {
+  window.formatUtc4Time = function(input) {
+    const ms = typeof input === 'number' ? input : new Date(input).getTime();
+    if (!Number.isFinite(ms)) return '—';
+    return new Date(ms - (4 * 60 * 60 * 1000)).toISOString().slice(11, 19);
+  };
+}
+if (typeof window.isHighConfidenceOverlayOn !== 'function') {
+  window.isHighConfidenceOverlayOn = function() {
+    return false;
+  };
+}
+if (typeof window.fmtCompactUsd !== 'function') {
+  window.fmtCompactUsd = function(n) {
+    if (n === null || n === undefined || isNaN(n)) return '—';
+    const num = Number(n);
+    if (Math.abs(num) >= 1e9) return '$' + (num / 1e9).toFixed(2) + 'B';
+    if (Math.abs(num) >= 1e6) return '$' + (num / 1e6).toFixed(2) + 'M';
+    if (Math.abs(num) >= 1e3) return '$' + (num / 1e3).toFixed(1) + 'K';
+    return '$' + num.toFixed(2);
+  };
+}
+
 // ---- 7 MAJORS FOCUS (CORE 4 FIRST) ──────────────────────────────────────────
 // 7 MAJORS: BTC, ETH, SOL, XRP, DOGE, BNB, HYPE
 // Primary traded 4: BTC, ETH, SOL, XRP (prioritized in UI display and inference)

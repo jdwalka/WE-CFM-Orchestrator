@@ -387,6 +387,7 @@ function formatUtc4Time(input) {
     if (!Number.isFinite(ms)) return '—';
     return new Date(ms - (4 * 60 * 60 * 1000)).toISOString().slice(11, 19);
   }
+window.formatUtc4Time = formatUtc4Time;
 
 const FILTER_GROUPS = {
     all: { label: 'All', pred: () => true },
