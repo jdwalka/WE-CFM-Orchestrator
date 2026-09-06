@@ -1509,8 +1509,18 @@ function renderMarkets5M() {
     window._p5EmbedCache = window._p5EmbedCache || new Map();
     COINS_5M.forEach((sym) => {
       const freshFrame = document.getElementById(`p5emb-${sym}`);
-      if (freshFrame) {
-        window._p5EmbedCache.set(sym, { src: freshFrame.getAttribute('src'), node: freshFrame });
+      if (!freshFrame) return;
+      const cached = window._p5EmbedCache.get(sym);
+      if (cached && cached.src === freshFrame.getAttribute('src') && cached.node) {
+        freshFrame.replaceWith(cached.node);
+      }
+    });
+
+    // Update cache with the active nodes (either restored or newly created)
+    COINS_5M.forEach((sym) => {
+      const activeFrame = document.getElementById(`p5emb-${sym}`);
+      if (activeFrame) {
+        window._p5EmbedCache.set(sym, { src: activeFrame.getAttribute('src'), node: activeFrame });
       }
     });
 
