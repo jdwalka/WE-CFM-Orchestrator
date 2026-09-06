@@ -2758,10 +2758,10 @@ ipcMain.handle('asi1:desk-chat', async (_event, args = {}) => {
 
     const traderPositionContext = {
       contractId: packet.contractId || packet.id || null,
-      horizon: packet.horizon || (isHourly ? '1h' : null),
+      horizon: packet.horizon || (packet.isHourly ? '1h' : null),
       side: packet.action || packet.side || null,
       strike: packet.priceToBeatNum || packet.strike || null,
-      range: packet.spotBucket || userRangeOverride || null,
+      range: packet.spotBucket || packet.userRangeOverride || null,
       spot: packet.spot || null,
       expirySec: packet.expirySec || null,
     };
