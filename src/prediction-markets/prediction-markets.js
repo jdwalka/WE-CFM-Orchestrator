@@ -2905,7 +2905,11 @@ function polymarketSentiment(markets, sym) {
     const poly60mResults = Object.create(null);
     if (fetchPoly5M) {
       const poly5mResults = Object.create(null);
-      await Promise.all(Object.keys(POLY_5M_COIN_SLUGS).map(async sym => {
+      const symKeys = Object.keys(POLY_5M_COIN_SLUGS);
+      await Promise.all(symKeys.map(async (sym, i) => {
+        // Stagger requests 200ms apart to avoid simultaneous 21-request bursts
+        // (7 coins × 3 horizons each) that trip Gamma's rate limiter on BTC/XRP.
+        if (i > 0) await new Promise(r => setTimeout(r, i * 200));
         try {
           poly5mResults[sym] = await withTimeout(fetchPolymarket5MBySlug(sym), 8_000, `Poly5M ${sym}`);
         } catch (err) {
@@ -2954,8 +2958,8 @@ function polymarketSentiment(markets, sym) {
     for (const sym of Object.keys(POLY_5M_COIN_SLUGS)) {
       const k5raw = _k5mCache[sym] ?? null;
       const poly5mSlug = k5raw?._poly5m ?? null;
-      const poly15mObj = poly15mResults[sym] || cache[sym]?.poly15m || null;
-      const poly60mObj = poly60mResults[sym] || cache[sym]?.poly60m || null;
+      const poly15mObj = poly15mResults[sym] || cache[sym]?.poly15m || _poly15mCache[sym]?.data || null;
+      const poly60mObj = poly60mResults[sym] || cache[sym]?.poly60m || _poly60mCache[sym]?.data || null;
       const poly = Array.isArray(_polyCache) ? polymarketSentiment(_polyCache, sym) : null;
       const poly5m = poly5mSlug || null;
 
