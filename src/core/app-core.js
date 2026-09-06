@@ -559,18 +559,7 @@ const FEE_PCT = 0;
 
 
 
-const COIN_WEIGHT = {
-    BTC: 'heavy', ETH: 'heavy',
-    SOL: 'mid', XRP: 'mid', BNB: 'mid',
-    DOGE: 'light', HYPE: 'light',
-  };
-  window.COIN_WEIGHT = COIN_WEIGHT;
 
-const WEIGHT_RANK = { heavy: 3, mid: 2, light: 1 };
-window.WEIGHT_RANK = WEIGHT_RANK;
-
-const ORBITAL_ACCESS = { all: 1, mid: 2, heavy: 3 };
-window.ORBITAL_ACCESS = ORBITAL_ACCESS;
 
 
 
