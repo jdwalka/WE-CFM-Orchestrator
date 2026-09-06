@@ -427,7 +427,13 @@ function predictionCard(p) {
         : (p.price > 0 ? ` <span class="k15-target" style="opacity:0.75" title="Live spot anchor while PTB benchmark locks">Live ${fmtPrice(p.price, p.sym)}</span>` : '');
 
       // Gap from current price to reference — show dollar amount + % + BORDERLINE warning
-      const _gapRaw = _kAlign?.gapPct ?? (_refStrikeNum != null && p.price > 0 ? ((p.price - _refStrikeNum) / _refStrikeNum) * 100 : null);
+      // _kAlign.gapPct must be validated: malformed/stale polyAlign payloads (e.g. a
+      // non-numeric or missing gapPct) previously crashed the whole card via
+      // `_gapRaw.toFixed()` below, taking out the ETH/SOL 15m Up/Down row.
+      const _gapRawCandidate = Number(_kAlign?.gapPct);
+      const _gapRaw = Number.isFinite(_gapRawCandidate)
+        ? _gapRawCandidate
+        : (_refStrikeNum != null && p.price > 0 ? ((p.price - _refStrikeNum) / _refStrikeNum) * 100 : null);
       const _gapDollar = (_refStrikeNum != null && p.price > 0)
         ? (_refStrikeNum - p.price) : null;
       const _gapDec = window.CoinPrecision?.getCoinDeltaDecimals
