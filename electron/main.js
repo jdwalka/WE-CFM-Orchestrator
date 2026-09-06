@@ -2982,7 +2982,14 @@ ${ladderLines ? `- Active Hourly Range Ladder:\n${ladderLines}` : ''}`;
 
     // ── Cognitive Metacognition & Gospel Persona ──
     const effectiveModel = model !== 'auto' ? model : 'asi1-mini';
-   const contractRule = isHourly
+    const isAnytime = packet.horizon === 'anytime' || /\b(anytime|open ended|general)\b/i.test(prompt);
+
+   const contractRule = isAnytime
+     ? `3. OPEN-ENDED / ANYTIME HORIZON RULE:
+   - This inquiry is an open-ended crypto market question or general prediction query.
+   - You are not constrained by a specific micro-horizon or top-of-the-hour settlement. Provide broad, strategic analysis, macro trends, or answer the trader's specific questions about the asset.
+   - You may incorporate live spot data, but you do not need to anchor to a specific PTB or strike unless the trader asks you to.`
+     : (isHourly
      ? `3. HOURLY CONTRACTS RESOLUTION RULE:
    - This inquiry is for the top-of-the-hour HOURLY PRICE RANGE ladder (settling at ${targetCloseHourUtc}:00:00 UTC / ${targetCloseTime}).
    - When asked what price or range the asset will close at, evaluate the active Hourly Range Ladder brackets, current spot price, momentum, and time to close. State clearly which specific price range bracket the asset is projected to settle in at the hourly close (${targetCloseHourUtc}:00 UTC) and the estimated probability.
@@ -2991,7 +2998,7 @@ ${ladderLines ? `- Active Hourly Range Ladder:\n${ladderLines}` : ''}`;
       : `3. BINARY UP/DOWN CONTRACT RESOLUTION RULE (${packet.horizon || '5m/15m'} HORIZON):
    - This inquiry is strictly for the binary UP/DOWN contract settling at the end of the ${packet.horizon || 'active micro'} window (${expirySecDisplay}s remaining) against the Target Strike / PTB (${ptbDisplay}).
    - DO NOT anchor onto hourly range ladders, top-of-the-hour decay, or 1-hour settlement. Evaluate whether the asset will settle UP (above PTB) or DOWN (below PTB) at the expiration of this specific ${packet.horizon || 'micro'} window.
-   - If asked for a price projection over this window, project the spot trajectory strictly across this window based on tape, depth imbalance, delta vs strike, and volatility.`;
+   - If asked for a price projection over this window, project the spot trajectory strictly across this window based on tape, depth imbalance, delta vs strike, and volatility.`);
 
     const systemPrompt = `You are ASI1, the lead quantitative trading strategist and co-pilot embedded in the WE|||CRYPTO terminal HUD.
 You are interacting with the lead human trader. You are currently inferencing using the model: [${effectiveModel}].
