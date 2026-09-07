@@ -887,7 +887,15 @@ function normalizePredictionCardData(raw, fallbackSym = '') {
     if (!sym) return { ...incoming, sym: '' };
 
     const prev = (typeof window !== 'undefined' && window._predictions?.[sym]) || null;
-    if (prev && prev.price === incoming.price && prev.score === incoming.score && prev.backtest === incoming.backtest && prev.holderMetrics === incoming.holderMetrics && prev.signal === incoming.signal) {
+    // Cold-start / feed-drop guard: window._predictions[sym] can hold a bare
+    // engine error object (e.g. { error: 'Insufficient data' }) written before
+    // it ever passed through this function, with no `sym` field. Every field
+    // in the equality check below is `undefined` on both sides in that case,
+    // so the bail-out below would return that sym-less object forever and the
+    // coin's card would vanish entirely (predArr.filter(p => p.sym) drops it)
+    // instead of showing a loading/error state. Require prev.sym so a bad
+    // cached value always gets rebuilt into a real object instead of reused.
+    if (prev && prev.sym && prev.price === incoming.price && prev.score === incoming.score && prev.backtest === incoming.backtest && prev.holderMetrics === incoming.holderMetrics && prev.signal === incoming.signal) {
       return prev; // bail - avoid unnecessary object allocation and DOM layout work
     }
 
