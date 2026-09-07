@@ -216,11 +216,12 @@ function predictionCard(p) {
       !verdictSource.startsWith('safety-') &&
       confNorm >= hcConfThreshold &&
       compositeEdge >= hcEdgeThreshold;
-    const hcBadge = isHighConfidenceOverlayOn()
+    const _isHcOn = typeof isHighConfidenceOverlayOn === 'function' ? isHighConfidenceOverlayOn() : (window.isHighConfidenceOverlayOn?.() ?? false);
+    const hcBadge = _isHcOn
       ? `<span class="pred-source-badge ${hcPass ? 'polymarket-align' : 'polymarket-fade'}" title="Advisory overlay only; does not alter model verdict routing">${hcPass ? '✅ HC PASS' : '⏸ HC HOLD'}</span>`
       : '';
     const hcRationale = (() => {
-      if (!isHighConfidenceOverlayOn()) return '';
+      if (!_isHcOn) return '';
       if (hcPass) {
         return `High-confidence overlay: PASS (conf ${Math.round(confNorm * 100)}%, edge ${compositeEdge.toFixed(2)}).`;
       }
@@ -351,10 +352,11 @@ function predictionCard(p) {
     const liquidityMeta = ind.liquidityDepth?.meta || null;
     const fmtDepthImb = value => Number.isFinite(Number(value)) ? `${Number(value) >= 0 ? '+' : ''}${(Number(value) * 100).toFixed(0)}%` : '—';
     const depthClass = value => Number(value) > 0.12 ? 'bull' : Number(value) < -0.12 ? 'bear' : 'flat';
+    const _fmtUsd = typeof fmtCompactUsd === 'function' ? fmtCompactUsd : (window.fmtCompactUsd || (n => '$' + Number(n||0).toLocaleString()));
     const depthRows = depthMeta ? `
       <div class="ind-item"><span class="ind-name">Depth 10/20</span><span class="ind-val ${depthClass(depthMeta.rawImbalance)}">10L ${fmtDepthImb(depth10?.imbalance)} / 20L ${fmtDepthImb(depth20?.imbalance)}</span></div>
       <div class="ind-item"><span class="ind-name">Imb Velocity</span><span class="ind-val ${depthClass(velocityMeta?.value)}">${velocityMeta?.band || 'stable'} · ${fmtDepthImb(velocityMeta?.value)}</span></div>
-      <div class="ind-item"><span class="ind-name">Liquidity</span><span class="ind-val ${liquidityMeta?.band === 'fragile' || liquidityMeta?.band === 'thin' ? 'bear' : liquidityMeta?.band === 'deep' ? 'bull' : 'flat'}">${liquidityMeta?.band || 'unknown'} · 20L ${fmtCompactUsd(liquidityMeta?.notional20)}</span></div>
+      <div class="ind-item"><span class="ind-name">Liquidity</span><span class="ind-val ${liquidityMeta?.band === 'fragile' || liquidityMeta?.band === 'thin' ? 'bear' : liquidityMeta?.band === 'deep' ? 'bull' : 'flat'}">${liquidityMeta?.band || 'unknown'} · 20L ${_fmtUsd(liquidityMeta?.notional20)}</span></div>
     ` : '';
 
     function indClass(sig) { return sig > 0.15 ? 'bull' : sig < -0.15 ? 'bear' : 'flat'; }
@@ -451,7 +453,11 @@ function predictionCard(p) {
       const _closeTimeRow = _poly15m?.closeTime ?? _k15m?.closeTime;
       const closeMs = _closeTimeRow ? new Date(_closeTimeRow).getTime() : defaultCloseMs;
       const msl = closeMs - Date.now();
-      const closeUtc4 = formatUtc4Time(closeMs);
+      const _fmtUtc4 = typeof formatUtc4Time === 'function' ? formatUtc4Time : (window.formatUtc4Time || ((input) => {
+        const ms = typeof input === 'number' ? input : new Date(input).getTime();
+        return Number.isFinite(ms) ? new Date(ms - 14400000).toISOString().slice(11, 19) : '—';
+      }));
+      const closeUtc4 = _fmtUtc4(closeMs);
       if (msl > 0) {
         const ts = Math.floor(msl / 1000);
         countdown = ` <span class="k15-expiry" data-close-ms="${closeMs}">⏱ ${Math.floor(ts / 60)}m${String(ts % 60).padStart(2, '0')}s · UTC-4 ${closeUtc4}</span>`;
@@ -1380,91 +1386,101 @@ function buildMarketDebugPanel() {
 
 function buildQuickDecisionPanel(predArr) {
     if (!predArr || predArr.length === 0) return '';
+    try {
+      const pCoins = (typeof window !== 'undefined' && Array.isArray(window.PREDICTION_COINS))
+        ? window.PREDICTION_COINS
+        : (typeof PREDICTION_COINS !== 'undefined' && Array.isArray(PREDICTION_COINS) ? PREDICTION_COINS : []);
+      const coinWeights = (typeof window !== 'undefined' && window.COIN_WEIGHT)
+        || (typeof COIN_WEIGHT !== 'undefined' ? COIN_WEIGHT : { BTC: 'heavy', ETH: 'heavy', SOL: 'mid', XRP: 'mid', BNB: 'mid', DOGE: 'light', HYPE: 'light' });
 
-    const ordered = PREDICTION_COINS
-      .map(c => predArr.find(p => p.sym === c.sym))
-      .filter(Boolean);
+      const ordered = pCoins
+        .map(c => predArr.find(p => p.sym === c.sym))
+        .filter(Boolean);
 
-    let upCount = 0, downCount = 0, neutralCount = 0;
+      let upCount = 0, downCount = 0, neutralCount = 0;
 
-    const cards = ordered.map(pred => {
-      const dir = _safePredictionDirection(pred);
-      const dirClass = dir > 0 ? 'up' : dir < 0 ? 'down' : 'neutral';
-      const arrow = dir > 0 ? '▲' : dir < 0 ? '▼' : '→';
-      const label = dir > 0 ? 'UP' : dir < 0 ? 'DOWN' : 'FLAT';
-      const score = Number.isFinite(pred.score) ? (pred.score > 0 ? '+' : '') + pred.score.toFixed(2) : '—';
-      const horizon = pred.backtest?.summary?.preferredHorizon ? `${pred.backtest.summary.preferredHorizon}m` : '';
-      const mkt = pred.indicators?.mktSentiment;
-      const kPct = mkt?.kalshi != null ? Math.round(mkt.kalshi * 100) : null;
-      const pPct = mkt?.poly != null ? Math.round(mkt.poly * 100) : null;
-      const mktRow = (kPct != null || pPct != null) ? `
-        <div class="dc-mkt-row">
-          ${kPct != null ? `<span class="dc-badge-k">K:${kPct}%</span>` : ''}
-          ${pPct != null ? `<span class="dc-badge-p">P:${pPct}%</span>` : ''}
-        </div>` : '';
+      const cards = ordered.map(pred => {
+        const dir = _safePredictionDirection(pred);
+        const dirClass = dir > 0 ? 'up' : dir < 0 ? 'down' : 'neutral';
+        const arrow = dir > 0 ? '▲' : dir < 0 ? '▼' : '→';
+        const label = dir > 0 ? 'UP' : dir < 0 ? 'DOWN' : 'FLAT';
+        const score = Number.isFinite(pred.score) ? (pred.score > 0 ? '+' : '') + pred.score.toFixed(2) : '—';
+        const horizon = pred.backtest?.summary?.preferredHorizon ? `${pred.backtest.summary.preferredHorizon}m` : '';
+        const mkt = pred.indicators?.mktSentiment;
+        const kPct = mkt?.kalshi != null ? Math.round(mkt.kalshi * 100) : null;
+        const pPct = mkt?.poly != null ? Math.round(mkt.poly * 100) : null;
+        const mktRow = (kPct != null || pPct != null) ? `
+          <div class="dc-mkt-row">
+            ${kPct != null ? `<span class="dc-badge-k">K:${kPct}%</span>` : ''}
+            ${pPct != null ? `<span class="dc-badge-p">P:${pPct}%</span>` : ''}
+          </div>` : '';
 
-      // Ground state synthesis for this coin
-      const coin = PREDICTION_COINS.find(c => c.sym === pred.sym);
-      const wClass = COIN_WEIGHT[pred.sym] || 'light';
-      const cfmSnap = window.CFMEngine?.getAll?.()?.[pred.sym];
-      const gsVals = cfmSnap ? {
-        ...cfmSnap,
-        _emaCross: pred.indicators?.ema?.value ?? 0,
-        _obvSlope: pred.indicators?.obv?.slope ?? 0,
-        _volRatio: pred.indicators?.volume?.ratio ?? 1,
-        _bookImbal: pred.indicators?.book?.imbalance ?? 0,
-        _aggrBuy: pred.indicators?.flow?.buyRatio ?? 50,
-        _funding: pred.derivatives?.funding ?? 0,
-        _cvdSlope: pred.cvd?.slope ?? 0,
-        _squeezeScore: pred.squeeze ? (pred.squeeze.severity === 'high' ? 2 : 1) : 0,
-        _squeezeType: pred.squeeze?.type ?? null,
-        _cbPremium: cfmSnap.sources?.CB > 0 && cfmSnap.cfmRate > 0 ? ((cfmSnap.sources.CB - cfmSnap.cfmRate) / cfmSnap.cfmRate) * 100 : 0,
-        _mktConsensus: window.PredictionMarkets?.getCoin(pred.sym)?.combinedProb ?? null,
-        _xSentiment: window.SocialSentiment?.getCoin(pred.sym)?.score ?? null,
-      } : null;
-      const gs = gsVals ? computeGroundState(gsVals, pred, wClass) : null;
-      const eq = gs ? computeEntryQuality(gs, detectMarketRegime(pred), pred) : null;
+        // Ground state synthesis for this coin
+        const coin = pCoins.find(c => c.sym === pred.sym);
+        const wClass = coinWeights[pred.sym] || 'light';
+        const cfmSnap = window.CFMEngine?.getAll?.()?.[pred.sym];
+        const gsVals = cfmSnap ? {
+          ...cfmSnap,
+          _emaCross: pred.indicators?.ema?.value ?? 0,
+          _obvSlope: pred.indicators?.obv?.slope ?? 0,
+          _volRatio: pred.indicators?.volume?.ratio ?? 1,
+          _bookImbal: pred.indicators?.book?.imbalance ?? 0,
+          _aggrBuy: pred.indicators?.flow?.buyRatio ?? 50,
+          _funding: pred.derivatives?.funding ?? 0,
+          _cvdSlope: pred.cvd?.slope ?? 0,
+          _squeezeScore: pred.squeeze ? (pred.squeeze.severity === 'high' ? 2 : 1) : 0,
+          _squeezeType: pred.squeeze?.type ?? null,
+          _cbPremium: cfmSnap.sources?.CB > 0 && cfmSnap.cfmRate > 0 ? ((cfmSnap.sources.CB - cfmSnap.cfmRate) / cfmSnap.cfmRate) * 100 : 0,
+          _mktConsensus: window.PredictionMarkets?.getCoin(pred.sym)?.combinedProb ?? null,
+          _xSentiment: window.SocialSentiment?.getCoin(pred.sym)?.score ?? null,
+        } : null;
+        const gs = gsVals ? computeGroundState(gsVals, pred, wClass) : null;
+        const eq = gs ? computeEntryQuality(gs, detectMarketRegime(pred), pred) : null;
 
-      const gsRow = gs ? `
-        <div class="dc-gs-row">
-          <span class="dc-gs-score ${gs.dir}" title="Ground state: ${gs.stateLabel}">${gs.dir === 'up' ? '▲' : gs.dir === 'down' ? '▼' : '—'} ${gs.score >= 0 ? '+' : ''}${gs.score.toFixed(2)}</span>
-          <span class="gs-grade ${eq?.cls || 'wait'}">${eq?.label || '—'}</span>
-          ${gs.conflicted ? `<span class="dc-conflict">⚠ CONFLICT</span>` : ''}
-        </div>` : '';
+        const gsRow = gs ? `
+          <div class="dc-gs-row">
+            <span class="dc-gs-score ${gs.dir}" title="Ground state: ${gs.stateLabel}">${gs.dir === 'up' ? '▲' : gs.dir === 'down' ? '▼' : '—'} ${gs.score >= 0 ? '+' : ''}${gs.score.toFixed(2)}</span>
+            <span class="gs-grade ${eq?.cls || 'wait'}">${eq?.label || '—'}</span>
+            ${gs.conflicted ? `<span class="dc-conflict">⚠ CONFLICT</span>` : ''}
+          </div>` : '';
 
-      const { primary, secondary } = getDecisionRationale(pred);
+        const { primary, secondary } = getDecisionRationale(pred);
 
-      if (dir > 0) upCount++; else if (dir < 0) downCount++; else neutralCount++;
+        if (dir > 0) upCount++; else if (dir < 0) downCount++; else neutralCount++;
+
+        return `
+          <div class="decision-card ${dirClass}${gs?.conflicted ? ' conflicted' : ''}" data-scroll-pred="${pred.sym}" title="${pred.sym} — ${label}  score ${score}">
+            <span class="dc-sym">${pred.sym}</span>
+            <span class="dc-arrow">${arrow}</span>
+            <span class="dc-label">${label}</span>
+            <span class="dc-score">${score}</span>
+            ${horizon ? `<span class="dc-horizon">${horizon}</span>` : ''}
+            ${mktRow}
+            ${gsRow}
+            ${primary ? `<span class="dc-rationale-primary">${primary}</span>` : ''}
+            ${secondary ? `<span class="dc-rationale-secondary">${secondary}</span>` : ''}
+            ${pred.llm?.narration ? `<span class="dc-rationale-llm" style="color:var(--color-primary); font-style:italic; font-size: 0.9em; display:block; margin-top:4px;">✨ ${pred.llm.narration}</span>` : ''}
+          </div>`;
+      }).join('');
 
       return `
-        <div class="decision-card ${dirClass}${gs?.conflicted ? ' conflicted' : ''}" data-scroll-pred="${pred.sym}" title="${pred.sym} — ${label}  score ${score}">
-          <span class="dc-sym">${pred.sym}</span>
-          <span class="dc-arrow">${arrow}</span>
-          <span class="dc-label">${label}</span>
-          <span class="dc-score">${score}</span>
-          ${horizon ? `<span class="dc-horizon">${horizon}</span>` : ''}
-          ${mktRow}
-          ${gsRow}
-          ${primary ? `<span class="dc-rationale-primary">${primary}</span>` : ''}
-          ${secondary ? `<span class="dc-rationale-secondary">${secondary}</span>` : ''}
-          ${pred.llm?.narration ? `<span class="dc-rationale-llm" style="color:var(--color-primary); font-style:italic; font-size: 0.9em; display:block; margin-top:4px;">✨ ${pred.llm.narration}</span>` : ''}
-        </div>`;
-    }).join('');
-
-    return `
-      <div class="decision-band">
-        <div class="decision-band-header">
-          <span class="decision-band-title">⚡ Market Calls</span>
-          <div class="decision-band-tally">
-            <span class="tally-up">${upCount} ▲ UP</span>
-            <span class="tally-down">${downCount} ▼ DOWN</span>
-            <span class="tally-flat">${neutralCount} → FLAT</span>
+        <div class="decision-band">
+          <div class="decision-band-header">
+            <span class="decision-band-title">⚡ Market Calls</span>
+            <div class="decision-band-tally">
+              <span class="tally-up">${upCount} ▲ UP</span>
+              <span class="tally-down">${downCount} ▼ DOWN</span>
+              <span class="tally-flat">${neutralCount} → FLAT</span>
+            </div>
           </div>
-        </div>
-        <div class="decision-band-coins">
-          ${cards}
-        </div>
-      </div>`;
+          <div class="decision-band-coins">
+            ${cards}
+          </div>
+        </div>`;
+    } catch (err) {
+      console.error('[buildQuickDecisionPanel] Error:', err);
+      return '';
+    }
   }
 
 function getDecisionRationale(pred) {
@@ -1734,12 +1750,14 @@ function evaluateSignal(orb, raw, vals = {}) {
 
 function buildCoinPeriodicTable(coin, cfm, pred) {
     const trendColor = cfm.trend === 'rising' ? 'var(--color-green)' : cfm.trend === 'falling' ? 'var(--color-red)' : 'var(--color-text-muted)';
-    const srcKeys = Object.keys(cfm.sources || {});
-    const weightClass = COIN_WEIGHT[coin.sym] || 'light';
-    const coinRank = WEIGHT_RANK[weightClass];
+    const coinWeights = (typeof window !== 'undefined' && window.COIN_WEIGHT) || (typeof COIN_WEIGHT !== 'undefined' ? COIN_WEIGHT : {});
+    const weightRanks = (typeof window !== 'undefined' && window.WEIGHT_RANK) || (typeof WEIGHT_RANK !== 'undefined' ? WEIGHT_RANK : { heavy: 3, mid: 2, light: 1 });
+    const orbitalAccess = (typeof window !== 'undefined' && window.ORBITAL_ACCESS) || (typeof ORBITAL_ACCESS !== 'undefined' ? ORBITAL_ACCESS : { all: 1, mid: 2, heavy: 3 });
+    const weightClass = coinWeights[coin.sym] || 'light';
+    const coinRank = weightRanks[weightClass] || 1;
 
-    const activeOrbitals = SUBORBITALS.filter(orb => {
-      const required = ORBITAL_ACCESS[orb.weight] || 1;
+    const activeOrbitals = (typeof SUBORBITALS !== 'undefined' ? SUBORBITALS : []).filter(orb => {
+      const required = orbitalAccess[orb.weight] || 1;
       return coinRank >= required;
     });
 
@@ -1883,14 +1901,17 @@ function buildCoinPeriodicTable(coin, cfm, pred) {
             ${partitionCards}
             ${sourceCards}
           </div>
-          ${cfm.dexMeta ? `
+          ${cfm.dexMeta ? (() => {
+            const _fmtUsd = typeof fmtCompactUsd === 'function' ? fmtCompactUsd : (window.fmtCompactUsd || (n => '$' + Number(n||0).toLocaleString()));
+            return `
             <div class="cfm-detail-strip">
               <span class="screener-chip">${cfm.dexMeta.chain || 'dex'} / ${cfm.dexMeta.dex || 'aggregated'}</span>
               <span class="screener-chip">${cfm.dexMeta.pair || 'pair n/a'}</span>
-              <span class="screener-chip">DEX Vol ${fmtCompactUsd(cfm.dexMeta.vol)}</span>
-              <span class="screener-chip">DEX Liq ${fmtCompactUsd(cfm.dexMeta.liq)}</span>
+              <span class="screener-chip">DEX Vol ${_fmtUsd(cfm.dexMeta.vol)}</span>
+              <span class="screener-chip">DEX Liq ${_fmtUsd(cfm.dexMeta.liq)}</span>
             </div>
-          ` : ''}
+          `;
+          })() : ''}
         </div>
       </div>
     `;
@@ -2053,13 +2074,17 @@ function computeGroundState(vals, pred, weightClass) {
   }
 
 function buildOpportunitiesPanel(cfmAll, predAll) {
+    const pCoins = (typeof PREDICTION_COINS !== 'undefined' && Array.isArray(PREDICTION_COINS))
+      ? PREDICTION_COINS
+      : (Array.isArray(window?.PREDICTION_COINS) ? window.PREDICTION_COINS : []);
+
     const allSignals = [];
     const coinEdges = {};
 
     const polymarketIntents = window.PolymarketOrchestrator?.update(predAll, cfmAll) ?? {};
 
     try {
-      PREDICTION_COINS.forEach(coin => {
+      pCoins.forEach(coin => {
         const ki = polymarketIntents[coin.sym];
         if (!ki) return;
         maybePlayContractArrivalBell(coin.sym, ki);
@@ -2106,7 +2131,7 @@ function buildOpportunitiesPanel(cfmAll, predAll) {
     } catch (orchLogErr) { console.warn('[orchLog]', orchLogErr.message); }
 
     if (window.DataLogger) {
-      PREDICTION_COINS.forEach(coin => {
+      pCoins.forEach(coin => {
         const pred = predAll[coin.sym];
         const cfm = cfmAll[coin.sym];
         if (!pred || !cfm || cfm.cfmRate === 0) return;
@@ -2136,8 +2161,10 @@ function buildOpportunitiesPanel(cfmAll, predAll) {
       const edge = calcEdge(coin.sym, cfm, pred);
       if (edge) coinEdges[coin.sym] = edge;
 
-      const wc = COIN_WEIGHT[coin.sym] || 'light';
-      const rank = WEIGHT_RANK[wc];
+      const coinWeights = (typeof window !== 'undefined' && window.COIN_WEIGHT) || (typeof COIN_WEIGHT !== 'undefined' ? COIN_WEIGHT : {});
+      const weightRanks = (typeof window !== 'undefined' && window.WEIGHT_RANK) || (typeof WEIGHT_RANK !== 'undefined' ? WEIGHT_RANK : { heavy: 3, mid: 2, light: 1 });
+      const wc = coinWeights[coin.sym] || 'light';
+      const rank = weightRanks[wc] || 1;
       const ind = pred?.indicators || {};
       const dexMeta = cfm.dexMeta || {};
       const cbPrice = cfm.sources?.CB || 0;

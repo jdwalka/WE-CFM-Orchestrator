@@ -81,7 +81,9 @@ function startCountdownTicker() {
   }
 
 function updateAccuracyBadge() {
-    const stats = getPredAccuracy(null, 50);
+    const getAccFn = typeof getPredAccuracy === 'function' ? getPredAccuracy : (typeof window.getPredAccuracy === 'function' ? window.getPredAccuracy : null);
+    if (!getAccFn) return;
+    const stats = getAccFn(null, 50);
     const el = document.getElementById('pred-accuracy-badge');
     if (!el || !stats) return;
     const color = stats.accuracy >= 60 ? 'var(--color-up)' : stats.accuracy >= 45 ? 'var(--color-gold)' : 'var(--color-down)';
@@ -244,26 +246,31 @@ function posneg(n) { return n >= 0 ? 'pos' : 'neg'; }
 function coinColor(sym) { return COIN_COLORS[sym] || '#7880a0'; }
 
 function coinIcon(sym) {
-    if (_iconCache.has(sym)) return _iconCache.get(sym);
+    const iconCache = window._iconCache || (typeof _iconCache !== 'undefined' ? _iconCache : null);
+    const iconFetchQueue = window._iconFetchQueue || (typeof _iconFetchQueue !== 'undefined' ? _iconFetchQueue : null);
 
-    const pc = PREDICTION_COINS?.find(c => c.sym === sym);
-    const hold = typeof PORTFOLIO_HOLDINGS !== 'undefined' ? PORTFOLIO_HOLDINGS?.find(h => h.sym === sym) : null;
-    const textFb = pc?.icon || hold?.icon || sym.slice(0, 2);
+    if (iconCache?.has(sym)) return iconCache.get(sym);
+
+    const coinsList = window.PREDICTION_COINS || (typeof PREDICTION_COINS !== 'undefined' ? PREDICTION_COINS : []);
+    const holdingsList = window.PORTFOLIO_HOLDINGS || (typeof PORTFOLIO_HOLDINGS !== 'undefined' ? PORTFOLIO_HOLDINGS : []);
+    const pc = coinsList?.find(c => c.sym === sym);
+    const hold = holdingsList?.find(h => h.sym === sym);
+    const textFb = pc?.icon || hold?.icon || (sym ? sym.slice(0, 2) : '??');
 
     // Waterfall: CoinGecko small (best quality) → CoinCap (Coinbase-affiliated, no rate limit)
     const sources = [
       ...(pc?.iconSources || []),
-      `https://assets.coincap.io/assets/icons/${sym.toLowerCase()}@2x.png`,
+      `https://assets.coincap.io/assets/icons/${sym?.toLowerCase()}@2x.png`,
     ].filter(Boolean);
 
     // Always render text fallback immediately — zero-dependency, works offline
     const html = `<span class="ci-wrap" data-sym="${sym}"><span class="ci-text">${textFb}</span></span>`;
-    _iconCache.set(sym, html);
+    if (iconCache) iconCache.set(sym, html);
 
     // Async: fetch image via window.fetch (goes through proxy shim in Electron)
     // Once resolved, inject blob URL into all live DOM nodes and update cache
-    if (sources.length && !_iconFetchQueue.has(sym)) {
-      _iconFetchQueue.add(sym);
+    if (sources.length && iconFetchQueue && !iconFetchQueue.has(sym)) {
+      iconFetchQueue.add(sym);
       (async () => {
         for (const src of sources) {
           try {
@@ -283,19 +290,19 @@ function coinIcon(sym) {
               }
             });
             // Update cache: future renders get the img straight away
-            _iconCache.set(sym,
-              `<span class="ci-wrap" data-sym="${sym}">` +
-              `<span class="ci-text">${textFb}</span>` +
-              `<img class="ci-img ci-loaded" src="${blobUrl}" alt="${sym}">` +
-              `</span>`
-            );
+            if (iconCache) {
+              iconCache.set(sym,
+                `<span class="ci-wrap" data-sym="${sym}">` +
+                `<span class="ci-text">${textFb}</span>` +
+                `<img class="ci-img ci-loaded" src="${blobUrl}" alt="${sym}">` +
+                `</span>`
+              );
+            }
             return; // done — skip remaining sources
           } catch { /* try next source */ }
         }
-
-})();
+      })();
     }
-
     return html;
   }
 
@@ -512,9 +519,11 @@ function renderMarkets5M() {
     }
     function _countdown(iso) {
       if (!iso) return '—';
-      const closeMs = new Date(iso).getTime();
-      const ms = closeMs - Date.now();
-      const closeUtc4 = formatUtc4Time(closeMs);
+      const _fmtUtc4 = typeof formatUtc4Time === 'function' ? formatUtc4Time : (window.formatUtc4Time || ((input) => {
+        const ms = typeof input === 'number' ? input : new Date(input).getTime();
+        return Number.isFinite(ms) ? new Date(ms - 14400000).toISOString().slice(11, 19) : '—';
+      }));
+      const closeUtc4 = _fmtUtc4(closeMs);
       if (ms <= 0) return 'Settling…';
       const s = Math.floor(ms / 1000);
       const m = Math.floor(s / 60);
@@ -912,9 +921,10 @@ function renderMarkets5M() {
       if (!ft) return '';
       
       const fd = ft.diagnostics || {};
-      const h5Score = is15m
-        ? (p.horizonScores?.h15 ?? (Number.isFinite(Number(p?.score)) ? Number(p.score) * 0.6 : 0))
+      const rawH5 = is15m
+        ? (p.horizonScores?.h15 ?? ft.horizonScores?.h15 ?? (Number.isFinite(Number(p?.score)) ? Number(p.score) * 0.6 : 0))
         : (p.horizonScores?.h5 ?? ft.horizonScores?.h5 ?? 0);
+      const h5Score = Number.isFinite(Number(rawH5)) ? Number(rawH5) : 0;
       const driftDir5 = fd.driftDir5 ?? 0;
       const streak5 = fd.streak5 ?? 0;
       const last5Aligned = fd.last5Aligned ?? false;
@@ -1245,7 +1255,8 @@ function renderMarkets5M() {
 
     // ── Per-coin cards ──────────────────────────────────────────────────
     const cards = COINS_5M.map(sym => {
-      const coin = pm[sym] || {};
+      try {
+        const coin = pm[sym] || {};
       const p5 = is15m ? (coin.poly15m || coin.poly5m) : coin.poly5m;
       const polyAll = coin.polyMarkets || [];   // all Poly markets for coin
       const poly5m = is15m ? (coin.poly15mMkts || coin.polyMarkets || []) : (coin.poly5mMkts || []);   // short-term Poly markets
@@ -1446,6 +1457,15 @@ function renderMarkets5M() {
 
         </div>
       `;
+      } catch (cardErr) {
+        console.warn(`[renderMarkets5M] Error rendering coin ${sym}:`, cardErr);
+        return `
+          <div class="card" style="border: 1px solid rgba(255,255,255,0.08); background: var(--color-surface); border-radius: 8px; padding: 14px; display:flex; flex-direction:column; justify-content:space-between;">
+            <div style="font-weight:700; color:var(--color-text-muted);">${sym} (${is15m ? '15m' : '5m'})</div>
+            <div style="font-size:12px; color:var(--color-text-faint); margin: 8px 0;">Market data initializing...</div>
+          </div>
+        `;
+      }
     }).join('');
 
     content.innerHTML = `
@@ -1489,8 +1509,18 @@ function renderMarkets5M() {
     window._p5EmbedCache = window._p5EmbedCache || new Map();
     COINS_5M.forEach((sym) => {
       const freshFrame = document.getElementById(`p5emb-${sym}`);
-      if (freshFrame) {
-        window._p5EmbedCache.set(sym, { src: freshFrame.getAttribute('src'), node: freshFrame });
+      if (!freshFrame) return;
+      const cached = window._p5EmbedCache.get(sym);
+      if (cached && cached.src === freshFrame.getAttribute('src') && cached.node) {
+        freshFrame.replaceWith(cached.node);
+      }
+    });
+
+    // Update cache with the active nodes (either restored or newly created)
+    COINS_5M.forEach((sym) => {
+      const activeFrame = document.getElementById(`p5emb-${sym}`);
+      if (activeFrame) {
+        window._p5EmbedCache.set(sym, { src: activeFrame.getAttribute('src'), node: activeFrame });
       }
     });
 
@@ -3338,7 +3368,7 @@ async function renderCFM() {
       // Also kick off predictions in background
       if (!predsLoaded) {
         startPredictionRun()
-          .then(() => { predsLoaded = true; _lastPredictionRunTs = Date.now(); snapshotPredictions(); })
+          .then(() => { predsLoaded = true; _lastPredictionRunTs = Date.now(); (typeof snapshotPredictions === 'function' ? snapshotPredictions : window?.snapshotPredictions)?.(); })
           .catch(() => { });
       }
     }
@@ -3602,6 +3632,18 @@ function renderSuborbital(orb, vals, coinColor) {
 
 async function renderPredictions() {
     ensurePredictionsScrollTracker();
+
+    // 15m Hydration Kick
+    // Ensure 15m Polymarket odds fetch immediately if missing, rather than waiting for boundary clock
+    if (window.PredictionMarkets?.refreshPoly15M && Date.now() - (window._pred15mHydrationKickTs || 0) > 8_000) {
+      const pm = window.PredictionMarkets.getAll() || {};
+      const hasAnyPoly15m = Object.values(pm).some(coin => coin?.poly15m);
+      if (!hasAnyPoly15m) {
+        window._pred15mHydrationKickTs = Date.now();
+        window.PredictionMarkets.refreshPoly15M('pred-mount').catch(() => {});
+      }
+    }
+
     const _myRV = _rv; // capture version — bail after any await if stale
     const nowTs = Date.now();
     const scrollTopSnapshot = content?.scrollTop || 0;
@@ -3639,7 +3681,7 @@ async function renderPredictions() {
             _predictionEngineRetryTimer = null;
           }
           predsLoaded = true;
-          snapshotPredictions();
+          (typeof snapshotPredictions === 'function' ? snapshotPredictions : window?.snapshotPredictions)?.();
           if (currentView === 'predictions') render();
         })
         .catch(e => {
@@ -3679,9 +3721,16 @@ async function renderPredictions() {
       cleanupPredScrollListener();
       return;
     }
-    const coinOrder = new Map(PREDICTION_COINS.map((coin, index) => [coin.sym, index]));
+    const pCoins = (typeof PREDICTION_COINS !== 'undefined' && Array.isArray(PREDICTION_COINS))
+      ? PREDICTION_COINS
+      : (Array.isArray(window?.PREDICTION_COINS) ? window.PREDICTION_COINS : []);
+    const pHorizons = (typeof PREDICTION_HORIZONS !== 'undefined' && Array.isArray(PREDICTION_HORIZONS))
+      ? PREDICTION_HORIZONS
+      : (Array.isArray(window?.PREDICTION_HORIZONS) ? window.PREDICTION_HORIZONS : [5, 15]);
+
+    const coinOrder = new Map(pCoins.map((coin, index) => [coin.sym, index]));
     const predBySym = new Map();
-    PREDICTION_COINS.forEach(coin => {
+    pCoins.forEach(coin => {
       predBySym.set(
         coin.sym,
         normalizePredictionCardData({ ...coin, ...(preds?.[coin.sym] || {}), sym: coin.sym }, coin.sym)
@@ -3729,12 +3778,12 @@ async function renderPredictions() {
       return acc;
     }, {});
     const dominantAdvancedRegime = Object.entries(regimeCounts).sort((a, b) => b[1] - a[1])[0]?.[0] || (avgReliability >= 55 ? 'NORMAL' : 'CALM');
-    const preferredHorizonCounts = PREDICTION_HORIZONS.map(horizonMin => ({
+    const preferredHorizonCounts = pHorizons.map(horizonMin => ({
       horizonMin,
       count: backtests.filter(bt => (bt.summary?.preferredHorizon || 5) === horizonMin).length,
     }));
     const preferredLeader = preferredHorizonCounts.slice().sort((a, b) => b.count - a.count)[0] || { horizonMin: 5, count: 0 };
-    const horizonSummaries = PREDICTION_HORIZONS.map(horizonMin => {
+    const horizonSummaries = pHorizons.map(horizonMin => {
       const key = `h${horizonMin}`;
       const active = backtests
         .map(bt => bt[key])
@@ -3765,6 +3814,10 @@ async function renderPredictions() {
     // Save collapsible state before wiping DOM
     const _debugOpen = document.getElementById('market-debug-panel')?.open ?? false;
 
+    const currentSession = session?.current || { scalp: false, label: 'Standard Session', desc: 'Market open' };
+    const nextScalp = session?.nextScalp || { label: 'Active', desc: 'Continuous trading' };
+    const minsToNext = session?.minsToNext ?? 0;
+
     content.innerHTML = `
       ${!predsLoaded ? `<div style="display:flex;align-items:center;gap:10px;padding:8px 16px;background:rgba(255,193,7,0.1);border:1px solid rgba(255,193,7,0.3);border-radius:6px;margin-bottom:12px;font-size:13px;color:#ffc107"><div style="width:16px;height:16px;border:2px solid rgba(255,193,7,0.3);border-top-color:#ffc107;border-radius:50%;animation:spin 0.8s linear infinite;flex-shrink:0"></div><span>Scoring UP/DOWN markets\u2026</span></div>` : ''}
       ${buildQuickDecisionPanel(predArr)}
@@ -3776,15 +3829,15 @@ async function renderPredictions() {
 
       <!-- Session + Scalp Timing Bar -->
       <div class="kpi-bar" style="margin-bottom:14px">
-        <div class="kpi-card" style="border-left:3px solid ${session.current.scalp ? 'var(--color-green)' : 'var(--color-text-faint)'}">
+        <div class="kpi-card" style="border-left:3px solid ${currentSession.scalp ? 'var(--color-green)' : 'var(--color-text-faint)'}">
           <div class="kpi-label">Current Session</div>
-          <div class="kpi-val ${session.current.scalp ? 'green' : ''}" style="font-size:15px">${session.current.label}</div>
-          <div class="kpi-sub">${session.current.desc}</div>
+          <div class="kpi-val ${currentSession.scalp ? 'green' : ''}" style="font-size:15px">${escapeHtml(currentSession.label || 'Active')}</div>
+          <div class="kpi-sub">${escapeHtml(currentSession.desc || '')}</div>
         </div>
         <div class="kpi-card">
           <div class="kpi-label">Next Scalp Window</div>
-          <div class="kpi-val blue" style="font-size:15px">${session.nextScalp.label}</div>
-          <div class="kpi-sub">in ${session.minsToNext} min &middot; ${session.nextScalp.desc.split('\u2014')[0]}</div>
+          <div class="kpi-val blue" style="font-size:15px">${escapeHtml(nextScalp.label || 'Active')}</div>
+          <div class="kpi-sub">in ${minsToNext} min &middot; ${escapeHtml(String(nextScalp.desc || '').split('\u2014')[0])}</div>
         </div>
         <div class="kpi-card">
           <div class="kpi-label">Market Sentiment</div>
@@ -3892,7 +3945,7 @@ async function renderPredictions() {
           })()}
         </div>
         <div style="display:flex;align-items:center;gap:8px">
-          <button class="btn-sm" id="toggleHighConfidenceOverlay" style="font-size:10px;padding:4px 10px">HC Overlay: ${isHighConfidenceOverlayOn() ? 'ON' : 'OFF'}</button>
+          <button class="btn-sm" id="toggleHighConfidenceOverlay" style="font-size:10px;padding:4px 10px">HC Overlay: ${(typeof isHighConfidenceOverlayOn === 'function' ? isHighConfidenceOverlayOn() : (window.isHighConfidenceOverlayOn?.() ?? false)) ? 'ON' : 'OFF'}</button>
           <button class="btn-sm" id="rerunPreds" style="font-size:10px;padding:4px 10px">Refresh Analysis</button>
         </div>
       </div>
@@ -3937,8 +3990,10 @@ async function renderPredictions() {
     const hcToggleBtn = document.getElementById('toggleHighConfidenceOverlay');
     if (hcToggleBtn) {
       hcToggleBtn.addEventListener('click', () => {
-        const next = !isHighConfidenceOverlayOn();
-        setHighConfidenceOverlayOn(next);
+        const _hcGet = typeof isHighConfidenceOverlayOn === 'function' ? isHighConfidenceOverlayOn : (window.isHighConfidenceOverlayOn || (() => false));
+        const _hcSet = typeof setHighConfidenceOverlayOn === 'function' ? setHighConfidenceOverlayOn : (window.setHighConfidenceOverlayOn || (() => {}));
+        const next = !_hcGet();
+        _hcSet(next);
         renderPredictions();
       });
     }

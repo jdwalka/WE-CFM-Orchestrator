@@ -3739,6 +3739,7 @@ function polymarketSentiment(markets, sym) {
     refreshPoly60M,
     getFreshRtdsTwap: _getFreshRtdsTwap,
     _getCachedChainlinkCandle,
+    POLY_5M_COIN_SLUGS,
   };
 
   if (window.__WE_TEST__) {

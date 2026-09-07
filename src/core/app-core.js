@@ -387,6 +387,7 @@ function formatUtc4Time(input) {
     if (!Number.isFinite(ms)) return '—';
     return new Date(ms - (4 * 60 * 60 * 1000)).toISOString().slice(11, 19);
   }
+window.formatUtc4Time = formatUtc4Time;
 
 const FILTER_GROUPS = {
     all: { label: 'All', pred: () => true },
@@ -558,15 +559,7 @@ const FEE_PCT = 0;
 
 
 
-const COIN_WEIGHT = {
-    BTC: 'heavy', ETH: 'heavy',
-    SOL: 'mid', XRP: 'mid', BNB: 'mid',
-    DOGE: 'light', HYPE: 'light',
-  };
 
-const WEIGHT_RANK = { heavy: 3, mid: 2, light: 1 };
-
-const ORBITAL_ACCESS = { all: 1, mid: 2, heavy: 3 };
 
 
 
