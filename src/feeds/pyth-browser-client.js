@@ -22,7 +22,7 @@
   // (PYTH_LAZER_TOKEN / PYTH_API / PYTH_NEW*) is NOT valid here -- sending it as
   // a Bearer makes the gateway 401 a request that would have succeeded with no
   // header at all, which is what took the spot feed down. Keep it out entirely.
-  let PYTH_API_KEY = '9AowRQwEELKpsMosei146CTHcxeNoHuSUWuDhGfFxkXZ'; // Pro key
+  let PYTH_API_KEY = '';
   const PRO_KEY_NAMES = ['PYTH_PRO_API_KEY', 'PYTH_HERMES_PRO_KEY', 'HERMES_PRO_API_KEY', 'PYTH_HERMES_TOKEN'];
   function _firstKey(getter) {
     for (const name of PRO_KEY_NAMES) {
