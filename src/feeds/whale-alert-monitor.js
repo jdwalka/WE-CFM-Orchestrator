@@ -289,7 +289,7 @@
         console.warn(`[WhaleAlert] ${chain} unexpected result shape:`, data.result);
       }
       const txs = (Array.isArray(data.result) ? data.result : []).map(tx => ({
-        hash: tx.hash,
+        hash: tx.blockchain_tx_hash || tx.tx_hash || tx.hash,
         timestamp: tx.timestamp,
         amount: tx.amount,
         amount_usd: tx.amount_usd,
