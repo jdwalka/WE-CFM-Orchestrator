@@ -1806,6 +1806,7 @@ async function startJsProxyFallback(port) {
         if (body && body.length) outgoingHeaders['content-length'] = body.length;
 
         const outgoingReq = transport.request({
+          host: parsedUrl.hostname,
           hostname: parsedUrl.hostname,
           servername: parsedUrl.hostname,
           port: parsedUrl.port || (isHttps ? 443 : 80),
@@ -3229,12 +3230,6 @@ function isPathSafe(targetPath) {
   if (realTarget === WORKSPACE_ROOT || realTarget.startsWith(WORKSPACE_ROOT + path.sep)) return true;
   const upper = realTarget.toUpperCase();
   if (upper.includes('\\MY DRIVE') || upper.includes('\\WE-CRYPTO') || upper.includes('\\WECRYPTO') || upper.includes('\\ONEDRIVE')) return true;
-  const localAppData = process.env.LOCALAPPDATA
-    || path.join(process.env.USERPROFILE || process.env.HOME || '', 'AppData', 'Local');
-  const localSpoolRoot = localAppData
-    ? path.resolve(localAppData, 'WECRYP', 'data-spool')
-    : null;
-  if (localSpoolRoot && (realTarget === localSpoolRoot || realTarget.startsWith(localSpoolRoot + path.sep))) return true;
   return false;
 }
 
@@ -4659,8 +4654,7 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
-      webSecurity: true,
-      allowRunningInsecureContent: false
+      webSecurity: false
     }
   });
   global.WECRYPTO_MAIN_WINDOW = win;

@@ -591,13 +591,7 @@
           const res = await window.dataStore.readFile(filePath);
           if (!res?.ok || !res.content) continue;
 
-          let loaded;
-          try {
-            loaded = JSON.parse(res.content);
-          } catch (parseError) {
-            console.warn(`[MultiDriveCache] Skipped invalid cache on ${dirPath}:`, parseError.message);
-            continue;
-          }
+          const loaded = JSON.parse(res.content);
           const now = Date.now();
           const maxAge = 2 * 60 * 60 * 1000;
 
