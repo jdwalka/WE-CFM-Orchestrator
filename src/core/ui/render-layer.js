@@ -414,7 +414,7 @@ function updateMarkets5MLivePrices(prices) {
     for (const sym of ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'BNB', 'HYPE']) {
       const ticker = prices?.[`${sym}USD`];
       const current = Number(ticker?.last);
-      const mkt = is15m ? (markets[sym]?.poly15m || markets[sym]?.poly5m) : markets[sym]?.poly5m;
+      const mkt = is15m ? markets[sym]?.poly15m : markets[sym]?.poly5m;
       const target = Number(mkt?.targetPriceNum ?? mkt?.priceToBeatNum);
       if (!Number.isFinite(current) || current <= 0) continue;
 
@@ -475,7 +475,7 @@ function renderMarkets5M() {
     // dataset, which survives other views overwriting content.innerHTML).
     const fingerprint = COINS_5M.map(s => {
       const b = window.Asi1PreContract?.get?.(s, horizon);
-      const mkt = is15m ? (pm[s]?.poly15m || pm[s]?.poly5m) : pm[s]?.poly5m;
+      const mkt = is15m ? pm[s]?.poly15m : pm[s]?.poly5m;
       return `${s}:${horizon}:${mkt?.slug || ''}:${mkt?.priceToBeatNum ?? mkt?.targetPriceNum ?? ''}:${b?.ts || 0}:${b?.call || ''}`;
     }).join('|');
     const _now5m = Date.now();
@@ -743,7 +743,7 @@ function renderMarkets5M() {
           ` : ''}
           ${(() => {
             try {
-              return window.Asi1PreContract?.renderStripHtml?.(sym, { horizon: '5m', maxNotes: 320 }) || '';
+              return window.Asi1PreContract?.renderStripHtml?.(sym, { horizon, maxNotes: 320 }) || '';
             } catch (_) { return ''; }
           })()}
           ${rationaleBlockHtml || divergenceAlertHtml ? `
@@ -766,7 +766,7 @@ function renderMarkets5M() {
     function _modelProj(sym) {
       const p = pred[sym];
       if (!p) return null;
-      return p.projections?.p15 ?? null;
+      return is15m ? (p.projections?.p15 ?? null) : (p.projections?.p5 ?? null);
     }
     function normalCDF(z) {
       const t = 1 / (1 + 0.2316419 * Math.abs(z));
@@ -795,7 +795,7 @@ function renderMarkets5M() {
 
     function _modelOdds5m(sym) {
       const p = pred[sym];
-      const p5 = is15m ? (pm[sym]?.poly15m || pm[sym]?.poly5m) : pm[sym]?.poly5m;
+      const p5 = is15m ? pm[sym]?.poly15m : pm[sym]?.poly5m;
       const ptb = Number(p5?.targetPriceNum ?? p5?.priceToBeatNum);
       
       // Real-time live price: prioritize live Chainlink 30s TWAP streamed by Polymarket RTDS
@@ -814,7 +814,7 @@ function renderMarkets5M() {
         
         // Momentum score for active horizon
         const hScore = is15m
-          ? (p?.horizonScores?.h15 ?? (Number.isFinite(Number(p?.score)) ? Number(p.score) * 0.6 : 0))
+          ? p?.horizonScores?.h15
           : (p?.horizonScores?.h5 ?? p?.diagnostics?.fastTiming?.horizonScores?.h5 ?? (Number.isFinite(Number(p?.score)) ? Number(p.score) * 0.5 : 0));
         const gap = liveTwap - ptb;
         
@@ -869,7 +869,7 @@ function renderMarkets5M() {
     // Polymarket PTB, or is the PTB-independent directional-lean fallback (path 4).
     // Purely a labeling signal for the UI -- does not change the odds computation.
     function _modelOdds5mIsPtbAnchored(sym) {
-      const p5 = is15m ? (pm[sym]?.poly15m || pm[sym]?.poly5m) : pm[sym]?.poly5m;
+      const p5 = is15m ? pm[sym]?.poly15m : pm[sym]?.poly5m;
       const ptb = Number(p5?.targetPriceNum ?? p5?.priceToBeatNum);
       return Number.isFinite(ptb) && ptb > 0;
     }
@@ -918,16 +918,15 @@ function renderMarkets5M() {
       return `✅ Odds/model aligned: ${marketYes > 50 ? 'UP priced' : 'DOWN priced'}`;
     }
     function _render5mIndicators(sym) {
+      if (is15m) return '';
       const p = pred[sym];
       if (!p) return '';
-      const p5 = is15m ? (pm[sym]?.poly15m || pm[sym]?.poly5m) : pm[sym]?.poly5m;
+      const p5 = pm[sym]?.poly5m;
       const ft = p.diagnostics?.fastTiming;
       if (!ft) return '';
       
       const fd = ft.diagnostics || {};
-      const rawH5 = is15m
-        ? (p.horizonScores?.h15 ?? ft.horizonScores?.h15 ?? (Number.isFinite(Number(p?.score)) ? Number(p.score) * 0.6 : 0))
-        : (p.horizonScores?.h5 ?? ft.horizonScores?.h5 ?? 0);
+      const rawH5 = p.horizonScores?.h5 ?? ft.horizonScores?.h5;
       const h5Score = Number.isFinite(Number(rawH5)) ? Number(rawH5) : 0;
       const driftDir5 = fd.driftDir5 ?? 0;
       const streak5 = fd.streak5 ?? 0;
@@ -986,8 +985,8 @@ function renderMarkets5M() {
              const currentOdds = _modelOdds5m(sym);
              
              const coin = pm[sym] || {};
-             const p5 = is15m ? (coin.poly15m || coin.poly5m) : coin.poly5m;
-             const poly5mMkts = is15m ? (coin.poly15mMkts || coin.polyMarkets || []) : (coin.poly5mMkts || []);
+             const p5 = is15m ? coin.poly15m : coin.poly5m;
+             const poly5mMkts = is15m ? (coin.poly15mMkts || []) : (coin.poly5mMkts || []);
              const stepSec = is15m ? 900 : 300;
              const nextPolyMkt = p5?._windowTs
                ? poly5mMkts.find(m => m.isFuture && m.ts === p5._windowTs + stepSec)
@@ -1261,9 +1260,9 @@ function renderMarkets5M() {
     const cards = COINS_5M.map(sym => {
       try {
         const coin = pm[sym] || {};
-      const p5 = is15m ? (coin.poly15m || coin.poly5m) : coin.poly5m;
+      const p5 = is15m ? coin.poly15m : coin.poly5m;
       const polyAll = coin.polyMarkets || [];   // all Poly markets for coin
-      const poly5m = is15m ? (coin.poly15mMkts || coin.polyMarkets || []) : (coin.poly5mMkts || []);   // short-term Poly markets
+      const poly5m = is15m ? (coin.poly15mMkts || []) : (coin.poly5mMkts || []);   // short-term Poly markets
       const tick = tickers[WATCHLIST.find(w => w.sym === sym)?.instrument] || null;
       const curPx = tick ? price(tick) : null;
       const proj = _modelProj(sym);
