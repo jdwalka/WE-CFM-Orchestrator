@@ -223,15 +223,42 @@ function startWebService() {
 
   app = express();
 
-  // Middleware
+  const resourceCsp = "default-src 'none'; frame-ancestors 'none'; form-action 'none'";
+  const cspDirective = "default-src 'self'; script-src 'self' https://api.fontshare.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://api.fontshare.com; font-src https://fonts.gstatic.com https://api.fontshare.com; img-src 'self' data: https://api.coingecko.com https://assets.coingecko.com https://www.crypto.com; connect-src 'self' http://127.0.0.1:3010 http://localhost:3010 ws://127.0.0.1:3010 ws://localhost:3010 https://api.coingecko.com https://api.coinbase.com https://api.crypto.com https://gamma-api.polymarket.com https://clob.polymarket.com https://api.dexscreener.com https://mempool.space https://eth.blockscout.com https://bsc.blockscout.com https://xrplcluster.com https://api.blockcypher.com https://api.hyperliquid.xyz https://api.binance.com https://api.exchange.coinbase.com https://api.kraken.com https://api.bybit.com https://www.okx.com https://hermes.pyth.network https://pyth.dourolabs.app https://asi1.ai https://fetch-ai.com https://openai.com https://anthropic.com https://x.ai https://deepseek.com https://timeapi.io https://polymarket.com; worker-src 'self'; frame-src https://embed.polymarket.com; frame-ancestors 'none'; object-src 'none'; base-uri 'self'; form-action 'none'";
+  const trustedOrigins = new Set([
+    'https://localhost:3450',
+    'https://127.0.0.1:3450',
+  ]);
+
+  app.disable('x-powered-by');
+  app.use((req, res, next) => {
+    const origin = req.headers.origin;
+    if (origin && trustedOrigins.has(origin)) {
+      res.header('Access-Control-Allow-Origin', origin);
+      res.header('Vary', 'Origin');
+      res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+      res.header('Access-Control-Allow-Headers', 'Content-Type');
+    }
+    res.header('X-Frame-Options', 'DENY');
+    res.header('X-Content-Type-Options', 'nosniff');
+    res.header('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+    res.header('Cross-Origin-Resource-Policy', 'same-origin');
+    res.header('Cross-Origin-Embedder-Policy', 'require-corp');
+    res.header('Cross-Origin-Opener-Policy', 'same-origin');
+    res.header('Referrer-Policy', 'no-referrer');
+    res.header('Content-Security-Policy', req.path === '/' ? cspDirective : resourceCsp);
+    next();
+  });
+
   app.use(express.json());
   app.use(express.static(path.join(__dirname, '../public')));
 
-  app.use((req, res, next) => {
-    res.header('Access-Control-Allow-Origin', '*');
-    res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.header('Access-Control-Allow-Headers', 'Content-Type');
-    next();
+  app.use((req, res) => {
+    res.status(404).send('Not found');
+  });
+
+  app.use((err, req, res, next) => {
+    res.status(err?.status || 500).send('Server error');
   });
 
   // ── API Routes ──────────────────────────────────────────────────────────
