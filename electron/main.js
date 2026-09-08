@@ -2657,7 +2657,8 @@ async function handleAsi1NarrativeRequest(args = {}, defaultModel = 'asi1-ultra'
       {
         model,
         candidateModels: [model], // HUD is a lone wolf: no model cascade, fail fast
-        onlyAccount: process.env.ASI1_PREFERRED_ACCOUNT || 'mauro',
+        onlyAccount: 'leaksnipe',
+        keyRole: model.includes('ultra') ? '15m' : '5m',
         max_tokens: model.includes('ultra') ? 350 : 120,
         temperature: 0.1,
         timeoutMs: model.includes('ultra') ? 25000 : 12000,
@@ -2734,7 +2735,7 @@ ipcMain.handle('asi1:desk-chat', async (_event, args = {}) => {
     const web_search = !!args.web_search;
 
     if (!Asi1Client.hasAsi1Credentials()) {
-      return { ok: false, error: 'ASI1 API key not configured in secrets/ASI1_ICLOUD.txt or environment' };
+      return { ok: false, error: 'ASI1 API key not configured in secrets/ASI1_LEAKSNIPE.txt or environment' };
     }
 
     const promptLower = prompt.toLowerCase();
@@ -2970,7 +2971,8 @@ ${contractRule}`;
         temperature: 0.35,
         reasoning_effort: reasoning_effort !== 'auto' ? reasoning_effort : 'medium',
         web_search,
-        onlyAccount: process.env.ASI1_PREFERRED_ACCOUNT || 'icloud',
+        onlyAccount: 'leaksnipe',
+        keyRole: String(packet.horizon || '').toLowerCase().includes('5m') ? '5m' : '15m',
         timeoutMs: 30000,
       }
     );

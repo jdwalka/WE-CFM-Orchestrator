@@ -1696,8 +1696,8 @@ Use this recall only as context, and prioritize current market snapshot data if 
     const lastProvider = this._lastProvider || this.provider || null;
     const lastModel = this._lastModel || null;
     const asi1Diag = (() => { try { return Asi1Client.getDiagnostics(); } catch (_) { return {}; } })();
-    const currentAccount = asi1Diag.currentAccount || 'maurofanellijr@gmail.com';
-    const currentAccountId = asi1Diag.currentAccountId || 'mauro';
+    const currentAccount = asi1Diag.currentAccount || 'mauro@leaksnipe.win';
+    const currentAccountId = asi1Diag.currentAccountId || 'leaksnipe';
     return {
       enabled: this.enabled,
       provider: lastProvider || this.provider,

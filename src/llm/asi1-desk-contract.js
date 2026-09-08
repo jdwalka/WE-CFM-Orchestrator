@@ -160,7 +160,7 @@
     const defaultDeskModel = (typeof process !== 'undefined' && (process.env.ASI1_DESK_MODEL || process.env.ASI1_MODEL)) || 'asi1-mini';
     return {
       mode: normalizeMode(mode),
-      account_order: ['mauro', 'icloud', 'gitgoin'],
+      account_order: ['leaksnipe'],
       model_for_5m: 'asi1-mini',
       model_for_15m: defaultDeskModel,
       planner_on_5m: false,
@@ -402,7 +402,7 @@
       warnings: warnings,
       _meta: {
         model: selectModel(packet, m),
-        account: selectModel(packet, m) === 'asi1-ultra' ? 'icloud' : 'mauro',
+        account: 'leaksnipe',
         source: 'inferLocal',
       },
     };
