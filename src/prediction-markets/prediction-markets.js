@@ -1702,6 +1702,7 @@
   const POLY5M_PTB_TRUSTED_SOURCES = new Set([
     'polymarket-contract',
     'polymarket-event-page',
+    'polymarket-crypto-price',
     'gamma-market',
     'gamma-market-metadata',
   ]);
@@ -2287,6 +2288,43 @@
     return (entry.candles || []).find(c => c.time === boundarySec) || null;
   }
 
+  const _polyCryptoPriceCache = new Map();
+
+  async function fetchPolymarketContractCryptoPrice(slug) {
+    const slugMatch = slug?.match?.(/^([a-z0-9-]+)-updown-(5m|15m|60m|1h)-(\d+)$/i);
+    if (!slugMatch) return null;
+    const symbolMap = {
+      btc: 'BTC', eth: 'ETH', sol: 'SOL', xrp: 'XRP',
+      doge: 'DOGE', hype: 'HYPE', bnb: 'BNB'
+    };
+    const symbol = symbolMap[slugMatch[1].toLowerCase()];
+    const horizonTag = slugMatch[2].toLowerCase();
+    const startSec = Number(slugMatch[3]);
+    if (!symbol || !Number.isFinite(startSec) || startSec <= 0) return null;
+
+    const cacheKey = `${symbol}:${horizonTag}:${startSec}`;
+    const cached = _polyCryptoPriceCache.get(cacheKey);
+    if (cached && cached.value != null && Date.now() - cached.fetchedAt < 4_000) return cached.value;
+    if (cached && cached.value == null && Date.now() - cached.fetchedAt < 1_000) return null;
+
+    const windowSec = horizonTag === '15m' ? 900 : (horizonTag === '60m' || horizonTag === '1h' ? 3600 : 300);
+    const horizonLiteral = horizonTag === '15m' ? 'fifteen' : ((horizonTag === '60m' || horizonTag === '1h') ? 'hourly' : 'fiveminute');
+    const startIso = new Date(startSec * 1000).toISOString().split('.')[0] + 'Z';
+    const endIso = new Date((startSec + windowSec) * 1000).toISOString().split('.')[0] + 'Z';
+    const url = `https://polymarket.com/api/crypto/crypto-price?symbol=${encodeURIComponent(symbol)}&eventStartTime=${encodeURIComponent(startIso)}&variant=${encodeURIComponent(horizonLiteral)}&endDate=${encodeURIComponent(endIso)}&twapEnabled=true&twapLookbackSeconds=${POLY_TWAP_LOOKBACK_SEC}`;
+    const response = await textFetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151 Safari/537.36',
+        'Accept': 'application/json',
+      },
+    });
+    const data = JSON.parse(response);
+    const openPrice = toPositiveFiniteNumber(data?.openPrice);
+    const value = openPrice != null && openPrice > 0 ? openPrice : null;
+    _polyCryptoPriceCache.set(cacheKey, { value, fetchedAt: Date.now() });
+    return value;
+  }
+
   async function fetchPolymarketPriceToBeat(slug) {
     if (!slug) return null;
     const existingLock = _getPolymarketPriceToBeatLock(slug);
@@ -2307,6 +2345,23 @@
       const horizonTag = slugMatch[2].toLowerCase();
       const startSec = Number(slugMatch[3]);
       if (sym && Number.isFinite(startSec)) {
+        // AUTHORITATIVE: Polymarket's own crypto-price endpoint returns the
+        // exact immutable contract openPrice for every coin and horizon.
+        try {
+          const contractOpen = await fetchPolymarketContractCryptoPrice(slug);
+          if (contractOpen != null && contractOpen > 0) {
+            const locked = _lockPolymarketPriceToBeat(slug, contractOpen, 'polymarket-crypto-price');
+            if (locked) {
+              _poly5mPriceToBeatCache[slug] = { value: locked.price, fetchedAt: Date.now() };
+              return locked.price;
+            }
+            if (existingLock) return existingLock.price;
+            return null;
+          }
+        } catch (e) {
+          console.warn(`[Poly5M-PTB] Polymarket crypto-price lookup failed for ${slug}:`, e?.message || e);
+        }
+
         // AUTHORITATIVE: Polymarket event page dehydrated state. The contract
         // publishes its immutable Price To Beat here at window open. No chart,
         // candle, TWAP, or spot feed is ever used as a substitute.
@@ -2837,7 +2892,11 @@ function polymarketSentiment(markets, sym) {
     const poly60mResults = Object.create(null);
     if (fetchPoly5M) {
       const poly5mResults = Object.create(null);
-      await Promise.all(Object.keys(POLY_5M_COIN_SLUGS).map(async sym => {
+      const symKeys = Object.keys(POLY_5M_COIN_SLUGS);
+      await Promise.all(symKeys.map(async (sym, i) => {
+        // Stagger requests 200ms apart to avoid simultaneous 21-request bursts
+        // (7 coins × 3 horizons each) that trip Gamma's rate limiter on BTC/XRP.
+        if (i > 0) await new Promise(r => setTimeout(r, i * 200));
         try {
           poly5mResults[sym] = await withTimeout(fetchPolymarket5MBySlug(sym), 8_000, `Poly5M ${sym}`);
         } catch (err) {
@@ -2886,8 +2945,8 @@ function polymarketSentiment(markets, sym) {
     for (const sym of Object.keys(POLY_5M_COIN_SLUGS)) {
       const k5raw = _k5mCache[sym] ?? null;
       const poly5mSlug = k5raw?._poly5m ?? null;
-      const poly15mObj = poly15mResults[sym] || cache[sym]?.poly15m || null;
-      const poly60mObj = poly60mResults[sym] || cache[sym]?.poly60m || null;
+      const poly15mObj = poly15mResults[sym] || cache[sym]?.poly15m || _poly15mCache[sym]?.data || null;
+      const poly60mObj = poly60mResults[sym] || cache[sym]?.poly60m || _poly60mCache[sym]?.data || null;
       const poly = Array.isArray(_polyCache) ? polymarketSentiment(_polyCache, sym) : null;
       const poly5m = poly5mSlug || null;
 
@@ -3029,7 +3088,12 @@ function polymarketSentiment(markets, sym) {
       const marketSlug = m.slug || slug;
 
       // Subscribe poly15m tokens on the shared PolymarketWS (same owner as poly5m).
-      const clobSnapshot = await fetchPolymarketClobMarketSnapshot(sym, m);
+      let clobSnapshot = null;
+      try {
+        clobSnapshot = await fetchPolymarketClobMarketSnapshot(sym, m);
+      } catch (clobErr) {
+        console.warn(`[PredictionMarkets] Poly15M CLOB snapshot unavailable for ${sym} ${marketSlug}:`, clobErr?.message || clobErr);
+      }
       const clobProb = Number(clobSnapshot?.upProbability);
       const liveUpProb = Number.isFinite(clobProb) && clobProb >= 0.01 && clobProb <= 0.99
         ? clobProb
@@ -3640,6 +3704,7 @@ function polymarketSentiment(markets, sym) {
     refreshPoly60M,
     getFreshRtdsTwap: _getFreshRtdsTwap,
     _getCachedChainlinkCandle,
+    POLY_5M_COIN_SLUGS,
   };
 
   if (window.__WE_TEST__) {
