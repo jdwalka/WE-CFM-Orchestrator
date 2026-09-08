@@ -519,6 +519,7 @@ function predictionCard(p) {
     })();
 
     const model5mRow = (() => {
+      if (p.horizon === '15m' || p.poly15m) return '';
       const p5 = p.projections?.p5;
       if (!p5) return '';
       const dir = p5.target > p.price ? 'UP' : 'DOWN';

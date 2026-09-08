@@ -474,7 +474,7 @@ function renderMarkets5M() {
     // holds a different view's markup -- checked via the container's own
     // dataset, which survives other views overwriting content.innerHTML).
     const fingerprint = COINS_5M.map(s => {
-      const b = window.Asi1PreContract?.get?.(s, horizon);
+      const b = window.Asi1PreContract?.get?.(s);
       const mkt = is15m ? (pm[s]?.poly15m || pm[s]?.poly5m) : pm[s]?.poly5m;
       return `${s}:${horizon}:${mkt?.slug || ''}:${mkt?.priceToBeatNum ?? mkt?.targetPriceNum ?? ''}:${b?.ts || 0}:${b?.call || ''}`;
     }).join('|');
@@ -739,7 +739,7 @@ function renderMarkets5M() {
           ` : ''}
           ${(() => {
             try {
-              return window.Asi1PreContract?.renderStripHtml?.(sym, { horizon: '5m', maxNotes: 320 }) || '';
+              return window.Asi1PreContract?.renderStripHtml?.(sym, { maxNotes: 320 }) || '';
             } catch (_) { return ''; }
           })()}
           ${rationaleBlockHtml || divergenceAlertHtml ? `
@@ -1215,39 +1215,48 @@ function renderMarkets5M() {
     // ── Grok Broader / Systemic Insights (separate part of 5m markets) ──
     // Only appears when Grok produced extra content beyond the per-coin specific UP/DOWN call, notes, and confidence.
     function _renderGrokBroaderInsights() {
+      if (is15m) return '';
       const api = (typeof window !== 'undefined') ? (window.FiveMinGrok || window.FiveMinClaude) : null;
-      if (!api || typeof api.getAllGuidance !== 'function') return '';
-      const all = api.getAllGuidance() || {};
-      const extras = [];
-      for (const sym of COINS_5M) {
-        const g = all[sym];
-        if (!g) continue;
-        const obs = (g.broaderObservations || '').trim();
-        const patterns = (g.marketPatterns || '').trim();
-        const setups = Array.isArray(g.scalpSetups) ? g.scalpSetups.filter(s => s && (s.label || s.ai_description)).length : 0;
-        if (obs || patterns || setups > 0) {
-          extras.push({ sym, obs, patterns, setupsCount: setups, ts: g.ts });
+      let itemsHtml = '';
+      if (api && typeof api.getAllGuidance === 'function') {
+        const all = api.getAllGuidance() || {};
+        const extras = [];
+        for (const sym of COINS_5M) {
+          const g = all[sym];
+          if (!g) continue;
+          const obs = (g.broaderObservations || '').trim();
+          const patterns = (g.marketPatterns || '').trim();
+          const setups = Array.isArray(g.scalpSetups) ? g.scalpSetups.filter(s => s && (s.label || s.ai_description)).length : 0;
+          if (obs || patterns || setups > 0) {
+            extras.push({ sym, obs, patterns, setupsCount: setups, ts: g.ts });
+          }
+        }
+        if (extras.length) {
+          const items = extras.map(e => {
+            const parts = [];
+            if (e.obs) parts.push(`<div style="margin:2px 0 4px;"><strong>Insight:</strong> ${e.obs}</div>`);
+            if (e.patterns) parts.push(`<div style="margin:2px 0;font-size:10px;color:var(--color-text-muted);">Patterns: ${e.patterns}</div>`);
+            if (e.setupsCount) parts.push(`<div style="font-size:10px;color:#a5b4fc;">+${e.setupsCount} specialized scalp setup(s) noted</div>`);
+            return `<div style="margin-bottom:7px;padding-bottom:5px;border-bottom:1px dashed var(--color-border);">
+              <span style="font-weight:700;color:#8a6dff;">${e.sym}</span> ${parts.join('')}
+            </div>`;
+          }).join('');
+          
+          itemsHtml = `
+            <div style="font-size:10px;font-weight:800;color:#8a6dff;letter-spacing:0.03em;margin-bottom:5px;display:flex;align-items:center;gap:6px;">
+              🤖 GROK — ADDITIONAL / SYSTEMIC OBSERVATIONS
+              <span style="margin-left:auto;font-size:9px;font-weight:400;opacity:0.7;">(non per-coin content)</span>
+            </div>
+            ${items}
+          `;
         }
       }
-      if (!extras.length) return '';
-
-      const items = extras.map(e => {
-        const parts = [];
-        if (e.obs) parts.push(`<div style="margin:2px 0 4px;"><strong>Insight:</strong> ${e.obs}</div>`);
-        if (e.patterns) parts.push(`<div style="margin:2px 0;font-size:10px;color:var(--color-text-muted);">Patterns: ${e.patterns}</div>`);
-        if (e.setupsCount) parts.push(`<div style="font-size:10px;color:#a5b4fc;">+${e.setupsCount} specialized scalp setup(s) noted</div>`);
-        return `<div style="margin-bottom:7px;padding-bottom:5px;border-bottom:1px dashed var(--color-border);">
-          <span style="font-weight:700;color:#8a6dff;">${e.sym}</span> ${parts.join('')}
-        </div>`;
-      }).join('');
 
       return `<div style="background:linear-gradient(180deg,rgba(138,109,255,0.07),var(--color-surface));border:1px solid #8a6dff44;border-radius:8px;padding:9px 11px;margin:0 0 14px 0;">
-        <div style="font-size:10px;font-weight:800;color:#8a6dff;letter-spacing:0.03em;margin-bottom:5px;display:flex;align-items:center;gap:6px;">
-          🤖 GROK — ADDITIONAL / SYSTEMIC OBSERVATIONS
-          <span style="margin-left:auto;font-size:9px;font-weight:400;opacity:0.7;">(non per-coin content)</span>
+        ${itemsHtml}
+        <div style="font-size:9px;color:var(--color-text-faint);margin-top:2px;">
+          🐳 <strong>Docker/Redpanda Pipeline Active:</strong> Derived from Grok 5m PTB analysis over a live Redpanda/Kafka tick stream (+ Firestore-backed defense history where available).
         </div>
-        ${items}
-        <div style="font-size:9px;color:var(--color-text-faint);margin-top:2px;">Derived from Grok 5m PTB analysis over a live Redpanda/Kafka tick stream (+ Firestore-backed defense history where available).</div>
       </div>`;
     }
 
