@@ -196,20 +196,27 @@ if (themeBtn) {
 activateNav(currentView);
 
 document.querySelectorAll('.nav-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      _userInteractedWithNav = true;
-      if (currentView === 'hourly-ranges' && btn.dataset.view !== 'hourly-ranges') {
-        window.HourlyRangesPanel?.stopAutoLoad?.();
-      }
-      currentView = btn.dataset.view;
-      activateNav(currentView);
-      persistUIState();
-      updateHeaderSummary();
-      render();
-      syncPredictionRefresh();
-      // close mobile sidebar
-      $('#sidebar')?.classList.remove('open');
-    });
+  btn.addEventListener('click', () => {
+    _userInteractedWithNav = true;
+    if (currentView === 'hourly-ranges' && btn.dataset.view !== 'hourly-ranges') {
+      window.HourlyRangesPanel?.stopAutoLoad?.();
+    }
+    currentView = btn.dataset.view;
+    window._marketsHorizon = '5m';
+    window._markets5mLastFingerprint = null;
+    activateNav(currentView);
+    persistUIState();
+    updateHeaderSummary();
+    render();
+    syncPredictionRefresh();
+    // close mobile sidebar
+    $('#sidebar')?.classList.remove('open');
+  });
+});
+
+  window.addEventListener('pageshow', () => {
+    window._marketsHorizon = '5m';
+    window._markets5mLastFingerprint = null;
   });
 
 if (menuBtn) menuBtn.addEventListener('click', () => $('#sidebar').classList.toggle('open'));
