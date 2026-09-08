@@ -500,6 +500,7 @@
   // produced a different open (e.g. BTC 16:10 window 64758.01 vs official
   // 64759.43) and that wrong number locked for the whole contract.
   const POLY_TWAP_LOOKBACK_SEC = 60;
+  const POLY_5M_CLOB_DELAY_SEC = 8;
   // Refuse to lock before the TWAP window has fully accumulated. 32s was
   // sized for the old 30s lookback; at 60s that captured a half-formed open.
   const PTB_TWAP_SETTLE_SEC = POLY_TWAP_LOOKBACK_SEC + 2;
@@ -526,6 +527,7 @@
         delete _pendingPtbLocks[slug]; continue;
       }
       if (now - st.boundaryMs > PTB_LOCK_GRACE_MS) { delete _pendingPtbLocks[slug]; continue; }
+      if (now - st.boundaryMs < POLY_5M_CLOB_DELAY_SEC * 1000) continue;
 
       // RTDS is deliberately not used here -- see POLY5M_PTB_TRUSTED_SOURCES.
       // Only the event-page scrape (Polymarket's own closed-window continuity
@@ -2293,12 +2295,6 @@
     if (existingLock && (existingLock.corrected || POLY5M_PTB_AUTHORITATIVE_SOURCES.has(existingLock.source))) {
       return existingLock.price;
     }
-    // A non-authoritative (candle/fallback) lock is still SERVED, but we keep
-    // hitting the event page below: its dehydrated priceToBeat is the exact
-    // contract benchmark and a candle open can settle a few cents off it. If
-    // nothing new locks this pass, we return existingLock.price at the end.
-    if (existingLock) return existingLock.price;
-
     const cached = _poly5mPriceToBeatCache[slug];
     if (!existingLock && cached && Date.now() - cached.fetchedAt < PTB_SCRAPE_RETRY_MS && cached.value != null) {
       return cached.value;
@@ -2311,40 +2307,9 @@
       const horizonTag = slugMatch[2].toLowerCase();
       const startSec = Number(slugMatch[3]);
       if (sym && Number.isFinite(startSec)) {
-        const settledSec = (Date.now() / 1000) - startSec;
-
-        // PRIMARY: chainlink-candles REST endpoint. Only when nothing is locked
-        // yet AND the 60s TWAP window has fully accumulated (PTB_TWAP_SETTLE_SEC)
-        // -- reading the `open` before then locks a half-formed TWAP that later
-        // settles a few cents away, which is the drift this path used to cause.
-        // NOTE: an unconfirmed read (_lockPolymarketPriceToBeat returns null while it
-        // waits for a second independent read -- see PTB_CONFIRM_* / v15 above) must
-        // NEVER be used as the returned/cached value. Falling back to the raw
-        // single-read candleOpen/pmOpen/fallbackPrice here (as this code used to do)
-        // silently bypassed the whole confirmation gate: the very first, unconfirmed
-        // read got cached and handed to callers immediately, so v15's fix never
-        // actually prevented a wrong PTB from being used -- it only changed what got
-        // frozen internally a few seconds later, after the wrong value had already
-        // been displayed/traded on. Return null (not-yet-available) instead; the
-        // caller's short-TTL cache (PTB_SCRAPE_RETRY_MS below) re-invokes this within
-        // ~1s, which naturally supplies the second confirming read.
-        if (!existingLock && settledSec >= PTB_TWAP_SETTLE_SEC) {
-          try {
-            const candleOpen = await fetchPolymarketChainlinkCandleOpen(sym, horizonTag, startSec, POLY_TWAP_LOOKBACK_SEC, false);
-            if (candleOpen != null && candleOpen > 0) {
-              const locked = _lockPolymarketPriceToBeat(slug, candleOpen, 'polymarket-chainlink-candles');
-              if (locked) {
-                _poly5mPriceToBeatCache[slug] = { value: locked.price, fetchedAt: Date.now() };
-                return locked.price;
-              }
-              return null;
-            }
-          } catch (_) {}
-        }
-
-        // AUTHORITATIVE: Polymarket event page dehydrated state. Always tried --
-        // it locks when nothing else has, and it CORRECTS a candle/fallback lock
-        // that came in off the contract value (see _lockPolymarketPriceToBeat).
+        // AUTHORITATIVE: Polymarket event page dehydrated state. The contract
+        // publishes its immutable Price To Beat here at window open. No chart,
+        // candle, TWAP, or spot feed is ever used as a substitute.
         try {
           const html = await textFetch(`https://polymarket.com/event/${encodeURIComponent(slug)}`, {
             headers: {
@@ -2370,21 +2335,6 @@
           console.warn(`[Poly5M-PTB] Polymarket openPrice lookup failed for ${slug}:`, e?.message || e);
         }
 
-        // TERTIARY FALLBACK: Only at the exact open boundary (<= 15 seconds into
-        // window) and only when nothing is locked yet.
-        const secondsSinceStart = (Date.now() / 1000) - startSec;
-        if (!existingLock && secondsSinceStart >= 0 && secondsSinceStart <= 15) {
-          const rtdsFallback = _getFreshRtdsTwap(sym, 15_000);
-          const fallbackPrice = toPositiveFiniteNumber(rtdsFallback?.price);
-          if (fallbackPrice != null && fallbackPrice > 0) {
-            const locked = _lockPolymarketPriceToBeat(slug, fallbackPrice, 'chainlink-open-fallback');
-            if (locked) {
-              _poly5mPriceToBeatCache[slug] = { value: locked.price, fetchedAt: Date.now() };
-              return locked.price;
-            }
-            return null;
-          }
-        }
       }
     }
 
@@ -2419,6 +2369,7 @@
 
     const nowSec = Math.floor(Date.now() / 1000);
     const windowTs = nowSec - (nowSec % 300);
+    if (nowSec - windowTs < POLY_5M_CLOB_DELAY_SEC) return null;
     const cached = _poly5mCache[sym];
     if (cached && cached.windowTs === windowTs && Date.now() - cached.fetchedAt < (cached.data?.priceToBeatNum != null ? 15_000 : 1_000)) {
       const c = cached.data;
@@ -2427,15 +2378,7 @@
       }
       // stale cache without PTB for active window — re-fetch to establish exact contract PTB
     }
-    const candidates = [
-      windowTs,
-      windowTs + 300,
-      windowTs + 600,
-      windowTs + 900,
-      windowTs + 1200,
-      windowTs + 1500,
-      windowTs - 300,
-    ];
+    const candidates = [windowTs];
 
     const results = await Promise.all(candidates.map(async (ts) => {
       const slug = `${coinSlugPrefix}-updown-5m-${ts}`;
@@ -2469,24 +2412,12 @@
           priceToBeatSource = existingLock.source;
         }
 
-        const isImmediateNext = ts === windowTs + 300;
         // Strike is the opening value of THIS window. Future contracts are
         // not yet immutable — do not lock a forming TWAP / prev close as PTB.
         const shouldResolvePTB = ts === windowTs;
-        const hasTwapSettled = nowSec >= ts + _twapLookbackSeconds(m) + 2;
 
-        // 0. CANONICAL CONTRACT BENCHMARK: Polymarket Chainlink 60s TWAP Candle Open (Absolute Truth)
-        if (priceToBeatNum == null && shouldResolvePTB && hasTwapSettled) {
-          try {
-            const candleStrike = await fetchPolymarketChainlinkCandleOpen(sym, '5m', ts, _twapLookbackSeconds(m), false);
-            if (candleStrike != null && candleStrike > 0) {
-              priceToBeatNum = candleStrike;
-              priceToBeatSource = 'polymarket-contract';
-            }
-          } catch (_) {}
-        }
-
-        // 1. Direct Polymarket Contract Benchmark posted on Polygon / Polymarket metadata
+        // 1. Direct Polymarket contract benchmark from the exact slug's market
+        // metadata. This is the immutable contract value, never an estimate.
         if (priceToBeatNum == null && shouldResolvePTB) {
           const directContractStrike = toPositiveFiniteNumber(
             m.eventMetadata?.priceToBeat
@@ -2503,7 +2434,8 @@
           }
         }
 
-        // 2. Fetch directly from Polymarket contract event page / API
+        // 2. Exact Polymarket contract event page. Never fall back to candles,
+        // RTDS/TWAP, spot feeds, or a derived continuity value.
         if (priceToBeatNum == null && shouldResolvePTB) {
           const maxRetries = (isActiveWindow && (nowSec - windowTs <= 30)) ? 4 : 1;
           for (let attempt = 0; attempt < maxRetries; attempt++) {
@@ -2555,7 +2487,7 @@
         // A five-minute contract is unavailable until its benchmark exists.
         if (priceToBeatNum == null && !isFuture && ts !== windowTs) return null;
 
-        if (ts === windowTs || isImmediateNext || priceToBeatNum != null) {
+        if (ts === windowTs || priceToBeatNum != null) {
           const ptbFidelity = priceToBeatNum == null ? 'pending' : 'exact-contract';
           console.log(`[Poly5M-PTB] ${sym} ${marketSlug} → $${priceToBeatNum ?? 'pending'} (source: ${priceToBeatSource ?? 'waiting-for-open'}) [${ptbFidelity}]`);
         }
@@ -3026,7 +2958,6 @@ function polymarketSentiment(markets, sym) {
   async function refreshPoly5M(reason = 'manual') {
     const results = Object.create(null);
     await Promise.all(Object.keys(POLY_5M_COIN_SLUGS).map(async sym => {
-      _poly5mCache[sym] = null;
       results[sym] = await fetchPolymarket5MBySlug(sym);
     }));
 
@@ -3112,27 +3043,8 @@ function polymarketSentiment(markets, sym) {
         priceToBeatNum = existingLock.price;
         priceToBeatSource = existingLock.source;
       } else {
-        // 0. CANONICAL CONTRACT BENCHMARK: Polymarket Chainlink 60s TWAP Candle Open (Absolute Truth)
-        try {
-          const candleStrike = await fetchPolymarketChainlinkCandleOpen(sym, '15m', windowTs, _twapLookbackSeconds(m), false);
-          if (candleStrike != null && candleStrike > 0) {
-            priceToBeatNum = candleStrike;
-            priceToBeatSource = 'polymarket-contract';
-          }
-        } catch (_) {}
-        const hasTwapSettled = nowSec >= windowTs + _twapLookbackSeconds(m) + 2;
-        // 0. CANONICAL CONTRACT BENCHMARK: Polymarket Chainlink 60s TWAP Candle Open (Absolute Truth)
-        if (hasTwapSettled) {
-          try {
-            const candleStrike = await fetchPolymarketChainlinkCandleOpen(sym, '15m', windowTs, _twapLookbackSeconds(m), false);
-            if (candleStrike != null && candleStrike > 0) {
-              priceToBeatNum = candleStrike;
-              priceToBeatSource = 'polymarket-contract';
-            }
-          } catch (_) {}
-        }
-
-        // 1. Direct Polymarket Contract Benchmark posted on metadata
+        // 1. Direct Polymarket contract benchmark from exact market metadata.
+        // No candle/TWAP approximation is allowed to masquerade as PTB.
         const directContractStrike = toPositiveFiniteNumber(
           m.eventMetadata?.priceToBeat
           ?? m.eventMetadata?.price_to_beat
@@ -3147,7 +3059,7 @@ function polymarketSentiment(markets, sym) {
           priceToBeatSource = 'gamma-market';
         }
 
-        // 2. Direct Polymarket contract event page (opening strike, not live TWAP)
+        // 2. Exact Polymarket contract event page.
         if (priceToBeatNum == null) {
           try {
             const scraped = await fetchPolymarketPriceToBeat(marketSlug);
@@ -3511,32 +3423,11 @@ function polymarketSentiment(markets, sym) {
       let lastBoundarySec = 0;
       let lastBoundary15Sec = 0;
       let lastBoundary60Sec = 0;
-      let prefetchTriggered = false;
       setInterval(() => {
         if (document.hidden) return;
         const nowMs = Date.now();
         const nowSec = Math.floor(nowMs / 1000);
         const secInPeriod = nowSec % 300;
-
-        // 1. Pre-fetch trigger: 30 seconds before the 5-minute boundary (pre-warm candidates only; NEVER lock PTB before boundary opens)
-        if (secInPeriod >= 270 && !prefetchTriggered) {
-          prefetchTriggered = true;
-          const currentBoundary = nowSec - secInPeriod;
-          const nextBoundary = currentBoundary + 300;
-          console.info(`[BoundaryClock] ⏱ 30s to 5m boundary (${nextBoundary}). Pre-warming candidate structure for upcoming contracts.`);
-          Object.keys(POLY_5M_COIN_SLUGS).forEach(async (sym) => {
-            try {
-              const prefix = POLY_5M_COIN_SLUGS[sym];
-              const nextSlug = `${prefix}-updown-5m-${nextBoundary}`;
-              await fetchPolymarket5MMarketCandidate(sym, nextSlug).catch(() => null);
-            } catch (_) {}
-          });
-        }
-
-        // Reset prefetch trigger when we are in a new period
-        if (secInPeriod < 270) {
-          prefetchTriggered = false;
-        }
 
         // 2. Rollover trigger: Exactly at the boundary
         const currentBoundary = nowSec - secInPeriod;
@@ -3632,6 +3523,21 @@ function polymarketSentiment(markets, sym) {
           // Trigger background fetch to get actual PTB and live pricing
           refreshPoly5M('boundary-clock').catch(() => {});
           fetchAll().catch(() => {});
+
+          // Polymarket publishes the immutable contract PTB at window open,
+          // but immediate requests can beat market propagation. Wait once,
+          // then fetch only this exact boundary slug.
+          const delayedFetchMs = Math.max(
+            0,
+            currentBoundary * 1000 + POLY_5M_CLOB_DELAY_SEC * 1000 - nowMs
+          );
+          setTimeout(() => {
+            if (document.hidden) return;
+            const latestNowSec = Math.floor(Date.now() / 1000);
+            const latestBoundary = latestNowSec - (latestNowSec % 300);
+            if (latestBoundary !== currentBoundary) return;
+            refreshPoly5M('boundary-delay').catch(() => {});
+          }, delayedFetchMs);
         } else if (lastBoundarySec === 0) {
           lastBoundarySec = currentBoundary;
         }
