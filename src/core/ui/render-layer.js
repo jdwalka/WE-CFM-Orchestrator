@@ -456,6 +456,87 @@ function renderMarkets5M() {
     const pm = window.PredictionMarkets?.getAll() || {};
     const COINS_5M = ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'BNB', 'HYPE'];
 
+    const _orchestrationStatusCache = window._orchestrationStatusCache || {
+      loading: true,
+      ts: 0,
+      docker: 'unknown',
+      redpanda: 'unknown',
+      redis: 'unknown',
+      firestore: 'unknown',
+      detail: 'Checking orchestration…'
+    };
+    window._orchestrationStatusCache = _orchestrationStatusCache;
+
+    function _orchestrationStatusColor(state) {
+      if (state === 'healthy' || state === 'ready' || state === 'active') return 'var(--color-green)';
+      if (state === 'degraded' || state === 'reconnecting') return 'var(--color-gold)';
+      return 'var(--color-red)';
+    }
+
+    function _renderOrchestrationStatusStrip() {
+      const el = document.getElementById('markets-orchestration-status');
+      if (!el) return;
+      el.innerHTML = '';
+      const items = [
+        ['Docker', _orchestrationStatusCache.docker],
+        ['Redpanda/Kafka', _orchestrationStatusCache.redpanda],
+        ['Redis', _orchestrationStatusCache.redis],
+        ['Firestore', _orchestrationStatusCache.firestore],
+      ];
+      for (const [label, state] of items) {
+        const row = document.createElement('span');
+        row.style.cssText = 'display:inline-flex;align-items:center;gap:5px;padding:3px 8px;border-radius:999px;background:var(--color-surface-2);border:1px solid var(--color-border);';
+        const dot = document.createElement('span');
+        dot.style.cssText = `width:7px;height:7px;border-radius:50%;background:${_orchestrationStatusColor(state)};`;
+        const text = document.createElement('span');
+        text.textContent = `${label}: ${String(state).toUpperCase()}`;
+        row.append(dot, text);
+        el.appendChild(row);
+      }
+      const detail = document.createElement('span');
+      detail.style.cssText = 'color:var(--color-text-faint);font-size:10px;margin-left:4px;';
+      detail.textContent = _orchestrationStatusCache.detail;
+      el.appendChild(detail);
+    }
+
+    async function _refreshOrchestrationStatus() {
+      const cache = window._orchestrationStatusCache;
+      if (cache && !cache.loading && Date.now() - cache.ts < 15_000) return;
+      if (window._orchestrationStatusInFlight) return;
+      window._orchestrationStatusInFlight = true;
+      try {
+        const [orbital, redis, firebase] = await Promise.all([
+          window._orbitalBroadcaster?.getOrbitalStatus?.() ?? Promise.resolve(null),
+          window._orbitalBroadcaster?.getRedisStatus?.() ?? Promise.resolve(null),
+          window.wecryp?.firebaseStatus?.() ?? Promise.resolve(null),
+        ]);
+        const redisStatus = redis?.status || {};
+        const firestoreStatus = firebase?.status || {};
+        const next = {
+          loading: false,
+          ts: Date.now(),
+          docker: orbital?.docker || 'unknown',
+          redpanda: orbital?.redpanda || 'unknown',
+          redis: redisStatus.ready ? 'healthy' : (redisStatus.lastError ? 'down' : 'unknown'),
+          firestore: firestoreStatus.available || firestoreStatus.initialized ? 'healthy' : (firestoreStatus.enabled ? 'degraded' : 'off'),
+          detail: `ingestor=${orbital?.ingestor ? 'on' : 'off'} · processor=${orbital?.processor ? 'on' : 'off'} · redisKeys=${Number(redisStatus.cachedKeys || 0)} · firestore=${firestoreStatus.mode || 'unavailable'}`
+        };
+        window._orchestrationStatusCache = next;
+      } catch (error) {
+        window._orchestrationStatusCache = {
+          ...cache,
+          loading: false,
+          ts: Date.now(),
+          detail: `Orchestration status unavailable: ${error?.message || 'unknown error'}`
+        };
+      } finally {
+        window._orchestrationStatusInFlight = false;
+        _renderOrchestrationStatusStrip();
+      }
+    }
+
+    _refreshOrchestrationStatus();
+
     // Throttle: refreshActiveView() (app-core.js) calls this on every debounced
     // live price tick -- as often as every 250-900ms -- not just on an actual
     // window rollover. A full innerHTML rebuild that often reads as "the whole
@@ -1442,6 +1523,7 @@ function renderMarkets5M() {
         </div>
       </div>
       ${snipeBanner}
+      <div id="markets-orchestration-status" style="display:flex;align-items:center;flex-wrap:wrap;gap:6px;margin:0 0 10px 0;font-size:10px;font-weight:700;color:var(--color-text-muted);"></div>
       ${grokBroader}
       <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:12px;padding:4px 0;">
         ${cards}
@@ -1452,6 +1534,7 @@ function renderMarkets5M() {
       </div>
     `;
     content.dataset.wecryptoView = 'markets5m';
+    _renderOrchestrationStatusStrip();
 
     // Reuse already-loaded Polymarket iframes instead of letting them reload.
     // The throttle above already stops most tick-driven calls from reaching this
