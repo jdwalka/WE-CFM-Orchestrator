@@ -23,6 +23,11 @@ const { spawn } = require('child_process');
 const { normalizeCoinbaseJwtUri } = require('../src/infra/coinbase-jwt-utils');
 
 // IPC bridges & managers
+let startKalshiWorker = null;
+let stopKalshiWorker = null;
+try {
+  ({ startKalshiWorker, stopKalshiWorker } = require('./kalshi-ipc-bridge.js'));
+} catch (e) { console.warn('[IPC] kalshi-ipc-bridge load warning:', e.message); }
 try { require('./tor-fetch-ipc-bridge'); } catch (e) { console.warn('[IPC] tor-fetch-ipc-bridge load warning:', e.message); }
 try { require('./polymarket-clob-manager'); } catch (e) { console.warn('[IPC] polymarket-clob-manager load warning:', e.message); }
 try { require('./multi-drive-logger-handlers'); } catch (e) { console.warn('[IPC] multi-drive-logger-handlers load warning:', e.message); }
@@ -825,8 +830,8 @@ let webServiceHealth = { started: false, mode: 'stopped', protocol: 'http', port
 // disconnect/reconnect storm ("All WebSocket connections down") with zero ticks for every feed.
 // Do not re-add 10 unless the token is upgraded with a DOGE spot grant. Feed 13 remains — it does
 // not trigger an entitlement error for this token.
-const LAZER_FEED_IDS = [1, 2, 6, 13, 14, 15]; // BTC(1), ETH(2), SOL(6), XRP(14), BNB(15) + possible DOGE(13)
-const LAZER_ID_MAP = { 1: 'BTCUSD', 2: 'ETHUSD', 6: 'SOLUSD', 10: 'DOGEUSD', 13: 'DOGE13', 14: 'XRPUSD', 15: 'BNBUSD' };
+const LAZER_FEED_IDS = [1, 2, 6, 14]; // BTC(1), ETH(2), SOL(6), XRP(14)
+const LAZER_ID_MAP = { 1: 'BTCUSD', 2: 'ETHUSD', 6: 'SOLUSD', 14: 'XRPUSD' };
 
 // The pyth-lazer-proxy-{1,2,3}.dourolabs.app fallbacks are a *different* public, unauthenticated
 // service from the direct pyth-lazer(-0).dourolabs.app REST API. They only accept GET requests
@@ -1076,7 +1081,7 @@ async function startPythLazerService(win) {
   // This makes the health banner leave "Waiting for first Pyth tick" even before WS or the poller.
   (async () => {
     try {
-      const symbols = ['Crypto.BTC/USD','Crypto.ETH/USD','Crypto.SOL/USD','Crypto.DOGE/USD','Crypto.XRP/USD','Crypto.BNB/USD'];
+      const symbols = ['Crypto.BTC/USD','Crypto.ETH/USD','Crypto.SOL/USD','Crypto.XRP/USD'];
       const basePayload = {
         channel: 'real_time',
         formats: ['evm'],
@@ -1192,7 +1197,7 @@ async function startPythLazerService(win) {
       ];
       pythLazerClient = await PythLazerClient.create({
         token,
-        webSocketPoolConfig: { urls: endpoints }
+        webSocketPoolConfig: { urls: endpoints, numConnections: 3 }
       });
       pythLazerStatus.initialized = true;
       console.log('[PythLazer] Realtime client created with token from PYTH_NEW_API / secrets (wired for realtime feeds)');
@@ -1222,7 +1227,7 @@ async function startPythLazerService(win) {
       if (pythRestPoller) clearInterval(pythRestPoller);
       pythRestPoller = setInterval(async () => {
         try {
-          const symbols = ['Crypto.BTC/USD','Crypto.ETH/USD','Crypto.SOL/USD','Crypto.DOGE/USD','Crypto.XRP/USD','Crypto.BNB/USD'];
+          const symbols = ['Crypto.BTC/USD','Crypto.ETH/USD','Crypto.SOL/USD','Crypto.XRP/USD'];
           const basePayload = {
             channel: 'real_time',
             formats: ['evm'],
@@ -1470,19 +1475,25 @@ async function startPythLazerService(win) {
         resetPythTimeout();
 
         const prices = {};
+        let sourceUpdateMs = 0;
         const seenIds = [];
         const skipped = [];
         for (const f of feeds) {
           seenIds.push(f.priceFeedId);
-          let instr = LAZER_ID_MAP[f.priceFeedId];
+          const instr = LAZER_ID_MAP[f.priceFeedId];
           if (!instr) {
-            instr = 'FEED_' + f.priceFeedId;  // fallback so dataCount advances and we see data
-            skipped.push({id: f.priceFeedId, reason: 'no-map-fallback'});
+            skipped.push({id: f.priceFeedId, reason: 'unmapped'});
+            continue;
           }
           const exp = f.exponent ?? -8;
           const scale = Math.pow(10, exp);
           const rawP = (f.price && typeof f.price === 'object') ? (f.price.price ?? f.price) : f.price;
           const px = Number(rawP) * scale;
+          const rawUpdateTs = Number(f.feedUpdateTimestamp ?? 0);
+          const updateTs = rawUpdateTs > 1e12 ? rawUpdateTs : rawUpdateTs * 1000;
+          if (Number.isFinite(updateTs) && updateTs > 0) {
+            sourceUpdateMs = Math.max(sourceUpdateMs, updateTs);
+          }
           if (!px || px <= 0 || isNaN(px)) {
             skipped.push({id: f.priceFeedId, instr, reason: 'bad-px', raw: String(rawP).slice(0,20)});
             continue;
@@ -1497,13 +1508,16 @@ async function startPythLazerService(win) {
             marketSession: f.marketSession,
             feedUpdateTimestamp: f.feedUpdateTimestamp,
             source: 'pyth-lazer',
-            timestamp: now,
+            timestamp: Number.isFinite(updateTs) && updateTs > 0 ? updateTs : now,
           };
         }
         if (pythLazerStatus.dataCount < 5 || Object.keys(prices).length === 0) {
           console.log(`[PythLazer] after map: produced=${Object.keys(prices).length} skipped=${JSON.stringify(skipped).slice(0,200)}`);
         }
-        if (Object.keys(prices).length && !win.isDestroyed()) {
+        const hasMappedFeed = Object.values(LAZER_ID_MAP).some((instr) => prices[instr]);
+        const sourceAgeMs = sourceUpdateMs > 0 ? now - sourceUpdateMs : 0;
+        const sourceIsFresh = sourceUpdateMs > 0 && sourceAgeMs <= 15_000;
+        if (hasMappedFeed && sourceIsFresh && Object.keys(prices).length && !win.isDestroyed()) {
           latestPythLazerTickers = prices;
           lastPythWsTickTs = now; // real WS tick -- gates REST fallback writers, see isPythWsHealthy()
           const smoothedHz = pythWsHzTracker.tick(now);
@@ -1524,44 +1538,14 @@ async function startPythLazerService(win) {
 
       pythLazerClient.addAllConnectionsDownListener(() => {
         console.error('[PythLazer] ⚠️ All WebSocket connections down — auto-reconnect triggered');
-        if (pythTimeoutHandle) {
-          clearTimeout(pythTimeoutHandle);
-          pythTimeoutHandle = null;
-        }
-        // Renderer will gracefully degrade to other data sources
+        // SDK reconnects automatically; just notify renderer and mark disconnected
+        pythLazerStatus.connected = false;
         if (!win.isDestroyed()) {
           win.webContents.send('pyth:connection-lost', {
             reason: 'all_connections_down',
             channel: activeChannel,
           });
-        }
-        if (!reconnectInFlight) {
-          reconnectInFlight = true;
-          setTimeout(async () => {
-            try {
-              if (pythLazerClient) {
-                try { pythLazerClient.unsubscribe(1); } catch (_) { }
-                try { await pythLazerClient.shutdown(); } catch (_) { }
-                pythLazerClient = null;
-              }
-              // A reconnect is a genuine cadence restart, not jitter within one
-              // connection -- reset so the post-reconnect burst of buffered/
-              // replayed ticks doesn't get smoothed together with the old
-              // connection's rate into a misleading transient reading.
-              pythWsHzTracker.reset();
-
-              if (channelIndex < channelCandidates.length - 1) {
-                channelIndex++;
-              }
-
-              retries = 0;
-              const nextChannel = channelCandidates[channelIndex] || activeChannel;
-              console.warn(`[PythLazer] Reconnecting with fallback channel=${nextChannel}`);
-              await createClientWithRetry(nextChannel);
-            } finally {
-              reconnectInFlight = false;
-            }
-          }, 500);
+          win.webContents.send('pyth:status', pythLazerStatus);
         }
       });
 
@@ -2329,18 +2313,8 @@ ipcMain.handle('proxy:port', () => proxyPort);
 
 // ── IPC: Pyth Lazer handlers ──────────────────────────────────────────────
 ipcMain.handle('pyth:getStatus', () => {
-  // ABC easy: if connected, force data so we never show "waiting for first tick"
-  if (pythLazerStatus.connected) {
-    if ((pythLazerStatus.dataCount || 0) === 0) {
-      pythLazerStatus.dataCount = 1;
-    }
-    if (!pythLazerStatus.lastDataTs) {
-      pythLazerStatus.lastDataTs = Date.now();
-    }
-    // send to make sure UI updates
-    if (mainWin && !mainWin.isDestroyed()) {
-      mainWin.webContents.send('pyth:status', pythLazerStatus);
-    }
+  if (pythLazerStatus.connected && mainWin && !mainWin.isDestroyed()) {
+    mainWin.webContents.send('pyth:status', pythLazerStatus);
   }
   return pythLazerStatus;
 });
@@ -2759,6 +2733,7 @@ ipcMain.handle('asi1:desk-chat', async (_event, args = {}) => {
     const traderPositionContext = {
       contractId: packet.contractId || packet.id || null,
       horizon: packet.horizon || (packet.isHourly ? '1h' : null),
+      isScalp: packet.isScalp === true,
       side: packet.action || packet.side || null,
       strike: packet.priceToBeatNum || packet.strike || null,
       range: packet.spotBucket || packet.userRangeOverride || null,
@@ -2983,6 +2958,7 @@ ${ladderLines ? `- Active Hourly Range Ladder:\n${ladderLines}` : ''}`;
     // ── Cognitive Metacognition & Gospel Persona ──
     const effectiveModel = model !== 'auto' ? model : 'asi1-mini';
     const isAnytime = packet.horizon === 'anytime' || /\b(anytime|open ended|general)\b/i.test(prompt);
+    const isScalp = packet.isScalp === true;
 
    const contractRule = isAnytime
      ? `3. OPEN-ENDED / ANYTIME HORIZON RULE:
@@ -3034,6 +3010,7 @@ ${positionContextBlock}`;
 - Asset: ${coin}
 - Inferred Under Model Engine: ${effectiveModel}
 - Horizon: ${isHourly ? '1h (Hourly Range)' : (packet.horizon || '5m')}
+- Intent: ${isScalp ? '5m SCALP — prioritize fast microstructure edge and avoid late-window chop' : 'contract settlement'}
 - Live Spot: ${CoinPrecision.formatCoinPrice(coin, packet.spot)}
 - Target Strike / PTB: ${ptbDisplay}${userPtbOverride ? ' [TRADER GOSPEL SPECIFIED]' : ''}
 - Delta vs Target: ${deltaDisplay}
@@ -3134,6 +3111,13 @@ ipcMain.handle('asi1:agentverse-hunt', async (_event, args = {}) => {
   } catch (err) {
     return { ok: false, error: err?.message || 'asi1-agentverse-hunt-error' };
   }
+});
+
+let agentverseMarketContext = Object.create(null);
+ipcMain.handle('asi1:agentverse-market-context', (_event, marketContext = {}) => {
+  if (!marketContext || typeof marketContext !== 'object') return { ok: false, error: 'invalid-market-context' };
+  agentverseMarketContext = marketContext;
+  return { ok: true, updatedAt: Date.now() };
 });
 
 ipcMain.handle('asi1:agentverse-audit', async () => {
@@ -4786,6 +4770,9 @@ app.whenReady().then(async () => {
 
   await startProxy();
   startCexFlowMonitor(); // best-effort; never blocks boot
+  if (typeof startKalshiWorker === 'function') {
+    await startKalshiWorker({ bootTimeoutMs: 12000, pollMs: 150 });
+  }
   // --- Orbital Matrix (Redpanda Orchestration + Ingestion & Sync) ---
   (async () => {
     const workspacePath = process.env.WECRYP_ROOT || path.join(__dirname, '..');
@@ -4887,7 +4874,11 @@ app.whenReady().then(async () => {
         mainWin.webContents.send('asi1:agentverse-hunt-completed', huntResult);
       }
     });
-    AgentverseHunter.startAutonomousScheduler({ bootDelayMs: 60_000, intervalMs: 300_000 });
+    AgentverseHunter.startAutonomousScheduler({
+      bootDelayMs: 60_000,
+      intervalMs: 300_000,
+      getMarketContext: () => agentverseMarketContext,
+    });
     console.log('[AgentverseHunter] Autonomous multi-agent scheduler initialized; cued to hunt in 60s');
   } catch (err) {
     console.warn('[AgentverseHunter] initialization deferred:', err.message);
@@ -4928,5 +4919,8 @@ app.on('before-quit', async (event) => {
     console.warn('[Main] Error during orbital shutdown in before-quit:', err.message);
   }
   stopCexFlowMonitor();
+  if (typeof stopKalshiWorker === 'function') {
+    stopKalshiWorker();
+  }
 });
 
