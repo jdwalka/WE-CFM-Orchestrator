@@ -60,9 +60,6 @@
     ETH: 'KXETH15M',
     SOL: 'KXSOL15M',
     XRP: 'KXXRP15M',
-    DOGE: 'KXDOGE15M',
-    BNB: 'KXBNB15M',
-    HYPE: 'KXHYPE15M',
   };
 
   // Direct 5-minute UP/DOWN series — BNB/HYPE gracefully null if not live on Kalshi
@@ -81,12 +78,9 @@
     ETH: 'eth',
     SOL: 'sol',
     XRP: 'xrp',
-    DOGE: 'doge',
-    BNB: 'bnb',
-    HYPE: 'hype',
   };
 
-  const KALSHI_DISABLED = true; // 100% Polymarket only mode
+  const KALSHI_DISABLED = false; // Kalshi is 15m-only; fetchKalshi5M remains disabled
 
   let cache = Object.create(null);
   let lastFetch = 0;
@@ -488,18 +482,23 @@
   // showing a late/approximate value -- it's still the exact number once
   // found, just retried for longer before conceding "pending" is honest.
   const PTB_LOCK_GRACE_MS = 120_000;
-  const PTB_SCRAPE_RETRY_MS = 4_000;
-  const PTB_SCRAPE_RETRIES_SEC = Array.from(
-    { length: Math.ceil(PTB_LOCK_GRACE_MS / PTB_SCRAPE_RETRY_MS) },
-    () => PTB_SCRAPE_RETRY_MS / 1000
-  );
-  const PTB_SCRAPE_MAX_ATTEMPTS = PTB_SCRAPE_RETRIES_SEC.length;
+  // PTB Blitz: fire at exact offsets from boundary, every 2-3 seconds,
+  // covering the full 120s grace window. Matches the proven stagger pattern
+  // (1s, 2s, 3.5s, 5s, 7s, 9s, 12s, 15s, 18s, 23s, 28s, 32s...) that caught
+  // PTB in 5-25s.
+  const PTB_BLITZ_FIRE_AT_SEC = [
+    1, 2, 3.5, 5, 7, 9, 12, 15, 18, 23, 28, 32,
+    35, 38, 41, 44, 47, 50, 53, 56, 59, 62, 65, 68,
+    71, 74, 77, 80, 83, 86, 89, 92, 95, 98, 101, 104,
+    107, 110, 113, 116, 119,
+  ];
   // Live-verified (2026-08-18): Gamma `cryptoMarketConfig` for current 5m and
   // 15m Up/Down markets is `btc-5m-twap-60` / `btc-15m-twap-60` with
   // twapLookbackSeconds=60. Querying chainlink-candles with lookback=30
   // produced a different open (e.g. BTC 16:10 window 64758.01 vs official
   // 64759.43) and that wrong number locked for the whole contract.
   const POLY_TWAP_LOOKBACK_SEC = 60;
+  const POLY_5M_CLOB_DELAY_SEC = 2;
   // Refuse to lock before the TWAP window has fully accumulated. 32s was
   // sized for the old 30s lookback; at 60s that captured a half-formed open.
   const PTB_TWAP_SETTLE_SEC = POLY_TWAP_LOOKBACK_SEC + 2;
@@ -526,13 +525,15 @@
         delete _pendingPtbLocks[slug]; continue;
       }
       if (now - st.boundaryMs > PTB_LOCK_GRACE_MS) { delete _pendingPtbLocks[slug]; continue; }
+      if (now - st.boundaryMs < POLY_5M_CLOB_DELAY_SEC * 1000) continue;
 
       // RTDS is deliberately not used here -- see POLY5M_PTB_TRUSTED_SOURCES.
       // Only the event-page scrape (Polymarket's own closed-window continuity
       // record) can produce an exact value, so that's the only thing retried.
-      if (st.scrapeAttempts >= PTB_SCRAPE_MAX_ATTEMPTS) continue;
-      const delayMs = (PTB_SCRAPE_RETRIES_SEC[st.scrapeAttempts] || 15) * 1000;
-      if (now - st.lastScrapeAttemptTs < delayMs) continue;
+      if (st.scrapeAttempts >= PTB_BLITZ_FIRE_AT_SEC.length) continue;
+      const fireAtSec = PTB_BLITZ_FIRE_AT_SEC[st.scrapeAttempts];
+      const elapsedSec = (now - st.boundaryMs) / 1000;
+      if (elapsedSec < fireAtSec) continue;
       st.lastScrapeAttemptTs = now;
       st.scrapeAttempts++;
       fetchPolymarketPriceToBeat(slug).then(() => {
@@ -952,31 +953,8 @@
   // falls back to nearest-expiry 15M market as real-time proxy ----
 
   async function fetchKalshi5M() {
-    if (KALSHI_DISABLED) return {};
-    const result = {};
-    const coins = Object.keys(KALSHI_15M_SERIES);
-    // Space series calls so we don't trip Kalshi 429 (7 coins × multi-transport was a storm)
-    const gapMs = () => (_rateLimitUntil > Date.now() ? 0 : 350);
-    for (let i = 0; i < coins.length; i++) {
-      if (_rateLimitUntil > Date.now()) {
-        // Cool-down active — stop the series loop; keep prior cache if any
-        break;
-      }
-      const sym = coins[i];
-
-      // Kalshi has no 5-minute crypto series. Verified against their API: KXBTC5M and
-      // KXETH5M return 404 not_found, while KXBTC15M / KXETH15M return 200. The old
-      // code queried the 5M tickers on every refresh (guaranteed 404s) and then, when
-      // that failed, substituted the strict 15M quarter-hour contract as a "5M proxy" —
-      // presenting a 15-minute market as a 5-minute one. That is the same substitute-a
-      // -plausible-value mistake that made the price-to-beat wrong for months.
-      // There is no 5m Kalshi market, so report none.
-      result[sym] = null;
-      if (i < coins.length - 1 && gapMs() > 0) {
-        await new Promise(r => setTimeout(r, gapMs()));
-      }
-    }
-    return result;
+    // Kalshi has no 5-minute crypto series. Never substitute its 15m contracts here.
+    return {};
   }
 
   // ---- Snipe detection: contracts closing within 5 min with strong bias ----
@@ -1624,10 +1602,15 @@
     if (!m) return false;
     if (m.active === false || m.closed === true || m.archived === true) return false;
     if (m.acceptingOrders === false || m.accepting_orders === false) return false;
+    const slug = String(m.slug || m.market_slug || '');
+    const bucketMatch = slug.match(/-(5m|15m|60m)-(\d+)$/);
+    if (!bucketMatch) return false;
+    const bucketMs = Number(bucketMatch[1].replace('m', '')) * 60_000;
+    const expectedEndMs = (Number(bucketMatch[2]) * 1000) + bucketMs;
     const endRaw = m.endDate || m.end_date_iso || m.end_date || m.endDateIso || null;
-    if (!endRaw) return true;
-    const endMs = new Date(endRaw).getTime();
-    return !Number.isFinite(endMs) || endMs > nowMs + 5_000;
+    const endMs = endRaw ? new Date(endRaw).getTime() : null;
+    if (!Number.isFinite(endMs) || Math.abs(endMs - expectedEndMs) > 1_000) return false;
+    return endMs > nowMs + 5_000;
   }
 
   let _poly5mCache = Object.create(null);
@@ -1700,6 +1683,7 @@
   const POLY5M_PTB_TRUSTED_SOURCES = new Set([
     'polymarket-contract',
     'polymarket-event-page',
+    'polymarket-crypto-price',
     'gamma-market',
     'gamma-market-metadata',
   ]);
@@ -2285,6 +2269,43 @@
     return (entry.candles || []).find(c => c.time === boundarySec) || null;
   }
 
+  const _polyCryptoPriceCache = new Map();
+
+  async function fetchPolymarketContractCryptoPrice(slug) {
+    const slugMatch = slug?.match?.(/^([a-z0-9-]+)-updown-(5m|15m|60m|1h)-(\d+)$/i);
+    if (!slugMatch) return null;
+    const symbolMap = {
+      btc: 'BTC', eth: 'ETH', sol: 'SOL', xrp: 'XRP',
+      doge: 'DOGE', hype: 'HYPE', bnb: 'BNB'
+    };
+    const symbol = symbolMap[slugMatch[1].toLowerCase()];
+    const horizonTag = slugMatch[2].toLowerCase();
+    const startSec = Number(slugMatch[3]);
+    if (!symbol || !Number.isFinite(startSec) || startSec <= 0) return null;
+
+    const cacheKey = `${symbol}:${horizonTag}:${startSec}`;
+    const cached = _polyCryptoPriceCache.get(cacheKey);
+    if (cached && cached.value != null && Date.now() - cached.fetchedAt < 4_000) return cached.value;
+    if (cached && cached.value == null && Date.now() - cached.fetchedAt < 1_000) return null;
+
+    const windowSec = horizonTag === '15m' ? 900 : (horizonTag === '60m' || horizonTag === '1h' ? 3600 : 300);
+    const horizonLiteral = horizonTag === '15m' ? 'fifteen' : ((horizonTag === '60m' || horizonTag === '1h') ? 'hourly' : 'fiveminute');
+    const startIso = new Date(startSec * 1000).toISOString().split('.')[0] + 'Z';
+    const endIso = new Date((startSec + windowSec) * 1000).toISOString().split('.')[0] + 'Z';
+    const url = `https://polymarket.com/api/crypto/crypto-price?symbol=${encodeURIComponent(symbol)}&eventStartTime=${encodeURIComponent(startIso)}&variant=${encodeURIComponent(horizonLiteral)}&endDate=${encodeURIComponent(endIso)}&twapEnabled=true&twapLookbackSeconds=${POLY_TWAP_LOOKBACK_SEC}`;
+    const response = await textFetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151 Safari/537.36',
+        'Accept': 'application/json',
+      },
+    });
+    const data = JSON.parse(response);
+    const openPrice = toPositiveFiniteNumber(data?.openPrice);
+    const value = openPrice != null && openPrice > 0 ? openPrice : null;
+    _polyCryptoPriceCache.set(cacheKey, { value, fetchedAt: Date.now() });
+    return value;
+  }
+
   async function fetchPolymarketPriceToBeat(slug) {
     if (!slug) return null;
     const existingLock = _getPolymarketPriceToBeatLock(slug);
@@ -2293,12 +2314,6 @@
     if (existingLock && (existingLock.corrected || POLY5M_PTB_AUTHORITATIVE_SOURCES.has(existingLock.source))) {
       return existingLock.price;
     }
-    // A non-authoritative (candle/fallback) lock is still SERVED, but we keep
-    // hitting the event page below: its dehydrated priceToBeat is the exact
-    // contract benchmark and a candle open can settle a few cents off it. If
-    // nothing new locks this pass, we return existingLock.price at the end.
-    if (existingLock) return existingLock.price;
-
     const cached = _poly5mPriceToBeatCache[slug];
     if (!existingLock && cached && Date.now() - cached.fetchedAt < PTB_SCRAPE_RETRY_MS && cached.value != null) {
       return cached.value;
@@ -2311,80 +2326,52 @@
       const horizonTag = slugMatch[2].toLowerCase();
       const startSec = Number(slugMatch[3]);
       if (sym && Number.isFinite(startSec)) {
-        const settledSec = (Date.now() / 1000) - startSec;
+        // PTB Blitz: independent racing lanes. Each lane locks the PTB the
+        // instant it resolves with a valid value — a slow or hanging lane can
+        // never stall a lane that already succeeded.
+        let resolved = false;
+        const lockLane = (value, source) => {
+          if (resolved) return null;
+          if (value == null || value <= 0) return null;
+          const locked = _lockPolymarketPriceToBeat(slug, value, source);
+          if (locked) resolved = true;
+          return locked;
+        };
 
-        // PRIMARY: chainlink-candles REST endpoint. Only when nothing is locked
-        // yet AND the 60s TWAP window has fully accumulated (PTB_TWAP_SETTLE_SEC)
-        // -- reading the `open` before then locks a half-formed TWAP that later
-        // settles a few cents away, which is the drift this path used to cause.
-        // NOTE: an unconfirmed read (_lockPolymarketPriceToBeat returns null while it
-        // waits for a second independent read -- see PTB_CONFIRM_* / v15 above) must
-        // NEVER be used as the returned/cached value. Falling back to the raw
-        // single-read candleOpen/pmOpen/fallbackPrice here (as this code used to do)
-        // silently bypassed the whole confirmation gate: the very first, unconfirmed
-        // read got cached and handed to callers immediately, so v15's fix never
-        // actually prevented a wrong PTB from being used -- it only changed what got
-        // frozen internally a few seconds later, after the wrong value had already
-        // been displayed/traded on. Return null (not-yet-available) instead; the
-        // caller's short-TTL cache (PTB_SCRAPE_RETRY_MS below) re-invokes this within
-        // ~1s, which naturally supplies the second confirming read.
-        if (!existingLock && settledSec >= PTB_TWAP_SETTLE_SEC) {
-          try {
-            const candleOpen = await fetchPolymarketChainlinkCandleOpen(sym, horizonTag, startSec, POLY_TWAP_LOOKBACK_SEC, false);
-            if (candleOpen != null && candleOpen > 0) {
-              const locked = _lockPolymarketPriceToBeat(slug, candleOpen, 'polymarket-chainlink-candles');
-              if (locked) {
-                _poly5mPriceToBeatCache[slug] = { value: locked.price, fetchedAt: Date.now() };
-                return locked.price;
-              }
-              return null;
-            }
-          } catch (_) {}
-        }
-
-        // AUTHORITATIVE: Polymarket event page dehydrated state. Always tried --
-        // it locks when nothing else has, and it CORRECTS a candle/fallback lock
-        // that came in off the contract value (see _lockPolymarketPriceToBeat).
-        try {
-          const html = await textFetch(`https://polymarket.com/event/${encodeURIComponent(slug)}`, {
-            headers: {
-              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151 Safari/537.36',
-              'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-              'Accept-Language': 'en-US,en;q=0.9',
-            },
-          });
-          const pmOpen = toPositiveFiniteNumber(_parsePolymarketPriceToBeat(html, slug));
-          if (pmOpen != null && pmOpen > 0) {
-            const locked = _lockPolymarketPriceToBeat(slug, pmOpen, 'polymarket-event-page');
+        const contractOpenPromise = fetchPolymarketContractCryptoPrice(slug)
+          .then(value => {
+            const locked = lockLane(value, 'polymarket-crypto-price');
             if (locked) {
               _poly5mPriceToBeatCache[slug] = { value: locked.price, fetchedAt: Date.now() };
-              return locked.price;
             }
-            // event-page read seen but not yet confirmed (needs a 2nd read, or a
-            // 2nd matching read to authorize a correction) -- keep serving the
-            // existing lock in the meantime.
-            if (existingLock) return existingLock.price;
-            return null;
-          }
-        } catch (e) {
-          console.warn(`[Poly5M-PTB] Polymarket openPrice lookup failed for ${slug}:`, e?.message || e);
-        }
+            return locked;
+          })
+          .catch(() => null);
 
-        // TERTIARY FALLBACK: Only at the exact open boundary (<= 15 seconds into
-        // window) and only when nothing is locked yet.
-        const secondsSinceStart = (Date.now() / 1000) - startSec;
-        if (!existingLock && secondsSinceStart >= 0 && secondsSinceStart <= 15) {
-          const rtdsFallback = _getFreshRtdsTwap(sym, 15_000);
-          const fallbackPrice = toPositiveFiniteNumber(rtdsFallback?.price);
-          if (fallbackPrice != null && fallbackPrice > 0) {
-            const locked = _lockPolymarketPriceToBeat(slug, fallbackPrice, 'chainlink-open-fallback');
+        const eventPagePromise = textFetch(`https://polymarket.com/event/${encodeURIComponent(slug)}`, {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+          },
+        })
+          .then(html => {
+            const value = toPositiveFiniteNumber(_parsePolymarketPriceToBeat(html, slug));
+            const locked = lockLane(value, 'polymarket-event-page');
             if (locked) {
               _poly5mPriceToBeatCache[slug] = { value: locked.price, fetchedAt: Date.now() };
-              return locked.price;
             }
-            return null;
-          }
-        }
+            return locked;
+          })
+          .catch(() => null);
+
+        // Wait for both lanes to settle. Each lane independently locks the
+        // instant it gets a valid value; the second lane to resolve is a no-op
+        // (already resolved). A `null` from one lane must NOT cancel the other.
+        const [contractResult, eventResult] = await Promise.all([contractOpenPromise, eventPagePromise]);
+        const winner = contractResult ?? eventResult;
+        if (winner) return winner.price;
+        return existingLock ? existingLock.price : null;
       }
     }
 
@@ -2419,6 +2406,7 @@
 
     const nowSec = Math.floor(Date.now() / 1000);
     const windowTs = nowSec - (nowSec % 300);
+    if (nowSec - windowTs < POLY_5M_CLOB_DELAY_SEC) return null;
     const cached = _poly5mCache[sym];
     if (cached && cached.windowTs === windowTs && Date.now() - cached.fetchedAt < (cached.data?.priceToBeatNum != null ? 15_000 : 1_000)) {
       const c = cached.data;
@@ -2427,15 +2415,7 @@
       }
       // stale cache without PTB for active window — re-fetch to establish exact contract PTB
     }
-    const candidates = [
-      windowTs,
-      windowTs + 300,
-      windowTs + 600,
-      windowTs + 900,
-      windowTs + 1200,
-      windowTs + 1500,
-      windowTs - 300,
-    ];
+    const candidates = [windowTs];
 
     const results = await Promise.all(candidates.map(async (ts) => {
       const slug = `${coinSlugPrefix}-updown-5m-${ts}`;
@@ -2469,24 +2449,12 @@
           priceToBeatSource = existingLock.source;
         }
 
-        const isImmediateNext = ts === windowTs + 300;
         // Strike is the opening value of THIS window. Future contracts are
         // not yet immutable — do not lock a forming TWAP / prev close as PTB.
         const shouldResolvePTB = ts === windowTs;
-        const hasTwapSettled = nowSec >= ts + _twapLookbackSeconds(m) + 2;
 
-        // 0. CANONICAL CONTRACT BENCHMARK: Polymarket Chainlink 60s TWAP Candle Open (Absolute Truth)
-        if (priceToBeatNum == null && shouldResolvePTB && hasTwapSettled) {
-          try {
-            const candleStrike = await fetchPolymarketChainlinkCandleOpen(sym, '5m', ts, _twapLookbackSeconds(m), false);
-            if (candleStrike != null && candleStrike > 0) {
-              priceToBeatNum = candleStrike;
-              priceToBeatSource = 'polymarket-contract';
-            }
-          } catch (_) {}
-        }
-
-        // 1. Direct Polymarket Contract Benchmark posted on Polygon / Polymarket metadata
+        // 1. Direct Polymarket contract benchmark from the exact slug's market
+        // metadata. This is the immutable contract value, never an estimate.
         if (priceToBeatNum == null && shouldResolvePTB) {
           const directContractStrike = toPositiveFiniteNumber(
             m.eventMetadata?.priceToBeat
@@ -2503,7 +2471,8 @@
           }
         }
 
-        // 2. Fetch directly from Polymarket contract event page / API
+        // 2. Exact Polymarket contract event page. Never fall back to candles,
+        // RTDS/TWAP, spot feeds, or a derived continuity value.
         if (priceToBeatNum == null && shouldResolvePTB) {
           const maxRetries = (isActiveWindow && (nowSec - windowTs <= 30)) ? 4 : 1;
           for (let attempt = 0; attempt < maxRetries; attempt++) {
@@ -2555,7 +2524,7 @@
         // A five-minute contract is unavailable until its benchmark exists.
         if (priceToBeatNum == null && !isFuture && ts !== windowTs) return null;
 
-        if (ts === windowTs || isImmediateNext || priceToBeatNum != null) {
+        if (ts === windowTs || priceToBeatNum != null) {
           const ptbFidelity = priceToBeatNum == null ? 'pending' : 'exact-contract';
           console.log(`[Poly5M-PTB] ${sym} ${marketSlug} → $${priceToBeatNum ?? 'pending'} (source: ${priceToBeatSource ?? 'waiting-for-open'}) [${ptbFidelity}]`);
         }
@@ -2711,6 +2680,8 @@
       clobTokenIds: primary.clobTokenIds,
       yesTokenId: primary.yesTokenId,
       noTokenId: primary.noTokenId,
+      clobUpAssetId: primary.yesTokenId,
+      clobDownAssetId: primary.noTokenId,
       marketId: primary.marketId,
       eventId: primary.eventId,
       eventMetadata: primary.eventMetadata,
@@ -2905,7 +2876,11 @@ function polymarketSentiment(markets, sym) {
     const poly60mResults = Object.create(null);
     if (fetchPoly5M) {
       const poly5mResults = Object.create(null);
-      await Promise.all(Object.keys(POLY_5M_COIN_SLUGS).map(async sym => {
+      const symKeys = Object.keys(POLY_5M_COIN_SLUGS);
+      await Promise.all(symKeys.map(async (sym, i) => {
+        // Stagger requests 200ms apart to avoid simultaneous 21-request bursts
+        // (7 coins × 3 horizons each) that trip Gamma's rate limiter on BTC/XRP.
+        if (i > 0) await new Promise(r => setTimeout(r, i * 200));
         try {
           poly5mResults[sym] = await withTimeout(fetchPolymarket5MBySlug(sym), 8_000, `Poly5M ${sym}`);
         } catch (err) {
@@ -2952,26 +2927,28 @@ function polymarketSentiment(markets, sym) {
 
     const next = Object.create(null);
     for (const sym of Object.keys(POLY_5M_COIN_SLUGS)) {
+      const k15 = kalshi15m[sym] ?? cache[sym]?.kalshi15m ?? null;
       const k5raw = _k5mCache[sym] ?? null;
       const poly5mSlug = k5raw?._poly5m ?? null;
-      const poly15mObj = poly15mResults[sym] || cache[sym]?.poly15m || null;
-      const poly60mObj = poly60mResults[sym] || cache[sym]?.poly60m || null;
+      const poly15mObj = poly15mResults[sym] || cache[sym]?.poly15m || _poly15mCache[sym]?.data || null;
+      const poly60mObj = poly60mResults[sym] || cache[sym]?.poly60m || _poly60mCache[sym]?.data || null;
       const poly = Array.isArray(_polyCache) ? polymarketSentiment(_polyCache, sym) : null;
       const poly5m = poly5mSlug || null;
 
       const sources = [];
+      if (k15?.probability != null) sources.push({ name: 'Kalshi15M', prob: k15.probability, vol: k15.volume || 1 });
       if (poly5mSlug?.probability != null) sources.push({ name: 'Poly5M', prob: poly5mSlug.probability, vol: poly5mSlug.volume || 1 });
       if (poly15mObj?.probability != null) sources.push({ name: 'Poly15M', prob: poly15mObj.probability, vol: poly15mObj.volume || 1 });
       if (poly?.probability != null) sources.push({ name: 'Polymarket', prob: poly.probability, vol: poly.volume || 1 });
       
-      const combinedProb = poly15mObj?.probability ?? poly5mSlug?.probability ?? poly?.probability ?? null;
+      const combinedProb = k15?.probability ?? poly15mObj?.probability ?? poly5mSlug?.probability ?? poly?.probability ?? null;
 
       next[sym] = {
-        kalshi: null,
+        kalshi: k15?.probability != null ? parseFloat(k15.probability.toFixed(4)) : null,
         poly: poly?.probability != null ? parseFloat(poly.probability.toFixed(4)) : (poly15mObj?.probability != null ? parseFloat(poly15mObj.probability.toFixed(4)) : (poly5mSlug?.probability != null ? parseFloat(poly5mSlug.probability.toFixed(4)) : null)),
         combinedProb: combinedProb !== null ? parseFloat(combinedProb.toFixed(4)) : null,
         sources,
-        kalshi15m: null,
+        kalshi15m: k15,
         kalshi5m: null,
         poly5m,
         poly5mSlug,
@@ -2979,9 +2956,10 @@ function polymarketSentiment(markets, sym) {
         poly60m: poly60mObj,
         poly5mMkts: poly5m?.markets || [],
         polyMarkets: poly?.markets || [],
-        kalshiTitle: null,
-        probVelocity: 0,
+        kalshiTitle: k15?.title ?? null,
+        probVelocity: getProbVelocity(sym),
       };
+      if (k15?.probability != null) trackProbability(sym, k15.probability);
     }
 
     cache = next;
@@ -3026,7 +3004,6 @@ function polymarketSentiment(markets, sym) {
   async function refreshPoly5M(reason = 'manual') {
     const results = Object.create(null);
     await Promise.all(Object.keys(POLY_5M_COIN_SLUGS).map(async sym => {
-      _poly5mCache[sym] = null;
       results[sym] = await fetchPolymarket5MBySlug(sym);
     }));
 
@@ -3098,7 +3075,12 @@ function polymarketSentiment(markets, sym) {
       const marketSlug = m.slug || slug;
 
       // Subscribe poly15m tokens on the shared PolymarketWS (same owner as poly5m).
-      const clobSnapshot = await fetchPolymarketClobMarketSnapshot(sym, m);
+      let clobSnapshot = null;
+      try {
+        clobSnapshot = await fetchPolymarketClobMarketSnapshot(sym, m);
+      } catch (clobErr) {
+        console.warn(`[PredictionMarkets] Poly15M CLOB snapshot unavailable for ${sym} ${marketSlug}:`, clobErr?.message || clobErr);
+      }
       const clobProb = Number(clobSnapshot?.upProbability);
       const liveUpProb = Number.isFinite(clobProb) && clobProb >= 0.01 && clobProb <= 0.99
         ? clobProb
@@ -3112,27 +3094,8 @@ function polymarketSentiment(markets, sym) {
         priceToBeatNum = existingLock.price;
         priceToBeatSource = existingLock.source;
       } else {
-        // 0. CANONICAL CONTRACT BENCHMARK: Polymarket Chainlink 60s TWAP Candle Open (Absolute Truth)
-        try {
-          const candleStrike = await fetchPolymarketChainlinkCandleOpen(sym, '15m', windowTs, _twapLookbackSeconds(m), false);
-          if (candleStrike != null && candleStrike > 0) {
-            priceToBeatNum = candleStrike;
-            priceToBeatSource = 'polymarket-contract';
-          }
-        } catch (_) {}
-        const hasTwapSettled = nowSec >= windowTs + _twapLookbackSeconds(m) + 2;
-        // 0. CANONICAL CONTRACT BENCHMARK: Polymarket Chainlink 60s TWAP Candle Open (Absolute Truth)
-        if (hasTwapSettled) {
-          try {
-            const candleStrike = await fetchPolymarketChainlinkCandleOpen(sym, '15m', windowTs, _twapLookbackSeconds(m), false);
-            if (candleStrike != null && candleStrike > 0) {
-              priceToBeatNum = candleStrike;
-              priceToBeatSource = 'polymarket-contract';
-            }
-          } catch (_) {}
-        }
-
-        // 1. Direct Polymarket Contract Benchmark posted on metadata
+        // 1. Direct Polymarket contract benchmark from exact market metadata.
+        // No candle/TWAP approximation is allowed to masquerade as PTB.
         const directContractStrike = toPositiveFiniteNumber(
           m.eventMetadata?.priceToBeat
           ?? m.eventMetadata?.price_to_beat
@@ -3147,7 +3110,7 @@ function polymarketSentiment(markets, sym) {
           priceToBeatSource = 'gamma-market';
         }
 
-        // 2. Direct Polymarket contract event page (opening strike, not live TWAP)
+        // 2. Exact Polymarket contract event page.
         if (priceToBeatNum == null) {
           try {
             const scraped = await fetchPolymarketPriceToBeat(marketSlug);
@@ -3202,6 +3165,8 @@ function polymarketSentiment(markets, sym) {
         clobTokenIds,
         yesTokenId,
         noTokenId,
+        clobUpAssetId: yesTokenId,
+        clobDownAssetId: noTokenId,
         marketId,
         eventId,
         eventMetadata: m.eventMetadata || null,
@@ -3511,32 +3476,11 @@ function polymarketSentiment(markets, sym) {
       let lastBoundarySec = 0;
       let lastBoundary15Sec = 0;
       let lastBoundary60Sec = 0;
-      let prefetchTriggered = false;
       setInterval(() => {
         if (document.hidden) return;
         const nowMs = Date.now();
         const nowSec = Math.floor(nowMs / 1000);
         const secInPeriod = nowSec % 300;
-
-        // 1. Pre-fetch trigger: 30 seconds before the 5-minute boundary (pre-warm candidates only; NEVER lock PTB before boundary opens)
-        if (secInPeriod >= 270 && !prefetchTriggered) {
-          prefetchTriggered = true;
-          const currentBoundary = nowSec - secInPeriod;
-          const nextBoundary = currentBoundary + 300;
-          console.info(`[BoundaryClock] ⏱ 30s to 5m boundary (${nextBoundary}). Pre-warming candidate structure for upcoming contracts.`);
-          Object.keys(POLY_5M_COIN_SLUGS).forEach(async (sym) => {
-            try {
-              const prefix = POLY_5M_COIN_SLUGS[sym];
-              const nextSlug = `${prefix}-updown-5m-${nextBoundary}`;
-              await fetchPolymarket5MMarketCandidate(sym, nextSlug).catch(() => null);
-            } catch (_) {}
-          });
-        }
-
-        // Reset prefetch trigger when we are in a new period
-        if (secInPeriod < 270) {
-          prefetchTriggered = false;
-        }
 
         // 2. Rollover trigger: Exactly at the boundary
         const currentBoundary = nowSec - secInPeriod;
@@ -3623,7 +3567,8 @@ function polymarketSentiment(markets, sym) {
           // window (see _tickPendingPtbLocks -- a single attempt right here
           // missed too often and left PTB stuck on "pending" for the whole
           // window instead of resolving within seconds).
-          Object.keys(POLY_5M_COIN_SLUGS).forEach((sym) => {
+          const allCoins = Object.keys(POLY_5M_COIN_SLUGS);
+          allCoins.forEach((sym) => {
             const prefix = POLY_5M_COIN_SLUGS[sym];
             const newSlug = `${prefix}-updown-5m-${currentBoundary}`;
             _seedPendingPtbLock(sym, newSlug, currentBoundary * 1000);
@@ -3632,6 +3577,21 @@ function polymarketSentiment(markets, sym) {
           // Trigger background fetch to get actual PTB and live pricing
           refreshPoly5M('boundary-clock').catch(() => {});
           fetchAll().catch(() => {});
+
+          // Polymarket publishes the immutable contract PTB at window open,
+          // but immediate requests can beat market propagation. Wait once,
+          // then fetch only this exact boundary slug.
+          const delayedFetchMs = Math.max(
+            0,
+            currentBoundary * 1000 + POLY_5M_CLOB_DELAY_SEC * 1000 - nowMs
+          );
+          setTimeout(() => {
+            if (document.hidden) return;
+            const latestNowSec = Math.floor(Date.now() / 1000);
+            const latestBoundary = latestNowSec - (latestNowSec % 300);
+            if (latestBoundary !== currentBoundary) return;
+            refreshPoly5M('boundary-delay').catch(() => {});
+          }, delayedFetchMs);
         } else if (lastBoundarySec === 0) {
           lastBoundarySec = currentBoundary;
         }
@@ -3659,8 +3619,10 @@ function polymarketSentiment(markets, sym) {
           lastBoundary60Sec = boundary60;
           Object.keys(POLY_5M_COIN_SLUGS).forEach((sym) => {
             const prefix = POLY_5M_COIN_SLUGS[sym];
-            _seedPendingPtbLock(sym, `${prefix}-updown-1h-${boundary60}`, boundary60 * 1000);
-            _seedPendingPtbLock(sym, `${prefix}-updown-60m-${boundary60}`, boundary60 * 1000);
+            const slug1h = `${prefix}-updown-1h-${boundary60}`;
+            const slug60m = `${prefix}-updown-60m-${boundary60}`;
+            _seedPendingPtbLock(sym, slug1h, boundary60 * 1000);
+            _seedPendingPtbLock(sym, slug60m, boundary60 * 1000);
           });
           refreshPoly60M('boundary-clock').catch(() => {});
         } else if (lastBoundary60Sec === 0) {
@@ -3734,6 +3696,7 @@ function polymarketSentiment(markets, sym) {
     refreshPoly60M,
     getFreshRtdsTwap: _getFreshRtdsTwap,
     _getCachedChainlinkCandle,
+    POLY_5M_COIN_SLUGS,
   };
 
   if (window.__WE_TEST__) {

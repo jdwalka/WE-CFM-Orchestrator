@@ -63,8 +63,8 @@ const KALSHI_WORKER_URL  = process.env.KALSHI_WORKER_URL || 'http://localhost:30
 // Kalshi sentiment poll interval (30 s — fast enough to track rapid contract price moves)
 const KALSHI_POLL_INTERVAL_MS = 30_000;
 
-const ASSETS = ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'BNB', 'HYPE'];
-const COINBASE_PRODUCTS = ['BTC-USD', 'ETH-USD', 'SOL-USD', 'XRP-USD', 'DOGE-USD', 'HYPE-USD'];
+const ASSETS = ['BTC', 'ETH', 'SOL', 'XRP'];
+const COINBASE_PRODUCTS = ['BTC-USD', 'ETH-USD', 'SOL-USD', 'XRP-USD'];
 const COINBASE_ASSETS = COINBASE_PRODUCTS.map(product => product.split('-')[0]);
 
 // --- p-orbital: Rolling VWAP state ---
@@ -204,7 +204,9 @@ class OrbitalIngestor {
         this.connectCoinbase();
         this.connectHyperliquid();
         this.startPolymarketPoll();
-        this.connectPythLazer();
+        // Pyth Lazer is already connected via the main PythLazerClient pool in
+        // electron/main.js; opening a second direct WebSocket here with the same
+        // token caused the server to kick connections in a reconnect storm.
     }
 
     stop() {
@@ -482,13 +484,17 @@ class OrbitalIngestor {
     // ─── s + p orbital: Pyth Lazer / Hermes WebSocket ───────────────────────────
     connectPythLazer() {
         if (this._stopped) return;
-        const token = process.env.PYTH_LAZER_TOKEN || process.env.LAZER_TOKEN || process.env.PYTH_API || '4XYJeYbsqoqu7dWPBXhkaWmHc7c8Hutkk3e6AGsoJkJ6';
+        const token = process.env.PYTH_LAZER_TOKEN || process.env.LAZER_TOKEN || process.env.PYTH_API || '';
+        if (!token) {
+            console.warn('[OrbitalIngestor] Pyth Lazer disabled: missing PYTH_LAZER_TOKEN/LAZER_TOKEN/PYTH_API.');
+            return;
+        }
         const wsUrl = `wss://pyth-lazer-1.dourolabs.app/v1/stream`;
         const ws = new WebSocket(wsUrl, { headers: { Authorization: `Bearer ${token}` } });
         this.connections.set('pyth_lazer', ws);
 
         const pythIds = {
-            1: 'BTC', 2: 'ETH', 6: 'SOL', 10: 'DOGE', 13: 'DOGE', 14: 'XRP', 15: 'BNB'
+            1: 'BTC', 2: 'ETH', 6: 'SOL', 10: 'DOGE', 14: 'XRP', 15: 'BNB'
         };
 
         ws.on('open', () => {
@@ -497,7 +503,7 @@ class OrbitalIngestor {
                 ws.send(JSON.stringify({
                     type: 'subscribe',
                     subscriptionId: 1,
-                    priceFeedIds: [1, 2, 6, 13, 14, 15],
+                    priceFeedIds: [1, 2, 6, 10, 14, 15],
                     properties: ["price", "bestBidPrice", "bestAskPrice", "confidence", "exponent"],
                     channel: 'fixed_rate@200ms',
                     deliveryFormat: 'json',
