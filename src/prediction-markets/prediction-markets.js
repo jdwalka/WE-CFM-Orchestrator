@@ -498,7 +498,7 @@
   // produced a different open (e.g. BTC 16:10 window 64758.01 vs official
   // 64759.43) and that wrong number locked for the whole contract.
   const POLY_TWAP_LOOKBACK_SEC = 60;
-  const POLY_5M_CLOB_DELAY_SEC = 2;
+  const POLY_5M_CLOB_DELAY_SEC = 8;
   // Refuse to lock before the TWAP window has fully accumulated. 32s was
   // sized for the old 30s lookback; at 60s that captured a half-formed open.
   const PTB_TWAP_SETTLE_SEC = POLY_TWAP_LOOKBACK_SEC + 2;
@@ -2326,21 +2326,37 @@
       const horizonTag = slugMatch[2].toLowerCase();
       const startSec = Number(slugMatch[3]);
       if (sym && Number.isFinite(startSec)) {
-        // PTB Blitz: independent racing lanes. Each lane locks the PTB the
-        // instant it resolves with a valid value — a slow or hanging lane can
-        // never stall a lane that already succeeded.
-        let resolved = false;
-        const lockLane = (value, source) => {
-          if (resolved) return null;
-          if (value == null || value <= 0) return null;
-          const locked = _lockPolymarketPriceToBeat(slug, value, source);
-          if (locked) resolved = true;
-          return locked;
-        };
+        // AUTHORITATIVE: Polymarket's own crypto-price endpoint returns the
+        // exact immutable contract openPrice for every coin and horizon.
+        try {
+          const contractOpen = await fetchPolymarketContractCryptoPrice(slug);
+          if (contractOpen != null && contractOpen > 0) {
+            const locked = _lockPolymarketPriceToBeat(slug, contractOpen, 'polymarket-crypto-price');
+            if (locked) {
+              _poly5mPriceToBeatCache[slug] = { value: locked.price, fetchedAt: Date.now() };
+              return locked.price;
+            }
+            if (existingLock) return existingLock.price;
+            return null;
+          }
+        } catch (e) {
+          console.warn(`[Poly5M-PTB] Polymarket crypto-price lookup failed for ${slug}:`, e?.message || e);
+        }
 
-        const contractOpenPromise = fetchPolymarketContractCryptoPrice(slug)
-          .then(value => {
-            const locked = lockLane(value, 'polymarket-crypto-price');
+        // AUTHORITATIVE: Polymarket event page dehydrated state. The contract
+        // publishes its immutable Price To Beat here at window open. No chart,
+        // candle, TWAP, or spot feed is ever used as a substitute.
+        try {
+          const html = await textFetch(`https://polymarket.com/event/${encodeURIComponent(slug)}`, {
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151 Safari/537.36',
+              'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+              'Accept-Language': 'en-US,en;q=0.9',
+            },
+          });
+          const pmOpen = toPositiveFiniteNumber(_parsePolymarketPriceToBeat(html, slug));
+          if (pmOpen != null && pmOpen > 0) {
+            const locked = _lockPolymarketPriceToBeat(slug, pmOpen, 'polymarket-event-page');
             if (locked) {
               _poly5mPriceToBeatCache[slug] = { value: locked.price, fetchedAt: Date.now() };
             }
@@ -2348,30 +2364,6 @@
           })
           .catch(() => null);
 
-        const eventPagePromise = textFetch(`https://polymarket.com/event/${encodeURIComponent(slug)}`, {
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.9',
-          },
-        })
-          .then(html => {
-            const value = toPositiveFiniteNumber(_parsePolymarketPriceToBeat(html, slug));
-            const locked = lockLane(value, 'polymarket-event-page');
-            if (locked) {
-              _poly5mPriceToBeatCache[slug] = { value: locked.price, fetchedAt: Date.now() };
-            }
-            return locked;
-          })
-          .catch(() => null);
-
-        // Wait for both lanes to settle. Each lane independently locks the
-        // instant it gets a valid value; the second lane to resolve is a no-op
-        // (already resolved). A `null` from one lane must NOT cancel the other.
-        const [contractResult, eventResult] = await Promise.all([contractOpenPromise, eventPagePromise]);
-        const winner = contractResult ?? eventResult;
-        if (winner) return winner.price;
-        return existingLock ? existingLock.price : null;
       }
     }
 
