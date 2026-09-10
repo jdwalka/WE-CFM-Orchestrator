@@ -65,12 +65,17 @@ SETTLEMENT_ORACLES = {
     },
     "POLYMARKET": {
         "oracle": "Chainlink TWAP",
-        "window_seconds": None,  # 30 or 60s variant exists; per-market window not confirmed here
+        "window_seconds": 60,  # per Polymarket's own Aug 7 2026 changelog: 5m markets use 30s,
+                                # 15m and 4h markets use 60s. Hourly isn't separately listed —
+                                # this defaults to the 60s bucket since hourly sits with 15m/4h,
+                                # not with the fast 5m tier. Treat as a strong default, not gospel.
         "method": "time-weighted average over a short pre-expiry window, "
                   "replacing the pre-Aug-2026 single last-price snapshot",
         "single_tick_can_settle_it": False,
-        "sustained_push_risk_seconds": 60,   # conservative assumption until confirmed per-market
-        "confirmed": False,  # exact window must be pulled from the live market rules
+        "sustained_push_risk_seconds": 60,
+        "confirmed": False,  # hourly window still not stated verbatim by Polymarket; override
+                             # settlement_window_seconds from the live market's own rules text
+                             # before trusting this for real size.
     },
 }
 

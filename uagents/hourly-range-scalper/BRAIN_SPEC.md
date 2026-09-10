@@ -39,29 +39,61 @@ Practical read: a lone wick is diluted across ~60 samples and usually won't
 flip settlement by itself, but a move sustained through most of that final
 minute will, because nothing smooths beyond that window.
 
-**Polymarket (confirmed direction, window not confirmed):** Polymarket
-upgraded its crypto markets to Chainlink TWAP settlement around August 7,
-2026, replacing a single last-price snapshot that had been exploited via a
-brief low-liquidity price spike right before expiry. Chainlink offers both
-30-second and 60-second TWAP variants; which one Polymarket uses for a given
-market wasn't pinned down by the sources I could reach. **`brain.py` treats
-this window as unconfirmed on purpose** (`SETTLEMENT_ORACLES["POLYMARKET"]["confirmed"] = False`)
-— have the architecture layer read it off the live market's own rules text
-via the Polymarket API/docs before this matters for real sizing, and flip
-that flag once it's pinned down.
+**Polymarket — SUPERSEDED 2026-09-10, see market_data.py's module
+docstring for the full writeup.** The changelog-based "hourly defaults to
+60s TWAP" note above turned out to be wrong once checked against live
+markets, not just docs. Verified by reading real, currently-open BTC
+markets' own descriptions directly (via `gamma-api.polymarket.com`):
 
-**Kalshi's range-contract structure (confirmed, adds a nuance worth knowing):**
-Kalshi runs two ladder types on Bitcoin: *band ladders*, where mutually
-exclusive rungs together price out to about a dollar (only one rung ultimately
-resolves), and *threshold/nested ladders* ("will BTC finish above $X"). Your
-"not PTB" instruction is honored regardless of which ladder a given range
-happens to be listed under — Section 1 tells the brain to always price and
-exit a range contract on its own live book, never to reason about it as an
-all-or-nothing bracket pick, whether the venue's underlying plumbing links it
-to sibling rungs or not.
+- `btc-updown-{5m,15m,4h}-<unix_ts>` events genuinely settle off a
+  Chainlink TWAP — but live text for 5m, 15m, *and* 4h instances all cite
+  the same `btc-usd-twap-60s-streams` URL, contradicting the changelog's
+  claim that 5m uses a 30s lookback. **No hourly (1h) variant of this
+  product exists at all.**
+- The only genuinely hourly-cadence BTC product on Polymarket —
+  `bitcoin-up-or-down-<date>-<hour><am|pm>-et` — settles off a single
+  Binance 1-hour candle's open vs. close. Confirmed live: no TWAP, no
+  averaging. This is the exact "single last-price snapshot" exploit shape
+  Section 6 (above) says Polymarket moved away from — apparently only for
+  the timestamp-slugged product line, not this one.
+- `bitcoin-price-on-<date>` daily events are real `[low, high]` band
+  ladders — the only Polymarket product structurally shaped like
+  `CandidateBand` — but settle off a single Binance 1-*minute* candle
+  close. Also not a TWAP, and daily cadence, not hourly.
 
-Sources (secondary/industry, not the venues' own docs — re-verify against
-Kalshi's and Polymarket's live rules pages before this trades size):
+**No Polymarket product is simultaneously hourly, banded, AND
+TWAP-settled.** `market_data.build_polymarket_snapshot()` defaults to the
+daily band ladder (closest structural fit) and sets
+`settlement_window_seconds=0` honestly — a single close tick, materially
+higher single-tick risk than Section 6 assumes for "Polymarket" generally.
+It is **not** wired into `mcp_agent.py`'s live scalper cycle pending a
+decision on which product line to actually trade; Kalshi is wired in and
+unaffected by any of this.
+
+**Kalshi's range-contract structure (now reasonably confirmed):** Kalshi's
+Bitcoin band ladder does slice price into adjacent bands where, at
+settlement, only one band ultimately resolves YES — but per Kalshi's own
+market design (see sailgp.com source below), *"traders can take positions on
+individual bands independently"*: each band is its own priced YES/NO
+contract with its own live bid/ask that you can enter and exit before
+settlement, not a single winner-take-all pool you lock capital into like a
+Pick-the-Bracket product. That's the distinction Section 1 cares about, and
+it holds: even though only one band resolves YES, every band you can see on
+the board is independently tradable right now, which is what lets the brain's
+Section 5 early-exit rule ("sell into the live book once converged") actually
+work. Kalshi also separately confirms tick-by-tick trades and Level-2
+order-book depth are published per Bitcoin contract. This is still
+inference from third-party/industry sources, not Kalshi's raw API schema —
+verify the specific ticker family (e.g. via Kalshi's market/orderbook
+endpoints) shows a live, independently-quoted book for the exact band you're
+about to trade before sizing up.
+
+Sources (secondary/industry except where noted as Polymarket's own docs —
+re-verify against Kalshi's and Polymarket's live rules pages before this
+trades size):
+- [Polymarket changelog — Chainlink TWAP resolution for crypto up/down markets (Aug 7, 2026)](https://docs.polymarket.com/changelog/predictions#aug-7-2026) — **Polymarket's own docs**
+- [Polymarket — Chainlink TWAP Prices (RTDS/SDK reference)](https://docs.polymarket.com/market-data/chainlink-twap) — **Polymarket's own docs**
+- [Kalshi Bitcoin Prediction Markets: How BTC Trading Works](https://sailgp.com/prediction-markets/kalshi/bitcoin)
 - [How Kalshi Settles Bitcoin: The CF Benchmarks Real-Time Index, 60-Second Averaging, and Edge Cases](https://predictionmarketspicks.com/articles/how-kalshi-settles-bitcoin)
 - [Kalshi Bitcoin Markets by Frequency](https://predictionmarketspicks.com/articles/kalshi-bitcoin-markets-by-frequency)
 - [How Bitcoin Price Contracts Work On Kalshi — OddsShopper](https://www.oddsshopper.com/articles/prediction-markets/kalshi-bitcoin-price-markets)
@@ -96,14 +128,20 @@ too rather than adding a second LLM client).
 
 ## Before this touches real money
 
-1. Confirm the Polymarket TWAP window per-market (see above) and set
-   `SETTLEMENT_ORACLES["POLYMARKET"]["window_seconds"]` + `"confirmed"` accordingly.
-2. Confirm the exact Kalshi ticker family you're trading is a standalone
-   range contract with its own live order book (not a rung you can only
-   exit by the whole ladder settling) — the "not PTB" assumption in Section 1
-   depends on that being true for the specific product.
+1. **Polymarket TWAP window — reopened 2026-09-10**: see the superseded
+   note above. There's no hourly+banded+TWAP product on Polymarket at all;
+   this is now a product-line decision (which of the 3 to trade), not a
+   number to fill in. Still open — needs Mar's call before Polymarket goes
+   live in `mcp_agent.py`'s scalper cycle.
+2. ~~Confirm the exact Kalshi ticker family~~ — **reasonably confirmed
+   2026-09-10**: Kalshi's band-ladder design lets you trade and exit each
+   band independently even though only one resolves YES (see sources above).
+   Still verify the specific ticker's orderbook endpoint shows a live,
+   independently-quoted book before sizing up.
 3. Sanity-check the 95-99¢ convergence/exit threshold in Section 5 against
    your own fill data — it's a reasonable default, not a backtested number.
+   This one can't be resolved by research; it needs real fills from the
+   execution layer once built.
 4. `size_hint` is deliberately relative — decide your own real position-size
    and max-concurrent-exposure rules in the architecture layer; nothing in
    this brain should be trusted with an actual dollar figure.
