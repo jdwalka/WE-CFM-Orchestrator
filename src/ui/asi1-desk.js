@@ -405,17 +405,17 @@
     if (fingerprint === _lastAccountsFingerprint) return;
     _lastAccountsFingerprint = fingerprint;
 
-    const accountIds = ['mauro', 'icloud', 'gitgoin'];
+    const accountIds = ['leaksnipe'];
     for (const k of Object.keys(accounts)) {
       if (!accountIds.includes(k)) accountIds.push(k);
     }
     const rows = accountIds.map((id) => {
       const a = accounts[id] || {};
       const keys = a.keys || 0;
-      const email = a.email || (id === 'mauro' ? 'maurofanellijr@gmail.com' : (id === 'icloud' ? 'mauro_fanelli@icloud.com' : 'gitgoin87@gmail.com'));
+      const email = a.email || 'mauro@leaksnipe.win';
       const live = keys > 0;
       const dotClass = live ? 'live' : 'rate';
-      const label = id === 'mauro' ? 'mauro (Primary)' : (id === 'icloud' ? 'icloud (Pro)' : id);
+      const label = 'mauro (LeakSnipe)';
       return `<div class="ad-pill">
         <span class="ad-dot ${dotClass}"></span>
         <span style="font-weight:600;color:${live ? '#00e676' : '#e6e8eb'}">${escapeHTML(label)}</span>
