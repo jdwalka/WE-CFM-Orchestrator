@@ -18,10 +18,10 @@
   const COINBASE_EXCH_BASE = 'https://api.exchange.coinbase.com';
   const INSTRUMENTS = {
     BTC: 'BTCUSD', ETH: 'ETHUSD', SOL: 'SOLUSD',
-    XRP: 'XRPUSD', DOGE: 'DOGEUSD',
+    XRP: 'XRPUSD', DOGE: 'DOGEUSD', BNB: 'BNBUSD', HYPE: 'HYPEUSD',
   };
 
-  const COINS = ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE'];
+  const COINS = ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'BNB', 'HYPE'];
 
   const CB_PRODUCTS = {
     BTC: 'BTC-USD', ETH: 'ETH-USD', SOL: 'SOL-USD',
@@ -37,7 +37,7 @@
 
   const COIN_COLORS = {
     BTC: '#f7931a', ETH: '#627eea', SOL: '#00d4aa',
-    XRP: '#00aae4', DOGE: '#c2a633',
+    XRP: '#00aae4', DOGE: '#c2a633', BNB: '#f3ba2f', HYPE: '#50e3c2',
   };
   const VISIBLE_BUCKETS = 11;   // 5 above + current + 5 below
   const POLL_NORMAL_MS  = 10000;  // First 30 mins (10s)
@@ -106,6 +106,7 @@
     if (sym === 'ETH' || (refPrice >= 1000 && refPrice < 20000)) return 10;
     if (sym === 'SOL' || (refPrice >= 50 && refPrice < 1000)) return 0.5;
     if (sym === 'BNB') return 2;
+    if (sym === 'HYPE') return 0.25;
     if (sym === 'XRP' || (refPrice >= 0.5 && refPrice < 50)) return 0.01;
     if (sym === 'DOGE' || refPrice < 0.5) return 0.005;
     return refPrice * 0.002;
@@ -312,18 +313,28 @@
 
   // ── Build HTML for one coin card ───────────────────────────────
   function buildCoinCard(sym) {
-    const ranges  = safeGet(_ranges, sym) || [];
-    const price   = safeGet(_prices, sym);
+    let ranges  = safeGet(_ranges, sym) || [];
+    const price   = safeGet(_prices, sym) || readLivePrice(sym);
     const color   = safeGet(COIN_COLORS, sym) || '#888';
-    const ctISO   = safeGet(_closeTimes, sym) || (ranges.at(0)?.closeTime);
+    const ctISO   = safeGet(_closeTimes, sym) || (ranges.at(0)?.closeTime) || new Date(Math.ceil(Date.now() / 3600000) * 3600000).toISOString();
     const ttc     = ctISO ? timeToClose(ctISO) : null;
     const ttcMs   = ctISO ? Date.parse(ctISO) - Date.now() : null;
     const isFinal = ttcMs !== null && ttcMs < FAST_WINDOW_MS;
 
-    const priceStr = price ? `$${price.toLocaleString('en-US', { maximumFractionDigits: 2 })}` : '—';
+    const priceStr = price
+      ? (window.CoinPrecision?.formatCoinPrice
+          ? window.CoinPrecision.formatCoinPrice(sym, price)
+          : `$${Number(price).toLocaleString('en-US', { minimumFractionDigits: (sym === 'XRP' || sym === 'DOGE') ? 4 : 2, maximumFractionDigits: (sym === 'XRP' || sym === 'DOGE') ? 4 : 2 })}`)
+      : '—';
+
 
     let body;
     let topBuckets = [];
+
+    if (!ranges.length && price) {
+      ranges = buildSpotCenteredRanges(sym, price, ctISO);
+      Object.defineProperty(_ranges, sym, { value: ranges, writable: true, enumerable: true, configurable: true });
+    }
 
     if (!ranges.length) {
       body = `<div class="hr-empty">Loading market data…</div>`;
@@ -416,7 +427,12 @@
           const slug = g.contractSlug || (peg15 && peg15.slug) || '';
           const side = peg15 && peg15.side ? peg15.side : (call === 'UP' ? 'Up' : 'Down');
           const ptb = peg15 && peg15.priceToBeatNum;
-          const ptbLabel = ptb ? `$${Number(ptb).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : (priceStr !== '—' ? priceStr : '');
+          const ptbLabel = ptb
+            ? (window.CoinPrecision?.formatCoinStrike
+                ? window.CoinPrecision.formatCoinStrike(sym, ptb)
+                : `$${Number(ptb).toLocaleString('en-US', { minimumFractionDigits: (sym === 'XRP' || sym === 'DOGE') ? 4 : 2, maximumFractionDigits: (sym === 'XRP' || sym === 'DOGE') ? 4 : 2 })}`)
+            : (priceStr !== '—' ? priceStr : '');
+
           if (slug) metaLine += ` · id: ${escapeHTML(slug.length > 20 ? slug.substring(0, 12) + '...' : slug)}`;
           if (slug) metaLine += ` · buy ${side}`;
           if (ptbLabel) metaLine += ` · PTB ${ptbLabel}`;
@@ -476,8 +492,14 @@
     let poly15mHtml = '';
     try {
       const p15 = window.PredictionMarkets?.getCoin?.(sym)?.poly15m;
-      if (p15 && p15.slug) {
-        const upProb = Number(p15.probability);
+      const coinPrefix = (window.PredictionMarkets?.POLY_5M_COIN_SLUGS?.[sym] || sym.toLowerCase());
+      const nowSec = Math.floor(Date.now() / 1000);
+      const windowTs = nowSec - (nowSec % 900);
+      const fallbackSlug = `${coinPrefix}-updown-15m-${windowTs}`;
+      const activeSlug = p15?.slug || fallbackSlug;
+
+      if (activeSlug) {
+        const upProb = Number(p15?.probability);
         const hasProb = Number.isFinite(upProb);
         const livePathApi = (typeof window !== 'undefined' && window.LivePath15m) || null;
         const live = livePathApi
@@ -486,21 +508,25 @@
               : livePathApi.resolve(sym, { spot: price, poly15m: p15 }))
           : null;
         const call = (live && live.dir)
-          || (p15.liveDirection === 'UP' || p15.liveDirection === 'DOWN' ? p15.liveDirection : null)
+          || (p15?.liveDirection === 'UP' || p15?.liveDirection === 'DOWN' ? p15.liveDirection : null)
           || (hasProb ? (upProb >= 0.5 ? 'UP' : 'DOWN') : null);
         const col = call === 'UP' ? 'var(--color-green,#26a69a)' : call === 'DOWN' ? 'var(--color-red,#ef5350)' : 'var(--color-text-faint)';
-        const ptbNum = Number(p15.priceToBeatNum ?? p15.targetPriceNum);
-        const ptbLabel = p15.targetPrice || (Number.isFinite(ptbNum) && ptbNum > 0
-          ? `$${ptbNum.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 6 })}` : 'pending');
-        const closeLabel15 = p15.closeTime ? timeToClose(p15.closeTime) : null;
+        const ptbNum = Number(p15?.priceToBeatNum ?? p15?.targetPriceNum);
+        const ptbLabel = p15?.targetPrice || (Number.isFinite(ptbNum) && ptbNum > 0
+          ? (window.CoinPrecision?.formatCoinStrike
+              ? window.CoinPrecision.formatCoinStrike(sym, ptbNum)
+              : `$${ptbNum.toLocaleString('en-US', { minimumFractionDigits: (sym === 'XRP' || sym === 'DOGE') ? 4 : 2, maximumFractionDigits: (sym === 'XRP' || sym === 'DOGE') ? 4 : 2 })}`)
+          : 'pending');
+        const closeLabel15 = p15?.closeTime ? timeToClose(p15.closeTime) : null;
+
         poly15mHtml = `<div class="hr-poly15m" style="margin-bottom:8px;">
           <div class="hr-grok-hdr" style="display:flex;justify-content:space-between;">
             <span>Polymarket 15m Up/Down</span>
-            <span style="opacity:0.5;font-family:monospace;font-size:9px;" title="Market Slug">${p15.slug}</span>
+            <span style="opacity:0.5;font-family:monospace;font-size:9px;" title="Market Slug">${activeSlug}</span>
           </div>
           <iframe
             title="${sym} Up or Down 15m — Polymarket"
-            src="https://embed.polymarket.com/market?market=${encodeURIComponent(p15.slug)}&theme=dark&border=false&creator=JohnDaWalka&height=220"
+            src="https://embed.polymarket.com/market?market=${encodeURIComponent(activeSlug)}&theme=dark&border=false&creator=JohnDaWalka&height=220"
             style="width:100%;height:220px;border:0;border-radius:6px;display:block;margin-top:4px;"
             frameborder="0"
             allowtransparency="true"
@@ -509,7 +535,7 @@
             <span class="hr-grok-call" style="color:${col}">${hasProb ? `${call === 'UP' ? '▲' : '▼'} ${Math.round(upProb * 100)}% YES` : 'awaiting odds'}</span>
             <span class="hr-grok-meta">PTB ${ptbLabel}${closeLabel15 ? ` · closes ${closeLabel15}` : ''}</span>
           </div>
-          <a href="https://polymarket.com/event/${encodeURIComponent(p15.slug)}" target="_blank" rel="noopener" style="display:inline-block;margin-top:3px;font-size:10px;color:var(--color-text-faint);text-decoration:none;">Open on Polymarket ↗</a>
+          <a href="https://polymarket.com/event/${encodeURIComponent(activeSlug)}" target="_blank" rel="noopener" style="display:inline-block;margin-top:3px;font-size:10px;color:var(--color-text-faint);text-decoration:none;">Open on Polymarket ↗</a>
         </div>`;
       }
     } catch (_) { poly15mHtml = ''; }

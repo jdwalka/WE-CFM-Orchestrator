@@ -372,12 +372,13 @@ function spawnDockerCompose(composeFilePath) {
     activeComposeFilePath = composeFilePath;
     const dockerBin = getDockerExecutable();
     return new Promise((resolve, reject) => {
-        console.log(`[OrbitalOrchestrator] Spawning docker compose for Redpanda & Redis (file: ${composeFilePath})...`);
-        const proc = spawn(dockerBin, ['compose', '-f', composeFilePath, 'up', '-d', '--no-recreate', 'redis', 'redpanda', 'redpanda-console'], {
+        const projectName = process.env.COMPOSE_PROJECT_NAME || 'wecryp';
+        console.log(`[OrbitalOrchestrator] Spawning docker compose (project: ${projectName}) for Redpanda & Redis (file: ${composeFilePath})...`);
+        const proc = spawn(dockerBin, ['compose', '-p', projectName, '-f', composeFilePath, 'up', '-d', '--no-recreate', 'redis', 'redpanda', 'redpanda-console'], {
             cwd: path.dirname(composeFilePath),
             stdio: ['ignore', 'pipe', 'pipe'],
             windowsHide: true,
-            env: process.env
+            env: Object.assign({}, process.env, { COMPOSE_PROJECT_NAME: projectName })
         });
         let stderr = '';
         proc.stdout.on('data', (data) => console.log('[Docker-Compose]', data.toString().trim()));

@@ -53,8 +53,18 @@
       const dtSec = Math.max(0, (now - lastTs) / 1000);
       lastTs = now;
       if (dtSec === 0) return filtered; // duplicate-timestamp tick, no time to filter over
-      const alpha = 1 - Math.exp(-2 * Math.PI * cutoffHz * dtSec);
+
+      // After a prolonged disconnection gap (> 3s), reseed directly to avoid lag/ramping
+      if (dtSec > 3.0) {
+        filtered = v;
+        return filtered;
+      }
+
+      // First-order IIR low-pass filter: alpha = 1 - exp(-2*pi*cutoffHz*dt).
+      // Clamped strictly to [0, 1] to guarantee stability and prevent resonance ringing or divergence.
+      const alpha = Math.min(1, Math.max(0, 1 - Math.exp(-2 * Math.PI * cutoffHz * dtSec)));
       filtered = filtered + alpha * (v - filtered);
+      if (!Number.isFinite(filtered)) filtered = v;
       return filtered;
     }
 
@@ -89,15 +99,24 @@
       }
       const intervalMs = now - lastTickTs;
       lastTickTs = now;
-      if (intervalMs <= 0) return intervalFilter.value != null ? 1000 / intervalFilter.value : null;
+      if (intervalMs <= 0) return (intervalFilter.value != null && intervalFilter.value > 0) ? 1000 / intervalFilter.value : null;
+
+      // Discontinuity handling: if interval > 3000ms (reconnect/pause), re-anchor
+      // without feeding the idle gap into intervalFilter, preventing resonance drag
+      if (intervalMs > 3000) {
+        intervalFilter.reset();
+        lastTickTs = now;
+        return (intervalFilter.value != null && intervalFilter.value > 0) ? 1000 / intervalFilter.value : null;
+      }
+
       sampleCount += 1;
       const smoothedIntervalMs = intervalFilter.update(intervalMs, now);
-      return smoothedIntervalMs > 0 ? 1000 / smoothedIntervalMs : null;
+      return (smoothedIntervalMs != null && smoothedIntervalMs > 0) ? 1000 / smoothedIntervalMs : null;
     }
 
     return {
       tick,
-      get hz() { return intervalFilter.value > 0 ? 1000 / intervalFilter.value : null; },
+      get hz() { return (intervalFilter.value != null && intervalFilter.value > 0) ? 1000 / intervalFilter.value : null; },
       get sampleCount() { return sampleCount; },
       reset() { intervalFilter.reset(); lastTickTs = null; sampleCount = 0; },
     };

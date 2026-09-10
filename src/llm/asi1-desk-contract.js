@@ -15,6 +15,23 @@
 }(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   'use strict';
 
+  const CP = (typeof require !== 'undefined')
+    ? (() => {
+        try { return require('../shared/coin-precision'); } catch (_) {
+          try { return require('./coin-precision'); } catch (__) { return null; }
+        }
+      })()
+    : (typeof globalThis !== 'undefined' ? globalThis.CoinPrecision : null);
+
+  function formatGraviRegime(regime) {
+    if (!regime) return 'Neutral';
+    return String(regime)
+      .toLowerCase()
+      .split('_')
+      .map(w => w.charAt(0).toUpperCase() + w.slice(1))
+      .join(' ');
+  }
+
   const MODES = Object.freeze(['asi1_only', 'dual_fire', 'planner']);
   const ACTIONS = Object.freeze(['BUY_UP', 'BUY_DOWN', 'SIZE_DOWN', 'HOLD_FLAT']);
   const CALLS = Object.freeze(['UP', 'DOWN', '—']);
@@ -32,6 +49,11 @@
     'Legal actions: BUY_UP | BUY_DOWN | SIZE_DOWN | HOLD_FLAT.',
     'If a number is missing, HOLD_FLAT / skip and add a warning. Never invent spot, PTB, TTC, or P(Up).',
     'Start notes with UP or DOWN (or HOLD_FLAT). Cite spot, PTB, TTC, yesProb, imbalance.',
+    'Format and Tone: Write notes in clear, objective, and transparent language for traders.',
+    'Avoid dark-pool or insider jargon such as "fade", "pierces PTB", or cryptic acronyms.',
+    'Respect exact coin precision without float noise (BTC/ETH/SOL/BNB/HYPE: 2 decimals, e.g. $79,566.58; XRP/DOGE: 4 decimals, e.g. $0.5842).',
+    'Format time-to-close (TTC) in clean human-readable durations (e.g. 10m 27s or 45s).',
+    'Format near-touch liquidity with commas and 2 decimals (e.g. $2,572.46), never raw IEEE-754 floats.',
     'Timing: secondsToClose is TTC in seconds, authoritative. urgency=late_window when TTC<90; ' +
       'urgency=now when TTC>=90 and the edge (deltaVsPtb vs yesProb, depthImbalance) is live and consistent; ' +
       'urgency=wait_pullback otherwise. spotAgeSec is how many seconds old the spot price is -- ' +
@@ -55,6 +77,10 @@
     'If binaryIV_5m or binaryIV_15m are present, use them to spot contract mispricings. Extreme IV ' +
       '(e.g. > 150%) may indicate the contract is overpriced relative to the time to expiry and spot distance, ' +
       'while very low IV might indicate a cheap contract. Adjust confidence/edge accordingly.',
+    'Hourly Contracts & Ranges: Hourly contracts refer specifically to HOURLY PRICE RANGES (the Hourly Ranges Ladder). ' +
+      'For hourly contracts, settlement is determined by which range bracket price closes within at the upcoming top-of-hour close (e.g. 13:00 UTC). ' +
+      'Evaluate spot position relative to the active range ladder brackets and identify the projected closing bracket. ' +
+      'Never confuse hourly contracts with 5m/15m Up/Down PTB strikes or invent/reference legacy or expired contract expiries (such as an old "02 contract expiry").',
     'Return ONLY JSON matching the desk contract schema.',
   ].join(' ');
 
@@ -163,31 +189,56 @@
       return holdContract(m, ['Invalid packet'], 'HOLD_FLAT. Invalid packet structure.');
     }
     const isLookahead = packet.horizon === 'anytime' || String(packet.horizon || '').toLowerCase().includes('lookahead');
-    const spot = num(packet.spot);
-    const ptb = num(packet.priceToBeatNum);
-    const yes = num(packet.yesProb);
+    const isHourly = packet.isHourly || packet.horizon === '1h' || packet.horizon === '60m' || packet.horizon === 'hourly' || packet.horizon === 'lookahead-1h' || (Array.isArray(packet.hourlyLadder) && packet.hourlyLadder.length > 0);
+    const sym = String(packet.sym || packet.coin || '').toUpperCase() || 'BTC';
+    const coinName = CP?.getCoinDisplayName ? CP.getCoinDisplayName(sym) : sym;
+
+    const rawSpot = num(packet.spot);
+    const rawPtb = num(packet.priceToBeatNum);
+    const spot = (rawSpot != null && rawSpot > 0 && CP?.roundCoinPrice) ? CP.roundCoinPrice(sym, rawSpot) : rawSpot;
+    const ptb = (rawPtb != null && rawPtb > 0 && CP?.roundCoinPrice) ? CP.roundCoinPrice(sym, rawPtb) : rawPtb;
+
+    const rawProjectedPtb = num(packet.projectedOpenPtb);
+    const projectedPtb = (rawProjectedPtb != null && rawProjectedPtb > 0 && CP?.roundCoinPrice)
+      ? CP.roundCoinPrice(sym, rawProjectedPtb)
+      : rawProjectedPtb;
+    let effectivePtb = ptb || (isLookahead && projectedPtb) || null;
+
+    // For hourly contracts, anchor to the active range bracket or spot ONLY if no PTB / projected PTB exists
+    let activeSpotBucket = packet.spotBucket || null;
+    if (isHourly && Array.isArray(packet.hourlyLadder) && packet.hourlyLadder.length > 0 && !activeSpotBucket && spot != null) {
+      activeSpotBucket = packet.hourlyLadder.find((b) => spot >= Number(b.low) && spot <= Number(b.high)) || null;
+    }
+    if (isHourly && (effectivePtb == null || effectivePtb <= 0) && spot != null) {
+      effectivePtb = activeSpotBucket ? ((Number(activeSpotBucket.low) + Number(activeSpotBucket.high)) / 2) : spot;
+      if (CP?.roundCoinPrice) effectivePtb = CP.roundCoinPrice(sym, effectivePtb);
+    }
+
+    let yes = num(packet.yesProb);
+    if (isHourly && yes == null && activeSpotBucket?.yesProb != null) {
+      yes = num(activeSpotBucket.yesProb);
+    }
+    const effectiveYes = yes ?? (isLookahead && num(packet.pUp) != null ? num(packet.pUp) : (isHourly ? 0.50 : null));
     const mid = num(packet.mid);
+    const effectiveMid = mid ?? effectiveYes;
     const spread = num(packet.spread);
     const imb = num(packet.depthImbalance) || 0;
-    const notional = num(packet.nearTouchNotional) || 0;
+    const rawNotional = num(packet.nearTouchNotional) || 0;
+    const notional = Math.round(rawNotional * 100) / 100;
     const ttc = num(packet.secondsToClose);
     const live = String(packet.liveDirection || packet.pathDir || '').toUpperCase();
-
-    const effectivePtb = ptb || (isLookahead && num(packet.projectedOpenPtb)) || null;
-    const effectiveYes = yes ?? (isLookahead && num(packet.pUp) != null ? num(packet.pUp) : null);
-    const effectiveMid = mid ?? effectiveYes;
 
     if (spot == null || spot <= 0 || effectivePtb == null || effectivePtb <= 0 || effectiveYes == null || effectiveMid == null) {
       const missing = [];
       if (!spot || spot <= 0) missing.push('spot');
-      if (!effectivePtb || effectivePtb <= 0) missing.push('priceToBeatNum (Awaiting immutable Polymarket contract push)');
+      if (!effectivePtb || effectivePtb <= 0) missing.push(isHourly ? 'hourlyRanges' : 'priceToBeatNum (Awaiting immutable Polymarket contract push)');
       if (effectiveYes == null) missing.push('yesProb');
       if (effectiveMid == null) missing.push('mid');
       return holdContract(
         m,
         missing,
         (!effectivePtb || effectivePtb <= 0)
-          ? 'HOLD_FLAT. Awaiting immutable Polymarket Up/Down contract PTB push.'
+          ? (isHourly ? 'HOLD_FLAT. Awaiting Hourly Range Ladder synchronization.' : 'HOLD_FLAT. Awaiting immutable Polymarket Up/Down contract target strike (PTB).')
           : 'HOLD_FLAT. Missing required oracle feeds.'
       );
     }
@@ -219,11 +270,16 @@
 
     // ── Graviharmonic modulation ──────────────────────────────────────────
     const gh = packet.graviharmonic;
+    let graviTag = '';
     if (gh) {
       if (gh.isEscaped && gh.harmonicCoherence >= 60) confidence += 0.05;
       if (gh.resonantRegime && gh.resonantRegime.includes('BREAKOUT')) regime = 'breakout_volatility';
       if (gh.resonantRegime && gh.resonantRegime.includes('DESTRUCTIVE')) confidence -= 0.05;
       if (gh.bindingStrength === 'HIGH_GRAVITY_CORE') regime = 'mean_reversion';
+
+      const regimeName = formatGraviRegime(gh.resonantRegime);
+      const escapeStr = (gh.isEscaped || (gh.escapeRatio != null && gh.escapeRatio > 0)) ? ` · Escape ${gh.escapeRatio}x` : '';
+      graviTag = ` [Wave: ${regimeName} · ${gh.harmonicCoherence}% Coherence${escapeStr}]`;
     }
 
     // ── Orbital Foresight Engine modulation ──────────────────────────────
@@ -243,10 +299,12 @@
       if (path === 'UP' && smb === 'bullish' && ofeConf >= 0.5) confidence += 0.02;
       if (path === 'DOWN' && smb === 'bearish' && ofeConf >= 0.5) confidence += 0.02;
       const ageS = ofe.scanAgeMs != null ? Math.round(ofe.scanAgeMs / 1000) : null;
-      ofeTag = ` [OFE: ${ofe.macroRegime}/${vec}@${(ofeConf * 100).toFixed(0)}%${ageS != null ? ` ${ageS}s ago` : ''}]`;
+      const macroName = ofe.macroRegime ? (ofe.macroRegime.charAt(0).toUpperCase() + ofe.macroRegime.slice(1)) : 'Active';
+      const ofeConfPct = Math.round(ofeConf * 100);
+      ofeTag = ` [Foresight: ${macroName} · ${vec} (${ofeConfPct}% conf${ageS != null ? `, ${ageS}s ago` : ''})]`;
     } else if (ofe && ofe.scanStale) {
       confidence -= 0.02;
-      ofeTag = ' [OFE: STALE]';
+      ofeTag = ' [Foresight: Stale]';
     }
 
     confidence = Math.round(Math.max(0, Math.min(1, confidence)) * 100) / 100;
@@ -272,37 +330,62 @@
       || !!packet.pinRisk?.isDefendedPinZone
     );
 
+    // Human-readable formatting values
+    const spotStr = CP?.formatCoinPrice ? CP.formatCoinPrice(sym, spot) : ('$' + spot.toFixed(2));
+    const ptbStr = CP?.formatCoinStrike ? CP.formatCoinStrike(sym, effectivePtb) : ('$' + effectivePtb.toFixed(2));
+    const deltaDist = Math.abs(delta);
+    const deltaStr = CP?.formatCoinDelta ? CP.formatCoinDelta(sym, deltaDist, { showSign: false }) : ('$' + deltaDist.toFixed(2));
+    const notionalStr = CP?.formatNotional ? CP.formatNotional(notional) : ('$' + notional.toFixed(2));
+    const ttcStr = CP?.formatTtc ? CP.formatTtc(ttc) : (ttc != null ? `${ttc}s` : 'unknown time');
+    const deltaBpsStr = Math.abs(deltaBps).toFixed(1);
+    const yesProbPct = Math.round(effectiveYes * 100);
+    const midFormatted = effectiveMid.toFixed(3);
+    const imbStr = (imb > 0 ? '+' : '') + imb.toFixed(2);
+
     const warnings = [];
     if (isPinDefended) {
       action = 'HOLD_FLAT';
       sizeHint = 'skip';
       urgency = 'late_window';
       confidence = Math.min(confidence, 0.40);
-      warnings.push('PIN_RISK_DEFENDED: Spot within 0.5σ noise margin of strike in late window (<90s). MM defense risks 1-2s post-expiry snap. Do NOT chase wire; pivot to T+1.');
+      warnings.push(`PIN_RISK_DEFENDED: ${coinName} spot is within ${deltaStr} (${deltaBpsStr} bps) of target strike ${ptbStr} in late window (<90s). Market maker defense risks whipsaws; pivot to T+1.`);
     }
 
     let invalidation = 'no path';
     if (call === 'UP') {
-      invalidation = `spot drops below ${effectivePtb} or yesProb falls under ${(effectiveYes - 0.03).toFixed(2)}`;
+      const invProb = Math.max(0, yesProbPct - 3);
+      invalidation = `Spot drops below ${ptbStr} or probability falls under ${invProb}%`;
     } else if (call === 'DOWN') {
-      invalidation = `spot rises above ${effectivePtb} or yesProb exceeds ${(effectiveYes + 0.03).toFixed(2)}`;
+      const invProb = Math.min(100, yesProbPct + 3);
+      invalidation = `Spot rises above ${ptbStr} or probability exceeds ${invProb}%`;
     }
 
-    const graviTag = gh ? ` [Gravi: ${gh.resonantRegime}, Coherence: ${gh.harmonicCoherence}%, Escape: ${gh.escapeRatio}x]` : '';
-
     let notes;
-    if (isPinDefended) {
+    if (isHourly) {
+      const bucketStr = activeSpotBucket
+        ? (CP?.formatCoinPrice ? `${CP.formatCoinPrice(sym, activeSpotBucket.low)}–${CP.formatCoinPrice(sym, activeSpotBucket.high)}` : `$${activeSpotBucket.low}–$${activeSpotBucket.high}`)
+        : (CP?.formatCoinPrice ? `around ${CP.formatCoinPrice(sym, spot)}` : `around $${spot}`);
+      const bucketProbPct = activeSpotBucket?.yesProb != null ? Math.round(Number(activeSpotBucket.yesProb) * 100) : yesProbPct;
+      const targetTimeStr = packet.targetCloseHourUtc
+        ? packet.targetCloseHourUtc
+        : (packet.targetCloseTime ? new Date(packet.targetCloseTime).toUTCString() : 'top of the hour');
+      const biasLabel = call === 'UP' ? 'upper range brackets' : (call === 'DOWN' ? 'lower range brackets' : 'current spot bracket');
+      notes = `HOURLY RANGE. ${coinName} spot (${spotStr}) is inside the [${bucketStr}] bracket (${bucketProbPct}% prob) with ${ttcStr} to close at ${targetTimeStr}. Projected close leans toward ${biasLabel}.${graviTag}${ofeTag}`;
+    } else if (isPinDefended) {
       const t1 = packet.futureWindowT1 || {};
-      const t1Guidance = t1.projectedOpenPtb
-        ? ` Pivot to T+1 horizon: Projected PTB $${t1.projectedOpenPtb}, Forward Call ${t1.forecastDirection || '—'} (${t1.confidence || 0}%), Stance: ${t1.sniperAction || 'STANDBY'}.`
+      const t1PtbFormatted = t1.projectedOpenPtb
+        ? (CP?.formatCoinStrike ? CP.formatCoinStrike(sym, t1.projectedOpenPtb) : `$${t1.projectedOpenPtb}`)
+        : null;
+      const t1Guidance = t1PtbFormatted
+        ? ` Pivot to T+1 horizon: Projected PTB ${t1PtbFormatted}, Forward Call ${t1.forecastDirection || '—'} (${t1.confidence || 0}%), Stance: ${t1.sniperAction || 'STANDBY'}.`
         : '';
-      notes = `HOLD_FLAT. PIN_RISK_DEFENDED. Spot ${spot} is within ${Math.abs(delta).toFixed(1)} (${Math.abs(deltaBps).toFixed(1)} bps) of PTB ${effectivePtb} with ${ttc ?? '?'}s to close. MM defense walls risk pinning strike until snapshot and snapping 1-2s post-expiry.${t1Guidance}`;
+      notes = `HOLD_FLAT. PIN_RISK_DEFENDED. ${coinName} spot (${spotStr}) is within ${deltaStr} (${deltaBpsStr} bps) of PTB ${ptbStr} with ${ttcStr} to close. MM defense walls risk pinning strike until snapshot and snapping 1-2s post-expiry.${t1Guidance}`;
     } else if (call === 'UP') {
-      notes = `UP. Spot ${spot} sits ${delta.toFixed(1)} above PTB ${effectivePtb} with ${ttc ?? '?'}s to close. YesProb ${effectiveYes.toFixed(2)} and mid ${effectiveMid.toFixed(3)} align upward. Depth imbalance ${imb.toFixed(2)} and near-touch notional ${notional} support buying.${graviTag}${ofeTag} Fade only if spot pierces PTB.`;
+      notes = `UP. ${coinName} spot ${spotStr} is ${deltaStr} above target strike ${ptbStr} with ${ttcStr} to close. Market probability is ${yesProbPct}% (mid ${midFormatted}), favoring upside. Order book depth shows imbalance of ${imbStr} with ${notionalStr} in near-touch liquidity supporting buying momentum.${graviTag}${ofeTag} Invalidate if spot drops below ${ptbStr}.`;
     } else if (call === 'DOWN') {
-      notes = `DOWN. Spot ${spot} sits ${Math.abs(delta).toFixed(1)} below PTB ${effectivePtb} with ${ttc ?? '?'}s to close. YesProb ${effectiveYes.toFixed(2)} and mid ${effectiveMid.toFixed(3)} suggest downside. Depth imbalance ${imb.toFixed(2)} and near-touch notional ${notional} support selling.${graviTag}${ofeTag} Fade only if spot pierces PTB.`;
+      notes = `DOWN. ${coinName} spot ${spotStr} is ${deltaStr} below target strike ${ptbStr} with ${ttcStr} to close. Market probability is ${yesProbPct}% (mid ${midFormatted}), suggesting downside. Order book depth shows imbalance of ${imbStr} with ${notionalStr} in near-touch liquidity confirming selling flow.${graviTag}${ofeTag} Invalidate if spot rises above ${ptbStr}.`;
     } else {
-      notes = `HOLD_FLAT. Spot ${spot} vs PTB ${effectivePtb} shows insufficient edge. YesProb ${effectiveYes.toFixed(2)} and mid ${effectiveMid.toFixed(3)} offer no clear direction.${graviTag}${ofeTag} No legal action with positive EV.`;
+      notes = `HOLD_FLAT. ${coinName} spot (${spotStr}) vs target strike ${ptbStr} shows insufficient edge. Market probability is ${yesProbPct}% (mid ${midFormatted}) offering no clear direction.${graviTag}${ofeTag} No legal action with positive EV.`;
     }
 
     return {
@@ -351,8 +434,12 @@
   }
 
   function userPrompt(packet) {
+    const isHourly = packet?.isHourly || packet?.horizon === '1h' || packet?.horizon === '60m' || packet?.horizon === 'hourly' || (Array.isArray(packet?.hourlyLadder) && packet.hourlyLadder.length > 0);
+    const header = isHourly
+      ? 'Analyze this authoritative HOURLY RANGE packet. For hourly contracts, evaluate the Hourly Range Ladder brackets and predict the closing range bracket at the upcoming top-of-hour close. Do not change the numbers.'
+      : 'Analyze this authoritative packet. Do not change the numbers.';
     return [
-      'Analyze this authoritative packet. Do not change the numbers.',
+      header,
       JSON.stringify(packet || {}, null, 2),
     ].join('\n');
   }
@@ -360,6 +447,8 @@
   function packetFromOracle(oracle, extras = {}) {
     const o = oracle || {};
     const w = o.active || {};
+    const sym = String(extras.sym || o.coin || o.sym || '').toUpperCase();
+    const isHourly = !!(extras.horizon === '1h' || extras.horizon === '60m' || extras.horizon === 'hourly' || extras.horizon === 'lookahead-1h' || o.horizon === '1h' || o.horizon === '60m' || o.horizon === 'hourly');
     const spotTs = num(o.spotTs);
     // Guard: spotTs must be a realistic unix-ms timestamp (after 2020-01-01).
     // If spotTs=0 or very small, Date.now()-spotTs blows up to ~56 years stale.
@@ -368,17 +457,34 @@
       ? Math.max(0, Math.round((Date.now() - spotTs) / 1000))
       : null;
     const rawSpot = num(o.spot);
+    const cleanSpot = (rawSpot != null && rawSpot > 0)
+      ? (CP?.roundCoinPrice ? CP.roundCoinPrice(sym, rawSpot) : rawSpot)
+      : null;
+    const rawPtb = num(o.priceToBeatNum ?? w.priceToBeatNum);
+    const cleanPtb = (rawPtb != null && rawPtb > 0)
+      ? (CP?.roundCoinPrice ? CP.roundCoinPrice(sym, rawPtb) : rawPtb)
+      : null;
+    const cleanDelta = (cleanSpot != null && cleanPtb != null)
+      ? (CP?.roundCoinPrice ? CP.roundCoinPrice(sym, cleanSpot - cleanPtb) : (cleanSpot - cleanPtb))
+      : num(o.deltaVsPtb);
+    const rawNotional = num(w.nearTouchNotional ?? extras.nearTouchNotional);
+    const cleanNotional = rawNotional != null ? Math.round(rawNotional * 100) / 100 : null;
+
     return {
-      sym: String(extras.sym || o.coin || o.sym || '').toUpperCase(),
+      sym,
       horizon: String(extras.horizon || o.horizon || w.horizon || '15m'),
       slug: o.slug || w.slug || null,
+      isHourly,
+      hourlyLadder: o.hourlyLadder || [],
+      spotBucket: o.spotBucket || null,
+      hourlySource: o.hourlySource || null,
       // spot=0 is invalid (same as missing) — treat as null so inferLocal() HOLD_FLATs correctly.
-      spot: (rawSpot != null && rawSpot > 0) ? rawSpot : null,
+      spot: cleanSpot,
       spotSource: o.spotSource || 'pyth',
       spotAgeSec,
-      priceToBeatNum: num(o.priceToBeatNum ?? w.priceToBeatNum),
+      priceToBeatNum: cleanPtb,
       priceToBeatSource: o.priceToBeatSource || w.priceToBeatSource || null,
-      deltaVsPtb: num(o.deltaVsPtb),
+      deltaVsPtb: cleanDelta,
       liveDirection: o.pathDir || w.liveDirection || null,
       yesProb: num(o.yesProb ?? w.yesProb),
       mid: num(w.mid ?? extras.mid),
@@ -386,7 +492,7 @@
       bestBid: num(w.bestBid ?? extras.bestBid),
       bestAsk: num(w.bestAsk ?? extras.bestAsk),
       depthImbalance: num(w.depthImbalance ?? extras.depthImbalance),
-      nearTouchNotional: num(w.nearTouchNotional ?? extras.nearTouchNotional),
+      nearTouchNotional: cleanNotional,
       secondsToClose: num(o.secondsToClose ?? w.secondsToClose),
       secondsSinceOpen: num(extras.secondsSinceOpen),
       // Supplementary context only -- never spot/PTB, never overrides them.

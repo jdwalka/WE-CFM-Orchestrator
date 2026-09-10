@@ -224,9 +224,16 @@
    */
   function _buildOslPrompt(sym, ctx = {}) {
     const coin = String(sym || 'BTC').toUpperCase();
-    const spotStr = ctx.spot ? `Spot: $${Number(ctx.spot).toLocaleString()}` : '';
-    const ptbStr  = ctx.ptb  ? `PTB: $${Number(ctx.ptb).toLocaleString()}`  : '';
+    const coinPrec = (typeof window !== 'undefined' && window.CoinPrecision)
+      || (typeof require === 'function' ? (() => { try { return require('../shared/coin-precision'); } catch (_) { return null; } })() : null);
+    const spotStr = ctx.spot
+      ? `Spot: ${coinPrec ? coinPrec.formatCoinPrice(coin, ctx.spot) : '$' + Number(ctx.spot).toFixed(coin === 'XRP' || coin === 'DOGE' ? 4 : 2)}`
+      : '';
+    const ptbStr = ctx.ptb
+      ? `PTB: ${coinPrec ? coinPrec.formatCoinStrike(coin, ctx.ptb) : '$' + Number(ctx.ptb).toFixed(coin === 'XRP' || coin === 'DOGE' ? 4 : 2)}`
+      : '';
     const horStr  = ctx.horizon || _cfg.horizon || '15m';
+
     const tsStr   = new Date().toUTCString();
 
     return [

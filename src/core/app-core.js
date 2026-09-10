@@ -448,6 +448,7 @@ async function loadCandles(options = {}) {
         .sort((a, b) => a.time - b.time);
 
       ensureChart(stage);
+      applyChartPriceFormat();
       chartRawCandles = series;
       chartSeries.candles.setData(series.map(({ volume, ...rest }) => rest));
       chartSeries.volume.setData(series.map(c => ({

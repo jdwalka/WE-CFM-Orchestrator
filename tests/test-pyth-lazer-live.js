@@ -17,7 +17,7 @@ if (!token) {
 }
 
 console.log('═══════════════════════════════════════════════════════════════');
-const PYTH_TEST_CHANNEL = process.env.PYTH_LAZER_CHANNEL || 'fixed_rate@1000ms';
+const PYTH_TEST_CHANNEL = process.env.PYTH_LAZER_CHANNEL || 'fixed_rate@100ms';
 
 console.log(`Pyth Lazer Live WebSocket Test (${PYTH_TEST_CHANNEL})`);
 console.log('═══════════════════════════════════════════════════════════════\n');

@@ -158,6 +158,9 @@
     } catch (_) { }
   }
 
+  let _lastLoggedPort = null;
+  let _lastForceReinitTs = 0;
+
   async function _init() {
     // 1. Try Tauri invoke to get the port the sidecar is on
     const invoke = window.__TAURI__?.core?.invoke;
@@ -166,7 +169,10 @@
         const port = await invoke('get_proxy_port');
         if (port && port > 0) {
           _proxyPort = port;
-          console.log(`[BRIDGE] Tauri sidecar proxy on :${port}`);
+          if (_lastLoggedPort !== _proxyPort) {
+            _lastLoggedPort = _proxyPort;
+            console.log(`[BRIDGE] Tauri sidecar proxy on :${port}`);
+          }
           return;
         }
       } catch (_) { /* fall through */ }
@@ -175,20 +181,24 @@
     // 2. Poll /health on the default cascade
     for (const tryPort of [3010, 3011, 3012, 3013, 3014, 3015, 3016, 3017, 3018, 3019, 3020]) {
       try {
-        const r = await fetch(`http://127.0.0.1:${tryPort}/health`, { signal: AbortSignal.timeout(2000) });
+        const r = await fetch(`http://127.0.0.1:${tryPort}/health`, { signal: AbortSignal.timeout(1500) });
         if (r.ok) {
           const txt = await r.text();
           if (txt.trim() === 'OK') {
-            console.log(`[tauri-bridge] proxy port resolved locally: ${tryPort}`);
             const d = await fetch(`http://127.0.0.1:${tryPort}/port`).then(r => r.json()).catch(() => ({ port: tryPort }));
             _proxyPort = d.port || tryPort;
             _proxyAvailable = true;
-            _proxyFailures = 0;
-            _proxyBypassUntil = 0;
-            console.log(`[BRIDGE] proxy discovered on :${_proxyPort}`);
+            if (Date.now() >= _proxyBypassUntil) {
+              _proxyFailures = 0;
+              _proxyBypassUntil = 0;
+              _setProxyMode('proxy', 'proxy-discovered');
+            }
+            if (_lastLoggedPort !== _proxyPort) {
+              _lastLoggedPort = _proxyPort;
+              console.log(`[BRIDGE] proxy discovered on :${_proxyPort}`);
+            }
             _lastInitAt = Date.now();
             _lastInitErr = '';
-            _setProxyMode('proxy', 'proxy-discovered');
             return;
           }
         }
@@ -197,7 +207,10 @@
     _proxyAvailable = false;
     _lastInitErr = 'proxy-not-found';
     _lastInitAt = Date.now();
-    console.warn(`[BRIDGE] proxy not found, using default :${_proxyPort}`);
+    if (_lastLoggedPort !== 'none') {
+      _lastLoggedPort = 'none';
+      console.warn(`[BRIDGE] proxy not found, using default :${_proxyPort}`);
+    }
     _setProxyMode('bypass', 'proxy-not-found');
   }
 
@@ -207,6 +220,12 @@
   }
 
   async function forceReinit(reason = 'route-change') {
+    const now = Date.now();
+    if (now - _lastForceReinitTs < 10000) {
+      // Throttle reinit to avoid cascading discovery storms
+      return initOnce();
+    }
+    _lastForceReinitTs = now;
     _initPromise = null;
     console.info(`[BRIDGE] re-initializing proxy discovery (${reason})`);
     _emitRouteEvent('reinit-start', reason);
@@ -313,10 +332,8 @@
         if ([502, 503, 504].includes(response.status) && attempt < maxAttempts) {
           if (useProxy) {
             _proxyFailures++;
-            if (_proxyFailures >= 2) {
-              _proxyBypassUntil = Date.now() + _jitter(20_000);
-              _setProxyMode('bypass', `proxy-http-${response.status}`, { attempt, proxied });
-            }
+            _proxyBypassUntil = Date.now() + _jitter(20_000);
+            _setProxyMode('bypass', `proxy-http-${response.status}`, { attempt, proxied });
           }
           const failureClass = `proxy-http-${response.status}`;
           _emitRouteEvent('route-error', `http-${response.status}`, {
@@ -327,10 +344,8 @@
             proxyUsed: useProxy,
             failureClass,
           });
-          if (useProxy) {
-            await forceReinit(`status-${response.status}`);
-          }
-          await _sleep(_jitter(180 * attempt));
+          // On next attempt, bypassActive is true so it will immediately fetch direct
+          await _sleep(_jitter(60 * attempt));
           continue;
         }
         if (useProxy) {
@@ -345,14 +360,12 @@
         lastDiag = diag;
         if (_isRouteChurnError(err) && attempt < maxAttempts && useProxy) {
           _proxyFailures++;
-          if (_proxyFailures >= 2) {
-            _proxyBypassUntil = Date.now() + _jitter(20_000);
-            _setProxyMode('bypass', 'proxy-route-churn', {
-              attempt,
-              proxied,
-              error: String(err?.message || err || 'route churn'),
-            });
-          }
+          _proxyBypassUntil = Date.now() + _jitter(20_000);
+          _setProxyMode('bypass', 'proxy-route-churn', {
+            attempt,
+            proxied,
+            error: String(err?.message || err || 'route churn'),
+          });
           _emitRouteEvent('route-error', 'transient-network-error', {
             attempt,
             proxied,
@@ -362,8 +375,7 @@
             proxyUsed: useProxy,
             failureClass: diag.kind,
           });
-          await forceReinit('transient-network-error');
-          await _sleep(_jitter(180 * attempt));
+          await _sleep(_jitter(60 * attempt));
           continue;
         }
 

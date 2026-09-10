@@ -1,0 +1,34 @@
+# ================================================================
+# WE|||CRYPTO — MergeKit Recipe: TIES Orderbook & Macro Consolidation
+# Model Merging Engine: TIES (Trim, Elect Sign, and Disjoint Merge)
+# Application: 5m & 15m Crypto Prediction Contracts (Kalshi / Polymarket)
+#
+# TIES trims bottom 25% noisy parameter deltas, resolves sign elections
+# between high-frequency CLOB depth and macro sentiment regimes, and
+# merges agreeing directional updates scaled by lambda (1.0).
+# ================================================================
+
+merge_method: ties
+base_model: models/crypto-base-foresight-8b
+dtype: bfloat16
+
+models:
+  - model: models/crypto-orderbook-clob-8b
+    parameters:
+      weight: 0.50
+      density: 0.75
+  - model: models/crypto-macro-sentiment-8b
+    parameters:
+      weight: 0.50
+      density: 0.75
+
+parameters:
+  top_k: 0.75
+  lambda: 1.00
+  normalize: true
+  sign_resolve: "majority_consensus"
+
+metadata:
+  target_horizons: ["5m", "15m"]
+  underlyings: ["BTC", "ETH", "SOL", "XRP"]
+  consensus_mode: "disjoint_sign_elected"

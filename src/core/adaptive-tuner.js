@@ -603,7 +603,6 @@ class AdaptiveTuner {
         return { loaded: false, reason: 'DataLogger.getLatest unavailable' };
       }
       const latest = await window.DataLogger.getLatest('weight_tuning_state');
-      const latest = window.DataLogger.getLatest('weight_tuning_state');
       if (!latest || !latest.state) return { loaded: false, reason: 'no prior session state found' };
       const result = window.PredictionEngine?.loadOnlineWeightState?.(latest.state) ?? { loaded: false, coins: 0 };
       console.log(`[AdaptiveTuner] Bootstrapped online-weight state from prior session: ${result.coins} coin(s).`);

@@ -1,0 +1,68 @@
+name: Build Windows Release Binaries (.exe)
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Release tag or version label (e.g. v2.15.7)'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    name: Build Windows Executables (x64)
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install Dependencies
+        run: npm ci --prefer-offline --no-audit
+
+      - name: Build Web Assets & Quant Bundle
+        run: |
+          npm run build:quant
+          npm run build:web
+
+      - name: Package Windows Portable & Installer (.exe)
+        env:
+          CI: 'true'
+          WECRYPTO_ALLOW_MISSING_EXTRA_RESOURCES: '1'
+          WECRYPTO_BUILD_LABEL: ${{ github.event.inputs.release_tag || github.ref_name }}
+        run: |
+          node scripts/build-electron-safe.js win
+
+      - name: Upload Artifacts to GitHub Actions
+        uses: actions/upload-artifact@v4
+        with:
+          name: wecrypto-windows-executables
+          path: dist/*.exe
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Create GitHub Release with Binaries
+        if: startsWith(github.ref, 'refs/tags/') || github.event.inputs.release_tag != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.release_tag || github.ref_name }}
+          name: "WE-CRYPTO Release ${{ github.event.inputs.release_tag || github.ref_name }}"
+          draft: false
+          prerelease: false
+          files: dist/*.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

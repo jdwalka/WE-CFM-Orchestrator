@@ -200,7 +200,7 @@
 
   async function _fetchWhaleTransactions(chain) {
     const whaleChain = CHAIN_MAP[chain];
-    if (!whaleChain) return null;
+    if (!whaleChain) return [];
 
     const threshold = THRESHOLDS[chain];
 

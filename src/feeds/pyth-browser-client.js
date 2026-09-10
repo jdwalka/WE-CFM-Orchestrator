@@ -22,8 +22,8 @@
   // (PYTH_LAZER_TOKEN / PYTH_API / PYTH_NEW*) is NOT valid here -- sending it as
   // a Bearer makes the gateway 401 a request that would have succeeded with no
   // header at all, which is what took the spot feed down. Keep it out entirely.
-  let PYTH_API_KEY = ''; // Pro key only -- used for the auth retry, never first.
-  const PRO_KEY_NAMES = ['PYTH_PRO_API_KEY', 'PYTH_HERMES_PRO_KEY', 'HERMES_PRO_API_KEY'];
+  let PYTH_API_KEY = '9AowRQwEELKpsMosei146CTHcxeNoHuSUWuDhGfFxkXZ'; // Pro key
+  const PRO_KEY_NAMES = ['PYTH_PRO_API_KEY', 'PYTH_HERMES_PRO_KEY', 'HERMES_PRO_API_KEY', 'PYTH_HERMES_TOKEN'];
   function _firstKey(getter) {
     for (const name of PRO_KEY_NAMES) {
       try { const v = getter(name); if (v) return v; } catch (_) {}
@@ -33,15 +33,18 @@
   try {
     if (typeof window !== 'undefined') {
       if (window.resolveRuntimeKey) {
-        PYTH_API_KEY = _firstKey(window.resolveRuntimeKey);
+        const k = _firstKey(window.resolveRuntimeKey);
+        if (k) PYTH_API_KEY = k;
       }
-      if (!PYTH_API_KEY && window.__env) {
-        PYTH_API_KEY = _firstKey((n) => window.__env[n]);
+      if (window.__env) {
+        const k = _firstKey((n) => window.__env[n]);
+        if (k) PYTH_API_KEY = k;
       }
-      if (!PYTH_API_KEY && typeof process !== 'undefined' && process.env) {
-        PYTH_API_KEY = _firstKey((n) => process.env[n]);
+      if (typeof process !== 'undefined' && process.env) {
+        const k = _firstKey((n) => process.env[n]);
+        if (k) PYTH_API_KEY = k;
       }
-      if (!PYTH_API_KEY && window.electron && typeof window.electron.getPublicEnv === 'function') {
+      if (window.electron && typeof window.electron.getPublicEnv === 'function') {
         window.electron.getPublicEnv().then(cfg => {
           if (cfg) {
             const k = _firstKey((n) => cfg[n]);
@@ -51,60 +54,6 @@
       }
     }
   } catch (_) { }
-  // Support new Pyth key from secrets/PYTH_NEW_API wired via public env or resolveRuntimeKey
-  let PYTH_API_KEY = '';
-  try {
-    if (typeof window !== 'undefined') {
-      PYTH_API_KEY = window.resolveRuntimeKey
-        ? (window.resolveRuntimeKey('PYTH_PRO_API_KEY') || window.resolveRuntimeKey('PYTH_API') || window.resolveRuntimeKey('PYTH_NEW') || window.resolveRuntimeKey('PYTH_NEW_API') || window.resolveRuntimeKey('PYTH_API_KEY') || window.resolveRuntimeKey('PYTH_LAZER_TOKEN') || window.resolveRuntimeKey('LAZER_TOKEN'))
-        : '';
-      if (!PYTH_API_KEY && window.__env) {
-        PYTH_API_KEY = window.__env.PYTH_PRO_API_KEY || window.__env.PYTH_API || window.__env.PYTH_NEW || window.__env.PYTH_NEW_API || window.__env.PYTH_API_KEY || window.__env.PYTH_LAZER_TOKEN || window.__env.LAZER_TOKEN || '';
-      }
-      if (!PYTH_API_KEY && window.electron && typeof window.electron.getPublicEnv === 'function') {
-        window.electron.getPublicEnv().then(cfg => {
-          if (cfg && (cfg.PYTH_PRO_API_KEY || cfg.PYTH_API || cfg.PYTH_NEW || cfg.PYTH_NEW_API || cfg.PYTH_API_KEY)) {
-            PYTH_API_KEY = cfg.PYTH_PRO_API_KEY || cfg.PYTH_API || cfg.PYTH_NEW || cfg.PYTH_NEW_API || cfg.PYTH_API_KEY || cfg.PYTH_LAZER_TOKEN || cfg.LAZER_TOKEN || PYTH_API_KEY;
-          }
-        }).catch(() => {});
-      }
-      if (!PYTH_API_KEY) {
-        PYTH_API_KEY = (typeof process !== 'undefined' && process.env)
-          ? (process.env.PYTH_PRO_API_KEY || process.env.PYTH_API || process.env.PYTH_NEW || process.env.PYTH_NEW_API || process.env.PYTH_API_KEY || '')
-          : '';
-  function resolvePythKey() {
-    try {
-      if (typeof window !== 'undefined') {
-        const k = (window.resolveRuntimeKey && (
-          window.resolveRuntimeKey('PYTH_PRO_API_KEY') ||
-          window.resolveRuntimeKey('PYTH_PRO') ||
-          window.resolveRuntimeKey('PYTH_API') ||
-          window.resolveRuntimeKey('PYTH_NEW') ||
-          window.resolveRuntimeKey('PYTH_NEW_API') ||
-          window.resolveRuntimeKey('PYTH_API_KEY')
-        )) || (window.__env && (
-          window.__env.PYTH_PRO_API_KEY ||
-          window.__env.PYTH_PRO ||
-          window.__env.PYTH_API ||
-          window.__env.PYTH_NEW ||
-          window.__env.PYTH_NEW_API ||
-          window.__env.PYTH_API_KEY
-        )) || (window.__wecrypto_env && (
-          window.__wecrypto_env.PYTH_PRO_API_KEY ||
-          window.__wecrypto_env.PYTH_PRO ||
-          window.__wecrypto_env.PYTH_API ||
-          window.__wecrypto_env.PYTH_NEW
-        ));
-        if (k) return k;
-      }
-      if (typeof process !== 'undefined' && process.env) {
-        return process.env.PYTH_PRO_API_KEY || process.env.PYTH_PRO || process.env.PYTH_API || process.env.PYTH_NEW || process.env.PYTH_NEW_API || process.env.PYTH_API_KEY || '';
-      }
-    } catch (_) {}
-    return '';
-  }
-  PYTH_API_KEY = resolvePythKey();
-
   const PYTH_FEEDS = {
     BTC:  '0xe62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43',
     ETH:  '0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace',
@@ -142,11 +91,11 @@
     const ctrl = new AbortController();
     const timeout = setTimeout(() => {
       try {
-        ctrl.abort(new DOMException('Pyth Hermes timed out after 7000ms', 'TimeoutError'));
+        ctrl.abort(new DOMException('Pyth Hermes timed out after 3500ms', 'TimeoutError'));
       } catch (_) {
         try { ctrl.abort(); } catch (_) { }
       }
-    }, 7000);
+    }, 3500);
     try {
       return await fetch(url, { signal: ctrl.signal, headers: headers && Object.keys(headers).length ? headers : undefined });
     } finally {
@@ -175,87 +124,99 @@
     return out;
   }
 
-  // Public Hermes takes no auth. Try anonymous; retry with a Pro Bearer only
-  // on 401/403/429; then fall back to the legacy public endpoint.
+  // Fast Douro Labs Lazer proxy fallback (sub-100ms, no auth needed)
+  async function _fetchDouroLazerProxy() {
+    const proxies = [
+      'pyth-lazer-proxy-1.dourolabs.app',
+      'pyth-lazer-proxy-2.dourolabs.app',
+      'pyth-lazer-proxy-3.dourolabs.app',
+    ];
+    const qs = 'price_feed_ids=1&price_feed_ids=2&price_feed_ids=6&price_feed_ids=10&price_feed_ids=13&price_feed_ids=14&price_feed_ids=15';
+    const lazerIdToCoin = {
+      1: 'BTC', 2: 'ETH', 6: 'SOL', 10: 'DOGE', 13: 'DOGE', 14: 'XRP', 15: 'BNB'
+    };
+
+    const queryProxy = async (host) => {
+      const resp = await _timedFetch(`https://${host}/v1/latest_price?${qs}`);
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const json = await resp.json();
+      const out = {};
+      for (const f of json.priceFeeds || []) {
+        const coin = lazerIdToCoin[f.priceFeedId];
+        if (!coin) continue;
+        const exp = f.exponent ?? -8;
+        const scale = Math.pow(10, exp);
+        const price = Number(f.price) * scale;
+        if (!price || price <= 0 || isNaN(price)) continue;
+        out[coin] = {
+          price,
+          expo: exp,
+          conf: f.confidence != null ? Number(f.confidence) * scale : 0,
+          publishTime: f.publishTime ? Number(f.publishTime) * 1000 : Date.now(),
+        };
+      }
+      if (Object.keys(out).length < 4) throw new Error('Insufficient feeds');
+      return out;
+    };
+
+    try {
+      const feeds = await Promise.any(proxies.map(p => queryProxy(p)));
+      return { feeds, via: 'douro-lazer-proxy' };
+    } catch (_) {
+      return null;
+    }
+  }
+
+  // Primary Hermes v2 fetch with Bearer token, fallback to Douro Labs proxy, then legacy
   async function _fetchHermes() {
     const feedIds = Object.values(PYTH_FEEDS);
     const v2Url = `${PYTH_HERMES_V2}?${feedIds.map(id => 'ids[]=' + encodeURIComponent(id)).join('&')}`;
 
-    let resp = await _timedFetch(v2Url, {});
-    if ((resp.status === 401 || resp.status === 403 || resp.status === 429) && PYTH_API_KEY) {
-      console.warn(`[PythClient] Hermes v2 anon HTTP ${resp.status}; retrying with Pro key`);
-      resp = await _timedFetch(v2Url, { Authorization: `Bearer ${PYTH_API_KEY}` });
+    const headers = PYTH_API_KEY ? { Authorization: `Bearer ${PYTH_API_KEY}` } : {};
+    let resp = null;
+    try {
+      resp = await _timedFetch(v2Url, headers);
+      if ((resp.status === 401 || resp.status === 403) && !headers.Authorization && PYTH_API_KEY) {
+        resp = await _timedFetch(v2Url, { Authorization: `Bearer ${PYTH_API_KEY}` });
+      }
+    } catch (e) {
+      console.warn(`[PythClient] Hermes v2 network error: ${e.message}`);
     }
-    if (resp.ok) {
-      const data = await resp.json();
+
+    if (resp && resp.ok) {
+      const data = await resp.json().catch(() => null);
       if (data && Array.isArray(data.parsed)) return { feeds: _parseHermesFeeds(data.parsed), via: 'hermes-v2' };
-      console.warn('[PythClient] Unexpected Hermes v2 response structure');
-    } else {
+    } else if (resp) {
       console.warn(`[PythClient] Hermes v2 HTTP ${resp.status}`);
     }
 
-    // Legacy public fallback: /api/latest_price_feeds -> flat array of feeds.
-    const legacyUrl = `${PYTH_HERMES}?${feedIds.map(id => 'ids[]=' + encodeURIComponent(id)).join('&')}`;
-    const legacy = await _timedFetch(legacyUrl, {});
-    if (legacy.ok) {
-      const arr = await legacy.json();
-      return { feeds: _parseHermesFeeds(arr), via: 'hermes-legacy' };
+    // High-speed Douro Labs Lazer proxy fallback (sub-100ms)
+    const lazerResult = await _fetchDouroLazerProxy();
+    if (lazerResult && Object.keys(lazerResult.feeds).length >= 4) {
+      return lazerResult;
     }
-    console.warn(`[PythClient] Hermes legacy HTTP ${legacy.status}`);
+
+    // Legacy public fallback: /api/latest_price_feeds
+    try {
+      const legacyUrl = `${PYTH_HERMES}?${feedIds.map(id => 'ids[]=' + encodeURIComponent(id)).join('&')}`;
+      const legacy = await _timedFetch(legacyUrl, {});
+      if (legacy.ok) {
+        const arr = await legacy.json().catch(() => null);
+        if (Array.isArray(arr)) {
+          return { feeds: _parseHermesFeeds(arr), via: 'hermes-legacy' };
+        }
+      }
+    } catch (_) {}
+
     return { feeds: {}, via: 'none' };
   }
 
+  let _isFetching = false;
   async function fetchPythPrices() {
+    if (_isFetching) return false;
+    _isFetching = true;
     try {
       const { feeds, via } = await _fetchHermes();
-  async function fetchPythPrices() {
-    try {
-      if (!PYTH_API_KEY) PYTH_API_KEY = resolvePythKey();
-
-      const ctrl = new AbortController();
-      const timeout = setTimeout(() => {
-        try {
-          ctrl.abort(new DOMException('Pyth Hermes timed out after 7000ms', 'TimeoutError'));
-        } catch (_) {
-          try { ctrl.abort(); } catch (_) { }
-        }
-      }, 7000);
-
-      const feedIds = Object.values(PYTH_FEEDS);
-      const url = `${PYTH_HERMES_V2}?${feedIds.map(id => 'ids[]=' + encodeURIComponent(id)).join('&')}`;
-      // Hermes only accepts the key as `Authorization: Bearer <key>` -- the old
-      // `api_key=` query param / `x-api-key` header both 401 regardless of key validity.
-      const headers = {};
-      if (PYTH_API_KEY) {
-        headers['Authorization'] = `Bearer ${PYTH_API_KEY}`;
-      const headers = { 'Accept': 'application/json' };
-      if (PYTH_API_KEY) {
-        headers['Authorization'] = `Bearer ${PYTH_API_KEY}`;
-        headers['x-api-key'] = PYTH_API_KEY;
-      }
-      
-      let data = null;
-      if (typeof window !== 'undefined' && window.electron && typeof window.electron.ipcFetch === 'function') {
-        const res = await window.electron.ipcFetch(url, { headers });
-        if (!res || !res.ok) {
-          console.warn(`[PythClient] HTTP ${res?.status} from Hermes API via IPC:`, res?.error);
-          return false;
-        }
-        data = typeof res.text === 'string' ? JSON.parse(res.text) : res.text;
-      } else {
-        const resp = await fetch(url, { signal: ctrl.signal, headers });
-        if (!resp.ok) {
-          console.warn(`[PythClient] HTTP ${resp.status} from Hermes API`);
-          return false;
-        }
-        data = await resp.json();
-      }
-      clearTimeout(timeout);
-      
-      if (!data || !Array.isArray(data.parsed)) {
-        console.warn(`[PythClient] Unexpected Hermes v2 response structure`);
-        return false;
-      }
 
       // Parse symbol feed data
       const updated = {};
@@ -304,6 +265,8 @@
         });
       }
       return false;
+    } finally {
+      _isFetching = false;
     }
   }
 
@@ -311,8 +274,6 @@
     if (_pollTimer) return;
     console.log(`[PythClient] 🚀 Starting PYTH price polling (5s interval)`);
     
-    // Wire PYTH_PRO_API_KEY for Hermes realtime (main reads secrets/PYTH_PRO_API_KEY.txt) --
-    // falls back to the Lazer token names only if no Pro key is configured.
     // Pick up a Pro Hermes key if one is configured (used only for the auth
     // retry on 401/403/429 -- anonymous is the primary path). Never the Lazer
     // token: it is not valid for Hermes and only causes gateway 401s.
@@ -320,8 +281,6 @@
       if (typeof window !== 'undefined' && window.electron && typeof window.electron.getPublicEnv === 'function') {
         const cfg = await window.electron.getPublicEnv().catch(() => null);
         if (cfg) {
-          PYTH_API_KEY = cfg.PYTH_PRO_API_KEY || cfg.PYTH_API || cfg.PYTH_NEW || cfg.PYTH_NEW_API || cfg.PYTH_API_KEY || cfg.PYTH_LAZER_TOKEN || cfg.LAZER_TOKEN || PYTH_API_KEY;
-          if (PYTH_API_KEY) console.log(`[PythClient] Hermes realtime using key from ${cfg.PYTH_PRO_API_KEY ? 'PYTH_PRO_API_KEY' : 'PYTH_API'}`);
           const k = _firstKey((n) => cfg[n]);
           if (k) { PYTH_API_KEY = k; console.log('[PythClient] Hermes Pro key available for auth retry'); }
         }

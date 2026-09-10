@@ -821,7 +821,13 @@
       const numMatch = subtitle.replace(/[$,]/g, '').match(/\d+\.?\d*/);
       if (numMatch) targetPriceNum = parseFloat(numMatch[0]);
     }
-    const targetPrice = targetPriceNum != null ? `$${targetPriceNum.toLocaleString()}` : null;
+    const targetSym = extra.sym || m.ticker || '';
+    const targetPrice = targetPriceNum != null
+      ? (window.CoinPrecision?.formatCoinStrike
+          ? window.CoinPrecision.formatCoinStrike(targetSym, targetPriceNum)
+          : _formatPolyPriceToBeat(targetPriceNum, targetSym))
+      : null;
+
 
     return {
       probability, yesAsk, yesBid, noAsk, noBid, last,
@@ -1718,6 +1724,9 @@
 
   /** Coin quote decimals: BTC/ETH/BNB/SOL/HYPE = 2 (cents); XRP/DOGE = 4. */
   function _priceDecimalsForSymbol(symbol = '', value) {
+    if (typeof window !== 'undefined' && window.CoinPrecision?.getCoinDecimals) {
+      return window.CoinPrecision.getCoinDecimals(symbol, value);
+    }
     const s = String(symbol || '').toUpperCase();
     const m = s.match(/^(BTC|ETH|SOL|XRP|DOGE|BNB|HYPE)/);
     const sym = m ? m[1] : s.replace(/[^A-Z]/g, '').slice(0, 5);
@@ -1737,6 +1746,9 @@
   }
 
   function _formatPolyPriceToBeat(value, symbol = '') {
+    if (typeof window !== 'undefined' && window.CoinPrecision?.formatCoinStrike) {
+      return window.CoinPrecision.formatCoinStrike(symbol, value);
+    }
     const n = Number(value);
     if (!Number.isFinite(n) || n <= 0) return null;
     const d = _priceDecimalsForSymbol(symbol, n);
@@ -1747,6 +1759,7 @@
       useGrouping: true,
     })}`;
   }
+
 
   /**
    * Lock the contract opening strike for `slug` at T0. Immutable for the
@@ -2711,7 +2724,7 @@
       priceToBeat: primary.priceToBeat,
       priceToBeatNum: primary.priceToBeatNum,
       priceToBeatSource: primary.priceToBeatSource,
-      currentPrice: _formatPolyPriceToBeat(primary.currentPriceNum),
+      currentPrice: _formatPolyPriceToBeat(primary.currentPriceNum, sym),
       currentPriceNum: primary.currentPriceNum,
       currentPriceTs: primary.currentPriceTs,
       currentPriceSource: primary.currentPriceSource,
@@ -2722,7 +2735,8 @@
       oracleBasisNum: primary.oracleBasisNum,
       settlementPriceDeltaNum: primary.settlementPriceDeltaNum,
       settlementLiveDirection: primary.settlementLiveDirection,
-      priceDelta: primary.priceDeltaNum != null ? _formatPolyPriceToBeat(Math.abs(primary.priceDeltaNum)) : null,
+      priceDelta: primary.priceDeltaNum != null ? _formatPolyPriceToBeat(Math.abs(primary.priceDeltaNum), sym) : null,
+
       priceDeltaNum: primary.priceDeltaNum,
       priceDeltaPct: primary.priceDeltaPct,
       liveDirection: primary.liveDirection,
@@ -3662,8 +3676,24 @@ function polymarketSentiment(markets, sym) {
       refreshPoly15M('start').catch(() => {});
       refreshPoly60M('start').catch(() => {});
     },
-    getAll() { return cache; },
-    getCoin(sym) { return cache[sym] ?? null; },
+    getAll() {
+      const result = {};
+      const keys = new Set([...Object.keys(cache), ...Object.keys(POLY_5M_COIN_SLUGS)]);
+      for (const sym of keys) {
+        const c = cache[sym];
+        const p15 = c?.poly15m || _poly15mCache[sym]?.data || null;
+        if (c || p15) {
+          result[sym] = { ...(c || {}), poly15m: p15 };
+        }
+      }
+      return result;
+    },
+    getCoin(sym) {
+      const c = cache[sym];
+      const p15 = c?.poly15m || _poly15mCache[sym]?.data || null;
+      if (!c && !p15) return null;
+      return { ...(c || {}), poly15m: p15 };
+    },
     getSnipes() { return detectSnipes(cache); },
     // Funding-rate bias for a coin: { avg, bias, strength, sources } or null.
     // Populated by cfm-engine.js _computeFundingBias() after each poll cycle.

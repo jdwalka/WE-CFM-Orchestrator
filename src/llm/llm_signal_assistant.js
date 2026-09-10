@@ -146,6 +146,11 @@ function resolveAnthropicApiKey() {
 const TOKENMIX_API_KEY = resolveTokenMixApiKey();
 const ANTHROPIC_API_KEY = resolveAnthropicApiKey();
 const ANTHROPIC_MODEL = process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-6';
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
+const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
+const OPENAI_BASE_URL = process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1/chat/completions';
+const OPENAI_TIMEOUT_MS = Number(process.env.OPENAI_TIMEOUT_MS || 45000);
+const OPENAI_MAX_TOKENS = Number(process.env.OPENAI_MAX_TOKENS || 1600);
 const TOKENMIX_BASE_URL = process.env.TOKENMIX_BASE_URL || "https://api.tokenmix.ai/v1/chat/completions";
 // deepseek/deepseek-v4-flash is the verified-working cost/detail pick (confirmed
 // live against api.tokenmix.ai on 2026-08-22: 200 OK, ~2s, clean JSON content).
@@ -174,7 +179,10 @@ const TOKENMIX_CREDIT_RE = /\bhttp\s*40[23]\b|\bstatus(?:code)?[:\s]*40[23]\b|\b
 // ASI1 on failure/cooldown. 'asi1' (default as of 2026-08-22) restores the
 // pre-2026-08-22 order -- TokenMix's account is card-payment-blocked and
 // couldn't be funded, so ASI1 is primary again until that clears.
-const LLM_PRIMARY_PROVIDER = (process.env.LLM_PRIMARY_PROVIDER || 'asi1').toLowerCase();
+const LLM_PRIMARY_PROVIDER = (
+  process.env.LLM_PRIMARY_PROVIDER
+  || (OPENAI_API_KEY ? 'openai' : 'asi1')
+).toLowerCase();
 
 // ── Inference layer: TokenMix primary, ASI1 fallback ────────────────────
 // PR #86 (2026-08-19) made ASI1 the sole inference provider, removing
@@ -230,10 +238,11 @@ function isFiveMinPtbMarket(snapshot) {
 
 class LLMSignalAssistant {
   constructor() {
-    this.provider = LLM_PRIMARY_PROVIDER === 'anthropic' && ANTHROPIC_API_KEY ? "anthropic" : (LLM_PRIMARY_PROVIDER === 'tokenmix' && TOKENMIX_API_KEY ? "tokenmix" : "asi1");
+    this.provider = LLM_PRIMARY_PROVIDER === 'openai' && OPENAI_API_KEY ? "openai" : (LLM_PRIMARY_PROVIDER === 'anthropic' && ANTHROPIC_API_KEY ? "anthropic" : (LLM_PRIMARY_PROVIDER === 'tokenmix' && TOKENMIX_API_KEY ? "tokenmix" : "asi1"));
+    this.openAIEnabled = !!OPENAI_API_KEY;
     this.anthropicEnabled = !!ANTHROPIC_API_KEY;
     this.tokenmixEnabled = !!TOKENMIX_API_KEY;
-    this.enabled = this.anthropicEnabled || this.tokenmixEnabled || Asi1Client.hasAsi1Credentials();
+    this.enabled = this.openAIEnabled || this.anthropicEnabled || this.tokenmixEnabled || Asi1Client.hasAsi1Credentials();
 
     this.contextCache = new Map();      // short-lived prompt/result cache
     this.marketMemory = new Map();      // per-coin rolling recall memory
@@ -256,6 +265,7 @@ class LLMSignalAssistant {
       asi1KeysConfigured: Asi1Client.getDiagnostics().keysConfigured,
       hasAnthropicKey: this.anthropicEnabled,
       hasTokenMixKey: this.tokenmixEnabled,
+      hasOpenAIKey: this.openAIEnabled,
       primaryProvider: this.provider,
       providerOverride: null,
     };
@@ -558,6 +568,65 @@ Use this recall only as context, and prioritize current market snapshot data if 
       || String(snapshot?.horizon || '') === '60m'
       || String(snapshot?.horizon || '') === '1h'
     );
+
+    if (LLM_PRIMARY_PROVIDER === 'openai' && OPENAI_API_KEY && process.env.LLM_DISABLE_OPENAI !== '1') {
+      const coinOpenAI = String(snapshot?.coin || 'GLOBAL');
+      const horizonOpenAI = is5mPtb ? '5m-ptb' : String(snapshot?.horizon || snapshot?.horizonMinutes || '15m');
+      const promptLengthOpenAI = (systemPrompt || '').length + (userPrompt || '').length;
+      const startOpenAI = Date.now();
+      try {
+        console.log(`[LLM ${horizonOpenAI}] trying openai (${OPENAI_MODEL})`);
+        const res = await this.callOpenAIAPI(systemPrompt, userPrompt, {});
+        const parsed = this.parseLlmJsonContent(res.content, { provider: 'openai', rawText: res.content });
+        parsed._provider = 'openai';
+        parsed._model = res.model;
+        this._recordQueryExecution({
+          id: `llm-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          timestamp: new Date().toISOString(),
+          ts: Date.now(),
+          coin: coinOpenAI,
+          horizon: horizonOpenAI,
+          provider: 'openai',
+          model: res.model,
+          status: 'SUCCESS',
+          latencyMs: Date.now() - startOpenAI,
+          promptChars: promptLengthOpenAI,
+          responseChars: res.content.length,
+          resultCall: parsed?.call || parsed?.direction || null,
+          regime: parsed?.regime || null,
+          confidence: parsed?.confidence ?? null,
+          notes: parsed?.suggestions?.notes?.slice(0, 280) || null,
+          attempted: ['openai'],
+          skipped: [],
+          error: null,
+        });
+        this._lastProvider = 'openai';
+        this._lastModel = res.model;
+        return this.normalizeResponse(parsed, snapshot);
+      } catch (err) {
+        this._recordQueryExecution({
+          id: `llm-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          timestamp: new Date().toISOString(),
+          ts: Date.now(),
+          coin: coinOpenAI,
+          horizon: horizonOpenAI,
+          provider: 'openai',
+          model: OPENAI_MODEL,
+          status: 'FAILURE',
+          latencyMs: Date.now() - startOpenAI,
+          promptChars: promptLengthOpenAI,
+          responseChars: 0,
+          resultCall: null,
+          regime: null,
+          confidence: null,
+          notes: null,
+          attempted: ['openai'],
+          skipped: [],
+          error: String(err.message || err),
+        });
+        console.warn(`[LLM ${horizonOpenAI}] openai failed, falling back: ${String(err.message || err).slice(0, 180)}`);
+      }
+    }
 
     // Anthropic-first: primary provider if configured
     if (LLM_PRIMARY_PROVIDER === 'anthropic' && ANTHROPIC_API_KEY && process.env.LLM_DISABLE_ANTHROPIC !== '1') {
@@ -1080,6 +1149,22 @@ Use this recall only as context, and prioritize current market snapshot data if 
       }
     }
     throw lastErr || new Error('TokenMix DeepSeek failed');
+  }
+
+  async callOpenAIAPI(systemPrompt, userPrompt, config = {}) {
+    if (!OPENAI_API_KEY) throw new Error('OPENAI_API_KEY missing');
+    const model = config.model || OPENAI_MODEL;
+    const maxTokens = Number(config.maxTokens || OPENAI_MAX_TOKENS);
+    const timeoutMs = Number(config.timeoutMs || OPENAI_TIMEOUT_MS);
+    const content = await this.callCompatibleAPI(systemPrompt, userPrompt, {
+      url: OPENAI_BASE_URL,
+      model,
+      key: OPENAI_API_KEY,
+      maxTokens,
+      timeoutMs,
+      providerLabel: 'openai',
+    });
+    return { content, model };
   }
 
   async callAnthropicAPI(systemPrompt, userPrompt, config = {}) {

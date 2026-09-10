@@ -144,14 +144,14 @@ class PythLazerWebSocketHandler {
           "fundingTimestamp",
         ],
         formats: ["solana", "leUnsigned", "leEcdsa", "evm"], // Multiple encoding formats
-        channel: "real_time", // Real-time updates (no 200ms throttle)
+        channel: process.env.PYTH_LAZER_CHANNEL || "fixed_rate@100ms", // 100ms fixed-rate updates
         deliveryFormat: "json",
         jsonBinaryEncoding: "hex",
         parsed: true,
         ignoreInvalidFeeds: true,
       });
 
-      console.log(`[PythLazerWS] Subscribed to price feeds: ${SUBSCRIPTION_PRICE_FEED_IDS.join(',')} (real-time)`);
+      console.log(`[PythLazerWS] Subscribed to price feeds: ${SUBSCRIPTION_PRICE_FEED_IDS.join(',')} (${process.env.PYTH_LAZER_CHANNEL || 'fixed_rate@100ms'})`);
 
       // Listen for price updates
       this.client.addMessageListener((message) => {

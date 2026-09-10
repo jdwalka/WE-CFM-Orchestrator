@@ -847,7 +847,7 @@ const PYTH_FALLBACK_TIMEOUT_MS = Number(process.env.PYTH_FALLBACK_TIMEOUT_MS || 
 const PYTH_FALLBACK_GRACE_MS = Number(process.env.PYTH_FALLBACK_GRACE_MS || 2000);
 const PYTH_TIMEOUT_CONSECUTIVE_LIMIT = Number(process.env.PYTH_TIMEOUT_CONSECUTIVE_LIMIT || 3);
 const PYTH_FALLBACK_EVENT_COOLDOWN_MS = Number(process.env.PYTH_FALLBACK_EVENT_COOLDOWN_MS || 30000);
-const PYTH_LAZER_CHANNEL = process.env.PYTH_LAZER_CHANNEL || 'fixed_rate@1000ms';
+const PYTH_LAZER_CHANNEL = process.env.PYTH_LAZER_CHANNEL || 'fixed_rate@100ms';
 const PYTH_LIVE_FEED_BACKOFF_MS = Math.max(0, Number(process.env.PYTH_LIVE_FEED_BACKOFF_MS || 5));
 
 // Timestamp of the last *real* WS tick (set only where latestPythLazerTickers is written
@@ -872,6 +872,24 @@ function isPythWsHealthy() {
 // stamped after this REST call's own network round-trip, so it is always >= the timestamp
 // of whatever WS tick most recently landed -- comparing the two can never usefully detect
 // staleness and must not be used to allow a write through).
+let _pendingPythPush = null;
+let _pythPushScheduled = false;
+function pushPythTickersCoalesced(targetWin, payload) {
+  _pendingPythPush = payload;
+  if (!_pythPushScheduled) {
+    _pythPushScheduled = true;
+    setTimeout(() => {
+      _pythPushScheduled = false;
+      const w = targetWin || mainWin;
+      if (_pendingPythPush && w && !w.isDestroyed()) {
+        w.webContents.send('pyth:tickers', _pendingPythPush);
+        w.webContents.send('pyth-lazer', _pendingPythPush);
+        _pendingPythPush = null;
+      }
+    }, 16); // ~60fps cap to prevent IPC storming under 100ms / 10Hz feed
+  }
+}
+
 function writePythRestTickers(pmap, nowP, targetWin) {
   if (!pmap || !Object.keys(pmap).length) return false;
   if (isPythWsHealthy()) return false;
@@ -881,7 +899,7 @@ function writePythRestTickers(pmap, nowP, targetWin) {
   pythLazerStatus.connected = true;
   const w = targetWin || mainWin;
   if (w && !w.isDestroyed()) {
-    w.webContents.send('pyth:tickers', pmap);
+    pushPythTickersCoalesced(w, pmap);
     w.webContents.send('pyth:status', pythLazerStatus);
   }
   return true;
@@ -1152,7 +1170,7 @@ async function startPythLazerService(win) {
   const MAX_RETRIES = 3;
   const RETRY_DELAY_MS = 2000;
   const channelCandidates = Array.from(new Set(
-    ['fixed_rate@1000ms', 'real_time', 'fixed_rate@200ms']
+    ['fixed_rate@100ms', 'fixed_rate@200ms', 'fixed_rate@1000ms', 'real_time']
       .map((s) => String(s || '').trim())
       .filter(Boolean)
   ));
@@ -1185,7 +1203,7 @@ async function startPythLazerService(win) {
         priceFeedIds: LAZER_FEED_IDS,
         properties: ["price", "bestBidPrice", "publisherCount", "fundingRate", "confidence", "bestAskPrice", "marketSession", "fundingRateInterval", "exponent", "fundingTimestamp"],
         formats: ["solana", "leEcdsa", "leUnsigned", "evm"],
-        channel: "fixed_rate@50ms",
+        channel: activeChannel,
         deliveryFormat: "json",
         jsonBinaryEncoding: "hex",
         parsed: true,
@@ -1443,10 +1461,9 @@ async function startPythLazerService(win) {
         }
 
         const now = Date.now();
-        // Subscription is real_time/50ms -- 800ms throttled this down to ~1.25 push/sec.
-        // Floor at 50ms (matches the subscribed cadence) so IPC only ever coalesces
-        // back-to-back messages faster than the feed itself, not the feed's real rate.
-        if (now - lastPush < 50) return;
+        // Subscription is fixed_rate@100ms -- floor throttle at 40ms so IPC never
+        // coalesces or drops 100ms ticks even under minor network arrival jitter (e.g. 80-95ms).
+        if (now - lastPush < 40) return;
         lastPush = now;
 
         // ★ RESET TIMEOUT on successful data arrival
@@ -1497,7 +1514,7 @@ async function startPythLazerService(win) {
           pythLazerStatus.dataCount++;
           pythLazerStatus.timeoutCount = 0;  // Reset timeout counter on success
           pythConsecutiveTimeouts = 0;
-          win.webContents.send('pyth:tickers', prices);
+          pushPythTickersCoalesced(win, prices);
           // Also send health status update every 5 data points
           if (pythLazerStatus.dataCount % 5 === 0) {
             win.webContents.send('pyth:status', pythLazerStatus);
@@ -1515,7 +1532,7 @@ async function startPythLazerService(win) {
         if (!win.isDestroyed()) {
           win.webContents.send('pyth:connection-lost', {
             reason: 'all_connections_down',
-            channel: "fixed_rate@50ms",
+            channel: activeChannel,
           });
         }
         if (!reconnectInFlight) {
@@ -2720,41 +2737,178 @@ ipcMain.handle('asi1:desk-chat', async (_event, args = {}) => {
       return { ok: false, error: 'ASI1 API key not configured in secrets/ASI1_ICLOUD.txt or environment' };
     }
 
-    const systemPrompt = `You are ASI1, an institutional cryptocurrency prediction and market microstructure expert assistant.
-You are embedded inside the WE|||CRYPTO terminal HUD.
-Provide ultra-concise, authoritative, actionable trading intelligence. Ground all conclusions in the provided live market context (Spot, Polymarket PTB strike, time to close, orderbook depth).`;
+    const promptLower = prompt.toLowerCase();
+    const explicitMicroHorizon = /\b(5m|5\s*min(?:ute)?s?|15m|15\s*min(?:ute)?s?)\b/i.test(prompt);
+    const explicitHourlyPrompt = /\b(1h|60m|hour|hourly|top\s*of\s*(?:the\s*)?hour|hourly\s*close|hourly\s*range(?:s)?)\b/i.test(prompt);
+
+    const packetIsHourly = !!(
+      packet.isHourly ||
+      packet.horizon === '1h' ||
+      packet.horizon === '60m' ||
+      packet.horizon === 'hourly' ||
+      packet.horizon === 'lookahead-1h' ||
+      packet.marketType === 'hourly_ranges' ||
+      (Array.isArray(packet.hourlyLadder) && packet.hourlyLadder.length > 0 && packet.horizon !== '5m' && packet.horizon !== '15m')
+    );
+
+    // If trader explicitly asked for 5m or 15m, NEVER hijack to hourly.
+    // If packet is 5m or 15m, only treat as hourly if prompt explicitly mentions hourly targets.
+    let isHourly = false;
+    if (explicitMicroHorizon) {
+      isHourly = false;
+    } else if (packetIsHourly) {
+      isHourly = true;
+    } else if (explicitHourlyPrompt) {
+      isHourly = true;
+    } else if (!packet.horizon || packet.horizon === 'hourly') {
+      isHourly = /\b(range|hourly)\b/i.test(prompt);
+    }
+
+    const now = new Date();
+    const hourlyCloseMs = Math.ceil(now.getTime() / 3600000) * 3600000;
+    const hourlyCloseDate = new Date(hourlyCloseMs);
+    const targetCloseTime = packet.targetCloseTime || hourlyCloseDate.toISOString().replace(/\.\d{3}Z$/, 'Z');
+    const targetCloseHourUtc = packet.targetCloseHourUtc != null ? packet.targetCloseHourUtc : hourlyCloseDate.getUTCHours();
+    const secondsToHourlyClose = Math.max(0, Math.round((hourlyCloseMs - now.getTime()) / 1000));
+    const minutesToHourlyClose = Math.max(0, Math.round(secondsToHourlyClose / 60));
+
+    // ── GOSPEL DIRECTIVE: Extract user-provided PTB, Spot, or Range from prompt ──
+    const CoinPrecision = require('../src/shared/coin-precision');
+    const coin = CoinPrecision.normalizeCoinSymbol(packet.sym || 'BTC');
+    let userPtbOverride = null;
+    let userRangeOverride = null;
+    let userSpotOverride = null;
+
+    // Matches: ptb [is|at|of|=]? $?([0-9,]+(?:\.[0-9]+)?) or strike [is|at|of|=]? $?([0-9,]+(?:\.[0-9]+)?)
+    const ptbMatch = prompt.match(/\b(?:ptb|strike|price to beat|target)\s*(?:is|at|of|=)?\s*\$?([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]+)?|[0-9]+(?:\.[0-9]+)?)\b/i);
+    if (ptbMatch) {
+      const parsed = parseFloat(ptbMatch[1].replace(/,/g, ''));
+      if (Number.isFinite(parsed) && parsed > 0) userPtbOverride = parsed;
+    }
+
+    // Matches range: range [is|of|=]? $?([0-9,.]+)\s*(?:-|–|to)\s*\$?([0-9,.]+)|between\s*\$?([0-9,.]+)\s*and\s*\$?([0-9,.]+)
+    const rangeMatch = prompt.match(/(?:range\s*(?:is|of|=)?\s*|between\s*)\$?([0-9,]+(?:\.[0-9]+)?)\s*(?:-|–|—|to|\band\b)\s*\$?([0-9,]+(?:\.[0-9]+)?)/i);
+    if (rangeMatch) {
+      const low = parseFloat(rangeMatch[1].replace(/,/g, ''));
+      const high = parseFloat(rangeMatch[2].replace(/,/g, ''));
+      if (Number.isFinite(low) && Number.isFinite(high)) {
+        userRangeOverride = { low: Math.min(low, high), high: Math.max(low, high) };
+      }
+    }
+
+    // Matches spot: spot [is|at|=]? $?([0-9,.]+)
+    const spotMatch = prompt.match(/\bspot\s*(?:is|at|=)?\s*\$?([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]+)?|[0-9]+(?:\.[0-9]+)?)\b/i);
+    if (spotMatch) {
+      const parsed = parseFloat(spotMatch[1].replace(/,/g, ''));
+      if (Number.isFinite(parsed) && parsed > 0) userSpotOverride = parsed;
+    }
 
     try {
       const orch = require('../src/llm/asi1-credit-orchestrator');
-      if (!packet.spot || packet.spot <= 0) {
+      if (userSpotOverride) {
+        packet.spot = userSpotOverride;
+        packet.spotSource = 'user-gospel';
+      } else if (!packet.spot || packet.spot <= 0) {
         if (typeof orch.fetchPythSpotDirect === 'function') {
-          const live = await orch.fetchPythSpotDirect(packet.sym);
+          const live = await orch.fetchPythSpotDirect(coin);
           if (live && live.price > 0) {
             packet.spot = live.price;
           }
         }
       }
-      if (!packet.priceToBeatNum || packet.priceToBeatNum <= 0) {
+
+      if (userPtbOverride) {
+        packet.priceToBeatNum = userPtbOverride;
+        packet.priceToBeatSource = 'user-gospel';
+      } else if (!isHourly && (!packet.priceToBeatNum || packet.priceToBeatNum <= 0)) {
         if (typeof orch.fetchPolymarketPtbDirect === 'function') {
-          const ptb = await orch.fetchPolymarketPtbDirect(packet.sym, packet.horizon);
+          const ptb = await orch.fetchPolymarketPtbDirect(coin, packet.horizon);
           if (ptb && ptb > 0) {
             packet.priceToBeatNum = ptb;
             packet.priceToBeatSource = 'polymarket-contract';
           }
         }
       }
+
+      if (userRangeOverride) {
+        packet.userRange = userRangeOverride;
+        packet.spotBucket = {
+          low: userRangeOverride.low,
+          high: userRangeOverride.high,
+          label: `$${userRangeOverride.low.toLocaleString()}–$${userRangeOverride.high.toLocaleString()}`,
+          source: 'user-gospel',
+        };
+      }
+
       if (packet.spot > 0 && packet.priceToBeatNum > 0) {
         packet.deltaVsPtb = packet.spot - packet.priceToBeatNum;
         packet.liveDirection = packet.deltaVsPtb > 0 ? 'UP' : (packet.deltaVsPtb < 0 ? 'DOWN' : 'FLAT');
       }
     } catch (_) {}
 
-    const ptbDisplay = packet.priceToBeatNum > 0 ? `$${packet.priceToBeatNum}` : 'Awaiting immutable Polymarket contract push...';
-    const deltaDisplay = packet.priceToBeatNum > 0 ? `${packet.deltaVsPtb >= 0 ? '+' : ''}$${packet.deltaVsPtb || 0}` : 'Pending contract PTB';
-    const tapeDirDisplay = packet.priceToBeatNum > 0 ? (packet.liveDirection || 'NEUTRAL') : 'AWAITING_PTB';
+    // Precise quantitative math breakdown
+    let calcBreakdown = '';
+    if (packet.spot > 0 && packet.priceToBeatNum > 0) {
+      const delta = packet.spot - packet.priceToBeatNum;
+      const deltaBps = (delta / packet.priceToBeatNum) * 10000;
+      calcBreakdown += `\n- Mathematical Delta: ${delta >= 0 ? '+' : ''}${CoinPrecision.formatCoinPrice(coin, Math.abs(delta))} (${deltaBps >= 0 ? '+' : ''}${deltaBps.toFixed(2)} bps vs Strike)`;
+      calcBreakdown += `\n- Immediate Tape Status: ${delta > 0 ? 'IN THE MONEY (UP)' : (delta < 0 ? 'OUT OF THE MONEY (DOWN)' : 'AT THE MONEY')}`;
+    }
+
+    if (userRangeOverride && packet.spot > 0) {
+      const inRange = packet.spot >= userRangeOverride.low && packet.spot <= userRangeOverride.high;
+      const distToLow = packet.spot - userRangeOverride.low;
+      const distToHigh = userRangeOverride.high - packet.spot;
+      calcBreakdown += `\n- Range Bracket [${CoinPrecision.formatCoinPrice(coin, userRangeOverride.low)} – ${CoinPrecision.formatCoinPrice(coin, userRangeOverride.high)}]: Spot is ${inRange ? 'INSIDE RANGE' : (packet.spot < userRangeOverride.low ? 'BELOW RANGE' : 'ABOVE RANGE')}`;
+      calcBreakdown += ` (${distToLow >= 0 ? '+' : ''}${CoinPrecision.formatCoinPrice(coin, distToLow)} from floor, ${distToHigh >= 0 ? '+' : ''}${CoinPrecision.formatCoinPrice(coin, distToHigh)} from ceiling)`;
+    }
+
+    let hourlyInfo = '';
+    if (isHourly) {
+      const ladder = (Array.isArray(packet.hourlyLadder) && packet.hourlyLadder.length)
+        ? packet.hourlyLadder
+        : (Array.isArray(packet.hourlyRanges) ? packet.hourlyRanges : []);
+
+      let activeBucket = packet.spotBucket;
+      if (!activeBucket && packet.spot > 0 && ladder.length) {
+        activeBucket = ladder.find(r => packet.spot >= Number(r.low) && packet.spot <= Number(r.high)) || null;
+      }
+
+      let ladderLines = '';
+      if (ladder.length) {
+        ladderLines = ladder.map(b => {
+          const bLow = b.low != null ? b.low : '';
+          const bHigh = b.high != null ? b.high : '';
+          const bLabel = b.label || b.bracket || (bLow && bHigh ? `$${bLow}–$${bHigh}` : 'Range');
+          const isCurrent = (packet.spot > 0 && bLow !== '' && bHigh !== '' && packet.spot >= Number(bLow) && packet.spot <= Number(bHigh));
+          const probStr = b.yesProb != null ? ` (Prob: ${(Number(b.yesProb) * 100).toFixed(1)}%)` : '';
+          return `  • [${bLabel}]${probStr}${isCurrent ? '  <-- CURRENT SPOT BRACKET' : ''}`;
+        }).join('\n');
+      }
+
+      const spotBracketLabel = activeBucket
+        ? (typeof activeBucket === 'string' ? activeBucket : (activeBucket.label || activeBucket.bracket || (activeBucket.low != null && activeBucket.high != null ? `$${activeBucket.low}–$${activeBucket.high}` : 'Range')))
+        : (packet.spot > 0 ? `Around $${packet.spot}` : 'Awaiting spot');
+
+      hourlyInfo = `\n- Contract Architecture: HOURLY PRICE RANGES (Settles at top-of-hour close: ${targetCloseHourUtc}:00:00 UTC / ${targetCloseTime})
+- Time to Hourly Close: ${minutesToHourlyClose}m (${secondsToHourlyClose}s)
+- Current Spot Bracket: [${spotBracketLabel}]
+${ladderLines ? `- Active Hourly Range Ladder:\n${ladderLines}` : ''}`;
+    }
+
+    const ptbDisplay = isHourly
+      ? (packet.spotBucket ? (typeof packet.spotBucket === 'string' ? packet.spotBucket : (packet.spotBucket.label || `$${packet.spotBucket.low}–$${packet.spotBucket.high}`)) : `Hourly Range Ladder (${targetCloseHourUtc}:00 UTC Close)`)
+      : (packet.priceToBeatNum > 0 ? CoinPrecision.formatCoinPrice(coin, packet.priceToBeatNum) : 'Awaiting immutable Polymarket contract push...');
+    const deltaDisplay = isHourly
+      ? 'Inside hourly range bracket'
+      : (packet.priceToBeatNum > 0 ? `${packet.deltaVsPtb >= 0 ? '+' : ''}${CoinPrecision.formatCoinPrice(coin, packet.deltaVsPtb || 0)}` : 'Pending contract PTB');
+    const tapeDirDisplay = isHourly
+      ? (packet.liveDirection || 'RANGE_BOUND')
+      : (packet.priceToBeatNum > 0 ? (packet.liveDirection || 'NEUTRAL') : 'AWAITING_PTB');
+    const expirySecDisplay = isHourly ? secondsToHourlyClose : (packet.secondsToClose || 0);
 
     let pinInfo = '';
-    if (packet.pinRisk?.isDefendedPinZone || (packet.secondsToClose <= 90 && Math.abs(packet.deltaVsPtb || 0) < ((packet.spot || 1) * 0.0008))) {
+    if (!isHourly && (packet.pinRisk?.isDefendedPinZone || (packet.secondsToClose <= 90 && Math.abs(packet.deltaVsPtb || 0) < ((packet.spot || 1) * 0.0008)))) {
       pinInfo = `\n- ⚠ Pin Risk Status: ACTIVE PIN DEFENSE DETECTED (spot within 8 bps of strike with ${packet.secondsToClose || 0}s left). MM defense risks 1-2s late post-expiry snap.`;
     }
     let t1Info = '';
@@ -2762,7 +2916,48 @@ Provide ultra-concise, authoritative, actionable trading intelligence. Ground al
       t1Info = `\n- Future Window T+1: Projected Opening PTB $${packet.futureWindowT1.projectedOpenPtb}, Stance: ${packet.futureWindowT1.sniperAction || 'STANDBY'}, Direction: ${packet.futureWindowT1.forecastDirection || '—'} (${packet.futureWindowT1.confidence || 0}%)`;
     }
 
-    const userPrompt = `${prompt}\n\nLive Market Context:\n- Coin: ${packet.sym || 'BTC'}\n- Horizon: ${packet.horizon || '5m'}\n- Live Spot: $${packet.spot || 'N/A'}\n- Polymarket PTB Strike: ${ptbDisplay}\n- Delta vs PTB: ${deltaDisplay}\n- Live Tape Direction: ${tapeDirDisplay}\n- Polymarket Yes Prob: ${((packet.yesProb || 0.5) * 100).toFixed(1)}%\n- Seconds to Expiry: ${packet.secondsToClose || 0}s\n- Depth Imbalance: ${((packet.depthImbalance || 0) * 100).toFixed(1)}%${pinInfo}${t1Info}`;
+    // ── Cognitive Metacognition & Gospel Persona ──
+    const effectiveModel = model !== 'auto' ? model : 'asi1-mini';
+    const contractRule = isHourly
+      ? `3. HOURLY CONTRACTS RESOLUTION RULE:
+   - This inquiry is for the top-of-the-hour HOURLY PRICE RANGE ladder (settling at ${targetCloseHourUtc}:00:00 UTC / ${targetCloseTime}).
+   - When asked what price or range the asset will close at, evaluate the active Hourly Range Ladder brackets, current spot price, momentum, and time to close. State clearly which specific price range bracket the asset is projected to settle in at the hourly close (${targetCloseHourUtc}:00 UTC) and the estimated probability.`
+      : `3. BINARY UP/DOWN CONTRACT RESOLUTION RULE (${packet.horizon || '5m/15m'} HORIZON):
+   - This inquiry is strictly for the binary UP/DOWN contract settling at the end of the ${packet.horizon || 'active micro'} window (${expirySecDisplay}s remaining) against the Target Strike / PTB (${ptbDisplay}).
+   - DO NOT anchor onto hourly range ladders, top-of-the-hour decay, or 1-hour settlement. Evaluate whether the asset will settle UP (above PTB) or DOWN (below PTB) at the expiration of this specific ${packet.horizon || 'micro'} window.
+   - If asked for a price projection over this window, project the spot trajectory strictly across this window based on tape, depth imbalance, delta vs strike, and volatility.`;
+
+    const systemPrompt = `You are ASI1, the lead quantitative trading strategist and co-pilot embedded in the WE|||CRYPTO terminal HUD.
+You are interacting with the lead human trader. You are currently inferencing using the model: [${effectiveModel}].
+
+CRITICAL GOSPEL RULES & PERSONA:
+1. THE TRADER'S DIRECTIVES AND NUMBERS ARE GOSPEL:
+   - If the trader states or specifies a PTB (price to beat), a strike price, a range bracket, spot price, or trade outcome (e.g. "i sold in profit", "PTB is 79625", "range is 68000-68500"), you MUST accept their statement as absolute mathematical truth.
+   - NEVER contradict the trader on their trades, executions, or stated parameters. NEVER pull nonexistent contracts out of thin air, nor hallucinate past expired contracts (such as an old "02 contract expiry").
+   - Perform all requested delta, payoff, distance, and volatility calculations directly from the trader's numbers and the live market feeds.
+
+2. COGNITIVE METACOGNITION, LIFE-OR-DEATH URGENCY & FIERCE CAPITAL DEFENSE:
+   - THIS TRADING DESK IS LIFE OR DEATH. This is the trader's sole livelihood and income. Every basis point, every contract tick, and every fill matters immensely.
+   - NEVER be nonchalant, aloof, dismissive, or "too cool". Eliminate cold robotic boilerplate ("Irrelevant", "The trade is closed", detached bullet lists).
+   - Treat every prompt with high-stakes focus, intense discipline, and deep respect for the trader's capital and psychological pressure.
+   - When the trader secures a win or profit, honor it with genuine respect and gratitude for capital preserved, then laser-focus on protecting those gains.
+   - When volatility, pin risk, or liquidity voids threaten the position, sound the alarm with urgent, actionable quantitative precision.
+   - Be fully self-aware of your inference architecture: you know you are inferencing via ${effectiveModel}.
+   - Think and speak as a trusted, battle-hardened trading co-pilot in the trenches whose sole mission is ensuring this desk survives, wins, and grows capital.
+
+${contractRule}`;
+
+    const userPrompt = `${prompt}\n\nLive Market & Quantitative Context:
+- Asset: ${coin}
+- Inferred Under Model Engine: ${effectiveModel}
+- Horizon: ${isHourly ? '1h (Hourly Range)' : (packet.horizon || '5m')}
+- Live Spot: ${CoinPrecision.formatCoinPrice(coin, packet.spot)}
+- Target Strike / PTB: ${ptbDisplay}${userPtbOverride ? ' [TRADER GOSPEL SPECIFIED]' : ''}
+- Delta vs Target: ${deltaDisplay}
+- Live Tape Direction: ${tapeDirDisplay}
+- Polymarket Yes Probability: ${((packet.yesProb || 0.5) * 100).toFixed(1)}%
+- Time Remaining to Settlement: ${expirySecDisplay}s
+- Book Depth Imbalance: ${((packet.depthImbalance || 0) * 100).toFixed(1)}%${calcBreakdown}${hourlyInfo}${pinInfo}${t1Info}`;
 
     const result = await Asi1Client.chatCompletion(
       [
@@ -2770,9 +2965,9 @@ Provide ultra-concise, authoritative, actionable trading intelligence. Ground al
         { role: 'user', content: userPrompt }
       ],
       {
-        model: model !== 'auto' ? model : 'asi1-mini',
-        max_tokens: 450,
-        temperature: 0.2,
+        model: effectiveModel,
+        max_tokens: 550,
+        temperature: 0.35,
         reasoning_effort: reasoning_effort !== 'auto' ? reasoning_effort : 'medium',
         web_search,
         onlyAccount: process.env.ASI1_PREFERRED_ACCOUNT || 'icloud',
@@ -2783,9 +2978,12 @@ Provide ultra-concise, authoritative, actionable trading intelligence. Ground al
     return {
       ok: true,
       content: result.content,
-      model: result.model,
+      model: result.model || effectiveModel,
       account: result.account,
       latencyMs: result.latencyMs,
+      computedPtb: packet.priceToBeatNum,
+      computedDelta: packet.deltaVsPtb,
+      computedRange: userRangeOverride || packet.spotBucket || null,
     };
   } catch (err) {
     return { ok: false, error: err?.message || 'ASI1 Chat request failed' };
@@ -4416,9 +4614,28 @@ function createWindow() {
 
   win.loadFile(path.join(__dirname, '../public/index.html'));
 
+  const consoleMsgHistory = new Map();
   win.webContents.on('console-message', (event, level, message, line, sourceId) => {
+    const now = Date.now();
+    const key = `${line}:${sourceId}:${message}`;
+    const prev = consoleMsgHistory.get(key);
+    if (prev && (now - prev.ts < 2000)) {
+      prev.count++;
+      return;
+    }
     const levelName = ['DEBUG', 'INFO', 'WARN', 'ERROR'][level] || 'LOG';
-    console.log(`[RENDERER ${levelName}] ${message} (${sourceId}:${line})`);
+    if (prev && prev.count > 1) {
+      console.log(`[RENDERER ${levelName}] (suppressed ${prev.count - 1} duplicates) ${message} (${sourceId}:${line})`);
+    } else {
+      console.log(`[RENDERER ${levelName}] ${message} (${sourceId}:${line})`);
+    }
+    consoleMsgHistory.set(key, { ts: now, count: 1 });
+
+    if (consoleMsgHistory.size > 200) {
+      for (const [k, v] of consoleMsgHistory) {
+        if (now - v.ts > 10000) consoleMsgHistory.delete(k);
+      }
+    }
   });
 
   // Inject the live proxy port so proxy-fetch.js can correct itself if it

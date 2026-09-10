@@ -1,0 +1,34 @@
+# ================================================================
+# WE|||CRYPTO — MergeKit Recipe: Multi-SLERP Barycentric Hypersphere
+# Model Merging Engine: Multi-SLERP (Spherical Linear Interpolation)
+# Application: 5m & 15m Crypto Prediction Contracts (Kalshi / Polymarket)
+#
+# Multi-SLERP performs iterative pairwise spherical reduction along
+# hyperspherical geodesic arcs across orderbook, tape velocity, and sniper
+# models, preserving directional probability geometry without L1 flatten.
+# ================================================================
+
+merge_method: multi_slerp
+base_model: models/crypto-base-foresight-8b
+dtype: bfloat16
+
+models:
+  - model: models/crypto-orderbook-clob-8b
+    parameters:
+      weight: 0.40
+  - model: models/crypto-tape-flow-8b
+    parameters:
+      weight: 0.35
+  - model: models/crypto-kalshi-15m-sniper-8b
+    parameters:
+      weight: 0.25
+
+parameters:
+  slerp_t: [0.40, 0.35, 0.25]
+  normalize: true
+  interpolation: "geodesic_hypersphere"
+
+metadata:
+  target_horizons: ["5m", "15m"]
+  underlyings: ["BTC", "ETH", "SOL", "XRP"]
+  geometric_curvature: "hyperspherical"

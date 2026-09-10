@@ -33,8 +33,15 @@
     }
   } catch (_) { /* */ }
 
+  const CoinPrecision = (typeof require !== 'undefined')
+    ? (() => {
+        try { return require('../shared/coin-precision'); } catch (_) { return null; }
+      })()
+    : (typeof globalThis !== 'undefined' ? globalThis.CoinPrecision : null);
+
   /** BTC/ETH/SOL/BNB/HYPE → 2dp; XRP/DOGE → 4dp. No float trails for AI/UI. */
   function priceDecimals(sym, value) {
+    if (CoinPrecision?.getCoinDecimals) return CoinPrecision.getCoinDecimals(sym, value);
     const s = String(sym || '').toUpperCase();
     if (s === 'BTC' || s === 'ETH' || s === 'BNB' || s === 'SOL' || s === 'HYPE') return 2;
     if (s === 'XRP' || s === 'DOGE') return 4;
@@ -44,6 +51,7 @@
   }
 
   function roundPrice(sym, value) {
+    if (CoinPrecision?.roundCoinPrice) return CoinPrecision.roundCoinPrice(sym, value);
     const n = Number(value);
     if (!Number.isFinite(n)) return null;
     const d = priceDecimals(sym, n);
@@ -52,6 +60,7 @@
   }
 
   function formatUsd(sym, value) {
+    if (CoinPrecision?.formatCoinPrice) return CoinPrecision.formatCoinPrice(sym, value);
     const n = roundPrice(sym, value);
     if (n == null) return null;
     const d = priceDecimals(sym, n);
@@ -218,9 +227,9 @@
       mid: num(m.mid),
       spread: num(m.spread),
       depthImbalance: num(m.depthImbalance),
-      nearTouchNotional: num(m.nearTouchNotional),
-      bidDepthNotional: num(m.bidDepthNotional),
-      askDepthNotional: num(m.askDepthNotional),
+      nearTouchNotional: num(m.nearTouchNotional) != null ? Math.round(num(m.nearTouchNotional) * 100) / 100 : null,
+      bidDepthNotional: num(m.bidDepthNotional) != null ? Math.round(num(m.bidDepthNotional) * 100) / 100 : null,
+      askDepthNotional: num(m.askDepthNotional) != null ? Math.round(num(m.askDepthNotional) * 100) / 100 : null,
       liveDirection: m.liveDirection || null,
       clobUpAssetId: m.clobUpAssetId || null,
       clobDownAssetId: m.clobDownAssetId || null,
@@ -381,7 +390,7 @@
 
     let deltaVsPtb = null;
     if (spot != null && primary?.priceToBeatNum) {
-      deltaVsPtb = spot - primary.priceToBeatNum;
+      deltaVsPtb = roundPrice(key, spot - primary.priceToBeatNum);
     }
 
     // Path direction from Pyth vs Polymarket PTB only
@@ -453,7 +462,7 @@
         mid: w.mid,
         spread: w.spread,
         depthImbalance: w.depthImbalance,
-        nearTouchNotional: w.nearTouchNotional,
+        nearTouchNotional: w.nearTouchNotional != null ? Math.round(num(w.nearTouchNotional) * 100) / 100 : null,
         liveDirection: w.liveDirection || o.pathDir,
         settlementRule: w.settlementRule,
         oracle: {
