@@ -264,7 +264,7 @@ function predictionCard(p) {
     const llmRegime = p.llm?.regime || p.diagnostics?.llmRegime || null;
     const llmConfidence = Number(p.llm?.confidence || p.diagnostics?.llmConfidence || 0);
     const llmNotes = String(p.llm?.notes || p.diagnostics?.llmNotes || '').trim();
-    const asi1Brief = window.Asi1PreContract?.get?.(p.sym);
+    const asi1Brief = window.Asi1PreContract?.get?.(p.sym, '15m');
     const asi1Notes = String(asi1Brief?.notes || asi1Brief?.primaryRationale || '').trim();
     const displayNotes = asi1Notes || llmNotes;
     const thoughtsProvider = String(
