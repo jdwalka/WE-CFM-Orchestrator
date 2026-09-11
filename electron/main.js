@@ -1727,6 +1727,8 @@ function moduleFileExists(crateRoot, name) {
 async function startJsProxyFallback(port) {
   const http = require('http');
   const https = require('https');
+  const swedenBindAddress = (process.env.WECRYPTO_SWEDEN_BIND || '').trim();
+  const swedenRouteHosts = /(^|\.)(binance|bybit|polymarket)\./i;
   let socksAgent = null;
   if (process.env.WECRYPTO_SWEDEN_SOCKS) {
     try {
@@ -1809,6 +1811,10 @@ async function startJsProxyFallback(port) {
           host: parsedUrl.hostname,
           hostname: parsedUrl.hostname,
           servername: parsedUrl.hostname,
+          localAddress: swedenBindAddress && swedenRouteHosts.test(parsedUrl.hostname)
+            ? swedenBindAddress
+            : undefined,
+          family: swedenBindAddress && swedenRouteHosts.test(parsedUrl.hostname) ? 4 : undefined,
           port: parsedUrl.port || (isHttps ? 443 : 80),
           path: parsedUrl.pathname + parsedUrl.search,
           method,
