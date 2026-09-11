@@ -22,7 +22,7 @@
   // (PYTH_LAZER_TOKEN / PYTH_API / PYTH_NEW*) is NOT valid here -- sending it as
   // a Bearer makes the gateway 401 a request that would have succeeded with no
   // header at all, which is what took the spot feed down. Keep it out entirely.
-  let PYTH_API_KEY = '9AowRQwEELKpsMosei146CTHcxeNoHuSUWuDhGfFxkXZ'; // Pro key
+  let PYTH_API_KEY = '';
   const PRO_KEY_NAMES = ['PYTH_PRO_API_KEY', 'PYTH_HERMES_PRO_KEY', 'HERMES_PRO_API_KEY', 'PYTH_HERMES_TOKEN'];
   function _firstKey(getter) {
     for (const name of PRO_KEY_NAMES) {
@@ -171,6 +171,14 @@
   async function _fetchHermes() {
     const feedIds = Object.values(PYTH_FEEDS);
     const v2Url = `${PYTH_HERMES_V2}?${feedIds.map(id => 'ids[]=' + encodeURIComponent(id)).join('&')}`;
+
+    // Douro Labs' Lazer proxy is public, sub-100ms, and currently the most
+    // reliable route. Prefer it and avoid the noisy Hermes 403/401 console
+    // response entirely; Hermes remains a fully authenticated fallback.
+    const lazerFirst = await _fetchDouroLazerProxy();
+    if (lazerFirst && Object.keys(lazerFirst.feeds).length >= 4) {
+      return lazerFirst;
+    }
 
     const headers = PYTH_API_KEY ? { Authorization: `Bearer ${PYTH_API_KEY}` } : {};
     let resp = null;

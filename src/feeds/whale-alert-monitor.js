@@ -101,7 +101,7 @@
         if (k) return String(k).trim();
       }
     } catch (_) {}
-    return '3QdbUuaagCfzZuUBOxeeMNvqeQsp1RwE';
+    return '';
   }
 
   async function resolveApiKey(force = false) {
@@ -341,7 +341,7 @@
     const allTxs = [];
 
     for (const chain of chains) {
-      const txs = await _fetchWhaleTransactions(chain);
+      const txs = await _fetchWhaleTransactions(chain) || [];
       if (txs.length > 0) {
         allTxs.push(...txs);
         const mon = _monitored.get(chain);
