@@ -720,7 +720,7 @@ try {
       console.log(`[LLM] 5m PTB binary markets (polycool.app / Chainlink) using: ${diagnostics.fiveMinuteProvider} / ${diagnostics.fiveMinuteModel}`);
     }
   } else {
-    console.warn('[LLM] Assistant loaded but disabled - check ASI1 API key (ASI1_API_KEY_GITGOIN / ASI1_API_KEY_MAURO / ASI_ONE_API_KEY or secrets/ASI1_*.txt).');
+    console.warn('[LLM] Assistant loaded but disabled - check ASI1 API key (ASI1_API_KEY_LEAKSNIPE / ASI_ONE_API_KEY_LEAKSNIPE or secrets/ASI1_LEAKSNIPE.txt).');
   }
 } catch (e) {
   console.warn('[LLM] Assistant module unavailable:', e.message);
@@ -2657,7 +2657,7 @@ async function handleAsi1NarrativeRequest(args = {}, defaultModel = 'asi1-ultra'
       {
         model,
         candidateModels: [model], // HUD is a lone wolf: no model cascade, fail fast
-        onlyAccount: process.env.ASI1_PREFERRED_ACCOUNT || 'mauro',
+        onlyAccount: process.env.ASI1_PREFERRED_ACCOUNT || 'leaksnipe',
         max_tokens: model.includes('ultra') ? 350 : 120,
         temperature: 0.1,
         timeoutMs: model.includes('ultra') ? 25000 : 12000,
@@ -2857,7 +2857,7 @@ ${ladderLines ? `- Active Hourly Range Ladder:\n${ladderLines}` : ''}`;
         temperature: 0.2,
         reasoning_effort: reasoning_effort !== 'auto' ? reasoning_effort : 'medium',
         web_search,
-        onlyAccount: process.env.ASI1_PREFERRED_ACCOUNT || 'icloud',
+        onlyAccount: process.env.ASI1_PREFERRED_ACCOUNT || 'leaksnipe',
         timeoutMs: 30000,
       }
     );
@@ -2871,6 +2871,37 @@ ${ladderLines ? `- Active Hourly Range Ladder:\n${ladderLines}` : ''}`;
     };
   } catch (err) {
     return { ok: false, error: err?.message || 'ASI1 Chat request failed' };
+  }
+});
+
+// Truffle -- the Hourly Range Scalper uAgent (Python/uagents, port 8002),
+// registered on Agentverse as agent1q253g9agfp66f2nvkmgxmtn2ewzv50a9uvna2p9x360qxpfawl6yjv303m6.
+// Unlike the asi1:desk-* handlers above, this does not build an ASI1-desk
+// packet -- truffle pulls its own live Kalshi/Polymarket contract data and
+// Coinbase spot via its own tool-calling loop, and answers free-text.
+ipcMain.handle('truffle:query', async (_event, args = {}) => {
+  try {
+    const query = String(args.query || args.prompt || '').trim();
+    if (!query) return { ok: false, error: 'empty query' };
+    const truffleUrl = process.env.TRUFFLE_URL || 'http://127.0.0.1:8002/query';
+    const resp = await fetch(truffleUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query }),
+      signal: AbortSignal.timeout(30000),
+    });
+    if (!resp.ok) {
+      return { ok: false, error: `truffle HTTP ${resp.status}` };
+    }
+    const data = await resp.json();
+    return { ok: !!data.ok, content: data.content || '', error: data.ok ? undefined : (data.content || 'truffle returned an error') };
+  } catch (err) {
+    return {
+      ok: false,
+      error: err?.message
+        ? `truffle unreachable: ${err.message}`
+        : 'truffle unreachable -- is the agent running on port 8002?',
+    };
   }
 });
 
