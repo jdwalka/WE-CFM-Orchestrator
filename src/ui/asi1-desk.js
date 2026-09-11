@@ -207,6 +207,7 @@
         <div style="display:flex;gap:4px">
           <textarea id="adCustomPrompt" placeholder="Ask ASI1 anything with live market context..." rows="2" style="flex:1;background:#06080a;color:#e6e8eb;border:1px solid #1f2a38;border-radius:6px;padding:6px;font-size:11px;resize:none;outline:none;font-family:inherit"></textarea>
           <button id="adSendPrompt" type="button" style="background:#00d4ff;color:#06080a;font-weight:700;border:0;border-radius:6px;padding:0 10px;font-size:11px;cursor:pointer">Send</button>
+          <button id="adTruffleToggle" type="button" title="Route query to local Truffle agent (port 8002)" style="background:#111318;border:1px solid #2a2f38;color:#8b929a;font-weight:700;border-radius:6px;padding:0 8px;font-size:11px;cursor:pointer">🍄 Truffle</button>
           <button id="adResetMemory" type="button" title="Clear conversation memory and start a new session" style="background:#1c2530;color:#ff8a80;font-weight:700;border:1px solid #ff5252;border-radius:6px;padding:0 8px;font-size:11px;cursor:pointer">Reset</button>
         </div>
         <div id="adCustomAnswer" style="display:none;background:#06080a;border:1px solid #1f2a38;border-radius:6px;padding:8px;font-size:11px;line-height:1.45;color:#e6e8eb;max-height:160px;overflow-y:auto"></div>
@@ -944,7 +945,7 @@
         paintContract(provisional, { provisional: true });
       }
 
-      const modelChoice = document.getElementById('adModelChoice')?.value || 'auto';
+
       const effortChoice = document.getElementById('adReasoningEffort')?.value || 'auto';
       const webSearch = document.getElementById('adWebSearch')?.checked || false;
 
@@ -970,6 +971,20 @@
       btn.disabled = false;
       btn.textContent = 'Ask ASI1';
     }
+  }
+
+  let truffleActive = false;
+
+  async function askTruffle(query) {
+    const r = await fetch('http://127.0.0.1:8002/query', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query }),
+    });
+    if (!r.ok) throw new Error('Truffle agent HTTP ' + r.status);
+    const data = await r.json();
+    if (data && data.ok) return data.content;
+    throw new Error('Truffle agent error: ' + (data?.error || 'unknown'));
   }
 
   async function sendCustomPrompt() {
@@ -1014,6 +1029,25 @@
           }
         }
       }
+      if (truffleActive) {
+        try {
+          const truffleAnswer = await askTruffle(query);
+          if (answerEl) {
+            answerEl.textContent = '';
+            const pre = document.createElement('pre');
+            pre.style.whiteSpace = 'pre-wrap';
+            pre.style.fontFamily = 'inherit';
+            pre.textContent = truffleAnswer;
+            answerEl.appendChild(pre);
+          }
+          return;
+        } catch (err) {
+          if (answerEl) {
+            answerEl.textContent = 'Truffle unavailable — falling back to ASI1.';
+          }
+        }
+      }
+
       const modelChoice = document.getElementById('adModelChoice')?.value || 'auto';
       const effortChoice = document.getElementById('adReasoningEffort')?.value || 'auto';
       const webSearch = document.getElementById('adWebSearch')?.checked || false;
@@ -1114,6 +1148,16 @@
   document.getElementById('adMin')?.addEventListener('click', () => setMinimized(!minimized));
   document.getElementById('adAsk')?.addEventListener('click', ask);
   document.getElementById('adSendPrompt')?.addEventListener('click', sendCustomPrompt);
+  const truffleBtn = document.getElementById('adTruffleToggle');
+  if (truffleBtn) {
+    truffleBtn.addEventListener('click', () => {
+      truffleActive = !truffleActive;
+      truffleBtn.style.background = truffleActive ? '#00d4ff' : '#111318';
+      truffleBtn.style.color = truffleActive ? '#06080a' : '#8b929a';
+      truffleBtn.style.border = truffleActive ? '1px solid #00d4ff' : '1px solid #2a2f38';
+      truffleBtn.textContent = truffleActive ? '🍄 Truffle ON' : '🍄 Truffle';
+    });
+  }
   document.getElementById('adResetMemory')?.addEventListener('click', async () => {
     try {
       let sessionId = null;
