@@ -79,6 +79,7 @@
           <option value="lookahead-15m">Look Ahead (15m)</option>
           <option value="anytime">Look Ahead (Anytime)</option>
           <option value="mispricings">Contract Mispricings</option>
+          <option value="truffle">🍄 Truffle (Live Agent)</option>
         </select>
       </div>
       <div class="ad-selects">
@@ -372,6 +373,7 @@
         setMode: 'asi1:desk-mode',
         infer: 'asi1:desk-infer',
         chat: 'asi1:desk-chat',
+        truffleQuery: 'truffle:query',
         hunt: 'asi1:agentverse-hunt',
         auditAgents: 'asi1:agentverse-audit',
         agentverseStatus: 'asi1:agentverse-status',
@@ -901,6 +903,34 @@
     btn.disabled = true;
     btn.textContent = 'Asking…';
     try {
+      const horizonNow = document.getElementById('adHorizon')?.value || '15m';
+      if (horizonNow === 'truffle') {
+        const coinNow = document.getElementById('adCoin')?.value || 'BTC';
+        const askedEl = document.getElementById('adAskedAt');
+        if (askedEl) askedEl.textContent = new Date().toLocaleTimeString();
+        const query = `Give me your live read on ${coinNow} right now: current spot, the live Kalshi hourly range ladder (or the 15m/5m contracts if more relevant), and the best out-of-range scalp setup if there is one.`;
+        const res = await invoke('truffleQuery', { query });
+        const content = res?.ok
+          ? (res.content || 'No response from truffle.')
+          : `Truffle error: ${res?.error || 'unknown — is the agent running on port 8002?'}`;
+        const truffleContract = {
+          call: '—',
+          action: 'HOLD_FLAT',
+          confidence: null,
+          regime: '—',
+          edge_vs_crowd: '—',
+          urgency: '—',
+          size_hint: '—',
+          invalidation: '',
+          notes: content,
+          warnings: [],
+          _meta: { model: 'truffle', account: 'truffle-live-agent' },
+        };
+        paintContract(truffleContract, {});
+        window.dispatchEvent(new CustomEvent('asi1:desk', { detail: { contract: truffleContract } }));
+        return;
+      }
+
       const packet = buildPacket();
 
       const spotEl = document.getElementById('adSpot');
