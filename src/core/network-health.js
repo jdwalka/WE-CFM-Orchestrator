@@ -954,11 +954,11 @@
     const ENDPOINT_HOST_PROBES = [
         { provider: 'Crypto.com', url: 'https://api.crypto.com/v2/public/get-ticker?instrument_name=BTC_USDT' },
         { provider: 'Mempool.space', url: 'https://mempool.space/api/blocks/tip/height' },
-        { provider: 'Solana RPC', url: 'https://api.mainnet-beta.solana.com', fallbackUrl: 'https://solana-mainnet.g.alchemy.com/v2/UNcUYppLXPl4s0jAkQe_J', method: 'POST', body: '{"jsonrpc":"2.0","id":1,"method":"getEpochInfo"}' },
+        { provider: 'Solana RPC', url: 'https://solana-rpc.publicnode.com', fallbackUrl: 'https://api.mainnet-beta.solana.com', method: 'POST', body: '{"jsonrpc":"2.0","id":1,"method":"getEpochInfo"}' },
         { provider: 'Etherscan', url: 'https://api.etherscan.io/api?module=proxy&action=eth_blockNumber' },
         { provider: 'XRP Ledger', url: 'https://xrplcluster.com', fallbackUrl: 'https://s1.ripple.com:51234', method: 'POST', body: '{"method":"server_info","params":[{}]}' },
         { provider: 'Alchemy RPC', url: 'https://ethereum.publicnode.com', fallbackUrl: 'https://cloudflare-eth.com', method: 'POST', body: '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber"}' },
-        { provider: 'Whale Alert', url: 'https://mempool.space/api/blocks/tip/height' },
+        { provider: 'Whale Alert', url: 'https://leviathan.whale-alert.io/status' },
         { provider: 'LocalProxy', url: 'http://127.0.0.1:3010/health' },
     ];
 
