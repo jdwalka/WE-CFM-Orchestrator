@@ -17,7 +17,7 @@ process.on('unhandledRejection', (reason) => {
 
 const { startOrbitalSystem, restartOrbitalSystem, shutdownOrbitalSystem, getOrbitalStatus } = require('../src/infra/orbital-startup-orchestrator');
 const { createHzTracker } = require('../src/infra/resonance-filter');
-const { app, BrowserWindow, Menu, shell, ipcMain } = require('electron');
+const { app, BrowserWindow, Menu, shell, ipcMain, session } = require('electron');
 const fsp = fs.promises;
 const { spawn } = require('child_process');
 const { normalizeCoinbaseJwtUri } = require('../src/infra/coinbase-jwt-utils');
@@ -105,6 +105,10 @@ const _consoleError = console.error.bind(console);
 function _safeConsoleWrite(writer, args) {
   try {
     writer(...args);
+    try {
+      const msg = args.map(a => (typeof a === 'object' && a !== null) ? (a.stack || JSON.stringify(a)) : String(a)).join(' ');
+      fs.appendFileSync(debugLogFile, `${new Date().toISOString()} ${msg}\n`);
+    } catch (_) {}
   } catch (err) {
     if (_isBrokenPipe(err)) return;
     throw err;
@@ -169,6 +173,8 @@ function getEnvFileCandidates() {
     path.join(__dirname, '..', '.env'),
     path.join(process.resourcesPath || '', '..', '.env'),
     path.join(process.cwd(), '.env'),
+    'G:\\WECRYP\\.env',
+    'H:\\My Drive\\WECRYP\\.env',
   ]);
 }
 
@@ -244,6 +250,9 @@ function getSecretDirCandidates() {
     path.join(process.resourcesPath || '', '..', 'secrets'),
     path.join(__dirname, '..', 'secrets'),
     path.join(process.cwd(), 'secrets'),
+    'G:\\WECRYP\\secrets',
+    'H:\\My Drive\\WECRYP\\secrets',
+    'H:\\WECRYP\\secrets',
     'G:\\WECRYPTO\\secrets',
     'F:\\WECRYPTO\\secrets',
     'E:\\WECRYPTO\\secrets',
@@ -264,7 +273,7 @@ function readSecretScalar(raw) {
     }
   }
 
-  const jsonKey = String(raw).match(/"(?:COINGECKO_API_KEY|COINGECKO_PRO_API_KEY|COINGECKO_DEMO_API_KEY|CMC_PRO_API_KEY|CMC_API_KEY|COINMARKETCAP_API_KEY|apiKey|key)"\s*:\s*"((?:\\.|[^"])*)"/i);
+  const jsonKey = String(raw).match(/"(?:COINGECKO_API_KEY|COINGECKO_PRO_API_KEY|COINGECKO_DEMO_API_KEY|CMC_PRO_API_KEY|CMC_API_KEY|COINMARKETCAP_API_KEY|apiKey|key)"\s*:\s*"((?:\\[\s\S]|[^"\\])*)"/i);
   if (jsonKey) return stripEnvValue(decodeJsonStringFragment(jsonKey[1]));
 
   return stripEnvValue(lines.reduce((longest, line) => line.length > longest.length ? line : longest, ''));
@@ -347,7 +356,7 @@ function readPythProSecret() {
 
 function decodeJsonStringFragment(value) {
   try {
-    return JSON.parse(`"${String(value).replace(/"/g, '\\"')}"`);
+    return JSON.parse(`"${String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`);
   } catch (_) {
     return String(value || '').replace(/\\"/g, '"').replace(/\\r\\n/g, '\n').replace(/\\n/g, '\n');
   }
@@ -355,10 +364,10 @@ function decodeJsonStringFragment(value) {
 
 function coinbaseCredentialFromObject(obj, source) {
   if (!obj || typeof obj !== 'object') return null;
-  const name = stripEnvValue(obj.name || obj.keyName || obj.key_name || obj.apiKeyName);
+  const keyId = stripEnvValue(obj.name || obj.keyName || obj.key_name);
   const privateKey = stripEnvValue(obj.privateKey || obj.private_key || obj.CDP_API_KEY_PRIVATE_KEY);
-  if (!name || !privateKey) return null;
-  return { name, privateKey, source };
+  if (!keyId || !privateKey) return null;
+  return { keyId, privateKey, source };
 }
 
 function readCoinbaseCredentialFromRawEnv() {
@@ -378,8 +387,8 @@ function readCoinbaseCredentialFromRawEnv() {
         }
       }
 
-      const nameMatch = raw.match(/"name"\s*:\s*"((?:\\.|[^"])*)"/);
-      const keyMatch = raw.match(/"privateKey"\s*:\s*"((?:\\.|[^"])*)"/);
+      const nameMatch = raw.match(/"name"\s*:\s*"((?:\\[\s\S]|[^"\\])*)"/);
+      const keyMatch = raw.match(/"privateKey"\s*:\s*"((?:\\[\s\S]|[^"\\])*)"/);
       if (nameMatch && keyMatch) {
         const credential = coinbaseCredentialFromObject({
           name: decodeJsonStringFragment(nameMatch[1]),
@@ -1284,7 +1293,7 @@ async function startPythLazerService(win) {
           // Fallback to Pyth Hermes v2 REST API (100% reliable public endpoint)
           if (!pfeeds.length) {
             try {
-              const hUrl = 'https://hermes.pyth.network/v2/updates/price/latest?ids[]=0xe62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43&ids[]=0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace&ids[]=0xef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d&ids[]=0xec5d399846a9209f3fe5881d70aae9268c94339ff9817e8d18ff19fa05eea1c8&ids[]=0xdcef50dd0a4cd2dcc17e45df1676dcb336a11a61c69df7a0299b0150c672d25c&ids[]=0x2f95862b045670cd22bee3114c39763a4a08beeb663b145d283c31d7d1101c4f&ids[]=0x4279e31cc369bbcc2faf022b382b080e32a8e689ff20fbc530d2a603eb6cd98b';
+              const hUrl = 'https://hermes.pyth.network/v2/updates/price/latest?ids[]=0xe62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43&ids[]=0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace&ids[]=0xef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d&ids[]=0xec5d399846a9209f3fe5881d70aae9268c94339ff9817e8d18ff19fa05eea1c8&ids[]=0xdcef50dd0a4cd2dcc17e45df1676dcb336a11a61c69df7a0299b0150c672d25c&ids[]=0x2f95862b045670cd22bee3114c39763a4a08beeb663b145d283c31d7d1101c4f';
               const r = await fetch(hUrl, token ? { headers: { "Authorization": "Bearer " + token } } : {});
               if (r.ok) {
                 const j = await r.json();
@@ -1296,7 +1305,6 @@ async function startPythLazerService(win) {
                     'ec5d399846a9209f3fe5881d70aae9268c94339ff9817e8d18ff19fa05eea1c8': 'XRPUSD',
                     'dcef50dd0a4cd2dcc17e45df1676dcb336a11a61c69df7a0299b0150c672d25c': 'DOGEUSD',
                     '2f95862b045670cd22bee3114c39763a4a08beeb663b145d283c31d7d1101c4f': 'BNBUSD',
-                    '4279e31cc369bbcc2faf022b382b080e32a8e689ff20fbc530d2a603eb6cd98b': 'HYPEUSD'
                   };
                   const nowP = Date.now();
                   const pmap = {};
@@ -2463,8 +2471,7 @@ function refreshPythFromProxy() {
             '0xef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d',
             '0xec5d399846a9209f3fe5881d70aae9268c94339ff9817e8d18ff19fa05eea1c8',
             '0xdcef50dd0a4cd2dcc17e45df1676dcb336a11a61c69df7a0299b0150c672d25c',
-            '0x2f95862b045670cd22bee3114c39763a4a08beeb663b145d283c31d7d1101c4f',
-            '0x4279e31cc369bbcc2faf022b382b080e32a8e689ff20fbc530d2a603eb6cd98b'
+            '0x2f95862b045670cd22bee3114c39763a4a08beeb663b145d283c31d7d1101c4f'
           ];
           const hermesCoinMap = {
             'e62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43': 'BTCUSD',
@@ -2472,8 +2479,7 @@ function refreshPythFromProxy() {
             'ef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d': 'SOLUSD',
             'ec5d399846a9209f3fe5881d70aae9268c94339ff9817e8d18ff19fa05eea1c8': 'XRPUSD',
             'dcef50dd0a4cd2dcc17e45df1676dcb336a11a61c69df7a0299b0150c672d25c': 'DOGEUSD',
-            '2f95862b045670cd22bee3114c39763a4a08beeb663b145d283c31d7d1101c4f': 'BNBUSD',
-            '4279e31cc369bbcc2faf022b382b080e32a8e689ff20fbc530d2a603eb6cd98b': 'HYPEUSD'
+            '2f95862b045670cd22bee3114c39763a4a08beeb663b145d283c31d7d1101c4f': 'BNBUSD'
           };
           const hUrl = 'https://hermes.pyth.network/v2/updates/price/latest?' + hermesIds.map(id => 'ids[]=' + id).join('&');
           const hResp = await fetch(hUrl, token ? { headers: { "Authorization": "Bearer " + token } } : {});
@@ -2607,8 +2613,7 @@ ipcMain.handle('pyth:getProxyLatest', async (_, feedIds) => {
         '0xef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d',
         '0xec5d399846a9209f3fe5881d70aae9268c94339ff9817e8d18ff19fa05eea1c8',
         '0xdcef50dd0a4cd2dcc17e45df1676dcb336a11a61c69df7a0299b0150c672d25c',
-        '0x2f95862b045670cd22bee3114c39763a4a08beeb663b145d283c31d7d1101c4f',
-        '0x4279e31cc369bbcc2faf022b382b080e32a8e689ff20fbc530d2a603eb6cd98b'
+        '0x2f95862b045670cd22bee3114c39763a4a08beeb663b145d283c31d7d1101c4f'
       ];
       const hermesCoinMap = {
         'e62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43': 'BTCUSD',
@@ -2616,8 +2621,7 @@ ipcMain.handle('pyth:getProxyLatest', async (_, feedIds) => {
         'ef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d': 'SOLUSD',
         'ec5d399846a9209f3fe5881d70aae9268c94339ff9817e8d18ff19fa05eea1c8': 'XRPUSD',
         'dcef50dd0a4cd2dcc17e45df1676dcb336a11a61c69df7a0299b0150c672d25c': 'DOGEUSD',
-        '2f95862b045670cd22bee3114c39763a4a08beeb663b145d283c31d7d1101c4f': 'BNBUSD',
-        '4279e31cc369bbcc2faf022b382b080e32a8e689ff20fbc530d2a603eb6cd98b': 'HYPEUSD'
+        '2f95862b045670cd22bee3114c39763a4a08beeb663b145d283c31d7d1101c4f': 'BNBUSD'
       };
       const hUrl = 'https://hermes.pyth.network/v2/updates/price/latest?' + hermesIds.map(id => 'ids[]=' + id).join('&');
       const hResp = await fetch(hUrl, token ? { headers: { "Authorization": "Bearer " + token } } : {});
@@ -2978,11 +2982,11 @@ ipcMain.handle('coinbase:generate-jwt', async (_, options = {}) => {
       return { success: false, error: 'CDP API Key not found in .env or secrets directory' };
     }
 
-    if (!keyData.name || !keyData.privateKey) return { success: false, error: 'Invalid CDP key format' };
+    if (!keyData.keyId || !keyData.privateKey) return { success: false, error: 'Invalid CDP key format' };
 
     const header = {
       alg: 'ES256',
-      kid: keyData.name,
+      kid: keyData.keyId,
       nonce: crypto.randomBytes(16).toString('hex'),
       typ: 'JWT'
     };
@@ -2991,7 +2995,7 @@ ipcMain.handle('coinbase:generate-jwt', async (_, options = {}) => {
       iss: 'cdp',
       nbf: Math.floor(Date.now() / 1000) - 30, // subtract 30s to prevent 401s if system clock is fast
       exp: Math.floor(Date.now() / 1000) + 120,
-      sub: keyData.name
+      sub: keyData.keyId
     };
 
     if (options.requestMethod && options.requestPath) {
@@ -4453,6 +4457,19 @@ function createPolycoolWindow(url = 'https://polycool.app') {
 }
 
 function createWindow() {
+  session.defaultSession.webRequest.onHeadersReceived(
+    { urls: ['http://*/*', 'https://*/*'] },
+    (details, callback) => {
+      const headers = { ...(details.responseHeaders || {}) };
+      delete headers['access-control-allow-origin'];
+      delete headers['Access-Control-Allow-Origin'];
+      headers['Access-Control-Allow-Origin'] = ['*'];
+      headers['Access-Control-Allow-Methods'] = ['GET,POST,PUT,PATCH,DELETE,OPTIONS,HEAD'];
+      headers['Access-Control-Allow-Headers'] = ['*'];
+      callback({ responseHeaders: headers });
+    }
+  );
+
   const win = mainWin = new BrowserWindow({
     width: 1440,
     height: 960,
@@ -4466,8 +4483,7 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
-      webSecurity: false
+      sandbox: false
     }
   });
   global.WECRYPTO_MAIN_WINDOW = win;
@@ -4742,4 +4758,3 @@ app.on('before-quit', async (event) => {
   }
   stopCexFlowMonitor();
 });
-

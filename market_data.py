@@ -1,6 +1,7 @@
 """Live market data for BTC hourly range predictions."""
-import requests
 from datetime import datetime, timezone
+
+import requests
 
 COINBASE_SPOT = "https://api.coinbase.com/v2/prices/BTC-USD/spot"
 COINBASE_CANDLES = "https://api.exchange.coinbase.com/products/BTC-USD/candles"
@@ -13,14 +14,29 @@ COINBASE_CANDLES = "https://api.exchange.coinbase.com/products/BTC-USD/candles"
 _HEADERS = {"User-Agent": "wecryp-truffle/1.0 (+https://agentverse.ai)"}
 
 def get_spot() -> dict:
-    """Current BTC spot price from Coinbase."""
+    """Current BTC spot with an explicit source stamp.
+
+    BRTI is the canonical settlement oracle, but no authenticated BRTI feed is
+    configured in this deployment yet. Coinbase spot is therefore a stamped
+    fallback rather than an implicit source.
+    """
     try:
         r = requests.get(COINBASE_SPOT, headers=_HEADERS, timeout=10)
         r.raise_for_status()
         price = float(r.json()["data"]["amount"])
-        return {"price": price, "error": None}
-    except Exception as e:
-        return {"price": None, "error": str(e)}
+        return {
+            "price": price,
+            "source": "coinbase_spot_fallback",
+            "canonical_source": "BRTI",
+            "error": None,
+        }
+    except (requests.RequestException, KeyError, ValueError, TypeError) as e:
+        return {
+            "price": None,
+            "source": "unavailable",
+            "canonical_source": "BRTI",
+            "error": str(e),
+        }
 
 def get_hourly_candles(count: int = 24) -> list:
     """Recent hourly candles from Coinbase Exchange.
@@ -40,7 +56,7 @@ def get_hourly_candles(count: int = 24) -> list:
         candles = [dict(zip(cols, c)) for c in r.json()]
         candles.sort(key=lambda c: c["time"])
         return candles[-count:]
-    except Exception:
+    except (requests.RequestException, KeyError, ValueError, TypeError):
         return []
 
 def compute_stats(candles: list) -> dict:

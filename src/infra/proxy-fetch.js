@@ -2,8 +2,8 @@
 // WE CFM ALPHA-1.3 — Smart Proxy Shim
 //
 // CORS is just a browser bouncer with a clipboard — it only fires
-// when the browser asks. Electron (webSecurity:false) already
-// dismissed that bouncer. The proxy's REAL job is server-side:
+// when the browser asks. Electron's scoped webRequest CORS passthrough
+// already dismissed that bouncer. The proxy's REAL job is server-side:
 //
 //  BUCKET A — CF_PROTECTED   : Cloudflare Bot Mgmt / 403 without
 //                               Chrome TLS fingerprint → ALWAYS proxy

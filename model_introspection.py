@@ -9,7 +9,7 @@ The decision tree mirrors the documented strategy in brain.py SYSTEM_PROMPT
 thesis, then exit into the live book on convergence toward par.
 """
 import json
-from typing import Any, Dict
+from typing import Any
 
 import prediction_engine as engine
 from prediction_engine import predict_hourly_range
@@ -21,9 +21,10 @@ CONVERGENCE_EXIT_CENTS = (95, 99)     # sell into the live book here
 FINAL_WINDOW_NO_ENTRY_SECONDS = 90    # final window is elevated-risk
 
 
-def get_model_weights() -> Dict[str, Any]:
+def get_model_weights() -> dict[str, Any]:
     """Live prediction plus the engine's actual parameter values."""
     prediction = predict_hourly_range()
+    volatility = prediction.get("volatility", {}) if isinstance(prediction, dict) else {}
     return {
         "prediction": prediction,
         "parameters": {
@@ -36,13 +37,29 @@ def get_model_weights() -> Dict[str, Any]:
             "center_shift_factor": engine.CENTER_SHIFT_FACTOR,
             "drift_factor": engine.DRIFT_FACTOR,
             "min_range_pct": engine.MIN_RANGE_PCT,
-            "probability_model": "normal approximation, time-decayed sigma, momentum drift",
+            "probability_model": (
+                "Student-t fat-tail distribution with time-decayed sigma and "
+                "momentum drift; normal model retained for comparison"
+            ),
+            "student_t_df": volatility.get("student_t_df"),
+            "fit_sample_size": volatility.get("log_returns_sample_size"),
+            "fit_status": volatility.get("fit_status"),
+            "normal_fallback_active": volatility.get("normal_fallback_active"),
+            "tail_adjustment_max": engine.TAIL_ADJUSTMENT_MAX,
+            "wick_ratio_min_body_pct": engine.WICK_RATIO_MIN_BODY_PCT,
+            "wick_ratio_max": engine.WICK_RATIO_MAX,
+            "tail_spike_frequency_min": engine.TAIL_SPIKE_FREQUENCY_MIN,
+            "tail_wick_slope_min": engine.TAIL_WICK_SLOPE_MIN,
+            "tail_adjustment_requires_both_conditions": True,
+            "alt_alignment_ratio_up": engine.ALT_ALIGNMENT_RATIO_UP,
+            "alt_alignment_ratio_down": engine.ALT_ALIGNMENT_RATIO_DOWN,
+            "alt_alignment_minutes": engine.ALT_ALIGNMENT_MINUTES,
         },
         "source": "prediction_engine.py module constants",
     }
 
 
-def get_decision_trees() -> Dict[str, Any]:
+def get_decision_trees() -> dict[str, Any]:
     """Entry/exit decision tree, mirroring brain.py SYSTEM_PROMPT Sections 3-6."""
     return {
         "entry_tree": {
@@ -113,6 +130,9 @@ def get_decision_trees() -> Dict[str, Any]:
                 "window_seconds": 60,
                 "method": "simple average of 1-per-second reads over the final 60s",
                 "single_wick_can_settle": False,
+                "single_one_second_wick_can_settle": False,
+                "sustained_push_through_final_minute_can_settle": True,
+                "note": "one violent 1-second print cannot move the 60-read average much; a sustained push through most of the final minute can",
             },
             "POLYMARKET": {
                 "oracle": "Chainlink TWAP",
@@ -130,16 +150,16 @@ def get_decision_trees() -> Dict[str, Any]:
     }
 
 
-def get_weights_endpoint() -> Dict[str, Any]:
+def get_weights_endpoint() -> dict[str, Any]:
     """REST endpoint handler for /weights."""
     return get_model_weights()
 
 
-def get_trees_endpoint() -> Dict[str, Any]:
+def get_trees_endpoint() -> dict[str, Any]:
     """REST endpoint handler for /trees."""
     return get_decision_trees()
 
 
-def format_for_llm(data: Dict[str, Any]) -> str:
+def format_for_llm(data: dict[str, Any]) -> str:
     """Format introspection data as readable text for LLM context."""
     return json.dumps(data, indent=2, default=str)

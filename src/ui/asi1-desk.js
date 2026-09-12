@@ -19,6 +19,11 @@
   const PROMPT_CACHE_KEY = 'wecrypto.asi1Desk.customPrompt';
   const ANSWER_CACHE_KEY = 'wecrypto.asi1Desk.customAnswer';
   const SESSION_ID_KEY = 'wecrypto.asi1Desk.sessionId';
+  const newDeskSessionId = () => {
+    const bytes = new Uint8Array(16);
+    window.crypto.getRandomValues(bytes);
+    return `asi1-desk-${Date.now()}-${Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')}`;
+  };
 
   const dash = document.createElement('div');
   dash.id = 'asi1-desk';
@@ -1004,6 +1009,28 @@
   }
 
   let truffleActive = false;
+  let truffleAvailable = false;
+
+  async function refreshTruffleAvailability() {
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(new Error('probe-timeout')), 1500);
+      const res = await fetch('http://127.0.0.1:8002/health', { signal: ctrl.signal, cache: 'no-store' });
+      truffleAvailable = res.ok;
+    } catch (_) {
+      truffleAvailable = false;
+    }
+    const btn = document.getElementById('adTruffleToggle');
+    if (btn) {
+      if (!truffleAvailable) {
+        btn.title = 'Truffle offline — no service on 127.0.0.1:8002';
+        btn.style.borderColor = '#ff5252';
+      } else {
+        btn.title = 'Route query to local Truffle agent (port 8002)';
+        btn.style.borderColor = truffleActive ? '#00d4ff' : '#2a2f38';
+      }
+    }
+  }
 
   async function askTruffle(query) {
     const r = await fetch('http://127.0.0.1:8002/query', {
@@ -1060,6 +1087,12 @@
         }
       }
       if (truffleActive) {
+        if (!truffleAvailable) {
+          if (answerEl) {
+            answerEl.textContent = 'Truffle offline — start the agent on 127.0.0.1:8002, then retry. This prompt was not sent to ASI1.';
+          }
+          return;
+        }
         try {
           const truffleAnswer = await askTruffle(query);
           if (answerEl) {
@@ -1086,7 +1119,7 @@
       let sessionId = null;
       try { sessionId = window.localStorage.getItem(SESSION_ID_KEY); } catch (_) {}
       if (!sessionId) {
-        sessionId = `asi1-desk-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+        sessionId = newDeskSessionId();
         try { window.localStorage.setItem(SESSION_ID_KEY, sessionId); } catch (_) {}
       }
       try {
@@ -1188,6 +1221,8 @@
       truffleBtn.textContent = truffleActive ? '🍄 Truffle ON' : '🍄 Truffle';
     });
   }
+  setInterval(refreshTruffleAvailability, 5000);
+  void refreshTruffleAvailability();
   document.getElementById('adResetMemory')?.addEventListener('click', async () => {
     try {
       let sessionId = null;
@@ -1197,7 +1232,7 @@
       } else if (window.electron?.invoke) {
         await window.electron.invoke('asi1:desk-chat-reset', { sessionId });
       }
-      const newSessionId = `asi1-desk-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+      const newSessionId = newDeskSessionId();
       try { window.localStorage.setItem(SESSION_ID_KEY, newSessionId); } catch (_) {}
       const answerEl = document.getElementById('adAnswer');
       if (answerEl) {

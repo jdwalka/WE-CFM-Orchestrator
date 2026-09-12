@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 
 import requests
 
-from market_data import get_spot, get_hourly_candles, compute_stats
+from market_data import compute_stats, get_hourly_candles, get_spot
 
 # ---------------------------------------------------------------------------
 # Model parameters (single source of truth; exposed via /weights)
@@ -40,6 +40,16 @@ REGIME_LOOKBACK_HOURS = 24 * 30      # 30 days of hourly candles
 DECAY_TABLE_MINUTES = [20, 15, 10, 5]
 RESIDUAL_FLAG_THRESHOLD_CENTS = 5.0  # flag ladder bands >5¢ above model
 STUDENT_T_DF_DEFAULT = 4.0           # fallback if empirical fit is unstable
+TAIL_ADJUSTMENT_MAX = 0.50
+WICK_RATIO_MIN_BODY_PCT = 0.01       # ignore near-zero-body ratio artifacts
+WICK_RATIO_MAX = 10.0                 # clamp one-candle ratio spikes
+TAIL_SPIKE_FREQUENCY_MIN = 0.001
+TAIL_WICK_SLOPE_MIN = 0.50
+ALT_ALIGNMENT_RATIO_UP = 0.55
+ALT_ALIGNMENT_RATIO_DOWN = 0.45
+ALT_ALIGNMENT_MINUTES = 10
+ALT_LEAD_LAG_MINUTES = [1, 2, 3, 4, 5]
+ALT_LEAD_LAG_SAMPLE_SIZE = 120
 
 _HEADERS = {"User-Agent": "wecryp-truffle/1.0 (+https://agentverse.ai)"}
 COINBASE_CANDLES = "https://api.exchange.coinbase.com/products/BTC-USD/candles"
@@ -65,7 +75,7 @@ def get_minute_candles(count: int = 360) -> list:
         candles = [dict(zip(cols, c)) for c in r.json()]
         candles.sort(key=lambda c: c["time"])
         return candles[-count:]
-    except Exception:
+    except (requests.RequestException, KeyError, ValueError):
         return []
 
 
@@ -91,7 +101,7 @@ def get_hourly_candle_history(total_hours: int = REGIME_LOOKBACK_HOURS) -> list:
             )
             r.raise_for_status()
             data = r.json()
-        except Exception:
+        except (requests.RequestException, KeyError, ValueError):
             break
 
         for c in data:
@@ -114,14 +124,34 @@ def get_kalshi_ladder() -> dict:
     try:
         r = requests.get(f"{MARKET_DATA_WORKER_URL}/kalshi/bands", timeout=15)
         r.raise_for_status()
-        return r.json()
-    except Exception as e:
-        return {"error": str(e)}
+        payload = r.json()
+        if not isinstance(payload, dict):
+            return {
+                "status": "error",
+                "candidate_bands": [],
+                "error": "market data worker returned a non-object ladder payload",
+            }
+        payload.setdefault("candidate_bands", [])
+        payload["status"] = "ok"
+        payload["error"] = None
+        return payload
+    except requests.RequestException as e:
+        return {"status": "error", "candidate_bands": [], "error": str(e)}
 
 
 # ---------------------------------------------------------------------------
 # Wick analytics
 # ---------------------------------------------------------------------------
+def _median(values: list) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    midpoint = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[midpoint]
+    return (ordered[midpoint - 1] + ordered[midpoint]) / 2.0
+
+
 def compute_wick_stats(candles_1m: list) -> dict:
     """Compute wick/spike statistics from Coinbase 1-minute candles."""
     if len(candles_1m) < 60:
@@ -155,13 +185,16 @@ def compute_wick_stats(candles_1m: list) -> dict:
             max_1m_move_pct = max(max_1m_move_pct, move_pct)
             body = abs(c["close"] - c["open"])
             wick = c["high"] - c["low"]
-            if body > 0:
-                wick_ratios.append(wick / body)
+            body_pct = body / c["open"] * 100
+            if body_pct >= WICK_RATIO_MIN_BODY_PCT:
+                wick_ratios.append(min(WICK_RATIO_MAX, wick / body))
 
+        median_wick_ratio = _median(wick_ratios)
         hour_stats = {
             "hour_bucket": hour_bucket,
             "max_1m_move_pct": round(max_1m_move_pct, 4),
-            "avg_wick_ratio": round(sum(wick_ratios) / len(wick_ratios), 3) if wick_ratios else 0.0,
+            "avg_wick_ratio": round(median_wick_ratio, 3),
+            "median_wick_ratio": round(median_wick_ratio, 3),
         }
         per_hour_stats.append(hour_stats)
 
@@ -190,6 +223,8 @@ def compute_wick_stats(candles_1m: list) -> dict:
         "late_window_spikes": late_spike_count,
         "late_window_spike_frequency_per_hour": round(late_spike_count / hours_analyzed, 3) if hours_analyzed else 0.0,
         "late_minutes_evaluated": late_minutes_evaluated,
+        "wick_ratio_min_body_pct": WICK_RATIO_MIN_BODY_PCT,
+        "wick_ratio_max": WICK_RATIO_MAX,
         "per_hour": per_hour_stats[-24:],
     }
 
@@ -265,6 +300,11 @@ def _student_t_cdf(x, df):
     return 1 - 0.5 * ib if x > 0 else 0.5 * ib
 
 
+def _normal_cdf(x: float) -> float:
+    """Standard normal cumulative distribution function."""
+    return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
+
+
 def _fit_student_t(log_returns: list):
     """Fit Student-t degrees of freedom from sample excess kurtosis."""
     if len(log_returns) < 20:
@@ -289,6 +329,321 @@ def _t_scale(sigma_hourly_pct, df):
     if df <= 2:
         return sigma_hourly_pct
     return sigma_hourly_pct * math.sqrt((df - 2) / df)
+
+
+def _linear_slope(values: list) -> float:
+    """Least-squares slope, normalized by the mean for readable trend values."""
+    values = [v for v in values if isinstance(v, (int, float))]
+    if len(values) < 3 or not values:
+        return 0.0
+    mean = sum(values) / len(values)
+    if mean == 0:
+        return 0.0
+    x_mean = (len(values) - 1) / 2
+    y_mean = mean
+    numerator = sum((i - x_mean) * (v - y_mean) for i, v in enumerate(values))
+    denominator = sum((i - x_mean) ** 2 for i in range(len(values)))
+    return numerator / denominator if denominator else 0.0
+
+
+def _correlation(left: list, right: list) -> float:
+    """Pearson correlation for equal-length lists."""
+    if len(left) != len(right) or len(left) < 3:
+        return 0.0
+    left_mean = sum(left) / len(left)
+    right_mean = sum(right) / len(right)
+    numerator = sum((x - left_mean) * (y - right_mean) for x, y in zip(left, right))
+    left_sq = sum((x - left_mean) ** 2 for x in left)
+    right_sq = sum((y - right_mean) ** 2 for y in right)
+    denominator = math.sqrt(left_sq * right_sq)
+    return numerator / denominator if denominator else 0.0
+
+
+def _get_alt_candles(product: str, count: int) -> list:
+    try:
+        response = requests.get(
+            f"https://api.exchange.coinbase.com/products/{product}/candles",
+            params={"granularity": 60},
+            headers=_HEADERS,
+            timeout=10,
+        )
+        response.raise_for_status()
+        cols = ["time", "low", "high", "open", "close", "volume"]
+        candles = [dict(zip(cols, row)) for row in response.json()]
+        candles.sort(key=lambda c: c["time"])
+        return candles[-count:]
+    except (requests.RequestException, KeyError, ValueError, TypeError):
+        return []
+
+
+def _get_binance_taker_ratios(symbol: str, count: int) -> list:
+    """Return per-minute taker buy/sell ratios from Binance klines."""
+    try:
+        response = requests.get(
+            "https://api.binance.com/api/v3/klines",
+            params={"symbol": symbol, "interval": "1m", "limit": count},
+            headers=_HEADERS,
+            timeout=10,
+        )
+        response.raise_for_status()
+        ratios = []
+        for row in response.json():
+            volume = float(row[5])
+            taker_buy = float(row[9])
+            ratios.append({
+                "time": int(row[0]) // 1000,
+                "ratio": taker_buy / volume if volume else 0.5,
+            })
+        return ratios
+    except (requests.RequestException, KeyError, ValueError, TypeError, ZeroDivisionError):
+        return []
+
+
+def _get_okx_taker_ratios(inst_id: str, count: int) -> list:
+    """Aggregate OKX public trades into per-minute taker buy/sell ratios."""
+    try:
+        response = requests.get(
+            "https://www.okx.com/api/v5/market/trades",
+            params={"instId": inst_id, "limit": 500},
+            headers=_HEADERS,
+            timeout=10,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if payload.get("code") != "0":
+            return []
+        by_minute = {}
+        for trade in payload.get("data", []):
+            timestamp = int(trade["ts"]) // 1000
+            minute = timestamp - timestamp % 60
+            size = float(trade["sz"])
+            entry = by_minute.setdefault(minute, {"buy": 0.0, "sell": 0.0})
+            entry["buy" if trade.get("side") == "buy" else "sell"] += size
+        ratios = []
+        for minute in sorted(by_minute)[-count:]:
+            entry = by_minute[minute]
+            total = entry["buy"] + entry["sell"]
+            if total:
+                ratios.append({"time": minute, "ratio": entry["buy"] / total})
+        return ratios
+    except (requests.RequestException, KeyError, ValueError, TypeError, ZeroDivisionError):
+        return []
+
+
+def _get_taker_ratios(asset: str) -> list:
+    """Return per-minute taker ratios, preferring Binance and falling back to OKX."""
+    if asset == "ETH":
+        ratios = _get_binance_taker_ratios("ETHUSDT", 20)
+        return ratios if ratios else _get_okx_taker_ratios("ETH-USDT", 20)
+    if asset == "SOL":
+        ratios = _get_binance_taker_ratios("SOLUSDT", 20)
+        return ratios if ratios else _get_okx_taker_ratios("SOL-USDT", 20)
+    return []
+
+
+def _alt_lead_lag_correlation(alt_returns: dict, btc_returns: list) -> dict:
+    """Correlate alt returns at t with BTC returns at t+lag."""
+    btc_by_time = {item["time"]: item["return"] for item in btc_returns}
+    result = {}
+    for lag in ALT_LEAD_LAG_MINUTES:
+        correlations = []
+        for asset, returns in alt_returns.items():
+            left, right = [], []
+            for item in returns:
+                future_time = item["time"] + lag * 60
+                if future_time in btc_by_time:
+                    left.append(item["return"])
+                    right.append(btc_by_time[future_time])
+                if len(left) >= ALT_LEAD_LAG_SAMPLE_SIZE:
+                    break
+            if len(left) >= 30:
+                correlations.append({
+                    "asset": asset,
+                    "correlation": round(_correlation(left, right), 4),
+                    "sample_size": len(left),
+                })
+        result[f"lag_{lag}m"] = correlations
+    return result
+
+
+def get_alt_signal() -> dict:
+    """Cross-asset SOL/ETH lead-lag and taker-flow alignment gate."""
+    btc = _get_alt_candles("BTC-USD", 240)
+    eth = _get_alt_candles("ETH-USD", 240)
+    sol = _get_alt_candles("SOL-USD", 240)
+    if not btc or not eth or not sol:
+        return {
+            "direction": "neutral",
+            "strength": 0.0,
+            "aligned": False,
+            "lead_lag_corr": 0.0,
+            "best_lag_minutes": None,
+            "data_quality": "insufficient",
+            "error": "alt or BTC candle data unavailable",
+        }
+
+    def returns(candles: list) -> list:
+        values = []
+        for previous, current in zip(candles, candles[1:]):
+            if previous["close"] > 0 and current["close"] > 0:
+                values.append({
+                    "time": current["time"],
+                    "return": math.log(current["close"] / previous["close"]),
+                })
+        return values
+
+    btc_returns = returns(btc)
+    eth_returns = returns(eth)
+    sol_returns = returns(sol)
+    lag_stats = _alt_lead_lag_correlation(
+        {"ETH": eth_returns, "SOL": sol_returns}, btc_returns
+    )
+    best_lag = None
+    best_correlation = 0.0
+    lag_averages = {}
+    for lag in ALT_LEAD_LAG_MINUTES:
+        values = lag_stats.get(f"lag_{lag}m", [])
+        if not values:
+            continue
+        average_correlation = sum(v["correlation"] for v in values) / len(values)
+        lag_averages[lag] = average_correlation
+        if abs(average_correlation) > abs(best_correlation):
+            best_correlation = average_correlation
+            best_lag = lag
+
+    def lead_lag_is_stable() -> bool:
+        if len(lag_averages) < 3:
+            return False
+        positive = sum(1 for value in lag_averages.values() if value >= 0.05)
+        negative = sum(1 for value in lag_averages.values() if value <= -0.05)
+        return positive >= 3 or negative >= 3
+
+    lead_lag_status = "stable" if lead_lag_is_stable() else "unstable"
+    if lead_lag_status == "unstable":
+        best_lag = None
+        best_correlation = 0.0
+
+    eth_ratios = _get_taker_ratios("ETH")
+    sol_ratios = _get_taker_ratios("SOL")
+    data_quality = "full" if eth_ratios and sol_ratios else "partial"
+    aligned = False
+    direction = "neutral"
+    duration_minutes = 0
+    if eth_ratios and sol_ratios:
+        eth_by_time = {item["time"]: item["ratio"] for item in eth_ratios}
+        sol_by_time = {item["time"]: item["ratio"] for item in sol_ratios}
+        common_times = sorted(set(eth_by_time) & set(sol_by_time))
+        consecutive = 0
+        max_consecutive = 0
+        last_direction = "neutral"
+        for timestamp in common_times:
+            eth_ratio = eth_by_time[timestamp]
+            sol_ratio = sol_by_time[timestamp]
+            if eth_ratio > ALT_ALIGNMENT_RATIO_UP and sol_ratio > ALT_ALIGNMENT_RATIO_UP:
+                current_direction = "up"
+            elif eth_ratio < ALT_ALIGNMENT_RATIO_DOWN and sol_ratio < ALT_ALIGNMENT_RATIO_DOWN:
+                current_direction = "down"
+            else:
+                current_direction = "neutral"
+            if current_direction != "neutral":
+                if current_direction == last_direction:
+                    consecutive += 1
+                else:
+                    consecutive = 1
+                    last_direction = current_direction
+                max_consecutive = max(max_consecutive, consecutive)
+            else:
+                consecutive = 0
+                last_direction = "neutral"
+        duration_minutes = max_consecutive
+        aligned = max_consecutive >= ALT_ALIGNMENT_MINUTES
+        direction = last_direction if aligned else "neutral"
+
+    def recent_return(values: list, minutes: int) -> float:
+        if not values:
+            return 0.0
+        selected = values[-minutes:]
+        return round(math.exp(sum(item["return"] for item in selected)) - 1, 6)
+
+    eth_return_5m = recent_return(eth_returns, 5)
+    sol_return_5m = recent_return(sol_returns, 5)
+    if direction == "neutral":
+        if eth_return_5m >= 0 and sol_return_5m >= 0:
+            direction = "up"
+        elif eth_return_5m <= 0 and sol_return_5m <= 0:
+            direction = "down"
+
+    strength = max(abs(eth_return_5m), abs(sol_return_5m))
+    return {
+        "direction": direction,
+        "strength": round(strength, 6),
+        "aligned": aligned,
+        "lead_lag_corr": round(best_correlation, 4),
+        "best_lag_minutes": best_lag,
+        "lead_lag_status": lead_lag_status,
+        "influence_active": False,
+        "validation_status": "diagnostic_only_until_backtested",
+        "eth": {
+            "return_1m": recent_return(eth_returns, 1),
+            "return_5m": eth_return_5m,
+            "return_15m": recent_return(eth_returns, 15),
+            "taker_buy_sell_ratio": round(eth_ratios[-1]["ratio"], 4) if eth_ratios else None,
+        },
+        "sol": {
+            "return_1m": recent_return(sol_returns, 1),
+            "return_5m": sol_return_5m,
+            "return_15m": recent_return(sol_returns, 15),
+            "taker_buy_sell_ratio": round(sol_ratios[-1]["ratio"], 4) if sol_ratios else None,
+        },
+        "duration_minutes": duration_minutes,
+        "lead_lag_by_lag": lag_stats,
+        "data_quality": data_quality,
+    }
+
+
+def get_tail_diagnostics(wick_stats: dict) -> dict:
+    """Late-window wick trend used by the tail adjustment."""
+    per_hour = wick_stats.get("per_hour", []) if isinstance(wick_stats, dict) else []
+    wick_ratios = [h.get("avg_wick_ratio", 0.0) for h in per_hour[-12:]]
+    slope = _linear_slope(wick_ratios[-5:])
+    late_frequency = wick_stats.get("late_window_spike_frequency_per_hour", 0.0)
+    spike_condition_met = late_frequency > TAIL_SPIKE_FREQUENCY_MIN
+    wick_condition_met = slope >= TAIL_WICK_SLOPE_MIN
+    if spike_condition_met and wick_condition_met:
+        spike_component = min(0.30, late_frequency * 0.12)
+        wick_component = min(0.20, slope * 0.10)
+        adjustment = min(TAIL_ADJUSTMENT_MAX, spike_component + wick_component)
+    else:
+        spike_component = 0.0
+        wick_component = 0.0
+        adjustment = 0.0
+    status = "elevated" if adjustment >= 0.15 else "normal"
+    return {
+        "late_window_spike_frequency_per_hour": late_frequency,
+        "wick_ratio_current": round(wick_ratios[-1], 3) if wick_ratios else 0.0,
+        "wick_ratio_slope": round(slope, 4),
+        "wick_ratio_5h_trend": [round(value, 3) for value in wick_ratios[-5:]],
+        "wick_ratio_trend_status": status,
+        "tail_adjustment": round(adjustment, 4),
+        "evidence": {
+            "spike_condition_met": spike_condition_met,
+            "wick_condition_met": wick_condition_met,
+            "requires_both_conditions": True,
+            "spike_component": round(spike_component, 4),
+            "wick_component": round(wick_component, 4),
+        },
+        "tail_adjustment_reason": (
+            f"late_window_spike_frequency={late_frequency:.3f} "
+            f"(required >{TAIL_SPIKE_FREQUENCY_MIN:.3f}); "
+            f"wick_ratio_slope={slope:.3f} "
+            f"(required >={TAIL_WICK_SLOPE_MIN:.3f})"
+        ),
+    }
+
+
+def _apply_tail_adjustment(probability: float, adjustment: float) -> float:
+    """Raise the chance of a touch without allowing adjustment to exceed bounds."""
+    return min(1.0, max(0.0, probability * (1.0 + adjustment)))
 
 
 # ---------------------------------------------------------------------------
@@ -364,6 +719,7 @@ def _band_probability(
     drift_pct: float,
     df: float,
     minutes_remaining: int,
+    distribution: str = "student_t",
 ) -> float:
     """Probability that final price settles inside [low, high]."""
     if minutes_remaining <= 0 or spot <= 0 or high <= low:
@@ -379,11 +735,14 @@ def _band_probability(
     z_low = (low_pct - drift_pct) / sigma
     z_high = (high_pct - drift_pct) / sigma
 
+    if distribution == "normal":
+        return max(0.0, _normal_cdf(z_high) - _normal_cdf(z_low))
     return max(0.0, _student_t_cdf(z_high, df) - _student_t_cdf(z_low, df))
 
 
 def _probs_from_sigma(
-    spot, upper, lower, sigma_hourly_pct, drift_pct, df, minutes_remaining
+    spot, upper, lower, sigma_hourly_pct, drift_pct, df, minutes_remaining,
+    distribution: str = "student_t"
 ):
     """Compute in/above/below probabilities for a constructed range."""
     if minutes_remaining <= 0:
@@ -398,8 +757,12 @@ def _probs_from_sigma(
     lower_pct = (lower - spot) / spot * 100
     z_up = (upper_pct - drift_pct) / sigma
     z_lo = (lower_pct - drift_pct) / sigma
-    p_above = 1 - _student_t_cdf(z_up, df)
-    p_below = _student_t_cdf(z_lo, df)
+    if distribution == "normal":
+        cdf = _normal_cdf
+    else:
+        cdf = lambda value: _student_t_cdf(value, df)
+    p_above = 1 - cdf(z_up)
+    p_below = cdf(z_lo)
     p_in = max(0.0, 1 - p_above - p_below)
     return {
         "in_range": round(p_in, 3),
@@ -429,6 +792,13 @@ def predict_hourly_range() -> dict:
     sigma_hourly_pct = rv / math.sqrt(24 * 365)
     expected_move = expected_move_pct(candles)
     bias = momentum_bias(candles)
+    from calibration_ledger import get_calibration_report
+    calibration_report = get_calibration_report()
+    distribution_selection = calibration_report.get("distribution_selection", {
+        "active_distribution": "student_t",
+        "reason": "calibration report unavailable; Student-t default retained",
+    })
+    active_distribution = distribution_selection.get("active_distribution", "student_t")
 
     range_pct = max(expected_move, MIN_RANGE_PCT)
     center_shift = bias * range_pct * CENTER_SHIFT_FACTOR
@@ -456,6 +826,18 @@ def predict_hourly_range() -> dict:
     # --- Per-strike probabilities from live Kalshi ladder ---
     ladder = get_kalshi_ladder()
     bands = ladder.get("candidate_bands", []) if isinstance(ladder, dict) else []
+    ladder_feed_status = {
+        "status": ladder.get("status", "error") if isinstance(ladder, dict) else "error",
+        "error": ladder.get("error") if isinstance(ladder, dict) else "invalid ladder payload",
+        "candidate_band_count": len(bands),
+        "usable_band_count": 0,
+    }
+
+    # --- Wick statistics must precede pricing so tail pressure is consumed ---
+    candles_1m = get_minute_candles(360)
+    wick_stats = compute_wick_stats(candles_1m)
+    tail_diagnostics = get_tail_diagnostics(wick_stats)
+    tail_adjustment = tail_diagnostics["tail_adjustment"]
 
     strike_probs = []
     for band in bands:
@@ -467,14 +849,19 @@ def predict_hourly_range() -> dict:
 
         low_pct = (low - spot) / spot * 100
         high_pct = (high - spot) / spot * 100
-        mid_pct = (low_pct + high_pct) / 2
-
-        p_touch = _band_probability(
+        p_normal = _band_probability(
+            low, high, spot, sigma_hourly_pct, drift_pct, df, minutes_to_expiry,
+            distribution="normal",
+        )
+        p_student_t = _band_probability(
             low, high, spot, sigma_hourly_pct, drift_pct, df, minutes_to_expiry
         )
+        p_selected = p_normal if active_distribution == "normal" else p_student_t
+        p_touch = _apply_tail_adjustment(p_selected, tail_adjustment)
 
         fair_value = p_touch * 100
         residual = ask - fair_value
+        tail_delta = p_student_t - p_normal
 
         strike_probs.append({
             "band": f"${low:,.0f}-${high:,.0f}",
@@ -484,12 +871,21 @@ def predict_hourly_range() -> dict:
             "model_fair_cents": round(fair_value, 1),
             "residual_cents": round(residual, 1),
             "flagged": residual > RESIDUAL_FLAG_THRESHOLD_CENTS,
+            "p_normal": round(p_normal, 3),
+            "p_student_t": round(p_student_t, 3),
+            "p_selected": round(p_selected, 3),
+            "selected_distribution": active_distribution,
+            "tail_delta": round(tail_delta, 3),
+            "tail_premium_cents": round(tail_delta * 100, 1),
+            "p_touch_raw": round(p_selected, 3),
+            "tail_adjustment": tail_adjustment,
+            "p_touch_adjusted": round(p_touch, 3),
             "p_touch": round(p_touch, 3),
+            "low": low,
+            "high": high,
         })
 
-    # --- Wick statistics (1m candles) ---
-    candles_1m = get_minute_candles(360)
-    wick_stats = compute_wick_stats(candles_1m)
+    ladder_feed_status["usable_band_count"] = len(strike_probs)
 
     # --- Regime classification ---
     hourly_history = get_hourly_candle_history(REGIME_LOOKBACK_HOURS)
@@ -503,9 +899,6 @@ def predict_hourly_range() -> dict:
         side = band.get("side_vs_spot", "ABOVE_SPOT")
         if low is None or high is None:
             continue
-        low_pct = (low - spot) / spot * 100
-        high_pct = (high - spot) / spot * 100
-        mid_pct = (low_pct + high_pct) / 2
         row = {
             "band": f"${low:,.0f}-${high:,.0f}",
             "side": side,
@@ -515,16 +908,54 @@ def predict_hourly_range() -> dict:
                 p = _band_probability(
                     low, high, spot, sigma_hourly_pct, drift_pct, df, m
                 )
-                row[f"p_{m}m"] = round(p, 3)
+                p_normal = _band_probability(
+                    low, high, spot, sigma_hourly_pct, drift_pct, df, m,
+                    distribution="normal",
+                )
+                p_student_t = p
+                p_selected = p_normal if active_distribution == "normal" else p_student_t
+                adjusted = _apply_tail_adjustment(p_selected, tail_adjustment)
+                row[f"p_{m}m"] = round(adjusted, 3)
+                row[f"p_normal_{m}m"] = round(p_normal, 3)
+                row[f"p_student_t_{m}m"] = round(p_student_t, 3)
+                row[f"selected_distribution_{m}m"] = active_distribution
+                row[f"tail_adjustment_{m}m"] = tail_adjustment
         decay_table.append(row)
 
-    full_hour_probs = _probs_from_sigma(spot, upper_bound, lower_bound, sigma_hourly_pct, drift_pct, df, 60)
-    remaining_probs = _probs_from_sigma(spot, upper_bound, lower_bound, sigma_hourly_pct, drift_pct, df, minutes_to_expiry)
+    alt_signal = get_alt_signal()
+
+    from calibration_ledger import record_prediction
+    for strike in strike_probs:
+        record_prediction(
+            timestamp=now,
+            band=strike["band"],
+            low=strike["low"],
+            high=strike["high"],
+            expiry=now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1),
+            p_touch=strike["p_touch_adjusted"],
+            p_normal=strike["p_normal"],
+            p_student_t=strike["p_student_t"],
+            tail_adjustment=strike["tail_adjustment"],
+            alt_aligned=alt_signal.get("aligned", False),
+            minutes_to_expiry=minutes_to_expiry,
+        )
+    calibration_report = get_calibration_report()
+
+    full_hour_probs = _probs_from_sigma(
+        spot, upper_bound, lower_bound, sigma_hourly_pct, drift_pct, df, 60,
+        active_distribution
+    )
+    remaining_probs = _probs_from_sigma(
+        spot, upper_bound, lower_bound, sigma_hourly_pct, drift_pct, df,
+        minutes_to_expiry, active_distribution
+    )
 
     return {
         "timestamp_utc": now.isoformat(),
         "minutes_to_hourly_expiry": minutes_to_expiry,
         "spot": spot,
+        "spot_source": spot_data.get("source", "unavailable"),
+        "canonical_spot_source": spot_data.get("canonical_source", "BRTI"),
         "range": {
             "upper": round(upper_bound, 2),
             "lower": round(lower_bound, 2),
@@ -540,7 +971,16 @@ def predict_hourly_range() -> dict:
             "expected_move_pct": round(expected_move, 3),
             "student_t_df": round(df, 2),
             "log_returns_sample_size": len(log_returns),
+            "fit_status": "fitted" if len(log_returns) >= 20 else "unstable_fit_fallback",
+            "normal_fallback_active": len(log_returns) < 20,
+            "active_distribution": active_distribution,
         },
+        "tail_diagnostics": tail_diagnostics,
+        "alt_signal": alt_signal,
+        "alt_alignment_warning": alt_signal.get("aligned", False),
+        "calibration": calibration_report,
+        "distribution_selection": distribution_selection,
+        "ladder_feed_status": ladder_feed_status,
         "regime": regime,
         "strike_probs": strike_probs,
         "ladder_residuals": [sp for sp in strike_probs if sp.get("flagged")],

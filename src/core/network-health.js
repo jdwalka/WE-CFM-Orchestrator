@@ -15,7 +15,6 @@
         'Etherscan',
         'XRP Ledger',
         'Alchemy RPC',
-        'Whale Alert',
     ];
 
     const DEFAULT_STATUS = {
@@ -61,7 +60,6 @@
         'Etherscan',
         'XRP Ledger',
         'Alchemy RPC',
-        'Whale Alert',
         'BSCScan',
         'Polygonscan',
         'Blockchair',
@@ -123,7 +121,7 @@
         if (key.includes('kalshi')) return 'Kalshi';
         if (key.includes('polymarket')) return 'Polymarket';
         if (key.includes('pyth') || key.includes('hermes')) return 'Pyth';
-        if (key.includes('gateio') || key === 'gate' || key.includes('gate.io')) return 'Gate';
+        if (key.includes('gateio') || key === 'gate' || key === 'gate.io') return 'Gate';
         if (key.includes('timeapi') || key.includes('time.akamai')) return 'TimeAPI';
         if (key.includes('projectserum') || key.includes('solana') || key.includes('publicnode')) return 'Solana RPC';
         if (key.includes('alchemy')) return 'Alchemy RPC';
@@ -944,7 +942,6 @@
         'api.mainnet-beta.solana.com': 'Solana RPC',
         'eth-mainnet.g.alchemy.com': 'Alchemy RPC',
         'polygon-mainnet.g.alchemy.com': 'Alchemy RPC',
-        'api.whale-alert.io': 'Whale Alert',
         's1.ripple.com': 'XRP Ledger',
         'xrplcluster.com': 'XRP Ledger',
         'ethereum.publicnode.com': 'Alchemy RPC',
@@ -958,15 +955,17 @@
         { provider: 'Etherscan', url: 'https://api.etherscan.io/api?module=proxy&action=eth_blockNumber' },
         { provider: 'XRP Ledger', url: 'https://xrplcluster.com', fallbackUrl: 'https://s1.ripple.com:51234', method: 'POST', body: '{"method":"server_info","params":[{}]}' },
         { provider: 'Alchemy RPC', url: 'https://ethereum.publicnode.com', fallbackUrl: 'https://cloudflare-eth.com', method: 'POST', body: '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber"}' },
-        { provider: 'Whale Alert', url: 'https://leviathan.whale-alert.io/status' },
         { provider: 'LocalProxy', url: 'http://127.0.0.1:3010/health' },
     ];
 
     const ENDPOINT_PROBE_STALE_MS = 90_000;
-    const ENDPOINT_PROBE_BATCH = 4;
+    const ENDPOINT_PROBE_BATCH = 2;
+    const ENDPOINT_PROBE_TIMEOUT_MS = 10_000;
+    const ENDPOINT_PROBE_MAX_FAILURES = 2;
     let endpointProbeCursor = 0;
     let endpointProbeInFlight = false;
     let optionalWarmCounter = 0;
+    const endpointProbeFailures = {};
 
     function pruneDuplicateProviders() {
         for (const [host, canonical] of Object.entries(HOST_CANONICAL)) {
@@ -1004,29 +1003,37 @@
             endpointProbeCursor = (endpointProbeCursor + due.length) % ENDPOINT_HOST_PROBES.length;
 
             for (const cfg of due) {
-                const ctrl = new AbortController();
-                const timer = setTimeout(() => ctrl.abort(new Error('endpoint-probe-timeout')), 4500);
-                const fetchFn = typeof window.proxyFetch === 'function' ? window.proxyFetch : fetch;
+                // Use direct fetch for probes - proxyFetch routes through the
+                // local proxy which returns 404 for probe endpoints and
+                // retries up to 3 times, causing cascading timeouts.
+                const fetchFn = fetch;
+
+                const fetchWithTimeout = async (url) => {
+                    const ctrl = new AbortController();
+                    const timer = setTimeout(() => ctrl.abort(new Error('endpoint-probe-timeout')), ENDPOINT_PROBE_TIMEOUT_MS);
+                    try {
+                        return await fetchFn(url, {
+                            method: cfg.method || 'GET',
+                            cache: 'no-store',
+                            signal: ctrl.signal,
+                            retries: 1,
+                            headers: cfg.body
+                                ? { Accept: 'application/json', 'Content-Type': 'application/json' }
+                                : { Accept: 'application/json,*/*' },
+                            body: cfg.body || undefined,
+                        });
+                    } finally {
+                        clearTimeout(timer);
+                    }
+                };
+
                 try {
-                    let res = await fetchFn(cfg.url, {
-                        method: cfg.method || 'GET',
-                        cache: 'no-store',
-                        signal: ctrl.signal,
-                        headers: cfg.body
-                            ? { Accept: 'application/json', 'Content-Type': 'application/json' }
-                            : { Accept: 'application/json,*/*' },
-                        body: cfg.body || undefined,
-                    });
+                    let res = await fetchWithTimeout(cfg.url);
                     let ok = typeof res?.ok === 'boolean' ? res.ok : (Number(res?.status || 0) > 0 && Number(res?.status || 0) < 500);
+                    if (ok) endpointProbeFailures[cfg.provider] = 0;
                     if (!ok && cfg.fallbackUrl) {
                         try {
-                            const res2 = await fetchFn(cfg.fallbackUrl, {
-                                method: cfg.method || 'GET',
-                                cache: 'no-store',
-                                signal: ctrl.signal,
-                                headers: cfg.body ? { Accept: 'application/json', 'Content-Type': 'application/json' } : { Accept: 'application/json,*/*' },
-                                body: cfg.body || undefined,
-                            });
+                            const res2 = await fetchWithTimeout(cfg.fallbackUrl);
                             if (typeof res2?.ok === 'boolean' ? res2.ok : (Number(res2?.status || 0) > 0 && Number(res2?.status || 0) < 500)) {
                                 res = res2;
                                 ok = true;
@@ -1044,32 +1051,19 @@
                         bucketReason: ok ? '' : `probe ${cfg.url}`,
                     });
                 } catch (err) {
-                    let recovered = false;
-                    if (cfg.fallbackUrl) {
-                        try {
-                            const res2 = await fetchFn(cfg.fallbackUrl, {
-                                method: cfg.method || 'GET',
-                                cache: 'no-store',
-                                signal: ctrl.signal,
-                                headers: cfg.body ? { Accept: 'application/json', 'Content-Type': 'application/json' } : { Accept: 'application/json,*/*' },
-                                body: cfg.body || undefined,
-                            });
-                            if (typeof res2?.ok === 'boolean' ? res2.ok : (Number(res2?.status || 0) > 0 && Number(res2?.status || 0) < 500)) {
-                                recovered = true;
-                                update(cfg.provider, {
-                                    status: 'healthy',
-                                    lastFetch: now,
-                                    fallback: true,
-                                    optional: true,
-                                    transient: false,
-                                    reason: 'Endpoint probe OK (fallback)',
-                                    bucket: BUCKETS.UNKNOWN,
-                                    bucketReason: '',
-                                });
-                            }
-                        } catch (_) {}
-                    }
-                    if (!recovered) {
+                    endpointProbeFailures[cfg.provider] = (endpointProbeFailures[cfg.provider] || 0) + 1;
+                    if (endpointProbeFailures[cfg.provider] < ENDPOINT_PROBE_MAX_FAILURES) {
+                        update(cfg.provider, {
+                            status: 'unknown',
+                            lastFetch: now,
+                            fallback: false,
+                            optional: true,
+                            transient: true,
+                            reason: `Probe pending (${endpointProbeFailures[cfg.provider]}/${ENDPOINT_PROBE_MAX_FAILURES})`,
+                            bucket: BUCKETS.UNKNOWN,
+                            bucketReason: '',
+                        });
+                    } else {
                         update(cfg.provider, {
                             status: 'degraded',
                             lastFetch: now,
@@ -1081,8 +1075,6 @@
                             bucketReason: String(err?.message || err || 'endpoint probe failed'),
                         });
                     }
-                } finally {
-                    clearTimeout(timer);
                 }
             }
         } finally {

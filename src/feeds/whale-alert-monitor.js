@@ -14,8 +14,7 @@
 
   const WHALE_ALERT_BASE = 'https://leviathan.whale-alert.io';
 
-  // Resolved lazily from secrets/WHALE_ALERT_API.txt, env, localStorage.
-  // (Old code only checked localStorage — key sat unused in secrets/ → 401s.)
+  // Resolved lazily from secrets/WHALE_ALERT_API.txt and trusted process/env sources.
   let _apiKey = '';
   let _apiKeyResolved = false;
   let _apiKeyResolveInFlight = null;
@@ -84,15 +83,6 @@
       }
     } catch (_) {}
     try {
-      if (typeof localStorage !== 'undefined') {
-        const k = localStorage.getItem('whaleAlertApiKey')
-          || localStorage.getItem('WHALE_ALERT_KEY')
-          || localStorage.getItem('WHALE_ALERT_API_KEY')
-          || '';
-        if (k) return String(k).trim();
-      }
-    } catch (_) {}
-    try {
       if (typeof process !== 'undefined' && process.env) {
         const k = process.env.WHALE_ALERT_KEY
           || process.env.WHALE_ALERT_API_KEY
@@ -134,11 +124,6 @@
       _apiKey = key || '';
       _apiKeyResolved = true;
       if (_apiKey) {
-        try {
-          if (typeof localStorage !== 'undefined' && !localStorage.getItem('whaleAlertApiKey')) {
-            localStorage.setItem('whaleAlertApiKey', _apiKey);
-          }
-        } catch (_) {}
         console.log('[WhaleAlert] API key loaded (len=' + _apiKey.length + ')');
       } else {
         console.warn('[WhaleAlert] No API key — put key in secrets/WHALE_ALERT_API.txt (calls will 401)');

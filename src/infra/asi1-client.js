@@ -28,6 +28,15 @@ const ASI1_BASE_URL = (
 ).replace(/\/$/, '');
 
 const ASI1_CHAT_URL = `${ASI1_BASE_URL}/chat/completions`;
+
+function isCloudflareAiGatewayUrl(url) {
+  try {
+    return new URL(String(url)).hostname === 'gateway.ai.cloudflare.com';
+  } catch (_) {
+    return false;
+  }
+}
+
 // Default model selection set to asi1-mini for fast response & low quota usage
 const ASI1_QUICK_TICK_MODEL = process.env.ASI1_QUICK_TICK_MODEL || 'asi1-mini';
 const ASI1_DEEP_INSIGHT_MODEL = process.env.ASI1_DEEP_INSIGHT_MODEL || process.env.ASI1_MODEL || 'asi1-mini';
@@ -427,7 +436,7 @@ async function chatCompletion(messagesOrOptions, maybeOptions = {}) {
           || (plannerOn ? `wecrypto-${account || 'shared'}-${Date.now().toString(36)}` : '');
         if (sessionId) headers['x-session-id'] = String(sessionId);
         const reqHeaders = { ...headers, Authorization: `Bearer ${value}` };
-        if (ASI1_CHAT_URL.includes('gateway.ai.cloudflare.com') && CF_AIG_TOKEN) {
+        if (isCloudflareAiGatewayUrl(ASI1_CHAT_URL) && CF_AIG_TOKEN) {
           reqHeaders['cf-aig-authorization'] = `Bearer ${CF_AIG_TOKEN}`;
         }
         const response = await fetchWithTimeout(
@@ -615,7 +624,7 @@ function getDiagnostics() {
     lastLatencyMs: routeState.lastLatencyMs,
     lastMeasuredAt: routeState.lastMeasuredAt,
     aiGateway: {
-      enabled: ASI1_BASE_URL.includes('gateway.ai.cloudflare.com'),
+      enabled: isCloudflareAiGatewayUrl(ASI1_BASE_URL),
       accountId: CF_AIG_ACCOUNT_ID,
       gateway: CF_AIG_GATEWAY,
       customProvider: 'custom-asi1',

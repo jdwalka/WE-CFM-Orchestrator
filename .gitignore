@@ -86,3 +86,6 @@ logs/
 scratch/
 _consolidated-from-drive/
 
+# Local CodeQL/Semgrep scan artifacts
+.codeql-results/
+
