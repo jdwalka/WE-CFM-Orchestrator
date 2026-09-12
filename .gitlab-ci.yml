@@ -22,6 +22,7 @@ include:
 
 default:
   interruptible: true
+  tags: [local]
 
 cache:
   key:
