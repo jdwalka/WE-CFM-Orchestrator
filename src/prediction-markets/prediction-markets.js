@@ -1603,13 +1603,9 @@
     if (m.active === false || m.closed === true || m.archived === true) return false;
     if (m.acceptingOrders === false || m.accepting_orders === false) return false;
     const slug = String(m.slug || m.market_slug || '');
-    const bucketMatch = slug.match(/-(5m|15m|60m)-(\d+)$/);
-    if (!bucketMatch) return false;
-    const bucketMs = Number(bucketMatch[1].replace('m', '')) * 60_000;
-    const expectedEndMs = (Number(bucketMatch[2]) * 1000) + bucketMs;
     const endRaw = m.endDate || m.end_date_iso || m.end_date || m.endDateIso || null;
     const endMs = endRaw ? new Date(endRaw).getTime() : null;
-    if (!Number.isFinite(endMs) || Math.abs(endMs - expectedEndMs) > 1_000) return false;
+    if (!Number.isFinite(endMs)) return false;
     return endMs > nowMs + 5_000;
   }
 
@@ -3719,8 +3715,20 @@ function polymarketSentiment(markets, sym) {
     };
   }
 
-  if (typeof window !== 'undefined' && window.PredictionMarkets && typeof window.PredictionMarkets.start === 'function') {
-    try { window.PredictionMarkets.start(); } catch (_) {}
+  if (typeof window !== 'undefined') {
+    if (typeof document === 'undefined') {
+      // Non-DOM environments (tests, worker contexts) intentionally skip auto-start.
+    } else if (document.readyState !== 'loading') {
+      if (window.PredictionMarkets && !window.PredictionMarkets._started) {
+        try { window.PredictionMarkets.start(); } catch (_) {}
+      }
+    } else {
+      document.addEventListener('DOMContentLoaded', () => {
+        if (window.PredictionMarkets && !window.PredictionMarkets._started) {
+          try { window.PredictionMarkets.start(); } catch (_) {}
+        }
+      });
+    }
   }
 
 })();
