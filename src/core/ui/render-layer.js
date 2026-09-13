@@ -414,7 +414,7 @@ function updateMarkets5MLivePrices(prices) {
     for (const sym of ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'BNB', 'HYPE']) {
       const ticker = prices?.[`${sym}USD`];
       const current = Number(ticker?.last);
-      const mkt = is15m ? markets[sym]?.poly15m : markets[sym]?.poly5m;
+      const mkt = is15m ? (markets[sym]?.kalshi15m || markets[sym]?.poly15m) : markets[sym]?.poly5m;
       const target = Number(mkt?.targetPriceNum ?? mkt?.priceToBeatNum);
       if (!Number.isFinite(current) || current <= 0) continue;
 
@@ -422,14 +422,10 @@ function updateMarkets5MLivePrices(prices) {
       if (currentEl) currentEl.textContent = fmtPrice(current, sym);
       if (!Number.isFinite(target) || target <= 0) continue;
 
-      // This handler is fed by the raw Pyth Lazer tick stream, but settlement is
-      // Chainlink-only. Comparing a fast Pyth spot price directly against the
-      // Chainlink-sourced PTB can be off by a few dollars — enough to flip the
-      // shown direction on cents-margin contracts — so prefer the Chainlink
-      // current price when we have one and only fall back to the raw tick
-      // before Chainlink has reported for this window.
+      // For 15m Kalshi contracts, settlement is spot Coinbase (current).
+      // For 5m Polymarket contracts, settlement is Chainlink TWAP/candle.
       const chainlinkCurrent = Number(mkt?.chainlinkCurrentPriceNum);
-      const settlementCurrent = Number.isFinite(chainlinkCurrent) && chainlinkCurrent > 0 ? chainlinkCurrent : current;
+      const settlementCurrent = !is15m && Number.isFinite(chainlinkCurrent) && chainlinkCurrent > 0 ? chainlinkCurrent : current;
 
       const delta = settlementCurrent - target;
       const direction = delta >= 0 ? 'UP' : 'DOWN';
@@ -461,7 +457,7 @@ function renderMarkets5M() {
     const horizon = window._marketsHorizon || '5m';
     const is15m = horizon === '15m';
     const pm = window.PredictionMarkets?.getAll() || {};
-    const COINS_5M = ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'BNB', 'HYPE'];
+    const COINS_5M = is15m ? ['BTC', 'ETH', 'SOL', 'XRP'] : ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'BNB', 'HYPE'];
 
     const _orchestrationStatusCache = window._orchestrationStatusCache || {
       loading: true,
@@ -556,8 +552,8 @@ function renderMarkets5M() {
     // dataset, which survives other views overwriting content.innerHTML).
     const fingerprint = COINS_5M.map(s => {
       const b = window.Asi1PreContract?.get?.(s, horizon);
-      const mkt = is15m ? pm[s]?.poly15m : pm[s]?.poly5m;
-      return `${s}:${horizon}:${mkt?.slug || ''}:${mkt?.priceToBeatNum ?? mkt?.targetPriceNum ?? ''}:${b?.ts || 0}:${b?.call || ''}`;
+      const mkt = is15m ? (pm[s]?.kalshi15m || pm[s]?.poly15m) : pm[s]?.poly5m;
+      return `${s}:${horizon}:${mkt?.ticker || mkt?.slug || ''}:${mkt?.targetPriceNum ?? mkt?.priceToBeatNum ?? mkt?.floorPrice ?? ''}:${b?.ts || 0}:${b?.call || ''}`;
     }).join('|');
     const _now5m = Date.now();
     const stillMounted = content?.dataset?.wecryptoView === 'markets5m';
@@ -583,14 +579,16 @@ function renderMarkets5M() {
         })
         .catch((err) => console.warn('[Markets5M] PredictionMarkets fetch failed:', err?.message || err));
     }
-    if (is15m && window.PredictionMarkets?.refreshPoly15M
-      && Date.now() - (window._markets15mHydrationKickTs || 0) > 8_000) {
-      const hasAnyPoly15m = Object.values(pm).some(coin => coin?.poly15m);
-      if (!hasAnyPoly15m) {
+    if (is15m && Date.now() - (window._markets15mHydrationKickTs || 0) > 8_000) {
+      const hasAnyKalshi15m = Object.values(pm).some(coin => coin?.kalshi15m);
+      if (!hasAnyKalshi15m) {
         window._markets15mHydrationKickTs = Date.now();
-        window.PredictionMarkets.refreshPoly15M('panel-mount')
+        const refreshPromise = window.PredictionMarkets?.refreshKalshi15M
+          ? window.PredictionMarkets.refreshKalshi15M('panel-mount')
+          : (window.PredictionMarkets?.fetchAll ? window.PredictionMarkets.fetchAll() : Promise.resolve());
+        refreshPromise
           .then(() => { if (currentView === 'markets5m') renderMarkets5M(); })
-          .catch((err) => console.warn('[Markets5M] Poly15M mount hydration failed:', err?.message || err));
+          .catch((err) => console.warn('[Markets5M] Kalshi 15M mount hydration failed:', err?.message || err));
       }
     }
 
@@ -600,9 +598,12 @@ function renderMarkets5M() {
     }
     function _countdown(iso) {
       if (!iso) return '—';
+      const closeMs = new Date(iso).getTime();
+      if (!Number.isFinite(closeMs)) return '—';
+      const ms = closeMs - Date.now();
       const _fmtUtc4 = typeof formatUtc4Time === 'function' ? formatUtc4Time : (window.formatUtc4Time || ((input) => {
-        const ms = typeof input === 'number' ? input : new Date(input).getTime();
-        return Number.isFinite(ms) ? new Date(ms - 14400000).toISOString().slice(11, 19) : '—';
+        const t = typeof input === 'number' ? input : new Date(input).getTime();
+        return Number.isFinite(t) ? new Date(t - 14400000).toISOString().slice(11, 19) : '—';
       }));
       const closeUtc4 = _fmtUtc4(closeMs);
       if (ms <= 0) return 'Settling…';
@@ -624,15 +625,26 @@ function renderMarkets5M() {
         const m = String(p5.slug).match(/^(btc|eth|sol|xrp|doge|bnb|hype)-/i);
         if (m) sym = m[1].toUpperCase();
       }
-      const rtdsTwap = (sym && window.PredictionMarkets?.getFreshRtdsTwap?.(sym, 15_000)?.price) || null;
-      const chainlinkCurrent = rtdsTwap ?? Number(p5?.chainlinkCurrentPriceNum ?? p5?.currentPriceNum);
-      const useChainlink = Number.isFinite(chainlinkCurrent) && chainlinkCurrent > 0;
-      const current = useChainlink
-        ? chainlinkCurrent
-        : (Number.isFinite(fallbackCurrentPx) && fallbackCurrentPx > 0
+      const is15mMode = window._marketsHorizon === '15m' || (p5?.ticker && !p5?.slug);
+      let current, source;
+      if (is15mMode) {
+        // Kalshi 15M settles against Coinbase spot index
+        current = Number.isFinite(fallbackCurrentPx) && fallbackCurrentPx > 0
           ? Number(fallbackCurrentPx)
-          : (p5?.currentPriceNum == null ? NaN : Number(p5.currentPriceNum)));
-      const target = Number(p5?.targetPriceNum ?? p5?.priceToBeatNum);
+          : (Number.isFinite(p5?.currentPriceNum) ? Number(p5.currentPriceNum) : (Number.isFinite(window.tickers?.[[`${sym}USD`]]?.last) ? Number(window.tickers[[`${sym}USD`]].last) : NaN));
+        source = 'coinbase-spot';
+      } else {
+        const rtdsTwap = (sym && window.PredictionMarkets?.getFreshRtdsTwap?.(sym, 15_000)?.price) || null;
+        const chainlinkCurrent = rtdsTwap ?? Number(p5?.chainlinkCurrentPriceNum ?? p5?.currentPriceNum);
+        const useChainlink = Number.isFinite(chainlinkCurrent) && chainlinkCurrent > 0;
+        current = useChainlink
+          ? chainlinkCurrent
+          : (Number.isFinite(fallbackCurrentPx) && fallbackCurrentPx > 0
+            ? Number(fallbackCurrentPx)
+            : (p5?.currentPriceNum == null ? NaN : Number(p5.currentPriceNum)));
+        source = useChainlink ? 'polymarket-chainlink' : 'fallback';
+      }
+      const target = Number(p5?.targetPriceNum ?? p5?.priceToBeatNum ?? p5?.floorPrice);
       if (!Number.isFinite(current) || current <= 0 || !Number.isFinite(target) || target <= 0) return null;
       const delta = current - target;
       return {
@@ -642,7 +654,7 @@ function renderMarkets5M() {
         deltaPct: delta / target,
         dir: delta >= 0 ? 'UP' : 'DOWN',
         state: delta >= 0 ? 'ABOVE' : 'BELOW',
-        source: useChainlink ? 'polymarket-chainlink' : 'fallback',
+        source,
       };
     }
     function _liveSide(sig, large) {
@@ -814,12 +826,12 @@ function renderMarkets5M() {
                 ${actionBadge}
               </div>
               ${_confBar(modelOdds)}
-              ${!ptbAnchored ? `<div style="font-size:8px;color:var(--color-text-faint);margin-top:2px;">directional lean only -- Polymarket has not published this window's price-to-beat yet</div>` : ''}
+              ${!ptbAnchored ? `<div style="font-size:8px;color:var(--color-text-faint);margin-top:2px;">directional lean only -- ${is15m ? 'Kalshi has not published this window\'s strike yet' : 'Polymarket has not published this window\'s price-to-beat yet'}</div>` : ''}
             `;
           })()}
           ${live5m ? `
             <div style="font-size:9px;color:${live5m.dir === 'UP' ? 'var(--color-green)' : 'var(--color-red)'};margin-top:5px;">
-              ${live5m.state} PTB by <strong>${_fmtSignedPriceDelta(live5m.delta, sym)}</strong> (${(Math.abs(live5m.deltaPct) * 100).toFixed(3)}%)
+              ${live5m.state} ${is15m ? 'Kalshi Strike' : 'PTB'} by <strong>${_fmtSignedPriceDelta(live5m.delta, sym)}</strong> (${(Math.abs(live5m.deltaPct) * 100).toFixed(3)}%)
             </div>
           ` : ''}
           ${(() => {
@@ -876,12 +888,18 @@ function renderMarkets5M() {
 
     function _modelOdds5m(sym) {
       const p = pred[sym];
-      const p5 = is15m ? pm[sym]?.poly15m : pm[sym]?.poly5m;
-      const ptb = Number(p5?.targetPriceNum ?? p5?.priceToBeatNum);
+      const p5 = is15m ? (pm[sym]?.kalshi15m || pm[sym]?.poly15m) : pm[sym]?.poly5m;
+      const ptb = Number(p5?.targetPriceNum ?? p5?.priceToBeatNum ?? p5?.floorPrice);
       
-      // Real-time live price: prioritize live Chainlink 30s TWAP streamed by Polymarket RTDS
-      const rtdsLive = window.PredictionMarkets?.getFreshRtdsTwap?.(sym, 15_000);
-      const liveTwap = rtdsLive?.price ?? (Number.isFinite(p5?.currentPriceNum) && p5.currentPriceNum > 0 ? p5.currentPriceNum : null) ?? window.Microstructure?.getTwap?.(sym, 30_000) ?? Number(p?.price);
+      // Real-time live price: For 15m Kalshi, use live Coinbase/exchange spot price. For 5m Polymarket, use Chainlink TWAP.
+      let livePrice;
+      if (is15m) {
+        livePrice = Number(p?.price) || Number(window.tickers?.[[`${sym}USD`]]?.last) || (Number.isFinite(p5?.currentPriceNum) ? p5.currentPriceNum : null);
+      } else {
+        const rtdsLive = window.PredictionMarkets?.getFreshRtdsTwap?.(sym, 15_000);
+        livePrice = rtdsLive?.price ?? (Number.isFinite(p5?.currentPriceNum) && p5.currentPriceNum > 0 ? p5.currentPriceNum : null) ?? window.Microstructure?.getTwap?.(sym, 30_000) ?? Number(p?.price);
+      }
+      const liveTwap = livePrice;
 
       if (Number.isFinite(ptb) && ptb > 0 && Number.isFinite(liveTwap) && liveTwap > 0) {
         const closeMs = p5?.closeTime ? new Date(p5.closeTime).getTime() : null;
@@ -950,8 +968,8 @@ function renderMarkets5M() {
     // Polymarket PTB, or is the PTB-independent directional-lean fallback (path 4).
     // Purely a labeling signal for the UI -- does not change the odds computation.
     function _modelOdds5mIsPtbAnchored(sym) {
-      const p5 = is15m ? pm[sym]?.poly15m : pm[sym]?.poly5m;
-      const ptb = Number(p5?.targetPriceNum ?? p5?.priceToBeatNum);
+      const p5 = is15m ? (pm[sym]?.kalshi15m || pm[sym]?.poly15m) : pm[sym]?.poly5m;
+      const ptb = Number(p5?.targetPriceNum ?? p5?.priceToBeatNum ?? p5?.floorPrice);
       return Number.isFinite(ptb) && ptb > 0;
     }
 
@@ -1066,7 +1084,7 @@ function renderMarkets5M() {
              const currentOdds = _modelOdds5m(sym);
              
              const coin = pm[sym] || {};
-             const p5 = is15m ? coin.poly15m : coin.poly5m;
+             const p5 = is15m ? (coin.kalshi15m || coin.poly15m) : coin.poly5m;
              const poly5mMkts = is15m ? (coin.poly15mMkts || []) : (coin.poly5mMkts || []);
              const stepSec = is15m ? 900 : 300;
              const nextPolyMkt = p5?._windowTs
@@ -1350,7 +1368,8 @@ function renderMarkets5M() {
     const cards = COINS_5M.map(sym => {
       try {
         const coin = pm[sym] || {};
-      const p5 = is15m ? coin.poly15m : coin.poly5m;
+      const k15 = coin.kalshi15m || null;
+      const p5 = is15m ? k15 : coin.poly5m;
       const polyAll = coin.polyMarkets || [];   // all Poly markets for coin
       const poly5m = is15m ? (coin.poly15mMkts || []) : (coin.poly5mMkts || []);   // short-term Poly markets
       const tick = tickers[WATCHLIST.find(w => w.sym === sym)?.instrument] || null;
@@ -1359,20 +1378,20 @@ function renderMarkets5M() {
 
       const p5prob = p5?.probability ?? null;
       const live5m = _live5mSignal(p5, curPx, sym);
-      const liveCurrentSource = live5m?.source === 'polymarket-chainlink'
-        ? 'polymarket-chainlink'
-        : (tick?.source === 'pyth-lazer' ? 'pyth-lazer' : (p5?.currentPriceSource || 'polymarket-chainlink'));
+      const liveCurrentSource = is15m
+        ? 'coinbase-spot'
+        : (live5m?.source === 'polymarket-chainlink'
+          ? 'polymarket-chainlink'
+          : (tick?.source === 'pyth-lazer' ? 'pyth-lazer' : (p5?.currentPriceSource || 'polymarket-chainlink')));
       const liveCurrentLabel = live5m
         ? (window.CoinPrecision?.formatCoinPrice ? window.CoinPrecision.formatCoinPrice(sym, live5m.current) : fmtPrice(live5m.current, sym))
         : p5?.currentPrice;
-      // Basis footnote compares the fast spot tick against Chainlink for
-      // transparency — independent of which one live5m actually used above.
       const fastCurrentPx = Number.isFinite(curPx) && curPx > 0 ? Number(curPx) : Number(p5?.currentPriceNum);
       const liveOracleBasis = Number.isFinite(fastCurrentPx) && Number.isFinite(Number(p5?.chainlinkCurrentPriceNum))
         ? fastCurrentPx - Number(p5.chainlinkCurrentPriceNum)
         : p5?.oracleBasisNum;
       const primaryMarketProb = p5prob;
-      const primaryMarketLabel = is15m ? 'Poly 15M' : 'Poly 5M';
+      const primaryMarketLabel = is15m ? 'Kalshi 15M' : 'Poly 5M';
 
       let combined5m = null;
       if (p5prob != null) combined5m = p5prob;
@@ -1460,30 +1479,87 @@ function renderMarkets5M() {
           return '';
         })() : ''}
 
-          <!-- Polymarket embed + Model row.
-               Kalshi has no 5-minute crypto series -- KXBTC5M/KXETH5M return 404
-               while the 15M series exist -- so a Kalshi column could only ever show
-               "no market" or a 15M contract mislabelled as 5M. The old third column
-               (a text readout of Polymarket odds/PTB) was dropped too: the embed
-               already renders those live, straight from the venue, with nothing to
-               parse or drift -- the text version could only ever lag or duplicate it. -->
+          <!-- Contract Display Widget + Model row.
+               5M Mode: Polymarket iframe embed (Chainlink TWAP settlement).
+               15M Mode: Native Kalshi 15M contract widget (Coinbase spot index settlement). -->
           <div style="margin-top:8px;">
-            <div style="background:var(--color-surface-2);border-radius:6px;padding:10px;position:relative;">
-              <!-- liveactivity intentionally omitted: it drives a constant internal
-                   re-render inside a fixed-size iframe, fighting this page's own
-                   refresh cycle. It never fed the model either way -- the iframe is
-                   Polymarket's own cross-origin document, sandboxed and unreadable
-                   from here. The model already sees this window's odds/PTB/close time
-                   through pm[sym].poly5m (see _modelOdds5m above), sourced straight
-                   from prediction-markets.js, independent of what this widget shows. -->
+            <div style="background:var(--color-surface-2);border-radius:6px;padding:12px;position:relative;">
               ${(() => {
+                if (is15m) {
+                  const k15 = coin.kalshi15m;
+                  if (!k15) {
+                    return `
+                      <div style="padding:24px 16px;text-align:center;color:var(--color-text-faint);font-size:12px;">
+                        <div style="font-weight:700;color:var(--color-text-muted);margin-bottom:6px;">Kalshi 15M (${sym})</div>
+                        ${['BTC', 'ETH', 'SOL', 'XRP'].includes(sym) ? 'Connecting to Kalshi 15M market…' : 'Kalshi 15M contracts only offered for BTC, ETH, SOL, XRP'}
+                      </div>
+                    `;
+                  }
+
+                  const kProb = k15.probability != null ? Math.round(k15.probability * 100) : null;
+                  const yesBidCents = k15.yesBid != null ? Math.round(k15.yesBid * 100) : '—';
+                  const yesAskCents = k15.yesAsk != null ? Math.round(k15.yesAsk * 100) : '—';
+                  const noBidCents = k15.noBid != null ? Math.round(k15.noBid * 100) : '—';
+                  const noAskCents = k15.noAsk != null ? Math.round(k15.noAsk * 100) : '—';
+                  const lastCents = k15.last != null ? Math.round(k15.last * 100) + '¢' : '—';
+                  const strikeTarget = k15.targetPrice || (Number.isFinite(k15.targetPriceNum) ? fmtPrice(k15.targetPriceNum, sym) : (Number.isFinite(k15.floorPrice) ? fmtPrice(k15.floorPrice, sym) : 'Strike pending'));
+                  const strikeDir = k15.strikeDir === 'below' ? 'Below' : 'At or Above';
+
+                  return `
+                    <div id="p5hudwrap-${sym}" style="position:absolute;top:10px;right:10px;z-index:5;pointer-events:none;">${_renderMicroHudInner(sym)}</div>
+                    <div style="margin-bottom:12px;">
+                      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;">
+                        <span style="font-size:11px;font-weight:800;color:var(--color-primary);letter-spacing:0.04em;">KALSHI 15M CONTRACT</span>
+                        <span style="font-size:9.5px;color:var(--color-text-muted);background:rgba(255,255,255,0.06);padding:2px 6px;border-radius:4px;font-family:monospace;">${k15.ticker || 'KX' + sym + '15M'}</span>
+                      </div>
+                      <div style="font-size:14px;font-weight:800;color:var(--color-text);margin:6px 0 2px 0;">
+                        ${strikeDir} <span style="color:var(--color-primary);">${strikeTarget}</span>
+                      </div>
+                      <div style="font-size:10.5px;color:var(--color-text-muted);">
+                        Settlement Index: <strong style="color:var(--color-text);">Coinbase Spot (CF Benchmarks)</strong>
+                      </div>
+                    </div>
+
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:10px 0;">
+                      <div style="background:rgba(74,222,128,0.08);border:1px solid rgba(74,222,128,0.25);border-radius:6px;padding:8px 10px;">
+                        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+                          <span style="font-size:12px;font-weight:800;color:var(--color-green);">YES</span>
+                          <span style="font-size:15px;font-weight:800;color:var(--color-green);">${kProb != null ? kProb + '%' : '—'}</span>
+                        </div>
+                        <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--color-text-muted);">
+                          <span>Bid: <strong>${yesBidCents}¢</strong></span>
+                          <span>Ask: <strong>${yesAskCents}¢</strong></span>
+                        </div>
+                      </div>
+
+                      <div style="background:rgba(248,113,113,0.08);border:1px solid rgba(248,113,113,0.25);border-radius:6px;padding:8px 10px;">
+                        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+                          <span style="font-size:12px;font-weight:800;color:var(--color-red);">NO</span>
+                          <span style="font-size:15px;font-weight:800;color:var(--color-red);">${kProb != null ? (100 - kProb) + '%' : '—'}</span>
+                        </div>
+                        <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--color-text-muted);">
+                          <span>Bid: <strong>${noBidCents}¢</strong></span>
+                          <span>Ask: <strong>${noAskCents}¢</strong></span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div style="display:flex;justify-content:space-between;align-items:center;font-size:10px;color:var(--color-text-faint);padding-top:6px;border-top:1px solid var(--color-border);flex-wrap:wrap;gap:4px;">
+                      <span>Last: <strong style="color:var(--color-text);">${lastCents}</strong></span>
+                      <span>Vol: <strong style="color:var(--color-text);">${_fmtVol(k15.volume)}</strong></span>
+                      <span>OI: <strong style="color:var(--color-text);">${k15.openInterest || 0}</strong></span>
+                      <a href="https://kalshi.com/markets/${encodeURIComponent(k15.ticker || '')}" target="_blank" rel="noopener"
+                         style="color:var(--color-accent);text-decoration:none;font-weight:700;">Open on Kalshi ↗</a>
+                    </div>
+                  `;
+                }
+
                 const nowSec = Math.floor(Date.now() / 1000);
-                const stepSec = is15m ? 900 : 300;
+                const stepSec = 300;
                 const windowTs = nowSec - (nowSec % stepSec);
                 const coinPrefix = (window.PredictionMarkets?.POLY_5M_COIN_SLUGS?.[sym] || sym.toLowerCase());
-                const horizonSlugPart = is15m ? '15m' : '5m';
-                const activeSlug = p5?.slug || `${coinPrefix}-updown-${horizonSlugPart}-${windowTs}`;
-                const embedTitle = `${sym} Up or Down ${is15m ? '15m' : '5m'} — Polymarket`;
+                const activeSlug = p5?.slug || `${coinPrefix}-updown-5m-${windowTs}`;
+                const embedTitle = `${sym} Up or Down 5m — Polymarket`;
                 return activeSlug ? `
                 <div id="p5hudwrap-${sym}" style="position:absolute;top:16px;left:16px;z-index:5;pointer-events:none;">${_renderMicroHudInner(sym)}</div>
                 <iframe
@@ -1496,7 +1572,7 @@ function renderMarkets5M() {
                   loading="lazy"></iframe>
                 <a href="https://polymarket.com/event/${encodeURIComponent(activeSlug)}" target="_blank" rel="noopener"
                    style="display:inline-block;margin-top:5px;font-size:10px;color:var(--color-text-faint);text-decoration:none;">Open on Polymarket ↗</a>
-              ` : `<div style="color:var(--color-text-faint);font-size:11px">No Poly ${is15m ? '15M' : '5M'} market</div>`;
+              ` : `<div style="color:var(--color-text-faint);font-size:11px">No Poly 5M market</div>`;
               })()}
             </div>
 
@@ -1513,9 +1589,9 @@ function renderMarkets5M() {
           </div>
 
           <!-- Upcoming contract queue -->
-          ${displayPolyMkts.length > 1 ? `
+          ${!is15m && displayPolyMkts.length > 1 ? `
           <div style="background:var(--color-surface-2);border-radius:6px;padding:10px;margin-top:8px;">
-            <div style="font-size:10px;color:var(--color-text-faint);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:8px;">${is15m ? '15M Contract Queue (45m)' : '5M Contract Queue (25m)'}</div>
+            <div style="font-size:10px;color:var(--color-text-faint);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:8px;">5M Contract Queue (25m)</div>
             <div style="display:flex;gap:8px;overflow-x:auto;padding-bottom:4px;">
               ${displayPolyMkts.map(m => {
                 const isCurrent = m.slug === p5?.slug;
@@ -1564,14 +1640,14 @@ function renderMarkets5M() {
     content.innerHTML = `
       <div class="section-header" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
         <div>
-          <span class="section-title">Fast Markets (${is15m ? '15m' : '5m'})</span>
+          <span class="section-title">Fast Markets (${is15m ? '15m (Kalshi)' : '5m (Polymarket)'})</span>
           <span style="font-size:11px;color:var(--color-text-faint);margin-left:8px;">
-            Polycool/Polymarket ${is15m ? '15m' : '5m'} (Chainlink PTB) · Grok xAI analysis
+            ${is15m ? 'Kalshi 15M Contracts (Coinbase Spot Index Settlement) · Kalshi Orderbook' : 'Polymarket 5M (Chainlink PTB Settlement) · Grok xAI analysis'}
           </span>
         </div>
         <div style="display:inline-flex;background:var(--color-surface-2);border:1px solid var(--color-border);border-radius:6px;padding:2px;gap:2px;">
-          <button class="btn btn-sm ${!is15m ? 'btn-primary' : 'btn-ghost'}" style="padding:3px 12px;font-size:11px;font-weight:700;border-radius:4px;cursor:pointer;" onclick="window.setMarketsHorizon('5m')">5-Min</button>
-          <button class="btn btn-sm ${is15m ? 'btn-primary' : 'btn-ghost'}" style="padding:3px 12px;font-size:11px;font-weight:700;border-radius:4px;cursor:pointer;" onclick="window.setMarketsHorizon('15m')">15-Min</button>
+          <button class="btn btn-sm ${!is15m ? 'btn-primary' : 'btn-ghost'}" style="padding:3px 12px;font-size:11px;font-weight:700;border-radius:4px;cursor:pointer;" onclick="window.setMarketsHorizon('5m')">5-Min (Polymarket)</button>
+          <button class="btn btn-sm ${is15m ? 'btn-primary' : 'btn-ghost'}" style="padding:3px 12px;font-size:11px;font-weight:700;border-radius:4px;cursor:pointer;" onclick="window.setMarketsHorizon('15m')">15-Min (Kalshi)</button>
         </div>
       </div>
       ${snipeBanner}
@@ -1637,7 +1713,7 @@ function renderMarkets5M() {
       if (expiredPoly5m && Date.now() - _markets5mPolyRefreshKickTs > 8_000) {
         _markets5mPolyRefreshKickTs = Date.now();
         const refreshPromise = is15m
-          ? (window.PredictionMarkets?.refreshPoly15M ? window.PredictionMarkets.refreshPoly15M('panel-expiry') : Promise.resolve())
+          ? (window.PredictionMarkets?.refreshKalshi15M ? window.PredictionMarkets.refreshKalshi15M('panel-expiry') : (window.PredictionMarkets?.fetchAll ? window.PredictionMarkets.fetchAll() : Promise.resolve()))
           : (window.PredictionMarkets?.refreshPoly5M ? window.PredictionMarkets.refreshPoly5M('panel-expiry') : Promise.resolve());
         refreshPromise
           .then(() => { if (currentView === 'markets5m') renderMarkets5M(); })
@@ -2914,10 +2990,12 @@ function updateChartMarketPanels() {
         const srcLabel = t?.source === 'coingecko' ? 'CoinGecko supplemental data'
           : (t?.source === 'pyth' || t?.source === 'hyperliquid') ? `${t.source} oracle (mid price only)`
             : 'this feed';
+        const unavailableCoin = escapeHtml(coin?.sym || chartCoin);
+        const unavailableSource = escapeHtml(srcLabel);
         ob.innerHTML = `
           <div class="empty-state" style="padding:20px 12px;text-align:left">
-            <div style="font-size:12px;color:var(--color-text)">Order book unavailable for ${coin?.sym || chartCoin}</div>
-            <div style="margin-top:6px">No bid/ask from ${srcLabel} — OB stream connecting…</div>
+            <div style="font-size:12px;color:var(--color-text)">Order book unavailable for ${unavailableCoin}</div>
+            <div style="margin-top:6px">No bid/ask from ${unavailableSource} — OB stream connecting…</div>
             <div style="margin-top:8px;font-size:11px;color:var(--color-text-muted)">24h Vol: <span style="color:var(--color-text)">${fmtCompactUsd(volume(t))}</span></div>
           </div>
         `;
@@ -3730,12 +3808,16 @@ async function renderPredictions() {
 
     // 15m Hydration Kick
     // Ensure 15m Polymarket odds fetch immediately if missing, rather than waiting for boundary clock
-    if (window.PredictionMarkets?.refreshPoly15M && Date.now() - (window._pred15mHydrationKickTs || 0) > 8_000) {
-      const pm = window.PredictionMarkets.getAll() || {};
-      const hasAnyPoly15m = Object.values(pm).some(coin => coin?.poly15m);
-      if (!hasAnyPoly15m) {
+    if (Date.now() - (window._pred15mHydrationKickTs || 0) > 8_000) {
+      const pm = window.PredictionMarkets?.getAll?.() || {};
+      const hasAnyKalshi15m = Object.values(pm).some(coin => coin?.kalshi15m);
+      if (!hasAnyKalshi15m) {
         window._pred15mHydrationKickTs = Date.now();
-        window.PredictionMarkets.refreshPoly15M('pred-mount').catch(() => {});
+        if (window.PredictionMarkets?.refreshKalshi15M) {
+          window.PredictionMarkets.refreshKalshi15M('pred-mount').catch(() => {});
+        } else if (window.PredictionMarkets?.fetchAll) {
+          window.PredictionMarkets.fetchAll().catch(() => {});
+        }
       }
     }
 

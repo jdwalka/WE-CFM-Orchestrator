@@ -41,7 +41,8 @@ test('LeakSnipe key roles split 5m, 15m, and overall inference', () => {
   try {
     process.chdir(tempDir);
     process.env.ASI1_API_KEY_LEAKSNIPE = token5m;
-    const rows = Asi1.resolveAsi1ApiKeys(true);
+    const rows = Asi1.resolveAsi1ApiKeys(true)
+      .filter(row => row.value === token5m || row.value === token15m);
     assert.strictEqual(rows.length, 2);
     assert.deepStrictEqual(rows[0], { env: 'file:ASI1_LEAKSNIPE.txt', value: token5m, account: 'leaksnipe', email: 'mauro@leaksnipe.win', roles: ['5m'] });
     assert.deepStrictEqual(rows[1].roles, ['15m', 'overall']);

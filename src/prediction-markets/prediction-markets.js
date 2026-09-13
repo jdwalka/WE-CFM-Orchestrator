@@ -3723,8 +3723,20 @@ function polymarketSentiment(markets, sym) {
     };
   }
 
-  if (typeof window !== 'undefined' && window.PredictionMarkets && typeof window.PredictionMarkets.start === 'function') {
-    try { window.PredictionMarkets.start(); } catch (_) {}
+  if (typeof window !== 'undefined') {
+    if (typeof document === 'undefined') {
+      // Non-DOM environments (tests, worker contexts) intentionally skip auto-start.
+    } else if (document.readyState !== 'loading') {
+      if (window.PredictionMarkets && !window.PredictionMarkets._started) {
+        try { window.PredictionMarkets.start(); } catch (_) {}
+      }
+    } else {
+      document.addEventListener('DOMContentLoaded', () => {
+        if (window.PredictionMarkets && !window.PredictionMarkets._started) {
+          try { window.PredictionMarkets.start(); } catch (_) {}
+        }
+      });
+    }
   }
 
 })();

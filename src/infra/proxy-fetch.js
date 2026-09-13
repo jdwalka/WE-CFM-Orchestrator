@@ -2,8 +2,8 @@
 // WE CFM ALPHA-1.3 — Smart Proxy Shim
 //
 // CORS is just a browser bouncer with a clipboard — it only fires
-// when the browser asks. Electron (webSecurity:false) already
-// dismissed that bouncer. The proxy's REAL job is server-side:
+// when the browser asks. Electron's scoped webRequest CORS passthrough
+// already dismissed that bouncer. The proxy's REAL job is server-side:
 //
 //  BUCKET A — CF_PROTECTED   : Cloudflare Bot Mgmt / 403 without
 //                               Chrome TLS fingerprint → ALWAYS proxy
@@ -133,7 +133,7 @@
   // pyth added 2026-08-24: Hermes/Lazer aren't geo-blocked, so routing them through
   // the local proxy (and from there, the Mullvad/Sweden path) only adds latency and
   // ties price-feed reliability to that tunnel's health for no access-control benefit.
-  const IGNORE_DOMAINS = /localhost|127\.0\.0\.1|asi1\.ai|fetch-ai\.com|openai\.com|anthropic\.com|x\.ai|deepseek\.com|timeapi\.io|polymarket\.com|pyth/i;
+  const IGNORE_DOMAINS = /localhost|127\.0\.0\.1|asi1\.ai|fetch-ai\.com|openai\.com|anthropic\.com|x\.ai|deepseek\.com|timeapi\.io|pyth/i;
 
   function needsProxy(hostname) {
     if (IGNORE_DOMAINS.test(hostname)) return false;

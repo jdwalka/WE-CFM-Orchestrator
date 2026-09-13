@@ -1,0 +1,18 @@
+name: "WECRYP CodeQL"
+
+paths:
+  - cloudflared
+  - electron
+  - public/index.html
+  - src
+  - prediction_engine.py
+  - model_introspection.py
+  - calibration_ledger.py
+  - market_data.py
+
+paths-ignore:
+  - node_modules
+  - dist
+  - build
+  - coverage
+  - .next

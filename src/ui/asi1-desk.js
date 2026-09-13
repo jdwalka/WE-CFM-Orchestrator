@@ -19,6 +19,11 @@
   const PROMPT_CACHE_KEY = 'wecrypto.asi1Desk.customPrompt';
   const ANSWER_CACHE_KEY = 'wecrypto.asi1Desk.customAnswer';
   const SESSION_ID_KEY = 'wecrypto.asi1Desk.sessionId';
+  const newDeskSessionId = () => {
+    const bytes = new Uint8Array(16);
+    window.crypto.getRandomValues(bytes);
+    return `asi1-desk-${Date.now()}-${Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')}`;
+  };
 
   const dash = document.createElement('div');
   dash.id = 'asi1-desk';
@@ -79,6 +84,7 @@
           <option value="lookahead-15m">Look Ahead (15m)</option>
           <option value="anytime">Look Ahead (Anytime)</option>
           <option value="mispricings">Contract Mispricings</option>
+          <option value="truffle">🍄 Truffle (Live Agent)</option>
         </select>
       </div>
       <div class="ad-selects">
@@ -372,6 +378,7 @@
         setMode: 'asi1:desk-mode',
         infer: 'asi1:desk-infer',
         chat: 'asi1:desk-chat',
+        truffleQuery: 'truffle:query',
         hunt: 'asi1:agentverse-hunt',
         auditAgents: 'asi1:agentverse-audit',
         agentverseStatus: 'asi1:agentverse-status',
@@ -901,6 +908,34 @@
     btn.disabled = true;
     btn.textContent = 'Asking…';
     try {
+      const horizonNow = document.getElementById('adHorizon')?.value || '15m';
+      if (horizonNow === 'truffle') {
+        const coinNow = document.getElementById('adCoin')?.value || 'BTC';
+        const askedEl = document.getElementById('adAskedAt');
+        if (askedEl) askedEl.textContent = new Date().toLocaleTimeString();
+        const query = `Give me your live read on ${coinNow} right now: current spot, the live Kalshi hourly range ladder (or the 15m/5m contracts if more relevant), and the best out-of-range scalp setup if there is one.`;
+        const res = await invoke('truffleQuery', { query });
+        const content = res?.ok
+          ? (res.content || 'No response from truffle.')
+          : `Truffle error: ${res?.error || 'unknown — is the agent running on port 8002?'}`;
+        const truffleContract = {
+          call: '—',
+          action: 'HOLD_FLAT',
+          confidence: null,
+          regime: '—',
+          edge_vs_crowd: '—',
+          urgency: '—',
+          size_hint: '—',
+          invalidation: '',
+          notes: content,
+          warnings: [],
+          _meta: { model: 'truffle', account: 'truffle-live-agent' },
+        };
+        paintContract(truffleContract, {});
+        window.dispatchEvent(new CustomEvent('asi1:desk', { detail: { contract: truffleContract } }));
+        return;
+      }
+
       const packet = buildPacket();
 
       const spotEl = document.getElementById('adSpot');
@@ -974,6 +1009,28 @@
   }
 
   let truffleActive = false;
+  let truffleAvailable = false;
+
+  async function refreshTruffleAvailability() {
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(new Error('probe-timeout')), 1500);
+      const res = await fetch('http://127.0.0.1:8002/health', { signal: ctrl.signal, cache: 'no-store' });
+      truffleAvailable = res.ok;
+    } catch (_) {
+      truffleAvailable = false;
+    }
+    const btn = document.getElementById('adTruffleToggle');
+    if (btn) {
+      if (!truffleAvailable) {
+        btn.title = 'Truffle offline — no service on 127.0.0.1:8002';
+        btn.style.borderColor = '#ff5252';
+      } else {
+        btn.title = 'Route query to local Truffle agent (port 8002)';
+        btn.style.borderColor = truffleActive ? '#00d4ff' : '#2a2f38';
+      }
+    }
+  }
 
   async function askTruffle(query) {
     const r = await fetch('http://127.0.0.1:8002/query', {
@@ -1030,6 +1087,12 @@
         }
       }
       if (truffleActive) {
+        if (!truffleAvailable) {
+          if (answerEl) {
+            answerEl.textContent = 'Truffle offline — start the agent on 127.0.0.1:8002, then retry. This prompt was not sent to ASI1.';
+          }
+          return;
+        }
         try {
           const truffleAnswer = await askTruffle(query);
           if (answerEl) {
@@ -1056,7 +1119,7 @@
       let sessionId = null;
       try { sessionId = window.localStorage.getItem(SESSION_ID_KEY); } catch (_) {}
       if (!sessionId) {
-        sessionId = `asi1-desk-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+        sessionId = newDeskSessionId();
         try { window.localStorage.setItem(SESSION_ID_KEY, sessionId); } catch (_) {}
       }
       try {
@@ -1158,6 +1221,8 @@
       truffleBtn.textContent = truffleActive ? '🍄 Truffle ON' : '🍄 Truffle';
     });
   }
+  setInterval(refreshTruffleAvailability, 5000);
+  void refreshTruffleAvailability();
   document.getElementById('adResetMemory')?.addEventListener('click', async () => {
     try {
       let sessionId = null;
@@ -1167,7 +1232,7 @@
       } else if (window.electron?.invoke) {
         await window.electron.invoke('asi1:desk-chat-reset', { sessionId });
       }
-      const newSessionId = `asi1-desk-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+      const newSessionId = newDeskSessionId();
       try { window.localStorage.setItem(SESSION_ID_KEY, newSessionId); } catch (_) {}
       const answerEl = document.getElementById('adAnswer');
       if (answerEl) {
