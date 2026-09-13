@@ -1032,25 +1032,11 @@
                 };
 
                 try {
-                    let res = await fetchFn(cfg.url, {
-                        method: cfg.method || 'GET',
-                        cache: 'no-store',
-                        signal: ctrl.signal,
-                        headers: cfg.body
-                            ? { Accept: 'application/json', 'Content-Type': 'application/json' }
-                            : { Accept: 'application/json,*/*' },
-                        body: cfg.body || undefined,
-                    });
+                    let res = await fetchWithTimeout(cfg.url);
                     let ok = typeof res?.ok === 'boolean' ? res.ok : (Number(res?.status || 0) > 0 && Number(res?.status || 0) < 500);
                     if (!ok && cfg.fallbackUrl) {
                         try {
-                            const res2 = await fetchFn(cfg.fallbackUrl, {
-                                method: cfg.method || 'GET',
-                                cache: 'no-store',
-                                signal: ctrl.signal,
-                                headers: cfg.body ? { Accept: 'application/json', 'Content-Type': 'application/json' } : { Accept: 'application/json,*/*' },
-                                body: cfg.body || undefined,
-                            });
+                            const res2 = await fetchWithTimeout(cfg.fallbackUrl);
                             if (typeof res2?.ok === 'boolean' ? res2.ok : (Number(res2?.status || 0) > 0 && Number(res2?.status || 0) < 500)) {
                                 res = res2;
                                 ok = true;
@@ -1071,13 +1057,7 @@
                     let recovered = false;
                     if (cfg.fallbackUrl) {
                         try {
-                            const res2 = await fetchFn(cfg.fallbackUrl, {
-                                method: cfg.method || 'GET',
-                                cache: 'no-store',
-                                signal: ctrl.signal,
-                                headers: cfg.body ? { Accept: 'application/json', 'Content-Type': 'application/json' } : { Accept: 'application/json,*/*' },
-                                body: cfg.body || undefined,
-                            });
+                            const res2 = await fetchWithTimeout(cfg.fallbackUrl);
                             if (typeof res2?.ok === 'boolean' ? res2.ok : (Number(res2?.status || 0) > 0 && Number(res2?.status || 0) < 500)) {
                                 recovered = true;
                                 update(cfg.provider, {
@@ -1105,8 +1085,6 @@
                             bucketReason: String(err?.message || err || 'endpoint probe failed'),
                         });
                     }
-                } finally {
-                    clearTimeout(timer);
                 }
             }
         } finally {
