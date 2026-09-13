@@ -14,19 +14,15 @@ try {
 const fs = require('fs');
 const pathMod = path;
 
-// Support secrets/PYTH_NEW_API etc. (user's updated Pyth terminal key)
+// Support the canonical secrets/PYTH_NEW_API key
 function readPythSecretFromFile() {
   const secretDirs = [
     pathMod.resolve(process.cwd(), 'secrets'),
     pathMod.resolve(__dirname, '../../secrets'),
     pathMod.resolve(__dirname, '../../../secrets'),
   ];
-  // Newest first: user upgraded → secrets/PYTH_API (+ PYTH_NEW)
+  // Canonical rotated key
   const candidates = [
-    'PYTH_API',
-    'PYTH_API.txt',
-    'PYTH_NEW',
-    'PYTH_NEW.txt',
     'PYTH_NEW_API',
     'PYTH_NEW_API.txt'
   ];
@@ -57,19 +53,14 @@ function readPythSecretFromFile() {
 }
 
 const PYTH_LAZER_URL = 'https://pyth-lazer.dourolabs.app/v1/latest_price';
-let PYTH_API_KEY = process.env.PYTH_API || process.env.PYTH_NEW || process.env.PYTH_NEW_API || process.env.PYTH_LAZER_TOKEN || process.env.PYTH_API_KEY || process.env.LAZER_TOKEN || '';
+let pythNewApiToken = process.env.PYTH_NEW_API || '';
 const fromSecret = readPythSecretFromFile();
 if (fromSecret) {
-  PYTH_API_KEY = fromSecret;
-  process.env.PYTH_API = fromSecret;
-  process.env.PYTH_NEW = fromSecret;
+  pythNewApiToken = fromSecret;
   process.env.PYTH_NEW_API = fromSecret;
-  process.env.PYTH_LAZER_TOKEN = fromSecret;
-  process.env.PYTH_API_KEY = fromSecret;
-  process.env.LAZER_TOKEN = fromSecret;
-  console.log('[PythLazerPoller] Using token from secrets/PYTH_API for realtime');
-} else if (process.env.PYTH_API || process.env.PYTH_NEW || process.env.PYTH_NEW_API) {
-  PYTH_API_KEY = process.env.PYTH_API || process.env.PYTH_NEW || process.env.PYTH_NEW_API;
+  console.log('[PythLazerPoller] Using token from secrets/PYTH_NEW_API for realtime');
+} else if (process.env.PYTH_NEW_API) {
+  pythNewApiToken = process.env.PYTH_NEW_API;
 }
 
 const SYMBOLS = [
@@ -143,10 +134,10 @@ class PythLazerPoller {
    * Poll Pyth Lazer API and emit updates
    */
   poll() {
-    if (!PYTH_API_KEY) {
+    if (!pythNewApiToken) {
       if (!this._warnedMissingToken) {
         this._warnedMissingToken = true;
-        console.warn('[PythLazer] PYTH_LAZER_TOKEN not set; poller disabled');
+        console.warn('[PythLazer] PYTH_NEW_API not set; poller disabled');
       }
       this.connected = false;
       return;
@@ -167,7 +158,7 @@ class PythLazerPoller {
       path: '/v1/latest_price',
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${PYTH_API_KEY}`,
+        'Authorization': `Bearer ${pythNewApiToken}`,
         'Content-Type': 'application/json',
         'Content-Length': Buffer.byteLength(payload),
         'User-Agent': 'WE-CRYPTO/2.4.8',

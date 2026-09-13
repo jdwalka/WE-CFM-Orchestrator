@@ -1144,7 +1144,7 @@ async function fetchPythHistoryCandles(instrument, timeframe) {
     // Pyth's real-time history API moved behind Pyth Pro auth
     // (docs.pyth.network/price-feeds/pro/api/history#authentication) -- was
     // 401ing on every call with no key attached. This is a distinct product/
-    // key from the Lazer streaming token (PYTH_API/PYTH_NEW) used elsewhere --
+    // key from the Lazer streaming token (PYTH_NEW_API) used elsewhere --
     // secrets/PYTH_PRO_API_KEY.txt, loaded via preload.js.
     const pythApiKey = String(resolveRuntimeKeyLocal('PYTH_PRO_API_KEY') || '').trim();
     if (!pythApiKey) throw new Error('Pyth History skipped: no API key configured');
@@ -1392,12 +1392,24 @@ function startPythLazerStream() {
         if (!window.NetworkHealth) return;
         const now = Date.now();
         const ageMs = status?.lastDataTs ? (now - status.lastDataTs) : Number.POSITIVE_INFINITY;
-        const healthy = !!status?.connected && ageMs < 6000;
+        const wsAgeMs = status?.lastWsTickTs ? (now - status.lastWsTickTs) : Number.POSITIVE_INFINITY;
+        const wsHealthy = status?.wsConnected !== false && ageMs < 6000;
+        const restFallbackHealthy = !!status?.restFallbackActive && ageMs < 6000;
+        const healthy = !!status?.connected && ageMs < 6000 && (wsHealthy || restFallbackHealthy);
+        const sustainedWsOutage = !wsHealthy && wsAgeMs >= 10000;
         window.NetworkHealth.update('Pyth', {
           status: healthy ? 'healthy' : 'degraded',
           lastFetch: status?.lastDataTs || now,
           fallback: !healthy,
-          reason: healthy ? '' : `Stale stream (${Math.max(0, Math.round(ageMs))}ms)`,
+          reason: healthy
+            ? (restFallbackHealthy && sustainedWsOutage
+              ? 'WS reconnecting; REST fallback active'
+              : (restFallbackHealthy
+                ? (status?.wsDisabledReason
+                  ? `REST fallback · WS disabled (${status.wsDisabledReason})`
+                  : 'REST fallback active')
+                : ''))
+            : `Stale stream (${Math.max(0, Math.round(ageMs))}ms)`,
         });
       });
 
@@ -1418,15 +1430,19 @@ function startPythLazerStream() {
       window.pythLazer?.onConnectionLost?.((data) => {
         if (!window.NetworkHealth) return;
         const reason = data?.reason || 'Pyth connection lost';
+        const restFallbackActive = !!data?.restFallbackActive;
+        const sustainedWsOutage = data?.lastWsTickAgeMs == null || data.lastWsTickAgeMs >= 10000;
         window.NetworkHealth.update('Pyth', {
-          status: 'degraded',
+          status: restFallbackActive ? 'healthy' : 'degraded',
           lastFetch: Date.now(),
           fallback: true,
           transient: true,
-          reason: reason === 'all_connections_down'
-            ? 'all_connections_down (auto-reconnect in progress)'
-            : reason,
-          bucket: 'network/transport',
+          reason: restFallbackActive
+            ? (sustainedWsOutage ? 'WS reconnecting; REST fallback active' : 'REST fallback active')
+            : (reason === 'all_connections_down'
+              ? 'all_connections_down (auto-reconnect in progress)'
+              : reason),
+          bucket: restFallbackActive ? 'unknown' : 'network/transport',
           bucketReason: '',
         });
       });

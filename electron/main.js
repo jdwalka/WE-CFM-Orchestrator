@@ -324,12 +324,8 @@ function readCMCSecret() {
 }
 
 function readPythLazerSecret() {
-  // Prefer PYTH_API (user upgraded key name), then PYTH_NEW, then legacy
+  // PYTH_NEW_API is the sole Lazer streaming-token alias.
   return readSecretFileValue([
-    'PYTH_API',
-    'PYTH_API.txt',
-    'PYTH_NEW',
-    'PYTH_NEW.txt',
     'PYTH_NEW_API',
     'PYTH_NEW_API.txt'
   ]);
@@ -497,16 +493,11 @@ function resolveCoinGeckoPublicConfig() {
     out.COINMARKETCAP_API_KEY = cmcKey;
   }
 
-  // ONLY use the newest Pyth key (PYTH_NEW / PYTH_API) for all realtime feeds
+  // ONLY use the canonical PYTH_NEW_API key for all realtime feeds
   const pythSecret = readPythLazerSecret();
-  const pythKey = pythSecret.value || readEnvValue(['PYTH_NEW', 'PYTH_API', 'PYTH_NEW_API', 'PYTH_LAZER_TOKEN', 'PYTH_API_KEY', 'LAZER_TOKEN']);
+  const pythKey = pythSecret.value || readEnvValue(['PYTH_NEW_API']);
   if (pythKey) {
-    out.PYTH_NEW = pythKey;
-    out.PYTH_API = pythKey;
     out.PYTH_NEW_API = pythKey;
-    out.PYTH_API_KEY = pythKey;
-    out.PYTH_LAZER_TOKEN = pythKey;
-    out.LAZER_TOKEN = pythKey;
   }
 
   // Pyth Pro key (secrets/PYTH_PRO_API_KEY.txt) -- distinct from the Lazer
@@ -537,18 +528,12 @@ try {
     console.log('[Env] No .env file found in startup candidates');
   }
 
-  // Load upgraded Pyth key from secrets/PYTH_NEW.txt or PYTH_API.txt (+ legacy names)
-  // Force all aliases so Lazer WS, Hermes, poller, and snapshots all use the same token.
+  // Load the canonical Pyth Lazer key from secrets/PYTH_NEW_API(.txt).
   try {
     const pythSecret = readPythLazerSecret();
     if (pythSecret.value) {
-      process.env.PYTH_NEW = pythSecret.value;
-      process.env.PYTH_API = pythSecret.value;
       process.env.PYTH_NEW_API = pythSecret.value;
-      process.env.PYTH_LAZER_TOKEN = pythSecret.value;
-      process.env.PYTH_API_KEY = pythSecret.value;
-      process.env.LAZER_TOKEN = pythSecret.value;
-      console.log(`[Env] Pyth key loaded from ${pythSecret.path} (aliases forced) len=${pythSecret.value.length}`);
+      console.log(`[Env] Pyth key loaded from ${pythSecret.path} len=${pythSecret.value.length}`);
     }
   } catch (e) {
     console.warn('[Env] Failed loading Pyth secret:', e && e.message);
@@ -564,16 +549,11 @@ try {
   // dotenv not installed, skip silently
 }
 
-// Early load of newest Pyth key (PYTH_NEW / PYTH_API)
+// Early load of the canonical Pyth Lazer key
 try {
   const pythSecret = readPythLazerSecret();
   if (pythSecret.value) {
-    process.env.PYTH_NEW = pythSecret.value;
-    process.env.PYTH_API = pythSecret.value;
     process.env.PYTH_NEW_API = pythSecret.value;
-    process.env.PYTH_LAZER_TOKEN = pythSecret.value;
-    process.env.PYTH_API_KEY = pythSecret.value;
-    process.env.LAZER_TOKEN = pythSecret.value;
     console.log(`[Env] Early Pyth key from ${pythSecret.path}`);
   }
 } catch (_) {}
@@ -806,7 +786,23 @@ try {
 // ── Pyth Lazer real-time WebSocket service ────────────────────────────────────
 let mainWin = null;
 let pythLazerClient = null;
-let pythLazerStatus = { initialized: false, connected: false, lastDataTs: 0, dataCount: 0, timeoutCount: 0, smoothedHz: null };
+let pythLazerStatus = {
+  initialized: false,
+  connected: false,
+  wsConnected: false,
+  restFallbackActive: false,
+  wsDisabled: false,
+  wsDisabledReason: null,
+  transport: 'none',
+  channel: null,
+  nominalCadenceMs: null,
+  nominalHz: null,
+  lastDataTs: 0,
+  lastWsTickTs: 0,
+  dataCount: 0,
+  timeoutCount: 0,
+  smoothedHz: null,
+};
 // EMA-smoothed tick-arrival rate -- absorbs single-tick network jitter (one
 // unusually fast/slow gap) so a transient burst doesn't read as "the feed
 // just changed speed" when the subscribed cadence hasn't actually changed.
@@ -816,7 +812,7 @@ let latestPythLazerTickers = {};
 let pythRestPoller = null;
 let proxyHealthy = false;
 let webServiceHealth = { started: false, mode: 'stopped', protocol: 'http', port: 3443 };
-// NOTE: feed 10 (DOGE spot) is deliberately excluded. The configured PYTH_LAZER_TOKEN's grants
+// NOTE: feed 10 (DOGE spot) is deliberately excluded. The configured PYTH_NEW_API's grants
 // do not include it — the server rejects it with "Not entitled: feed 10 (no grant accepts this
 // feed (asset type 'crypto', instrument type 'spot'))". Because both the REST /v1/latest_price
 // endpoint and the WS subscribe request are batched, a single not-entitled feed ID poisons the
@@ -847,17 +843,27 @@ const PYTH_FALLBACK_TIMEOUT_MS = Number(process.env.PYTH_FALLBACK_TIMEOUT_MS || 
 const PYTH_FALLBACK_GRACE_MS = Number(process.env.PYTH_FALLBACK_GRACE_MS || 2000);
 const PYTH_TIMEOUT_CONSECUTIVE_LIMIT = Number(process.env.PYTH_TIMEOUT_CONSECUTIVE_LIMIT || 3);
 const PYTH_FALLBACK_EVENT_COOLDOWN_MS = Number(process.env.PYTH_FALLBACK_EVENT_COOLDOWN_MS || 30000);
-const PYTH_LAZER_CHANNEL = process.env.PYTH_LAZER_CHANNEL || 'fixed_rate@100ms';
+const PYTH_CONNECTION_LOST_EVENT_COOLDOWN_MS = Number(process.env.PYTH_CONNECTION_LOST_EVENT_COOLDOWN_MS || 10000);
+const PYTH_WS_ALL_DOWN_GRACE_MS = Number(process.env.PYTH_WS_ALL_DOWN_GRACE_MS || 12000);
+const PYTH_WS_HEARTBEAT_TIMEOUT_MS = Number(process.env.PYTH_WS_HEARTBEAT_TIMEOUT_MS || 10000);
+const PYTH_WS_MAX_RETRY_DELAY_MS = Number(process.env.PYTH_WS_MAX_RETRY_DELAY_MS || 2000);
+const PYTH_LAZER_CHANNEL = process.env.PYTH_LAZER_CHANNEL || 'fixed_rate@50ms';
 const PYTH_LIVE_FEED_BACKOFF_MS = Math.max(0, Number(process.env.PYTH_LIVE_FEED_BACKOFF_MS || 5));
+const PYTH_WS_PUSH_FLOOR_MS = Math.max(0, Number(process.env.PYTH_WS_PUSH_FLOOR_MS || 25));
+
+function getPythChannelCadenceMs(channel) {
+  const match = /^fixed_rate@(\d+)ms$/.exec(String(channel || ''));
+  return match ? Number(match[1]) : null;
+}
 
 // Timestamp of the last *real* WS tick (set only where latestPythLazerTickers is written
 // from an actual pythLazerClient message, never by a REST fallback writer). Needed because
 // pythLazerStatus.connected is set true by REST writers too, so it can't tell REST fallbacks
 // apart from a live WS -- see isPythWsHealthy() / writePythRestTickers() below.
 let lastPythWsTickTs = 0;
-// WS ticks every ~50-100ms when healthy (real_time/50ms subscription), so anything idle
+// WS ticks every ~50ms when healthy (fixed_rate@50ms subscription), so anything idle
 // past this is treated as WS-not-healthy and REST is allowed to fill in.
-const PYTH_WS_TICK_STALE_MS = Number(process.env.PYTH_WS_TICK_STALE_MS || 1500);
+const PYTH_WS_TICK_STALE_MS = Number(process.env.PYTH_WS_TICK_STALE_MS || 5000);
 
 function isPythWsHealthy() {
   return lastPythWsTickTs > 0 && (Date.now() - lastPythWsTickTs) < PYTH_WS_TICK_STALE_MS;
@@ -886,7 +892,7 @@ function pushPythTickersCoalesced(targetWin, payload) {
         w.webContents.send('pyth-lazer', _pendingPythPush);
         _pendingPythPush = null;
       }
-    }, 16); // ~60fps cap to prevent IPC storming under 100ms / 10Hz feed
+    }, 16); // ~60fps IPC cap; renderer batching handles the 50ms / 20Hz feed
   }
 }
 
@@ -897,6 +903,9 @@ function writePythRestTickers(pmap, nowP, targetWin) {
   pythLazerStatus.lastDataTs = nowP;
   pythLazerStatus.dataCount = Math.max(pythLazerStatus.dataCount || 0, 1);
   pythLazerStatus.connected = true;
+  pythLazerStatus.wsConnected = false;
+  pythLazerStatus.restFallbackActive = true;
+  pythLazerStatus.transport = 'rest';
   const w = targetWin || mainWin;
   if (w && !w.isDestroyed()) {
     pushPythTickersCoalesced(w, pmap);
@@ -977,12 +986,10 @@ async function startPythLazerService(win) {
   // ONLY use the newest key from secrets/PYTH_NEW_API - no fallbacks to old keys
   let token = null;
 
-  // Direct read — newest rotated key first (PYTH_NEW / PYTH_API), then legacy names
+  // Direct read of the canonical rotated key
   try {
     const secretDirs = getSecretDirCandidates();
     const directCandidates = [
-      'PYTH_API', 'PYTH_API.txt',
-      'PYTH_NEW', 'PYTH_NEW.txt',
       'PYTH_NEW_API', 'PYTH_NEW_API.txt',
     ];
     outer:
@@ -1008,69 +1015,21 @@ async function startPythLazerService(win) {
     }
   }
   if (!token) {
-    token = readEnvValue(['PYTH_NEW', 'PYTH_API', 'PYTH_NEW_API', 'PYTH_LAZER_TOKEN', 'PYTH_API_KEY', 'LAZER_TOKEN']);
+    token = readEnvValue(['PYTH_NEW_API']);
   }
   if (!token) {
-    console.warn('[PythLazer] No Pyth key found in secrets/PYTH_NEW.txt or PYTH_API.txt — Lazer WS disabled');
+    console.warn('[PythLazer] No Pyth key found in secrets/PYTH_NEW_API(.txt) — Lazer WS disabled');
     pythLazerStatus.initialized = false;
     if (!win.isDestroyed()) {
       win.webContents.send('pyth:connection-failed', {
         retries: 0,
-        error: 'PYTH key not set (expected secrets/PYTH_NEW.txt or PYTH_API.txt)',
+        error: 'PYTH key not set (expected secrets/PYTH_NEW_API.txt)',
       });
     }
     return;
   }
 
   pythLazerStatus.initialized = true;
-
-  // ABC easy: start a simple background REST poller using direct + token as soon as we have the key.
-  // This guarantees dataCount and lastDataTs are kept fresh from the proven proxy/direct path,
-  // so the banner never stays stuck on "Waiting for first Pyth tick".
-  // WS realtime (if it ever starts delivering streamUpdated) will still overlay on top.
-  setInterval(async () => {
-    try {
-      if (!token) return;
-      const payload = JSON.stringify({
-        channel: 'real_time',
-        formats: ['evm'],
-        properties: ['price'],
-        priceFeedIds: LAZER_FEED_IDS,
-        parsed: true,
-        jsonBinaryEncoding: 'hex',
-      });
-      const r = await fetch('https://pyth-lazer.dourolabs.app/v1/latest_price', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json',
-        },
-        body: payload,
-      });
-      if (r.ok) {
-        const j = await r.json();
-        const pfeeds = j?.parsed?.priceFeeds || [];
-        if (pfeeds.length) {
-          const nowP = Date.now();
-          const pmap = {};
-          for (const f of pfeeds) {
-            let instr = LAZER_ID_MAP[f.priceFeedId];
-            if (!instr) instr = 'FEED_' + f.priceFeedId;
-            const px = Number(f.price) * Math.pow(10, f.exponent ?? -8);
-            if (px > 0) {
-              pmap[instr] = {
-                instrument_name: instr,
-                last: px,
-                source: 'pyth-rest',
-                timestamp: nowP,
-              };
-            }
-          }
-          writePythRestTickers(pmap, nowP, win);
-        }
-      }
-    } catch (_) {}
-  }, 3000);  // every 3s is plenty to keep age <15s and dataCount >0
 
   // Immediate one-time seed from REST proxies so we have dataCount/lastDataTs right away.
   // This makes the health banner leave "Waiting for first Pyth tick" even before WS or the poller.
@@ -1158,19 +1117,49 @@ async function startPythLazerService(win) {
     refreshPythFromProxy();
   }, 3000);
 
-  // Force ALL aliases from the loaded key (secrets/PYTH_API preferred)
-  process.env.PYTH_API = token;
-  process.env.PYTH_NEW = token;
+  // Force the canonical alias from the loaded key
   process.env.PYTH_NEW_API = token;
-  process.env.PYTH_LAZER_TOKEN = token;
-  process.env.PYTH_API_KEY = token;
-  process.env.LAZER_TOKEN = token;
-  console.log(`[PythLazer] Env aliases forced from loaded key (len=${token.length})`);
+  console.log(`[PythLazer] Canonical env key loaded (len=${token.length})`);
+
+  try {
+    const response = await fetch('https://pyth-lazer.dourolabs.app/v1/latest_price', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        priceFeedIds: LAZER_FEED_IDS,
+        channel: 'fixed_rate@50ms',
+        properties: ['price'],
+        formats: ['evm'],
+        parsed: true,
+      }),
+      signal: AbortSignal.timeout(5000),
+    });
+
+    if ([400, 401, 403].includes(response.status)) {
+      const body = await response.text().catch(() => '');
+      const reason = response.status === 403
+        ? 'token_not_entitled'
+        : (response.status === 401 ? 'invalid_token' : 'invalid_request');
+      pythLazerStatus.wsDisabled = true;
+      pythLazerStatus.wsDisabledReason = reason;
+      pythLazerStatus.wsConnected = false;
+      pythLazerStatus.restFallbackActive = true;
+      pythLazerStatus.transport = 'rest';
+      console.warn(`[PythLazer] WS disabled (${reason}); REST fallback remains active. Preflight HTTP ${response.status}: ${body.slice(0, 240)}`);
+      if (!win.isDestroyed()) win.webContents.send('pyth:status', pythLazerStatus);
+      return true;
+    }
+  } catch (error) {
+    console.warn('[PythLazer] Authorization preflight failed; allowing WS attempt:', error.message);
+  }
 
   const MAX_RETRIES = 3;
   const RETRY_DELAY_MS = 2000;
   const channelCandidates = Array.from(new Set(
-    ['fixed_rate@100ms', 'fixed_rate@200ms', 'fixed_rate@1000ms', 'real_time']
+    ['fixed_rate@50ms', 'fixed_rate@200ms', 'fixed_rate@1000ms', 'real_time']
       .map((s) => String(s || '').trim())
       .filter(Boolean)
   ));
@@ -1182,6 +1171,10 @@ async function startPythLazerService(win) {
     try {
       retries++;
       const activeChannel = channel || channelCandidates[channelIndex] || PYTH_LAZER_CHANNEL;
+      const nominalCadenceMs = getPythChannelCadenceMs(activeChannel);
+      pythLazerStatus.channel = activeChannel;
+      pythLazerStatus.nominalCadenceMs = nominalCadenceMs;
+      pythLazerStatus.nominalHz = nominalCadenceMs ? 1000 / nominalCadenceMs : null;
       console.log(`[PythLazer] Connecting (attempt ${retries}/${MAX_RETRIES}, channel=${activeChannel})...`);
 
       const { PythLazerClient } = require('@pythnetwork/pyth-lazer-sdk');
@@ -1192,7 +1185,14 @@ async function startPythLazerService(win) {
       ];
       pythLazerClient = await PythLazerClient.create({
         token,
-        webSocketPoolConfig: { urls: endpoints }
+        webSocketPoolConfig: {
+          urls: endpoints,
+          numConnections: endpoints.length,
+          rwsConfig: {
+            heartbeatTimeoutDurationMs: PYTH_WS_HEARTBEAT_TIMEOUT_MS,
+            maxRetryDelayMs: PYTH_WS_MAX_RETRY_DELAY_MS,
+          },
+        },
       });
       pythLazerStatus.initialized = true;
       console.log('[PythLazer] Realtime client created with token from PYTH_NEW_API / secrets (wired for realtime feeds)');
@@ -1348,8 +1348,17 @@ async function startPythLazerService(win) {
       let pythTimeoutHandle = null;
       let pythConsecutiveTimeouts = 0;
       let pythLastFallbackEventTs = 0;
+      let pythLastConnectionLostEventTs = 0;
+      let pythAllDownGraceTimer = null;
 
-      // ★ STRICT TIMEOUT WATCHER: If no data arrives within 1000ms, trigger fallback
+      function clearPythAllDownGrace() {
+        if (pythAllDownGraceTimer) {
+          clearTimeout(pythAllDownGraceTimer);
+          pythAllDownGraceTimer = null;
+        }
+      }
+
+      // ★ TIMEOUT WATCHER: if no data arrives within the configured budget, trigger fallback
       function resetPythTimeout() {
         if (pythTimeoutHandle) clearTimeout(pythTimeoutHandle);
         const timeoutBudgetMs = PYTH_FALLBACK_TIMEOUT_MS + PYTH_FALLBACK_GRACE_MS + PYTH_LIVE_FEED_BACKOFF_MS;
@@ -1409,7 +1418,11 @@ async function startPythLazerService(win) {
 
         if (serverType === 'subscribed') {
           console.log(`[PythLazer] ✅ Subscription confirmed (id=${payload?.subscriptionId})`);
+          clearPythAllDownGrace();
           pythLazerStatus.connected = true;
+          pythLazerStatus.wsConnected = true;
+          pythLazerStatus.restFallbackActive = false;
+          pythLazerStatus.transport = 'websocket';
           pythLazerStatus.dataCount = Math.max(pythLazerStatus.dataCount || 0, 1);
           pythLazerStatus.lastDataTs = Date.now();
           if (!win.isDestroyed()) win.webContents.send('pyth:status', pythLazerStatus);
@@ -1423,7 +1436,11 @@ async function startPythLazerService(win) {
         if (serverType === 'subscribedWithInvalidFeedIdsIgnored') {
           const ignored = payload?.ignoredInvalidFeedIds;
           console.warn('[PythLazer] Subscribed with some invalid feeds ignored:', JSON.stringify(ignored));
+          clearPythAllDownGrace();
           pythLazerStatus.connected = true;
+          pythLazerStatus.wsConnected = true;
+          pythLazerStatus.restFallbackActive = false;
+          pythLazerStatus.transport = 'websocket';
           pythLazerStatus.dataCount = Math.max(pythLazerStatus.dataCount || 0, 1);
           pythLazerStatus.lastDataTs = Date.now();
           if (!win.isDestroyed()) win.webContents.send('pyth:status', pythLazerStatus);
@@ -1461,9 +1478,9 @@ async function startPythLazerService(win) {
         }
 
         const now = Date.now();
-        // Subscription is fixed_rate@100ms -- floor throttle at 40ms so IPC never
-        // coalesces or drops 100ms ticks even under minor network arrival jitter (e.g. 80-95ms).
-        if (now - lastPush < 40) return;
+        // 50ms / 20Hz subscription. A 25ms floor preserves every nominal tick
+        // while still coalescing sub-frame replay bursts after reconnect.
+        if (now - lastPush < PYTH_WS_PUSH_FLOOR_MS) return;
         lastPush = now;
 
         // ★ RESET TIMEOUT on successful data arrival
@@ -1506,10 +1523,15 @@ async function startPythLazerService(win) {
         if (Object.keys(prices).length && !win.isDestroyed()) {
           latestPythLazerTickers = prices;
           lastPythWsTickTs = now; // real WS tick -- gates REST fallback writers, see isPythWsHealthy()
+          pythLazerStatus.lastWsTickTs = now;
+          clearPythAllDownGrace();
           const smoothedHz = pythWsHzTracker.tick(now);
           if (smoothedHz != null) pythLazerStatus.smoothedHz = smoothedHz;
           // ★ UPDATE STATUS: Track Pyth Lazer health
           pythLazerStatus.connected = true;
+          pythLazerStatus.wsConnected = true;
+          pythLazerStatus.restFallbackActive = false;
+          pythLazerStatus.transport = 'websocket';
           pythLazerStatus.lastDataTs = now;
           pythLazerStatus.dataCount++;
           pythLazerStatus.timeoutCount = 0;  // Reset timeout counter on success
@@ -1523,21 +1545,36 @@ async function startPythLazerService(win) {
       });
 
       pythLazerClient.addAllConnectionsDownListener(() => {
-        console.error('[PythLazer] ⚠️ All WebSocket connections down — auto-reconnect triggered');
+        const now = Date.now();
+        const lastWsTickAgeMs = pythLazerStatus.lastWsTickTs ? now - pythLazerStatus.lastWsTickTs : null;
+        const restFallbackActive = !isPythWsHealthy();
+        console.warn(`[PythLazer] ⚠️ All WebSocket connections down — SDK recovery grace started (lastWsTickAgeMs=${lastWsTickAgeMs}, restFallbackActive=${restFallbackActive}, graceMs=${PYTH_WS_ALL_DOWN_GRACE_MS})`);
         if (pythTimeoutHandle) {
           clearTimeout(pythTimeoutHandle);
           pythTimeoutHandle = null;
         }
-        // Renderer will gracefully degrade to other data sources
+        pythLazerStatus.wsConnected = false;
+        pythLazerStatus.restFallbackActive = restFallbackActive;
+        pythLazerStatus.transport = restFallbackActive ? 'rest' : 'none';
         if (!win.isDestroyed()) {
-          win.webContents.send('pyth:connection-lost', {
-            reason: 'all_connections_down',
-            channel: activeChannel,
-          });
+          win.webContents.send('pyth:status', pythLazerStatus);
+          if (now - pythLastConnectionLostEventTs >= PYTH_CONNECTION_LOST_EVENT_COOLDOWN_MS) {
+            pythLastConnectionLostEventTs = now;
+            win.webContents.send('pyth:connection-lost', {
+              reason: 'all_connections_down',
+              channel: activeChannel,
+              lastWsTickAgeMs,
+              restFallbackActive,
+            });
+          }
         }
-        if (!reconnectInFlight) {
+
+        clearPythAllDownGrace();
+        pythAllDownGraceTimer = setTimeout(() => {
+          pythAllDownGraceTimer = null;
+          if (reconnectInFlight) return;
           reconnectInFlight = true;
-          setTimeout(async () => {
+          (async () => {
             try {
               if (pythLazerClient) {
                 try { pythLazerClient.unsubscribe(1); } catch (_) { }
@@ -1556,13 +1593,21 @@ async function startPythLazerService(win) {
 
               retries = 0;
               const nextChannel = channelCandidates[channelIndex] || activeChannel;
-              console.warn(`[PythLazer] Reconnecting with fallback channel=${nextChannel}`);
+              console.warn(`[PythLazer] Sustained WS outage — rebuilding client with fallback channel=${nextChannel}`);
               await createClientWithRetry(nextChannel);
             } finally {
               reconnectInFlight = false;
             }
-          }, 500);
-        }
+          })();
+        }, PYTH_WS_ALL_DOWN_GRACE_MS);
+      });
+
+      pythLazerClient.addConnectionRestoredListener(() => {
+        clearPythAllDownGrace();
+        console.log('[PythLazer] ✅ WebSocket connection restored by SDK');
+        pythLazerStatus.wsConnected = true;
+        pythLazerStatus.transport = 'websocket';
+        if (!win.isDestroyed()) win.webContents.send('pyth:status', pythLazerStatus);
       });
 
       console.log(`[PythLazer] ✅ Client started — feeds: ${LAZER_FEED_IDS.join(',')} (channel=${activeChannel})`);
@@ -2396,7 +2441,7 @@ function updatePythStatusFromProxyPrices(prices) {
 function refreshPythFromProxy() {
   (async () => {
     try {
-      const token = process.env.PYTH_API || process.env.PYTH_NEW || process.env.PYTH_NEW_API || process.env.PYTH_LAZER_TOKEN || process.env.PYTH_API_KEY || process.env.LAZER_TOKEN;
+      const token = process.env.PYTH_NEW_API;
       const proxies = [
         'https://pyth-lazer-proxy-1.dourolabs.app',
         'https://pyth-lazer-proxy-2.dourolabs.app',
@@ -2540,13 +2585,11 @@ ipcMain.handle('pyth:getProxyLatest', async (_, feedIds) => {
     }
 
     // Fall back to official REST API
-    // Prefer secret for PYTH_NEW_API - direct read
+    // Prefer the canonical secret for PYTH_NEW_API - direct read
     let token = null;
     try {
       const secretDirs = getSecretDirCandidates();
       const directCandidates = [
-        'PYTH_API', 'PYTH_API.txt',
-        'PYTH_NEW', 'PYTH_NEW.txt',
         'PYTH_NEW_API', 'PYTH_NEW_API.txt',
       ];
       outer:
@@ -2567,12 +2610,11 @@ ipcMain.handle('pyth:getProxyLatest', async (_, feedIds) => {
       } catch (_) {}
     }
     if (!token) {
-      token = readEnvValue(['PYTH_API', 'PYTH_NEW', 'PYTH_NEW_API', 'LAZER_TOKEN']);
-      token = readEnvValue(['PYTH_API', 'PYTH_NEW', 'PYTH_NEW_API', 'PYTH_LAZER_TOKEN', 'PYTH_API_KEY', 'LAZER_TOKEN']);
+      token = readEnvValue(['PYTH_NEW_API']);
     }
     if (token) {
       try {
-        console.log('[Pyth] getProxyLatest using token from secrets/PYTH_API for realtime fallback');
+        console.log('[Pyth] getProxyLatest using token from secrets/PYTH_NEW_API for realtime fallback');
         const url = 'https://pyth-lazer.dourolabs.app/v1/latest_price';
         const response = await fetch(url, {
           method: 'POST',

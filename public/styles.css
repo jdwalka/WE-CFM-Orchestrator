@@ -244,6 +244,7 @@ input, select { font: inherit; color: inherit; }
   overflow-x: hidden;
   padding: 16px 20px 24px;
   overscroll-behavior: contain;
+  scrollbar-gutter: stable;
   min-height: 0;
   scrollbar-width: thin;
   scrollbar-color: var(--color-border) transparent;
@@ -2784,16 +2785,8 @@ input, select { font: inherit; color: inherit; }
 /* ================================================================
    HOURLY RANGES PRICE LADDER
    ================================================================ */
-#hourly-ranges-panel {
-  display: flex; flex-direction: column; height: 100%;
-  background: var(--color-surface);
-  overflow: hidden;
-}
-
-.hr-panel {
-  display: flex; flex-direction: column; height: 100%;
-  overflow: hidden;
-}
+/* Hourly Ranges is a normal page that scrolls inside #content. The panel
+   supplies its own layout; do not force it to viewport height or clip it. */
 
 .hr-panel-header {
   padding: 16px;
