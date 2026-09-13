@@ -1,9 +1,9 @@
 // ================================================================
-// WE|||CRYPTO — Hourly Ranges Panel v8 (Polymarket)
+// WE|||CRYPTO — Hourly Ranges Panel v8 (Kalshi 15m)
 //
 // Shows a spot-centered synthetic range ladder (no live multi-strike
-// ladder market exists on Polymarket for hourly crypto ranges today,
-// unlike Kalshi's KX* series) plus the live Polymarket 15m contract,
+// ladder market exists for hourly crypto ranges today) plus the live
+// Kalshi 15m contract,
 // read straight from window.PredictionMarkets (already polled there,
 // no separate network fetch needed here).
 // Polls every 10s, accelerates to every 2.5s in the final 15 mins.
@@ -100,7 +100,7 @@
     return res.json();
   }
 
-  // ── Spot-Centered Range Synthesizer (for Polymarket bracket & strike ranges) ──
+  // ── Spot-Centered Range Synthesizer (for bracket & strike ranges) ──
   function getStepSize(sym, refPrice) {
     if (sym === 'BTC' || refPrice >= 20000) return 100;
     if (sym === 'ETH' || (refPrice >= 1000 && refPrice < 20000)) return 10;
@@ -200,14 +200,14 @@
     return readLivePrice(sym);
   }
 
-  // ── Live Polymarket 15m contract (already polled by prediction-markets.js) ──
+  // ── Live Kalshi 15m contract (already polled by prediction-markets.js) ──
   function get15mContract(sym) {
-    return window.PredictionMarkets?.getCoin?.(sym)?.poly15m || null;
+    return window.PredictionMarkets?.getCoin?.(sym)?.kalshi15m || null;
   }
 
   // ── Build range list for a coin ────────────────────────────────
-  // No live multi-strike hourly ladder market exists on Polymarket today
-  // (unlike Kalshi's KX* range series), so the ladder is always the
+  // No live multi-strike hourly ladder market exists today,
+  // so the ladder is always the
   // spot-centered synthetic distribution.
   const _rangeHourTs = Object.create(null);
 
@@ -401,7 +401,7 @@
         ${closeLabel}`;
     }
 
-    // Grok 15m + hourly call pegged to live Polymarket data (no 5m, never WAIT)
+    // Grok 15m + hourly call pegged to live market data (no 5m, never WAIT)
     let grokHtml = '';
     try {
       const api = window.GrokRangeOverlay || window.GrokRangeGrok;
@@ -472,7 +472,7 @@
 
       if (b15 || b60 || asi1Strip) {
         grokHtml = `<div class="hr-grok">
-          <div class="hr-grok-hdr">✨ ASI1 pre-contract · 🤖 range overlay (Polymarket-pegged)</div>
+          <div class="hr-grok-hdr">✨ ASI1 pre-contract · 🤖 range overlay</div>
           ${asi1Strip}
           ${b15}${b60}
         </div>`;
@@ -485,62 +485,39 @@
       }
     } catch (_) { grokHtml = ''; }
 
-    // Polymarket 15m Up/Down — pulled by prediction-markets.js refreshPoly15M().
-    // Probability/PTB text is shown only when the venue has actually published
-    // it for this window; the embed itself renders whatever Polymarket shows,
-    // live, straight from the venue -- never a guess.
-    let poly15mHtml = '';
+    // Kalshi 15m Up/Down — pulled by prediction-markets.js fetchKalshi15M().
+    // Render the live Kalshi quote directly; do not substitute another venue here.
+    let kalshi15mHtml = '';
     try {
-      const p15 = window.PredictionMarkets?.getCoin?.(sym)?.poly15m;
-      const coinPrefix = (window.PredictionMarkets?.POLY_5M_COIN_SLUGS?.[sym] || sym.toLowerCase());
-      const nowSec = Math.floor(Date.now() / 1000);
-      const windowTs = nowSec - (nowSec % 900);
-      const fallbackSlug = `${coinPrefix}-updown-15m-${windowTs}`;
-      const activeSlug = p15?.slug || fallbackSlug;
-
-      if (activeSlug) {
-        const upProb = Number(p15?.probability);
-        const hasProb = Number.isFinite(upProb);
-        const livePathApi = (typeof window !== 'undefined' && window.LivePath15m) || null;
-        const live = livePathApi
-          ? (typeof livePathApi.fromAny === 'function'
-              ? livePathApi.fromAny(sym, { spot: price, poly15m: p15 })
-              : livePathApi.resolve(sym, { spot: price, poly15m: p15 }))
-          : null;
-        const call = (live && live.dir)
-          || (p15?.liveDirection === 'UP' || p15?.liveDirection === 'DOWN' ? p15.liveDirection : null)
-          || (hasProb ? (upProb >= 0.5 ? 'UP' : 'DOWN') : null);
-        const col = call === 'UP' ? 'var(--color-green,#26a69a)' : call === 'DOWN' ? 'var(--color-red,#ef5350)' : 'var(--color-text-faint)';
-        const ptbNum = Number(p15?.priceToBeatNum ?? p15?.targetPriceNum);
-        const ptbLabel = p15?.targetPrice || (Number.isFinite(ptbNum) && ptbNum > 0
+      const k15 = window.PredictionMarkets?.getCoin?.(sym)?.kalshi15m;
+      const ticker = k15?.ticker || '';
+      const upProb = Number(k15?.probability);
+      const hasProb = Number.isFinite(upProb);
+      const call = hasProb ? (upProb >= 0.5 ? 'UP' : 'DOWN') : null;
+      const col = call === 'UP' ? 'var(--color-green,#26a69a)' : call === 'DOWN' ? 'var(--color-red,#ef5350)' : 'var(--color-text-faint)';
+      const ptbNum = Number(k15?.targetPriceNum);
+      const ptbLabel = k15?.targetPrice || (Number.isFinite(ptbNum) && ptbNum > 0
           ? (window.CoinPrecision?.formatCoinStrike
               ? window.CoinPrecision.formatCoinStrike(sym, ptbNum)
               : `$${ptbNum.toLocaleString('en-US', { minimumFractionDigits: (sym === 'XRP' || sym === 'DOGE') ? 4 : 2, maximumFractionDigits: (sym === 'XRP' || sym === 'DOGE') ? 4 : 2 })}`)
           : 'pending');
-        const closeLabel15 = p15?.closeTime ? timeToClose(p15.closeTime) : null;
+      const closeLabel15 = k15?.closeTime ? timeToClose(k15.closeTime) : null;
 
-        poly15mHtml = `<div class="hr-poly15m" style="margin-bottom:8px;">
+      if (ticker) {
+        kalshi15mHtml = `<div class="hr-kalshi15m" style="margin-bottom:8px;">
           <div class="hr-grok-hdr" style="display:flex;justify-content:space-between;">
-            <span>Polymarket 15m Up/Down</span>
-            <span style="opacity:0.5;font-family:monospace;font-size:9px;" title="Market Slug">${activeSlug}</span>
+            <span>Kalshi 15m Up/Down</span>
+            <span style="opacity:0.5;font-family:monospace;font-size:9px;" title="Kalshi ticker">${escapeHTML(ticker)}</span>
           </div>
-          <iframe
-            title="${sym} Up or Down 15m — Polymarket"
-            src="https://embed.polymarket.com/market?market=${encodeURIComponent(activeSlug)}&theme=dark&border=false&creator=JohnDaWalka&height=220"
-            style="width:100%;height:220px;border:0;border-radius:6px;display:block;margin-top:4px;"
-            frameborder="0"
-            allowtransparency="true"
-            loading="lazy"></iframe>
           <div class="hr-grok-row" style="margin-top:4px;">
             <span class="hr-grok-call" style="color:${col}">${hasProb ? `${call === 'UP' ? '▲' : '▼'} ${Math.round(upProb * 100)}% YES` : 'awaiting odds'}</span>
             <span class="hr-grok-meta">PTB ${ptbLabel}${closeLabel15 ? ` · closes ${closeLabel15}` : ''}</span>
           </div>
-          <a href="https://polymarket.com/event/${encodeURIComponent(activeSlug)}" target="_blank" rel="noopener" style="display:inline-block;margin-top:3px;font-size:10px;color:var(--color-text-faint);text-decoration:none;">Open on Polymarket ↗</a>
         </div>`;
       }
-    } catch (_) { poly15mHtml = ''; }
+    } catch (_) { kalshi15mHtml = ''; }
 
-    // Polymarket embed shows the live 15m odds; body is the spot-centered
+    // Kalshi shows the live 15m odds; body is the spot-centered
     // hourly bucket ladder (top-3 ranked by likelihood); Grok adds the LLM's
     // own directional call + reasoning on top of both.
     return `
@@ -549,7 +526,7 @@
           <span class="hr-sym" style="color:${color}">${escapeHTML(sym)}</span>
           <span class="hr-price">${escapeHTML(priceStr)}</span>
         </div>
-        <div class="hr-card-body">${poly15mHtml || '<div class="hr-empty">Loading Polymarket 15m market…</div>'}${body}${grokHtml}</div>
+        <div class="hr-card-body">${kalshi15mHtml || '<div class="hr-empty">Kalshi 15m market pending…</div>'}${body}${grokHtml}</div>
       </div>`;
   }
 
@@ -559,7 +536,7 @@
     return `
       <div class="hr-panel" id="hourly-ranges-panel">
         <div class="hr-panel-hdr">
-          <h2 class="hr-panel-title">▲▼ Polymarket 15m Up/Down</h2>
+          <h2 class="hr-panel-title">▲▼ Hourly Ranges</h2>
           <span class="hr-panel-updated">Updated ${now}</span>
         </div>
         <div class="hr-grid">
