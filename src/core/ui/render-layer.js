@@ -1098,7 +1098,7 @@ function renderMarkets5M() {
 
              const proj5Target = Number(proj5?.target);
              const proj10Target = Number(proj10?.target);
-             const lastPriceNum = Number(p?.price || proj5Target);
+             const lastPriceNum = Number(p?.price);
              const hasModelTargets = Number.isFinite(proj5Target)
                && Number.isFinite(proj10Target)
                && proj5Target > 0
