@@ -952,13 +952,13 @@
     };
 
     const ENDPOINT_HOST_PROBES = [
-        { provider: 'Crypto.com', url: 'https://api.crypto.com/v2/public/get-ticker?instrument_name=BTC_USDT' },
-        { provider: 'Mempool.space', url: 'https://mempool.space/api/blocks/tip/height' },
-        { provider: 'Solana RPC', url: 'https://api.mainnet-beta.solana.com', fallbackUrl: 'https://solana-mainnet.g.alchemy.com/v2/UNcUYppLXPl4s0jAkQe_J', method: 'POST', body: '{"jsonrpc":"2.0","id":1,"method":"getEpochInfo"}' },
-        { provider: 'Etherscan', url: 'https://api.etherscan.io/api?module=proxy&action=eth_blockNumber' },
-        { provider: 'XRP Ledger', url: 'https://xrplcluster.com', fallbackUrl: 'https://s1.ripple.com:51234', method: 'POST', body: '{"method":"server_info","params":[{}]}' },
-        { provider: 'Alchemy RPC', url: 'https://ethereum.publicnode.com', fallbackUrl: 'https://cloudflare-eth.com', method: 'POST', body: '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber"}' },
-        { provider: 'Whale Alert', url: 'https://mempool.space/api/blocks/tip/height' },
+        { provider: 'Crypto.com', url: 'https://api.crypto.com/v2/public/get-ticker?instrument_name=BTC_USDT', viaProxy: true },
+        { provider: 'Mempool.space', url: 'https://mempool.space/api/blocks/tip/height', viaProxy: true },
+        { provider: 'Solana RPC', url: 'https://solana-rpc.publicnode.com', fallbackUrl: 'https://solana-mainnet.g.alchemy.com/v2/UNcUYppLXPl4s0jAkQe_J', method: 'POST', body: '{"jsonrpc":"2.0","id":1,"method":"getEpochInfo"}', viaProxy: true },
+        { provider: 'Etherscan', url: 'https://api.etherscan.io/api?module=proxy&action=eth_blockNumber', viaProxy: true },
+        { provider: 'XRP Ledger', url: 'https://xrplcluster.com', fallbackUrl: 'https://s1.ripple.com:51234', method: 'POST', body: '{"method":"server_info","params":[{}]}' , viaProxy: true },
+        { provider: 'Alchemy RPC', url: 'https://ethereum.publicnode.com', fallbackUrl: 'https://cloudflare-eth.com', method: 'POST', body: '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber"}', viaProxy: true },
+        { provider: 'Whale Alert', url: 'https://mempool.space/api/blocks/tip/height', viaProxy: true },
         { provider: 'LocalProxy', url: 'http://127.0.0.1:3010/health' },
     ];
 
@@ -1004,9 +1004,33 @@
             endpointProbeCursor = (endpointProbeCursor + due.length) % ENDPOINT_HOST_PROBES.length;
 
             for (const cfg of due) {
-                const ctrl = new AbortController();
-                const timer = setTimeout(() => ctrl.abort(new Error('endpoint-probe-timeout')), 4500);
-                const fetchFn = typeof window.proxyFetch === 'function' ? window.proxyFetch : fetch;
+                // Route RPC/datacenter endpoints through the local proxy (SOCKS
+                // egress) — they are geo-blocked or slow when hit directly and
+                // previously burned 10s timeouts every cycle. LocalProxy is
+                // sourced from the bridge state, not probed over HTTP.
+                const fetchFn = cfg.viaProxy && typeof window.proxyFetch === 'function'
+                    ? (url, opts) => window.proxyFetch(url, { ...opts, retries: 1 })
+                    : fetch;
+
+                const fetchWithTimeout = async (url) => {
+                    const ctrl = new AbortController();
+                    const timer = setTimeout(() => ctrl.abort(new Error('endpoint-probe-timeout')), 4500);
+                    try {
+                        return await fetchFn(url, {
+                            method: cfg.method || 'GET',
+                            cache: 'no-store',
+                            signal: ctrl.signal,
+                            retries: 1,
+                            headers: cfg.body
+                                ? { Accept: 'application/json', 'Content-Type': 'application/json' }
+                                : { Accept: 'application/json,*/*' },
+                            body: cfg.body || undefined,
+                        });
+                    } finally {
+                        clearTimeout(timer);
+                    }
+                };
+
                 try {
                     let res = await fetchFn(cfg.url, {
                         method: cfg.method || 'GET',
@@ -1036,7 +1060,7 @@
                     update(cfg.provider, {
                         status: ok ? 'healthy' : 'degraded',
                         lastFetch: now,
-                        fallback: fetchFn !== fetch,
+                        fallback: !!cfg.viaProxy,
                         optional: true,
                         transient: !ok,
                         reason: ok ? 'Endpoint probe OK' : `Endpoint probe HTTP ${res?.status || 'error'}`,
@@ -1073,7 +1097,7 @@
                         update(cfg.provider, {
                             status: 'degraded',
                             lastFetch: now,
-                            fallback: fetchFn !== fetch,
+                            fallback: !!cfg.viaProxy,
                             optional: true,
                             transient: true,
                             reason: String(err?.message || err || 'endpoint probe failed').slice(0, 120),
