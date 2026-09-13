@@ -572,12 +572,16 @@
   // Low-pass cutoff for Pyth spot-price smoothing. Additive only -- this
   // never touches PTB (Polymarket's own published contract value must stay
   // exact, see POLY5M_PTB_LOCK_VERSION notes below) or the raw `price` field
-  // callers already read; it only adds a `filteredPrice` alongside it. 2Hz
-  // removes noise above the level a human/LLM would react to while staying
-  // responsive against the multi-second PTB-confirm and LLM-call latencies
-  // that already dominate this pipeline's end-to-end timing.
+  // callers already read; it only adds a `filteredPrice` alongside it. The 2Hz
+  // cutoff is time-based, so it is unchanged by the 50ms/20Hz feed cadence; it
+  // still removes noise above the level a human/LLM would react to while
+  // staying responsive against the multi-second PTB-confirm and LLM-call
+  // latencies that already dominate this pipeline's end-to-end timing.
   const PYTH_PRICE_FILTER_HZ = Number(
     (typeof process !== 'undefined' && process.env && process.env.PYTH_PRICE_FILTER_HZ) || 2
+  );
+  const PYTH_PRICE_FILTER_GAP_RESEED_MS = Number(
+    (typeof process !== 'undefined' && process.env && process.env.PYTH_PRICE_FILTER_GAP_RESEED_MS) || 250
   );
   const _pythPriceFilters = new Map(); // sym -> low-pass filter instance
 
@@ -585,7 +589,7 @@
     if (!ResonanceFilter || !Number.isFinite(price)) return null;
     let f = _pythPriceFilters.get(sym);
     if (!f) {
-      f = ResonanceFilter.createLowPassFilter(PYTH_PRICE_FILTER_HZ, 1000);
+      f = ResonanceFilter.createLowPassFilter(PYTH_PRICE_FILTER_HZ, PYTH_PRICE_FILTER_GAP_RESEED_MS);
       _pythPriceFilters.set(sym, f);
     }
     return f.update(price, Number.isFinite(timestamp) ? timestamp : Date.now());
@@ -3711,6 +3715,7 @@ function polymarketSentiment(markets, sym) {
       _filteredPythPrice,
       _pythPriceFilters,
       PYTH_PRICE_FILTER_HZ,
+      PYTH_PRICE_FILTER_GAP_RESEED_MS,
       _getPolymarketPriceToBeatLock,
       PTB_CONFIRM_MIN_GAP_MS,
       PTB_CONFIRM_TOLERANCE,

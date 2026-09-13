@@ -19,12 +19,8 @@ function readPythSecretFromFile() {
     pathMod.resolve(__dirname, '../../secrets'),
     pathMod.resolve(__dirname, '../../../secrets'),
   ];
-  // Newest first: user upgraded → secrets/PYTH_API (+ PYTH_NEW)
+  // Canonical rotated key
   const candidates = [
-    'PYTH_API',
-    'PYTH_API.txt',
-    'PYTH_NEW',
-    'PYTH_NEW.txt',
     'PYTH_NEW_API',
     'PYTH_NEW_API.txt'
   ];
@@ -56,19 +52,14 @@ function readPythSecretFromFile() {
 
 const { PythLazerClient } = require("@pythnetwork/pyth-lazer-sdk");
 
-let LAZER_TOKEN = process.env.PYTH_LAZER_TOKEN || process.env.PYTH_API_KEY || process.env.PYTH_API || process.env.PYTH_NEW || process.env.PYTH_NEW_API || process.env.LAZER_TOKEN || '';
+let lazerToken = process.env.PYTH_NEW_API || '';
 const fromSecret = readPythSecretFromFile();
 if (fromSecret) {
-  LAZER_TOKEN = fromSecret;
-  process.env.PYTH_API = fromSecret;
-  process.env.PYTH_NEW = fromSecret;
+  lazerToken = fromSecret;
   process.env.PYTH_NEW_API = fromSecret;
-  process.env.PYTH_LAZER_TOKEN = fromSecret;
-  process.env.PYTH_API_KEY = fromSecret;
-  process.env.LAZER_TOKEN = fromSecret;
-  console.log('[PythLazerWS] Using token from secrets/PYTH_API or env for realtime');
-} else if (process.env.PYTH_LAZER_TOKEN || process.env.PYTH_API_KEY || process.env.PYTH_API || process.env.PYTH_NEW || process.env.PYTH_NEW_API) {
-  LAZER_TOKEN = process.env.PYTH_LAZER_TOKEN || process.env.PYTH_API_KEY || process.env.PYTH_API || process.env.PYTH_NEW || process.env.PYTH_NEW_API || process.env.LAZER_TOKEN;
+  console.log('[PythLazerWS] Using token from secrets/PYTH_NEW_API for realtime');
+} else if (process.env.PYTH_NEW_API) {
+  lazerToken = process.env.PYTH_NEW_API;
 }
 
 const PRICE_FEED_IDS = {
@@ -98,7 +89,7 @@ class PythLazerWebSocketHandler {
    */
   async connect() {
     try {
-      if (!LAZER_TOKEN) {
+      if (!lazerToken) {
         throw new Error("PYTH_NEW_API not set");
       }
       console.log("[PythLazerWS] Initializing official SDK client...");
@@ -109,7 +100,7 @@ class PythLazerWebSocketHandler {
         "wss://pyth-lazer-2.dourolabs.app/v1/stream",
       ];
       this.client = await PythLazerClient.create({
-        token: LAZER_TOKEN,
+        token: lazerToken,
         webSocketPoolConfig: { urls: endpoints }
       });
 
@@ -144,14 +135,14 @@ class PythLazerWebSocketHandler {
           "fundingTimestamp",
         ],
         formats: ["solana", "leUnsigned", "leEcdsa", "evm"], // Multiple encoding formats
-        channel: process.env.PYTH_LAZER_CHANNEL || "fixed_rate@100ms", // 100ms fixed-rate updates
+        channel: process.env.PYTH_LAZER_CHANNEL || "fixed_rate@50ms", // 50ms / 20Hz fixed-rate updates
         deliveryFormat: "json",
         jsonBinaryEncoding: "hex",
         parsed: true,
         ignoreInvalidFeeds: true,
       });
 
-      console.log(`[PythLazerWS] Subscribed to price feeds: ${SUBSCRIPTION_PRICE_FEED_IDS.join(',')} (${process.env.PYTH_LAZER_CHANNEL || 'fixed_rate@100ms'})`);
+      console.log(`[PythLazerWS] Subscribed to price feeds: ${SUBSCRIPTION_PRICE_FEED_IDS.join(',')} (${process.env.PYTH_LAZER_CHANNEL || 'fixed_rate@50ms'})`);
 
       // Listen for price updates
       this.client.addMessageListener((message) => {

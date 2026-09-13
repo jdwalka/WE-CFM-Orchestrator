@@ -164,6 +164,19 @@ test('createLowPassFilter supports a custom residual gap-reseed threshold', () =
   assert.throws(() => createLowPassFilter(2, -1));
 });
 
+test('50ms Pyth residual filter reseeds after a 250ms feed discontinuity', () => {
+  const f = createLowPassFilter(2, 250);
+  f.update(100, 0);
+  f.update(100, 50);
+
+  const shortGapOut = f.update(120, 300);
+  assert.ok(shortGapOut > 100 && shortGapOut < 120, `150ms jitter should remain smoothed, got ${shortGapOut}`);
+
+  f.update(120, 350);
+  const discontinuityOut = f.update(130, 610);
+  assert.strictEqual(discontinuityOut, 130, 'a >250ms 50ms-feed discontinuity must reseed, not lag residuals');
+});
+
 test('createHzTracker handles a reconnection pause without dragging smoothed Hz down', () => {
   const h = createHzTracker(0.5);
   let t = 0;

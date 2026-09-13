@@ -1144,7 +1144,7 @@ async function fetchPythHistoryCandles(instrument, timeframe) {
     // Pyth's real-time history API moved behind Pyth Pro auth
     // (docs.pyth.network/price-feeds/pro/api/history#authentication) -- was
     // 401ing on every call with no key attached. This is a distinct product/
-    // key from the Lazer streaming token (PYTH_API/PYTH_NEW) used elsewhere --
+    // key from the Lazer streaming token (PYTH_NEW_API) used elsewhere --
     // secrets/PYTH_PRO_API_KEY.txt, loaded via preload.js.
     const pythApiKey = String(resolveRuntimeKeyLocal('PYTH_PRO_API_KEY') || '').trim();
     if (!pythApiKey) throw new Error('Pyth History skipped: no API key configured');

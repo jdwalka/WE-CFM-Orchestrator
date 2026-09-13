@@ -89,7 +89,7 @@
       "GEMINI_API_KEY",
       "OPENAI_API_KEY",
       "KALSHI_API_KEY",
-      "PYTH_API_KEY"
+      "PYTH_NEW_API"
     ]
   },
   "output_format": {

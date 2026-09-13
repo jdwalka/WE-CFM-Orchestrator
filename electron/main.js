@@ -324,12 +324,8 @@ function readCMCSecret() {
 }
 
 function readPythLazerSecret() {
-  // Prefer PYTH_API (user upgraded key name), then PYTH_NEW, then legacy
+  // PYTH_NEW_API is the sole Lazer streaming-token alias.
   return readSecretFileValue([
-    'PYTH_API',
-    'PYTH_API.txt',
-    'PYTH_NEW',
-    'PYTH_NEW.txt',
     'PYTH_NEW_API',
     'PYTH_NEW_API.txt'
   ]);
@@ -497,16 +493,11 @@ function resolveCoinGeckoPublicConfig() {
     out.COINMARKETCAP_API_KEY = cmcKey;
   }
 
-  // ONLY use the newest Pyth key (PYTH_NEW / PYTH_API) for all realtime feeds
+  // ONLY use the canonical PYTH_NEW_API key for all realtime feeds
   const pythSecret = readPythLazerSecret();
-  const pythKey = pythSecret.value || readEnvValue(['PYTH_NEW', 'PYTH_API', 'PYTH_NEW_API', 'PYTH_LAZER_TOKEN', 'PYTH_API_KEY', 'LAZER_TOKEN']);
+  const pythKey = pythSecret.value || readEnvValue(['PYTH_NEW_API']);
   if (pythKey) {
-    out.PYTH_NEW = pythKey;
-    out.PYTH_API = pythKey;
     out.PYTH_NEW_API = pythKey;
-    out.PYTH_API_KEY = pythKey;
-    out.PYTH_LAZER_TOKEN = pythKey;
-    out.LAZER_TOKEN = pythKey;
   }
 
   // Pyth Pro key (secrets/PYTH_PRO_API_KEY.txt) -- distinct from the Lazer
@@ -537,18 +528,12 @@ try {
     console.log('[Env] No .env file found in startup candidates');
   }
 
-  // Load upgraded Pyth key from secrets/PYTH_NEW.txt or PYTH_API.txt (+ legacy names)
-  // Force all aliases so Lazer WS, Hermes, poller, and snapshots all use the same token.
+  // Load the canonical Pyth Lazer key from secrets/PYTH_NEW_API(.txt).
   try {
     const pythSecret = readPythLazerSecret();
     if (pythSecret.value) {
-      process.env.PYTH_NEW = pythSecret.value;
-      process.env.PYTH_API = pythSecret.value;
       process.env.PYTH_NEW_API = pythSecret.value;
-      process.env.PYTH_LAZER_TOKEN = pythSecret.value;
-      process.env.PYTH_API_KEY = pythSecret.value;
-      process.env.LAZER_TOKEN = pythSecret.value;
-      console.log(`[Env] Pyth key loaded from ${pythSecret.path} (aliases forced) len=${pythSecret.value.length}`);
+      console.log(`[Env] Pyth key loaded from ${pythSecret.path} len=${pythSecret.value.length}`);
     }
   } catch (e) {
     console.warn('[Env] Failed loading Pyth secret:', e && e.message);
@@ -564,16 +549,11 @@ try {
   // dotenv not installed, skip silently
 }
 
-// Early load of newest Pyth key (PYTH_NEW / PYTH_API)
+// Early load of the canonical Pyth Lazer key
 try {
   const pythSecret = readPythLazerSecret();
   if (pythSecret.value) {
-    process.env.PYTH_NEW = pythSecret.value;
-    process.env.PYTH_API = pythSecret.value;
     process.env.PYTH_NEW_API = pythSecret.value;
-    process.env.PYTH_LAZER_TOKEN = pythSecret.value;
-    process.env.PYTH_API_KEY = pythSecret.value;
-    process.env.LAZER_TOKEN = pythSecret.value;
     console.log(`[Env] Early Pyth key from ${pythSecret.path}`);
   }
 } catch (_) {}
@@ -814,6 +794,9 @@ let pythLazerStatus = {
   wsDisabled: false,
   wsDisabledReason: null,
   transport: 'none',
+  channel: null,
+  nominalCadenceMs: null,
+  nominalHz: null,
   lastDataTs: 0,
   lastWsTickTs: 0,
   dataCount: 0,
@@ -829,7 +812,7 @@ let latestPythLazerTickers = {};
 let pythRestPoller = null;
 let proxyHealthy = false;
 let webServiceHealth = { started: false, mode: 'stopped', protocol: 'http', port: 3443 };
-// NOTE: feed 10 (DOGE spot) is deliberately excluded. The configured PYTH_LAZER_TOKEN's grants
+// NOTE: feed 10 (DOGE spot) is deliberately excluded. The configured PYTH_NEW_API's grants
 // do not include it — the server rejects it with "Not entitled: feed 10 (no grant accepts this
 // feed (asset type 'crypto', instrument type 'spot'))". Because both the REST /v1/latest_price
 // endpoint and the WS subscribe request are batched, a single not-entitled feed ID poisons the
@@ -866,6 +849,12 @@ const PYTH_WS_HEARTBEAT_TIMEOUT_MS = Number(process.env.PYTH_WS_HEARTBEAT_TIMEOU
 const PYTH_WS_MAX_RETRY_DELAY_MS = Number(process.env.PYTH_WS_MAX_RETRY_DELAY_MS || 2000);
 const PYTH_LAZER_CHANNEL = process.env.PYTH_LAZER_CHANNEL || 'fixed_rate@50ms';
 const PYTH_LIVE_FEED_BACKOFF_MS = Math.max(0, Number(process.env.PYTH_LIVE_FEED_BACKOFF_MS || 5));
+const PYTH_WS_PUSH_FLOOR_MS = Math.max(0, Number(process.env.PYTH_WS_PUSH_FLOOR_MS || 25));
+
+function getPythChannelCadenceMs(channel) {
+  const match = /^fixed_rate@(\d+)ms$/.exec(String(channel || ''));
+  return match ? Number(match[1]) : null;
+}
 
 // Timestamp of the last *real* WS tick (set only where latestPythLazerTickers is written
 // from an actual pythLazerClient message, never by a REST fallback writer). Needed because
@@ -903,7 +892,7 @@ function pushPythTickersCoalesced(targetWin, payload) {
         w.webContents.send('pyth-lazer', _pendingPythPush);
         _pendingPythPush = null;
       }
-    }, 16); // ~60fps cap to prevent IPC storming under 100ms / 10Hz feed
+    }, 16); // ~60fps IPC cap; renderer batching handles the 50ms / 20Hz feed
   }
 }
 
@@ -997,12 +986,10 @@ async function startPythLazerService(win) {
   // ONLY use the newest key from secrets/PYTH_NEW_API - no fallbacks to old keys
   let token = null;
 
-  // Direct read — newest rotated key first (PYTH_NEW / PYTH_API), then legacy names
+  // Direct read of the canonical rotated key
   try {
     const secretDirs = getSecretDirCandidates();
     const directCandidates = [
-      'PYTH_API', 'PYTH_API.txt',
-      'PYTH_NEW', 'PYTH_NEW.txt',
       'PYTH_NEW_API', 'PYTH_NEW_API.txt',
     ];
     outer:
@@ -1028,15 +1015,15 @@ async function startPythLazerService(win) {
     }
   }
   if (!token) {
-    token = readEnvValue(['PYTH_NEW', 'PYTH_API', 'PYTH_NEW_API', 'PYTH_LAZER_TOKEN', 'PYTH_API_KEY', 'LAZER_TOKEN']);
+    token = readEnvValue(['PYTH_NEW_API']);
   }
   if (!token) {
-    console.warn('[PythLazer] No Pyth key found in secrets/PYTH_NEW.txt or PYTH_API.txt — Lazer WS disabled');
+    console.warn('[PythLazer] No Pyth key found in secrets/PYTH_NEW_API(.txt) — Lazer WS disabled');
     pythLazerStatus.initialized = false;
     if (!win.isDestroyed()) {
       win.webContents.send('pyth:connection-failed', {
         retries: 0,
-        error: 'PYTH key not set (expected secrets/PYTH_NEW.txt or PYTH_API.txt)',
+        error: 'PYTH key not set (expected secrets/PYTH_NEW_API.txt)',
       });
     }
     return;
@@ -1130,14 +1117,9 @@ async function startPythLazerService(win) {
     refreshPythFromProxy();
   }, 3000);
 
-  // Force ALL aliases from the loaded key (secrets/PYTH_API preferred)
-  process.env.PYTH_API = token;
-  process.env.PYTH_NEW = token;
+  // Force the canonical alias from the loaded key
   process.env.PYTH_NEW_API = token;
-  process.env.PYTH_LAZER_TOKEN = token;
-  process.env.PYTH_API_KEY = token;
-  process.env.LAZER_TOKEN = token;
-  console.log(`[PythLazer] Env aliases forced from loaded key (len=${token.length})`);
+  console.log(`[PythLazer] Canonical env key loaded (len=${token.length})`);
 
   try {
     const response = await fetch('https://pyth-lazer.dourolabs.app/v1/latest_price', {
@@ -1189,6 +1171,10 @@ async function startPythLazerService(win) {
     try {
       retries++;
       const activeChannel = channel || channelCandidates[channelIndex] || PYTH_LAZER_CHANNEL;
+      const nominalCadenceMs = getPythChannelCadenceMs(activeChannel);
+      pythLazerStatus.channel = activeChannel;
+      pythLazerStatus.nominalCadenceMs = nominalCadenceMs;
+      pythLazerStatus.nominalHz = nominalCadenceMs ? 1000 / nominalCadenceMs : null;
       console.log(`[PythLazer] Connecting (attempt ${retries}/${MAX_RETRIES}, channel=${activeChannel})...`);
 
       const { PythLazerClient } = require('@pythnetwork/pyth-lazer-sdk');
@@ -1492,9 +1478,9 @@ async function startPythLazerService(win) {
         }
 
         const now = Date.now();
-        // Subscription is fixed_rate@50ms -- floor throttle at 40ms so IPC never
-        // coalesces or drops ticks under minor network arrival jitter.
-        if (now - lastPush < 40) return;
+        // 50ms / 20Hz subscription. A 25ms floor preserves every nominal tick
+        // while still coalescing sub-frame replay bursts after reconnect.
+        if (now - lastPush < PYTH_WS_PUSH_FLOOR_MS) return;
         lastPush = now;
 
         // ★ RESET TIMEOUT on successful data arrival
@@ -2455,7 +2441,7 @@ function updatePythStatusFromProxyPrices(prices) {
 function refreshPythFromProxy() {
   (async () => {
     try {
-      const token = process.env.PYTH_API || process.env.PYTH_NEW || process.env.PYTH_NEW_API || process.env.PYTH_LAZER_TOKEN || process.env.PYTH_API_KEY || process.env.LAZER_TOKEN;
+      const token = process.env.PYTH_NEW_API;
       const proxies = [
         'https://pyth-lazer-proxy-1.dourolabs.app',
         'https://pyth-lazer-proxy-2.dourolabs.app',
@@ -2599,13 +2585,11 @@ ipcMain.handle('pyth:getProxyLatest', async (_, feedIds) => {
     }
 
     // Fall back to official REST API
-    // Prefer secret for PYTH_NEW_API - direct read
+    // Prefer the canonical secret for PYTH_NEW_API - direct read
     let token = null;
     try {
       const secretDirs = getSecretDirCandidates();
       const directCandidates = [
-        'PYTH_API', 'PYTH_API.txt',
-        'PYTH_NEW', 'PYTH_NEW.txt',
         'PYTH_NEW_API', 'PYTH_NEW_API.txt',
       ];
       outer:
@@ -2626,12 +2610,11 @@ ipcMain.handle('pyth:getProxyLatest', async (_, feedIds) => {
       } catch (_) {}
     }
     if (!token) {
-      token = readEnvValue(['PYTH_API', 'PYTH_NEW', 'PYTH_NEW_API', 'LAZER_TOKEN']);
-      token = readEnvValue(['PYTH_API', 'PYTH_NEW', 'PYTH_NEW_API', 'PYTH_LAZER_TOKEN', 'PYTH_API_KEY', 'LAZER_TOKEN']);
+      token = readEnvValue(['PYTH_NEW_API']);
     }
     if (token) {
       try {
-        console.log('[Pyth] getProxyLatest using token from secrets/PYTH_API for realtime fallback');
+        console.log('[Pyth] getProxyLatest using token from secrets/PYTH_NEW_API for realtime fallback');
         const url = 'https://pyth-lazer.dourolabs.app/v1/latest_price';
         const response = await fetch(url, {
           method: 'POST',

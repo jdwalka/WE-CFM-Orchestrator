@@ -198,12 +198,8 @@ function readCMCSecret() {
 }
 
 function readPythLazerSecret() {
-  // Prefer PYTH_API (upgraded key name), then PYTH_NEW, then legacy
+  // PYTH_NEW_API is the sole Lazer streaming-token alias.
   return readSecretFileValue([
-    'PYTH_API',
-    'PYTH_API.txt',
-    'PYTH_NEW',
-    'PYTH_NEW.txt',
     'PYTH_NEW_API',
     'PYTH_NEW_API.txt'
   ]);
@@ -269,16 +265,11 @@ function readPublicEnv() {
     if (value) out[name] = value;
   }
 
-  // Pyth key for realtime feeds (Hermes, Lazer, snapshots) — newest secret files first
+  // Canonical Pyth Lazer key for realtime feeds (Hermes, Lazer, snapshots)
   const pythSecret = readPythLazerSecret();
-  const pythKey = pythSecret.value || readEnvValue(['PYTH_NEW', 'PYTH_API', 'PYTH_NEW_API', 'LAZER_TOKEN']);
+  const pythKey = pythSecret.value || readEnvValue(['PYTH_NEW_API']);
   if (pythKey) {
-    out.PYTH_NEW = pythKey;
-    out.PYTH_API = pythKey;
     out.PYTH_NEW_API = pythKey;
-    out.PYTH_API_KEY = pythKey;
-    out.PYTH_LAZER_TOKEN = pythKey;
-    out.LAZER_TOKEN = pythKey;
   }
 
   // Pyth Pro key (secrets/PYTH_PRO_API_KEY.txt) -- distinct from the Lazer
