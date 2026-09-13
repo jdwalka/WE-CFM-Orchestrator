@@ -1392,12 +1392,16 @@ function startPythLazerStream() {
         if (!window.NetworkHealth) return;
         const now = Date.now();
         const ageMs = status?.lastDataTs ? (now - status.lastDataTs) : Number.POSITIVE_INFINITY;
-        const healthy = !!status?.connected && ageMs < 6000;
+        const wsHealthy = status?.wsConnected !== false && ageMs < 6000;
+        const restFallbackHealthy = !!status?.restFallbackActive && ageMs < 6000;
+        const healthy = !!status?.connected && ageMs < 6000 && (wsHealthy || restFallbackHealthy);
         window.NetworkHealth.update('Pyth', {
           status: healthy ? 'healthy' : 'degraded',
           lastFetch: status?.lastDataTs || now,
           fallback: !healthy,
-          reason: healthy ? '' : `Stale stream (${Math.max(0, Math.round(ageMs))}ms)`,
+          reason: healthy
+            ? (restFallbackHealthy && !wsHealthy ? 'WS reconnecting; REST fallback active' : '')
+            : `Stale stream (${Math.max(0, Math.round(ageMs))}ms)`,
         });
       });
 
@@ -1418,15 +1422,18 @@ function startPythLazerStream() {
       window.pythLazer?.onConnectionLost?.((data) => {
         if (!window.NetworkHealth) return;
         const reason = data?.reason || 'Pyth connection lost';
+        const restFallbackActive = !!data?.restFallbackActive;
         window.NetworkHealth.update('Pyth', {
-          status: 'degraded',
+          status: restFallbackActive ? 'healthy' : 'degraded',
           lastFetch: Date.now(),
           fallback: true,
           transient: true,
-          reason: reason === 'all_connections_down'
-            ? 'all_connections_down (auto-reconnect in progress)'
-            : reason,
-          bucket: 'network/transport',
+          reason: restFallbackActive
+            ? 'WS reconnecting; REST fallback active'
+            : (reason === 'all_connections_down'
+              ? 'all_connections_down (auto-reconnect in progress)'
+              : reason),
+          bucket: restFallbackActive ? 'unknown' : 'network/transport',
           bucketReason: '',
         });
       });

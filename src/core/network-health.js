@@ -668,25 +668,36 @@
         const initialized = !!payload?.initialized;
         const connected = !!payload?.connected;
         const lastDataTs = Number(payload?.lastDataTs || 0);
+        const lastWsTickTs = Number(payload?.lastWsTickTs || 0);
         const age = lastDataTs ? Math.max(0, now - lastDataTs) : null;
+        const wsAge = lastWsTickTs ? Math.max(0, now - lastWsTickTs) : null;
         const dataCount = Number(payload?.dataCount || 0);
         const timeoutCount = Number(payload?.timeoutCount || 0);
         const currentFreshHealthy = current.status === 'healthy' &&
             Number(current.lastFetch || 0) > 0 &&
             (now - Number(current.lastFetch)) < 30_000;
 
-        if (currentFreshHealthy && !(ok && connected && age != null && age < 15_000)) return;
+        const dataHealthy = ok && connected && age != null && age < 15_000;
+        const wsHealthy = ok && payload?.wsConnected === true && wsAge != null && wsAge < 15_000;
+        const restFallbackHealthy = ok && payload?.restFallbackActive === true && dataHealthy;
+        if (currentFreshHealthy && !(dataHealthy && (wsHealthy || restFallbackHealthy))) return;
 
         let status = 'degraded';
         let reason = payload?.error || 'Pyth Lazer status unavailable';
         let bucket = BUCKETS.APP_LOGIC;
         let bucketReason = reason;
 
-        if (ok && connected && age != null && age < 15_000) {
+        if (dataHealthy && (wsHealthy || restFallbackHealthy)) {
             status = 'healthy';
-            reason = `${dataCount} ticks · ${Math.round(age / 1000)}s old`;
+            reason = restFallbackHealthy && !wsHealthy
+                ? `${dataCount} ticks · REST fallback active (${Math.round(age / 1000)}s old)`
+                : `${dataCount} ticks · ${Math.round(age / 1000)}s old`;
             bucket = BUCKETS.UNKNOWN;
             bucketReason = '';
+        } else if (dataHealthy && payload?.wsConnected === false) {
+            reason = `${dataCount} ticks · WS reconnecting (${Math.round(age / 1000)}s old)`;
+            bucket = BUCKETS.NETWORK_TRANSPORT;
+            bucketReason = 'Pyth WebSocket reconnecting';
         } else if (ok && dataCount > 0) {
             reason = age == null
                 ? `${dataCount} ticks · stale`

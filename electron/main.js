@@ -806,7 +806,18 @@ try {
 // ── Pyth Lazer real-time WebSocket service ────────────────────────────────────
 let mainWin = null;
 let pythLazerClient = null;
-let pythLazerStatus = { initialized: false, connected: false, lastDataTs: 0, dataCount: 0, timeoutCount: 0, smoothedHz: null };
+let pythLazerStatus = {
+  initialized: false,
+  connected: false,
+  wsConnected: false,
+  restFallbackActive: false,
+  transport: 'none',
+  lastDataTs: 0,
+  lastWsTickTs: 0,
+  dataCount: 0,
+  timeoutCount: 0,
+  smoothedHz: null,
+};
 // EMA-smoothed tick-arrival rate -- absorbs single-tick network jitter (one
 // unusually fast/slow gap) so a transient burst doesn't read as "the feed
 // just changed speed" when the subscribed cadence hasn't actually changed.
@@ -847,6 +858,7 @@ const PYTH_FALLBACK_TIMEOUT_MS = Number(process.env.PYTH_FALLBACK_TIMEOUT_MS || 
 const PYTH_FALLBACK_GRACE_MS = Number(process.env.PYTH_FALLBACK_GRACE_MS || 2000);
 const PYTH_TIMEOUT_CONSECUTIVE_LIMIT = Number(process.env.PYTH_TIMEOUT_CONSECUTIVE_LIMIT || 3);
 const PYTH_FALLBACK_EVENT_COOLDOWN_MS = Number(process.env.PYTH_FALLBACK_EVENT_COOLDOWN_MS || 30000);
+const PYTH_CONNECTION_LOST_EVENT_COOLDOWN_MS = Number(process.env.PYTH_CONNECTION_LOST_EVENT_COOLDOWN_MS || 10000);
 const PYTH_LAZER_CHANNEL = process.env.PYTH_LAZER_CHANNEL || 'fixed_rate@100ms';
 const PYTH_LIVE_FEED_BACKOFF_MS = Math.max(0, Number(process.env.PYTH_LIVE_FEED_BACKOFF_MS || 5));
 
@@ -857,7 +869,7 @@ const PYTH_LIVE_FEED_BACKOFF_MS = Math.max(0, Number(process.env.PYTH_LIVE_FEED_
 let lastPythWsTickTs = 0;
 // WS ticks every ~50-100ms when healthy (real_time/50ms subscription), so anything idle
 // past this is treated as WS-not-healthy and REST is allowed to fill in.
-const PYTH_WS_TICK_STALE_MS = Number(process.env.PYTH_WS_TICK_STALE_MS || 1500);
+const PYTH_WS_TICK_STALE_MS = Number(process.env.PYTH_WS_TICK_STALE_MS || 3000);
 
 function isPythWsHealthy() {
   return lastPythWsTickTs > 0 && (Date.now() - lastPythWsTickTs) < PYTH_WS_TICK_STALE_MS;
@@ -897,6 +909,9 @@ function writePythRestTickers(pmap, nowP, targetWin) {
   pythLazerStatus.lastDataTs = nowP;
   pythLazerStatus.dataCount = Math.max(pythLazerStatus.dataCount || 0, 1);
   pythLazerStatus.connected = true;
+  pythLazerStatus.wsConnected = false;
+  pythLazerStatus.restFallbackActive = true;
+  pythLazerStatus.transport = 'rest';
   const w = targetWin || mainWin;
   if (w && !w.isDestroyed()) {
     pushPythTickersCoalesced(w, pmap);
@@ -1348,6 +1363,7 @@ async function startPythLazerService(win) {
       let pythTimeoutHandle = null;
       let pythConsecutiveTimeouts = 0;
       let pythLastFallbackEventTs = 0;
+      let pythLastConnectionLostEventTs = 0;
 
       // ★ STRICT TIMEOUT WATCHER: If no data arrives within 1000ms, trigger fallback
       function resetPythTimeout() {
@@ -1410,6 +1426,9 @@ async function startPythLazerService(win) {
         if (serverType === 'subscribed') {
           console.log(`[PythLazer] ✅ Subscription confirmed (id=${payload?.subscriptionId})`);
           pythLazerStatus.connected = true;
+          pythLazerStatus.wsConnected = true;
+          pythLazerStatus.restFallbackActive = false;
+          pythLazerStatus.transport = 'websocket';
           pythLazerStatus.dataCount = Math.max(pythLazerStatus.dataCount || 0, 1);
           pythLazerStatus.lastDataTs = Date.now();
           if (!win.isDestroyed()) win.webContents.send('pyth:status', pythLazerStatus);
@@ -1424,6 +1443,9 @@ async function startPythLazerService(win) {
           const ignored = payload?.ignoredInvalidFeedIds;
           console.warn('[PythLazer] Subscribed with some invalid feeds ignored:', JSON.stringify(ignored));
           pythLazerStatus.connected = true;
+          pythLazerStatus.wsConnected = true;
+          pythLazerStatus.restFallbackActive = false;
+          pythLazerStatus.transport = 'websocket';
           pythLazerStatus.dataCount = Math.max(pythLazerStatus.dataCount || 0, 1);
           pythLazerStatus.lastDataTs = Date.now();
           if (!win.isDestroyed()) win.webContents.send('pyth:status', pythLazerStatus);
@@ -1506,10 +1528,14 @@ async function startPythLazerService(win) {
         if (Object.keys(prices).length && !win.isDestroyed()) {
           latestPythLazerTickers = prices;
           lastPythWsTickTs = now; // real WS tick -- gates REST fallback writers, see isPythWsHealthy()
+          pythLazerStatus.lastWsTickTs = now;
           const smoothedHz = pythWsHzTracker.tick(now);
           if (smoothedHz != null) pythLazerStatus.smoothedHz = smoothedHz;
           // ★ UPDATE STATUS: Track Pyth Lazer health
           pythLazerStatus.connected = true;
+          pythLazerStatus.wsConnected = true;
+          pythLazerStatus.restFallbackActive = false;
+          pythLazerStatus.transport = 'websocket';
           pythLazerStatus.lastDataTs = now;
           pythLazerStatus.dataCount++;
           pythLazerStatus.timeoutCount = 0;  // Reset timeout counter on success
@@ -1523,17 +1549,28 @@ async function startPythLazerService(win) {
       });
 
       pythLazerClient.addAllConnectionsDownListener(() => {
-        console.error('[PythLazer] ⚠️ All WebSocket connections down — auto-reconnect triggered');
+        const now = Date.now();
+        const lastWsTickAgeMs = pythLazerStatus.lastWsTickTs ? now - pythLazerStatus.lastWsTickTs : null;
+        const restFallbackActive = !isPythWsHealthy();
+        console.error(`[PythLazer] ⚠️ All WebSocket connections down — auto-reconnect triggered (lastWsTickAgeMs=${lastWsTickAgeMs}, restFallbackActive=${restFallbackActive})`);
         if (pythTimeoutHandle) {
           clearTimeout(pythTimeoutHandle);
           pythTimeoutHandle = null;
         }
-        // Renderer will gracefully degrade to other data sources
+        pythLazerStatus.wsConnected = false;
+        pythLazerStatus.restFallbackActive = restFallbackActive;
+        pythLazerStatus.transport = restFallbackActive ? 'rest' : 'none';
         if (!win.isDestroyed()) {
-          win.webContents.send('pyth:connection-lost', {
-            reason: 'all_connections_down',
-            channel: activeChannel,
-          });
+          win.webContents.send('pyth:status', pythLazerStatus);
+          if (now - pythLastConnectionLostEventTs >= PYTH_CONNECTION_LOST_EVENT_COOLDOWN_MS) {
+            pythLastConnectionLostEventTs = now;
+            win.webContents.send('pyth:connection-lost', {
+              reason: 'all_connections_down',
+              channel: activeChannel,
+              lastWsTickAgeMs,
+              restFallbackActive,
+            });
+          }
         }
         if (!reconnectInFlight) {
           reconnectInFlight = true;

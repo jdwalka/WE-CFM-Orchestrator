@@ -155,6 +155,15 @@ test('createLowPassFilter reseeds cleanly after a long network disconnection gap
   assert.strictEqual(out, 120, 'must reseed directly to new price after gap > 3s, avoiding multi-second lag');
 });
 
+test('createLowPassFilter supports a custom residual gap-reseed threshold', () => {
+  const f = createLowPassFilter(2, 1000);
+  f.update(100, 0);
+  f.update(101, 100);
+  const out = f.update(120, 1200);
+  assert.strictEqual(out, 120, 'a 1.1s Pyth feed gap must not be smoothed into the residual signal');
+  assert.throws(() => createLowPassFilter(2, -1));
+});
+
 test('createHzTracker handles a reconnection pause without dragging smoothed Hz down', () => {
   const h = createHzTracker(0.5);
   let t = 0;

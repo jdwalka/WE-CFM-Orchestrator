@@ -585,7 +585,7 @@
     if (!ResonanceFilter || !Number.isFinite(price)) return null;
     let f = _pythPriceFilters.get(sym);
     if (!f) {
-      f = ResonanceFilter.createLowPassFilter(PYTH_PRICE_FILTER_HZ);
+      f = ResonanceFilter.createLowPassFilter(PYTH_PRICE_FILTER_HZ, 1000);
       _pythPriceFilters.set(sym, f);
     }
     return f.update(price, Number.isFinite(timestamp) ? timestamp : Date.now());
