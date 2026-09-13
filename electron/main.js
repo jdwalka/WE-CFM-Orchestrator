@@ -811,6 +811,8 @@ let pythLazerStatus = {
   connected: false,
   wsConnected: false,
   restFallbackActive: false,
+  wsDisabled: false,
+  wsDisabledReason: null,
   transport: 'none',
   lastDataTs: 0,
   lastWsTickTs: 0,
@@ -859,7 +861,10 @@ const PYTH_FALLBACK_GRACE_MS = Number(process.env.PYTH_FALLBACK_GRACE_MS || 2000
 const PYTH_TIMEOUT_CONSECUTIVE_LIMIT = Number(process.env.PYTH_TIMEOUT_CONSECUTIVE_LIMIT || 3);
 const PYTH_FALLBACK_EVENT_COOLDOWN_MS = Number(process.env.PYTH_FALLBACK_EVENT_COOLDOWN_MS || 30000);
 const PYTH_CONNECTION_LOST_EVENT_COOLDOWN_MS = Number(process.env.PYTH_CONNECTION_LOST_EVENT_COOLDOWN_MS || 10000);
-const PYTH_LAZER_CHANNEL = process.env.PYTH_LAZER_CHANNEL || 'fixed_rate@100ms';
+const PYTH_WS_ALL_DOWN_GRACE_MS = Number(process.env.PYTH_WS_ALL_DOWN_GRACE_MS || 12000);
+const PYTH_WS_HEARTBEAT_TIMEOUT_MS = Number(process.env.PYTH_WS_HEARTBEAT_TIMEOUT_MS || 10000);
+const PYTH_WS_MAX_RETRY_DELAY_MS = Number(process.env.PYTH_WS_MAX_RETRY_DELAY_MS || 2000);
+const PYTH_LAZER_CHANNEL = process.env.PYTH_LAZER_CHANNEL || 'fixed_rate@50ms';
 const PYTH_LIVE_FEED_BACKOFF_MS = Math.max(0, Number(process.env.PYTH_LIVE_FEED_BACKOFF_MS || 5));
 
 // Timestamp of the last *real* WS tick (set only where latestPythLazerTickers is written
@@ -867,9 +872,9 @@ const PYTH_LIVE_FEED_BACKOFF_MS = Math.max(0, Number(process.env.PYTH_LIVE_FEED_
 // pythLazerStatus.connected is set true by REST writers too, so it can't tell REST fallbacks
 // apart from a live WS -- see isPythWsHealthy() / writePythRestTickers() below.
 let lastPythWsTickTs = 0;
-// WS ticks every ~50-100ms when healthy (real_time/50ms subscription), so anything idle
+// WS ticks every ~50ms when healthy (fixed_rate@50ms subscription), so anything idle
 // past this is treated as WS-not-healthy and REST is allowed to fill in.
-const PYTH_WS_TICK_STALE_MS = Number(process.env.PYTH_WS_TICK_STALE_MS || 3000);
+const PYTH_WS_TICK_STALE_MS = Number(process.env.PYTH_WS_TICK_STALE_MS || 5000);
 
 function isPythWsHealthy() {
   return lastPythWsTickTs > 0 && (Date.now() - lastPythWsTickTs) < PYTH_WS_TICK_STALE_MS;
@@ -1039,54 +1044,6 @@ async function startPythLazerService(win) {
 
   pythLazerStatus.initialized = true;
 
-  // ABC easy: start a simple background REST poller using direct + token as soon as we have the key.
-  // This guarantees dataCount and lastDataTs are kept fresh from the proven proxy/direct path,
-  // so the banner never stays stuck on "Waiting for first Pyth tick".
-  // WS realtime (if it ever starts delivering streamUpdated) will still overlay on top.
-  setInterval(async () => {
-    try {
-      if (!token) return;
-      const payload = JSON.stringify({
-        channel: 'real_time',
-        formats: ['evm'],
-        properties: ['price'],
-        priceFeedIds: LAZER_FEED_IDS,
-        parsed: true,
-        jsonBinaryEncoding: 'hex',
-      });
-      const r = await fetch('https://pyth-lazer.dourolabs.app/v1/latest_price', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json',
-        },
-        body: payload,
-      });
-      if (r.ok) {
-        const j = await r.json();
-        const pfeeds = j?.parsed?.priceFeeds || [];
-        if (pfeeds.length) {
-          const nowP = Date.now();
-          const pmap = {};
-          for (const f of pfeeds) {
-            let instr = LAZER_ID_MAP[f.priceFeedId];
-            if (!instr) instr = 'FEED_' + f.priceFeedId;
-            const px = Number(f.price) * Math.pow(10, f.exponent ?? -8);
-            if (px > 0) {
-              pmap[instr] = {
-                instrument_name: instr,
-                last: px,
-                source: 'pyth-rest',
-                timestamp: nowP,
-              };
-            }
-          }
-          writePythRestTickers(pmap, nowP, win);
-        }
-      }
-    } catch (_) {}
-  }, 3000);  // every 3s is plenty to keep age <15s and dataCount >0
-
   // Immediate one-time seed from REST proxies so we have dataCount/lastDataTs right away.
   // This makes the health banner leave "Waiting for first Pyth tick" even before WS or the poller.
   (async () => {
@@ -1182,10 +1139,45 @@ async function startPythLazerService(win) {
   process.env.LAZER_TOKEN = token;
   console.log(`[PythLazer] Env aliases forced from loaded key (len=${token.length})`);
 
+  try {
+    const response = await fetch('https://pyth-lazer.dourolabs.app/v1/latest_price', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        priceFeedIds: LAZER_FEED_IDS,
+        channel: 'fixed_rate@50ms',
+        properties: ['price'],
+        formats: ['evm'],
+        parsed: true,
+      }),
+      signal: AbortSignal.timeout(5000),
+    });
+
+    if ([400, 401, 403].includes(response.status)) {
+      const body = await response.text().catch(() => '');
+      const reason = response.status === 403
+        ? 'token_not_entitled'
+        : (response.status === 401 ? 'invalid_token' : 'invalid_request');
+      pythLazerStatus.wsDisabled = true;
+      pythLazerStatus.wsDisabledReason = reason;
+      pythLazerStatus.wsConnected = false;
+      pythLazerStatus.restFallbackActive = true;
+      pythLazerStatus.transport = 'rest';
+      console.warn(`[PythLazer] WS disabled (${reason}); REST fallback remains active. Preflight HTTP ${response.status}: ${body.slice(0, 240)}`);
+      if (!win.isDestroyed()) win.webContents.send('pyth:status', pythLazerStatus);
+      return true;
+    }
+  } catch (error) {
+    console.warn('[PythLazer] Authorization preflight failed; allowing WS attempt:', error.message);
+  }
+
   const MAX_RETRIES = 3;
   const RETRY_DELAY_MS = 2000;
   const channelCandidates = Array.from(new Set(
-    ['fixed_rate@100ms', 'fixed_rate@200ms', 'fixed_rate@1000ms', 'real_time']
+    ['fixed_rate@50ms', 'fixed_rate@200ms', 'fixed_rate@1000ms', 'real_time']
       .map((s) => String(s || '').trim())
       .filter(Boolean)
   ));
@@ -1207,7 +1199,14 @@ async function startPythLazerService(win) {
       ];
       pythLazerClient = await PythLazerClient.create({
         token,
-        webSocketPoolConfig: { urls: endpoints }
+        webSocketPoolConfig: {
+          urls: endpoints,
+          numConnections: endpoints.length,
+          rwsConfig: {
+            heartbeatTimeoutDurationMs: PYTH_WS_HEARTBEAT_TIMEOUT_MS,
+            maxRetryDelayMs: PYTH_WS_MAX_RETRY_DELAY_MS,
+          },
+        },
       });
       pythLazerStatus.initialized = true;
       console.log('[PythLazer] Realtime client created with token from PYTH_NEW_API / secrets (wired for realtime feeds)');
@@ -1364,8 +1363,16 @@ async function startPythLazerService(win) {
       let pythConsecutiveTimeouts = 0;
       let pythLastFallbackEventTs = 0;
       let pythLastConnectionLostEventTs = 0;
+      let pythAllDownGraceTimer = null;
 
-      // ★ STRICT TIMEOUT WATCHER: If no data arrives within 1000ms, trigger fallback
+      function clearPythAllDownGrace() {
+        if (pythAllDownGraceTimer) {
+          clearTimeout(pythAllDownGraceTimer);
+          pythAllDownGraceTimer = null;
+        }
+      }
+
+      // ★ TIMEOUT WATCHER: if no data arrives within the configured budget, trigger fallback
       function resetPythTimeout() {
         if (pythTimeoutHandle) clearTimeout(pythTimeoutHandle);
         const timeoutBudgetMs = PYTH_FALLBACK_TIMEOUT_MS + PYTH_FALLBACK_GRACE_MS + PYTH_LIVE_FEED_BACKOFF_MS;
@@ -1425,6 +1432,7 @@ async function startPythLazerService(win) {
 
         if (serverType === 'subscribed') {
           console.log(`[PythLazer] ✅ Subscription confirmed (id=${payload?.subscriptionId})`);
+          clearPythAllDownGrace();
           pythLazerStatus.connected = true;
           pythLazerStatus.wsConnected = true;
           pythLazerStatus.restFallbackActive = false;
@@ -1442,6 +1450,7 @@ async function startPythLazerService(win) {
         if (serverType === 'subscribedWithInvalidFeedIdsIgnored') {
           const ignored = payload?.ignoredInvalidFeedIds;
           console.warn('[PythLazer] Subscribed with some invalid feeds ignored:', JSON.stringify(ignored));
+          clearPythAllDownGrace();
           pythLazerStatus.connected = true;
           pythLazerStatus.wsConnected = true;
           pythLazerStatus.restFallbackActive = false;
@@ -1483,8 +1492,8 @@ async function startPythLazerService(win) {
         }
 
         const now = Date.now();
-        // Subscription is fixed_rate@100ms -- floor throttle at 40ms so IPC never
-        // coalesces or drops 100ms ticks even under minor network arrival jitter (e.g. 80-95ms).
+        // Subscription is fixed_rate@50ms -- floor throttle at 40ms so IPC never
+        // coalesces or drops ticks under minor network arrival jitter.
         if (now - lastPush < 40) return;
         lastPush = now;
 
@@ -1529,6 +1538,7 @@ async function startPythLazerService(win) {
           latestPythLazerTickers = prices;
           lastPythWsTickTs = now; // real WS tick -- gates REST fallback writers, see isPythWsHealthy()
           pythLazerStatus.lastWsTickTs = now;
+          clearPythAllDownGrace();
           const smoothedHz = pythWsHzTracker.tick(now);
           if (smoothedHz != null) pythLazerStatus.smoothedHz = smoothedHz;
           // ★ UPDATE STATUS: Track Pyth Lazer health
@@ -1552,7 +1562,7 @@ async function startPythLazerService(win) {
         const now = Date.now();
         const lastWsTickAgeMs = pythLazerStatus.lastWsTickTs ? now - pythLazerStatus.lastWsTickTs : null;
         const restFallbackActive = !isPythWsHealthy();
-        console.error(`[PythLazer] ⚠️ All WebSocket connections down — auto-reconnect triggered (lastWsTickAgeMs=${lastWsTickAgeMs}, restFallbackActive=${restFallbackActive})`);
+        console.warn(`[PythLazer] ⚠️ All WebSocket connections down — SDK recovery grace started (lastWsTickAgeMs=${lastWsTickAgeMs}, restFallbackActive=${restFallbackActive}, graceMs=${PYTH_WS_ALL_DOWN_GRACE_MS})`);
         if (pythTimeoutHandle) {
           clearTimeout(pythTimeoutHandle);
           pythTimeoutHandle = null;
@@ -1572,9 +1582,13 @@ async function startPythLazerService(win) {
             });
           }
         }
-        if (!reconnectInFlight) {
+
+        clearPythAllDownGrace();
+        pythAllDownGraceTimer = setTimeout(() => {
+          pythAllDownGraceTimer = null;
+          if (reconnectInFlight) return;
           reconnectInFlight = true;
-          setTimeout(async () => {
+          (async () => {
             try {
               if (pythLazerClient) {
                 try { pythLazerClient.unsubscribe(1); } catch (_) { }
@@ -1593,13 +1607,21 @@ async function startPythLazerService(win) {
 
               retries = 0;
               const nextChannel = channelCandidates[channelIndex] || activeChannel;
-              console.warn(`[PythLazer] Reconnecting with fallback channel=${nextChannel}`);
+              console.warn(`[PythLazer] Sustained WS outage — rebuilding client with fallback channel=${nextChannel}`);
               await createClientWithRetry(nextChannel);
             } finally {
               reconnectInFlight = false;
             }
-          }, 500);
-        }
+          })();
+        }, PYTH_WS_ALL_DOWN_GRACE_MS);
+      });
+
+      pythLazerClient.addConnectionRestoredListener(() => {
+        clearPythAllDownGrace();
+        console.log('[PythLazer] ✅ WebSocket connection restored by SDK');
+        pythLazerStatus.wsConnected = true;
+        pythLazerStatus.transport = 'websocket';
+        if (!win.isDestroyed()) win.webContents.send('pyth:status', pythLazerStatus);
       });
 
       console.log(`[PythLazer] ✅ Client started — feeds: ${LAZER_FEED_IDS.join(',')} (channel=${activeChannel})`);

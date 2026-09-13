@@ -1392,15 +1392,23 @@ function startPythLazerStream() {
         if (!window.NetworkHealth) return;
         const now = Date.now();
         const ageMs = status?.lastDataTs ? (now - status.lastDataTs) : Number.POSITIVE_INFINITY;
+        const wsAgeMs = status?.lastWsTickTs ? (now - status.lastWsTickTs) : Number.POSITIVE_INFINITY;
         const wsHealthy = status?.wsConnected !== false && ageMs < 6000;
         const restFallbackHealthy = !!status?.restFallbackActive && ageMs < 6000;
         const healthy = !!status?.connected && ageMs < 6000 && (wsHealthy || restFallbackHealthy);
+        const sustainedWsOutage = !wsHealthy && wsAgeMs >= 10000;
         window.NetworkHealth.update('Pyth', {
           status: healthy ? 'healthy' : 'degraded',
           lastFetch: status?.lastDataTs || now,
           fallback: !healthy,
           reason: healthy
-            ? (restFallbackHealthy && !wsHealthy ? 'WS reconnecting; REST fallback active' : '')
+            ? (restFallbackHealthy && sustainedWsOutage
+              ? 'WS reconnecting; REST fallback active'
+              : (restFallbackHealthy
+                ? (status?.wsDisabledReason
+                  ? `REST fallback · WS disabled (${status.wsDisabledReason})`
+                  : 'REST fallback active')
+                : ''))
             : `Stale stream (${Math.max(0, Math.round(ageMs))}ms)`,
         });
       });
@@ -1423,13 +1431,14 @@ function startPythLazerStream() {
         if (!window.NetworkHealth) return;
         const reason = data?.reason || 'Pyth connection lost';
         const restFallbackActive = !!data?.restFallbackActive;
+        const sustainedWsOutage = data?.lastWsTickAgeMs == null || data.lastWsTickAgeMs >= 10000;
         window.NetworkHealth.update('Pyth', {
           status: restFallbackActive ? 'healthy' : 'degraded',
           lastFetch: Date.now(),
           fallback: true,
           transient: true,
           reason: restFallbackActive
-            ? 'WS reconnecting; REST fallback active'
+            ? (sustainedWsOutage ? 'WS reconnecting; REST fallback active' : 'REST fallback active')
             : (reason === 'all_connections_down'
               ? 'all_connections_down (auto-reconnect in progress)'
               : reason),

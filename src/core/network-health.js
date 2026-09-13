@@ -680,6 +680,7 @@
         const dataHealthy = ok && connected && age != null && age < 15_000;
         const wsHealthy = ok && payload?.wsConnected === true && wsAge != null && wsAge < 15_000;
         const restFallbackHealthy = ok && payload?.restFallbackActive === true && dataHealthy;
+        const sustainedWsOutage = !wsHealthy && wsAge != null && wsAge >= 10_000;
         if (currentFreshHealthy && !(dataHealthy && (wsHealthy || restFallbackHealthy))) return;
 
         let status = 'degraded';
@@ -690,12 +691,15 @@
         if (dataHealthy && (wsHealthy || restFallbackHealthy)) {
             status = 'healthy';
             reason = restFallbackHealthy && !wsHealthy
-                ? `${dataCount} ticks · REST fallback active (${Math.round(age / 1000)}s old)`
+                ? `${dataCount} ticks · ${sustainedWsOutage ? 'WS reconnecting; ' : ''}REST fallback active (${Math.round(age / 1000)}s old)`
                 : `${dataCount} ticks · ${Math.round(age / 1000)}s old`;
+            if (restFallbackHealthy && !wsHealthy && payload?.wsDisabledReason) {
+                reason = `${dataCount} ticks · REST fallback · WS disabled (${payload.wsDisabledReason})`;
+            }
             bucket = BUCKETS.UNKNOWN;
             bucketReason = '';
         } else if (dataHealthy && payload?.wsConnected === false) {
-            reason = `${dataCount} ticks · WS reconnecting (${Math.round(age / 1000)}s old)`;
+            reason = `${dataCount} ticks · ${sustainedWsOutage ? 'WS reconnecting' : 'REST fallback active'} (${Math.round(age / 1000)}s old)`;
             bucket = BUCKETS.NETWORK_TRANSPORT;
             bucketReason = 'Pyth WebSocket reconnecting';
         } else if (ok && dataCount > 0) {
