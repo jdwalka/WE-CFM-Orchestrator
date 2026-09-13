@@ -22,13 +22,14 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Run Trivy Vulnerability & Security Scanner
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: 'fs'
           ignore-unfixed: true
           format: 'sarif'
           output: 'trivy-results.sarif'
           severity: 'CRITICAL,HIGH'
+          skip-dirs: 'node_modules,dist,build,WE-CRYPTO-CACHE,WE-CRYPTO-backup-2026-05-01-014815,_consolidated-from-drive,.codeql-results'
 
       - name: Upload Security Scan Results to GitHub Code Scanning
         uses: github/codeql-action/upload-sarif@v3

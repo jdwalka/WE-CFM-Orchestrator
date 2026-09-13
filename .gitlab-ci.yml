@@ -87,6 +87,8 @@ secret_detection:
 
 semgrep-sast:
   stage: security
+  variables:
+    SAST_EXCLUDED_PATHS: 'node_modules/,dist/,build/,WE-CRYPTO-CACHE/,WE-CRYPTO-backup-*/,_consolidated-from-drive/,.codeql-results/'
   allow_failure: true
 
 # ------------------------------------------------------------------------------
