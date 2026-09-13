@@ -949,13 +949,12 @@
     };
 
     const ENDPOINT_HOST_PROBES = [
-        { provider: 'Crypto.com', url: 'https://api.crypto.com/v2/public/get-ticker?instrument_name=BTC_USDT' },
-        { provider: 'Mempool.space', url: 'https://mempool.space/api/blocks/tip/height' },
-        { provider: 'Solana RPC', url: 'https://solana-rpc.publicnode.com', fallbackUrl: 'https://api.mainnet-beta.solana.com', method: 'POST', body: '{"jsonrpc":"2.0","id":1,"method":"getEpochInfo"}' },
-        { provider: 'Etherscan', url: 'https://api.etherscan.io/api?module=proxy&action=eth_blockNumber' },
-        { provider: 'XRP Ledger', url: 'https://xrplcluster.com', fallbackUrl: 'https://s1.ripple.com:51234', method: 'POST', body: '{"method":"server_info","params":[{}]}' },
-        { provider: 'Alchemy RPC', url: 'https://ethereum.publicnode.com', fallbackUrl: 'https://cloudflare-eth.com', method: 'POST', body: '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber"}' },
-        { provider: 'LocalProxy', url: 'http://127.0.0.1:3010/health' },
+        { provider: 'Crypto.com', url: 'https://api.crypto.com/v2/public/get-ticker?instrument_name=BTC_USDT', viaProxy: true },
+        { provider: 'Mempool.space', url: 'https://mempool.space/api/blocks/tip/height', viaProxy: true },
+        { provider: 'Solana RPC', url: 'https://solana-rpc.publicnode.com', fallbackUrl: 'https://api.mainnet-beta.solana.com', method: 'POST', body: '{"jsonrpc":"2.0","id":1,"method":"getEpochInfo"}', viaProxy: true },
+        { provider: 'Etherscan', url: 'https://api.etherscan.io/api?module=proxy&action=eth_blockNumber', viaProxy: true },
+        { provider: 'XRP Ledger', url: 'https://xrplcluster.com', fallbackUrl: 'https://s1.ripple.com:51234', method: 'POST', body: '{"method":"server_info","params":[{}]}' , viaProxy: true },
+        { provider: 'Alchemy RPC', url: 'https://ethereum.publicnode.com', fallbackUrl: 'https://cloudflare-eth.com', method: 'POST', body: '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber"}', viaProxy: true },
     ];
 
     const ENDPOINT_PROBE_STALE_MS = 90_000;
@@ -1003,10 +1002,13 @@
             endpointProbeCursor = (endpointProbeCursor + due.length) % ENDPOINT_HOST_PROBES.length;
 
             for (const cfg of due) {
-                // Use direct fetch for probes - proxyFetch routes through the
-                // local proxy which returns 404 for probe endpoints and
-                // retries up to 3 times, causing cascading timeouts.
-                const fetchFn = fetch;
+                // Route RPC/datacenter endpoints through the local proxy (SOCKS
+                // egress) — they are geo-blocked or slow when hit directly and
+                // previously burned 10s timeouts every cycle. LocalProxy is
+                // sourced from the bridge state, not probed over HTTP.
+                const fetchFn = cfg.viaProxy && typeof window.proxyFetch === 'function'
+                    ? (url, opts) => window.proxyFetch(url, { ...opts, retries: 1 })
+                    : fetch;
 
                 const fetchWithTimeout = async (url) => {
                     const ctrl = new AbortController();
@@ -1043,7 +1045,7 @@
                     update(cfg.provider, {
                         status: ok ? 'healthy' : 'degraded',
                         lastFetch: now,
-                        fallback: fetchFn !== fetch,
+                        fallback: !!cfg.viaProxy,
                         optional: true,
                         transient: !ok,
                         reason: ok ? 'Endpoint probe OK' : `Endpoint probe HTTP ${res?.status || 'error'}`,
@@ -1067,7 +1069,7 @@
                         update(cfg.provider, {
                             status: 'degraded',
                             lastFetch: now,
-                            fallback: fetchFn !== fetch,
+                            fallback: !!cfg.viaProxy,
                             optional: true,
                             transient: true,
                             reason: String(err?.message || err || 'endpoint probe failed').slice(0, 120),

@@ -3046,7 +3046,7 @@ function isPathSafe(targetPath) {
 
   if (realTarget === WORKSPACE_ROOT || realTarget.startsWith(WORKSPACE_ROOT + path.sep)) return true;
   const upper = realTarget.toUpperCase();
-  if (upper.includes('\\MY DRIVE') || upper.includes('\\WE-CRYPTO') || upper.includes('\\WECRYPTO') || upper.includes('\\ONEDRIVE')) return true;
+  if (upper.includes('\\MY DRIVE') || upper.includes('\\WE-CRYPTO') || upper.includes('\\WECRYPTO') || upper.includes('\\WECRYP\\') || upper.includes('\\ONEDRIVE')) return true;
   return false;
 }
 
