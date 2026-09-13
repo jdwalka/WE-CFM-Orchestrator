@@ -12,6 +12,10 @@ _HEADERS = {"User-Agent": "wecryp-truffle/1.0 (+https://agentverse.ai)"}
 _TAIL_EVENT_NORMAL_P = 0.20
 DISTRIBUTION_FALLBACK_MIN_SAMPLE = 500
 DISTRIBUTION_FALLBACK_BRIER_IMPROVEMENT = 0.05
+PROBABILITY_CORRECTION_PRIOR_STRENGTH = 200.0
+PROBABILITY_CORRECTION_MIN_SAMPLES = 30
+PROBABILITY_CORRECTION_MAX_SHRINK = 0.85
+PROBABILITY_CORRECTION_FLOOR = 0.0005
 
 
 def _connect() -> sqlite3.Connection:
@@ -36,6 +40,9 @@ def _initialize(connection: sqlite3.Connection) -> None:
             p_touch REAL NOT NULL,
             p_normal REAL NOT NULL,
             p_student_t REAL NOT NULL,
+            p_base REAL,
+            p_calibrated REAL,
+            calibration_factor REAL,
             tail_adjustment REAL NOT NULL,
             alt_aligned INTEGER NOT NULL,
             minutes_to_expiry INTEGER NOT NULL,
@@ -66,6 +73,9 @@ def _migrate(connection: sqlite3.Connection) -> None:
         row[1] for row in connection.execute("PRAGMA table_info(predictions)")
     }
     migrations = {
+        "p_base": "ALTER TABLE predictions ADD COLUMN p_base REAL",
+        "p_calibrated": "ALTER TABLE predictions ADD COLUMN p_calibrated REAL",
+        "calibration_factor": "ALTER TABLE predictions ADD COLUMN calibration_factor REAL",
         "tail_arrived": "ALTER TABLE predictions ADD COLUMN tail_arrived INTEGER",
         "resolution_source": "ALTER TABLE predictions ADD COLUMN resolution_source TEXT",
         "outcome_window_start_utc": "ALTER TABLE predictions ADD COLUMN outcome_window_start_utc TEXT",
@@ -75,6 +85,14 @@ def _migrate(connection: sqlite3.Connection) -> None:
     for column, statement in migrations.items():
         if column not in columns:
             connection.execute(statement)
+    connection.execute(
+        "UPDATE predictions SET p_base = COALESCE(p_base, p_student_t) "
+        "WHERE p_base IS NULL"
+    )
+    connection.execute(
+        "UPDATE predictions SET calibration_factor = COALESCE(calibration_factor, 1.0) "
+        "WHERE calibration_factor IS NULL"
+    )
     connection.commit()
 
 
@@ -116,6 +134,9 @@ def record_prediction(
     tail_adjustment: float,
     alt_aligned: bool,
     minutes_to_expiry: int,
+    p_base: float | None = None,
+    p_calibrated: float | None = None,
+    calibration_factor: float = 1.0,
 ) -> bool:
     """Append one prediction; duplicate timestamp/band/expiry rows are ignored."""
     try:
@@ -125,9 +146,10 @@ def record_prediction(
                 """
                 INSERT OR IGNORE INTO predictions (
                     prediction_key, timestamp_utc, band, low, high, expiry_utc,
-                    p_touch, p_normal, p_student_t, tail_adjustment, alt_aligned,
+                    p_touch, p_normal, p_student_t, p_base, p_calibrated,
+                    calibration_factor, tail_adjustment, alt_aligned,
                     minutes_to_expiry, model_version
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     _prediction_key(timestamp, band, expiry),
@@ -139,6 +161,9 @@ def record_prediction(
                     float(p_touch),
                     float(p_normal),
                     float(p_student_t),
+                    float(p_base if p_base is not None else p_student_t),
+                    float(p_calibrated if p_calibrated is not None else p_touch),
+                    float(calibration_factor),
                     float(tail_adjustment),
                     int(alt_aligned),
                     int(minutes_to_expiry),
@@ -257,6 +282,64 @@ def _window_stats(connection: sqlite3.Connection, where: str, args: tuple = ()) 
     }
 
 
+def _probability_correction(connection: sqlite3.Connection) -> dict:
+    """Empirical-Bayes shrinkage of raw model probabilities toward outcomes."""
+    row = connection.execute(
+        """
+        SELECT COUNT(*), SUM(p_base), SUM(touched)
+        FROM (
+            SELECT p_base, touched
+            FROM predictions
+            WHERE resolved_at_utc IS NOT NULL AND p_base IS NOT NULL
+            ORDER BY resolved_at_utc DESC, id DESC
+            LIMIT 200
+        )
+        """
+    ).fetchone()
+    sample_count, predicted_sum, realized_sum = row
+    sample_count = int(sample_count or 0)
+    predicted_sum = float(predicted_sum or 0.0)
+    realized_sum = float(realized_sum or 0.0)
+
+    if sample_count < PROBABILITY_CORRECTION_MIN_SAMPLES or predicted_sum <= 0:
+        return {
+            "correction_factor": 1.0,
+            "active": False,
+            "samples": sample_count,
+            "sum_predicted": round(predicted_sum, 4),
+            "sum_realized": round(realized_sum, 4),
+            "raw_ratio": None,
+            "posterior_ratio": 1.0,
+            "prior_strength": PROBABILITY_CORRECTION_PRIOR_STRENGTH,
+            "min_samples": PROBABILITY_CORRECTION_MIN_SAMPLES,
+            "max_shrink": PROBABILITY_CORRECTION_MAX_SHRINK,
+            "floor": PROBABILITY_CORRECTION_FLOOR,
+            "reason": "insufficient resolved outcomes; correction disabled",
+        }
+
+    raw_ratio = realized_sum / predicted_sum
+    evidence_weight = sample_count / (sample_count + PROBABILITY_CORRECTION_PRIOR_STRENGTH)
+    posterior_ratio = evidence_weight * raw_ratio + (1.0 - evidence_weight)
+    correction_factor = max(posterior_ratio, PROBABILITY_CORRECTION_MAX_SHRINK)
+    return {
+        "correction_factor": round(correction_factor, 4),
+        "active": True,
+        "samples": sample_count,
+        "sum_predicted": round(predicted_sum, 4),
+        "sum_realized": round(realized_sum, 4),
+        "raw_ratio": round(raw_ratio, 4),
+        "posterior_ratio": round(posterior_ratio, 4),
+        "prior_strength": PROBABILITY_CORRECTION_PRIOR_STRENGTH,
+        "min_samples": PROBABILITY_CORRECTION_MIN_SAMPLES,
+        "max_shrink": PROBABILITY_CORRECTION_MAX_SHRINK,
+        "floor": PROBABILITY_CORRECTION_FLOOR,
+        "reason": (
+            "raw realized/predicted ratio blended with a no-bias prior; "
+            "factor clamped to prevent small-sample overcorrection"
+        ),
+    }
+
+
 def get_calibration_report() -> dict:
     """Rolling and bucketed Brier/calibration report for recent predictions."""
     now = datetime.now(timezone.utc)
@@ -324,6 +407,7 @@ def get_calibration_report() -> dict:
                 "resolution_source": "coinbase_1m_v2",
             }
             report["distribution_selection"] = _distribution_selection(report)
+            report["probability_correction"] = _probability_correction(connection)
             return report
     except sqlite3.Error as error:
         return {"status": "storage_error", "error": str(error)}

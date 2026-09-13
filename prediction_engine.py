@@ -646,6 +646,13 @@ def _apply_tail_adjustment(probability: float, adjustment: float) -> float:
     return min(1.0, max(0.0, probability * (1.0 + adjustment)))
 
 
+def _apply_probability_correction(probability: float, correction: dict) -> float:
+    """Shrink a raw model probability using empirical-Bayes calibration."""
+    factor = float(correction.get("correction_factor", 1.0) or 1.0)
+    floor = float(correction.get("floor", 0.0) or 0.0)
+    return max(probability * factor, floor)
+
+
 # ---------------------------------------------------------------------------
 # Core engine
 # ---------------------------------------------------------------------------
@@ -799,6 +806,12 @@ def predict_hourly_range() -> dict:
         "reason": "calibration report unavailable; Student-t default retained",
     })
     active_distribution = distribution_selection.get("active_distribution", "student_t")
+    probability_correction = calibration_report.get("probability_correction", {
+        "correction_factor": 1.0,
+        "active": False,
+        "floor": 0.0,
+        "reason": "calibration report unavailable; correction disabled",
+    })
 
     range_pct = max(expected_move, MIN_RANGE_PCT)
     center_shift = bias * range_pct * CENTER_SHIFT_FACTOR
@@ -857,7 +870,9 @@ def predict_hourly_range() -> dict:
             low, high, spot, sigma_hourly_pct, drift_pct, df, minutes_to_expiry
         )
         p_selected = p_normal if active_distribution == "normal" else p_student_t
-        p_touch = _apply_tail_adjustment(p_selected, tail_adjustment)
+        p_base = p_selected
+        p_calibrated = _apply_probability_correction(p_base, probability_correction)
+        p_touch = _apply_tail_adjustment(p_calibrated, tail_adjustment)
 
         fair_value = p_touch * 100
         residual = ask - fair_value
@@ -875,9 +890,12 @@ def predict_hourly_range() -> dict:
             "p_student_t": round(p_student_t, 3),
             "p_selected": round(p_selected, 3),
             "selected_distribution": active_distribution,
+            "p_base": round(p_base, 5),
+            "p_calibrated": round(p_calibrated, 5),
+            "calibration_factor": probability_correction.get("correction_factor", 1.0),
             "tail_delta": round(tail_delta, 3),
             "tail_premium_cents": round(tail_delta * 100, 1),
-            "p_touch_raw": round(p_selected, 3),
+            "p_touch_raw": round(p_base, 3),
             "tail_adjustment": tail_adjustment,
             "p_touch_adjusted": round(p_touch, 3),
             "p_touch": round(p_touch, 3),
@@ -914,10 +932,17 @@ def predict_hourly_range() -> dict:
                 )
                 p_student_t = p
                 p_selected = p_normal if active_distribution == "normal" else p_student_t
-                adjusted = _apply_tail_adjustment(p_selected, tail_adjustment)
+                p_base = p_selected
+                p_calibrated = _apply_probability_correction(p_base, probability_correction)
+                adjusted = _apply_tail_adjustment(p_calibrated, tail_adjustment)
                 row[f"p_{m}m"] = round(adjusted, 3)
                 row[f"p_normal_{m}m"] = round(p_normal, 3)
                 row[f"p_student_t_{m}m"] = round(p_student_t, 3)
+                row[f"p_base_{m}m"] = round(p_base, 5)
+                row[f"p_calibrated_{m}m"] = round(p_calibrated, 5)
+                row[f"calibration_factor_{m}m"] = probability_correction.get(
+                    "correction_factor", 1.0
+                )
                 row[f"selected_distribution_{m}m"] = active_distribution
                 row[f"tail_adjustment_{m}m"] = tail_adjustment
         decay_table.append(row)
@@ -938,6 +963,9 @@ def predict_hourly_range() -> dict:
             tail_adjustment=strike["tail_adjustment"],
             alt_aligned=alt_signal.get("aligned", False),
             minutes_to_expiry=minutes_to_expiry,
+            p_base=strike["p_base"],
+            p_calibrated=strike["p_calibrated"],
+            calibration_factor=strike["calibration_factor"],
         )
     calibration_report = get_calibration_report()
 
@@ -980,6 +1008,7 @@ def predict_hourly_range() -> dict:
         "alt_alignment_warning": alt_signal.get("aligned", False),
         "calibration": calibration_report,
         "distribution_selection": distribution_selection,
+        "probability_correction": probability_correction,
         "ladder_feed_status": ladder_feed_status,
         "regime": regime,
         "strike_probs": strike_probs,
