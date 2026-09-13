@@ -15,6 +15,7 @@ This repository includes workspace-specific agents for the WE CFM Orchestrator p
 - `Smart Money Flow Agent` — specialized for spoofing heuristics, iceberg detection, absorption, delta, and order-flow toxicity.
 - `Signal Clarity Agent` — specialized in UP/DOWN, YES/NO, green/red label semantics, confidence presentation, and execution cue clarity.
 - `ASI1 GitHub Agent` — reviews pull requests and implements `/asi1 fix` requests from the GitHub UI.
+- `Signal Clarity Agent` — specialized for UP/DOWN, YES/NO, green/red label semantics, confidence presentation, and execution cue clarity.
 
 ## Security Scanning Policy
 
