@@ -500,9 +500,9 @@ class OrbitalIngestor {
     // ─── s + p orbital: Pyth Lazer / Hermes WebSocket ───────────────────────────
     connectPythLazer() {
         if (this._stopped) return;
-        const token = process.env.PYTH_LAZER_TOKEN || process.env.LAZER_TOKEN || process.env.PYTH_API || '';
+        const token = process.env.PYTH_NEW_API || '';
         if (!token) {
-            console.warn('[OrbitalIngestor] Pyth Lazer disabled: missing PYTH_LAZER_TOKEN/LAZER_TOKEN/PYTH_API.');
+            console.warn('[OrbitalIngestor] Pyth Lazer disabled: missing PYTH_NEW_API.');
             return;
         }
         const wsUrl = `wss://pyth-lazer-1.dourolabs.app/v1/stream`;
