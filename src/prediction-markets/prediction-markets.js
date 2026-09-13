@@ -2359,10 +2359,12 @@
             const locked = _lockPolymarketPriceToBeat(slug, pmOpen, 'polymarket-event-page');
             if (locked) {
               _poly5mPriceToBeatCache[slug] = { value: locked.price, fetchedAt: Date.now() };
+              return locked.price;
             }
-            return locked;
-          })
-          .catch(() => null);
+          }
+        } catch (e) {
+          console.warn(`[Poly5M-PTB] Polymarket event-page lookup failed for ${slug}:`, e?.message || e);
+        }
 
       }
     }
