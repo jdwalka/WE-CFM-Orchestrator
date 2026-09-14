@@ -213,8 +213,8 @@
     const secondsToClose = Number.isFinite(closeMs)
       ? Math.max(0, Math.round((closeMs - now) / 1000))
       : null;
-    const yesProb = Number.isFinite(Number(p.probability)) ? Number(p.probability) : null;
-    const targetPriceNum = Number.isFinite(Number(p.targetPriceNum)) ? Number(p.targetPriceNum) : null;
+    const yesProb = Number.isFinite(Number(p?.probability)) ? Number(p.probability) : null;
+    const targetPriceNum = Number.isFinite(Number(p?.targetPriceNum)) ? Number(p.targetPriceNum) : null;
     const targetPrice = p?.targetPrice
       || (targetPriceNum != null
         ? (window.CoinPrecision?.formatCoinStrike
