@@ -196,20 +196,27 @@ if (themeBtn) {
 activateNav(currentView);
 
 document.querySelectorAll('.nav-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      _userInteractedWithNav = true;
-      if (currentView === 'hourly-ranges' && btn.dataset.view !== 'hourly-ranges') {
-        window.HourlyRangesPanel?.stopAutoLoad?.();
-      }
-      currentView = btn.dataset.view;
-      activateNav(currentView);
-      persistUIState();
-      updateHeaderSummary();
-      render();
-      syncPredictionRefresh();
-      // close mobile sidebar
-      $('#sidebar')?.classList.remove('open');
-    });
+  btn.addEventListener('click', () => {
+    _userInteractedWithNav = true;
+    if (currentView === 'hourly-ranges' && btn.dataset.view !== 'hourly-ranges') {
+      window.HourlyRangesPanel?.stopAutoLoad?.();
+    }
+    currentView = btn.dataset.view;
+    window._marketsHorizon = '5m';
+    window._markets5mLastFingerprint = null;
+    activateNav(currentView);
+    persistUIState();
+    updateHeaderSummary();
+    render();
+    syncPredictionRefresh();
+    // close mobile sidebar
+    $('#sidebar')?.classList.remove('open');
+  });
+});
+
+  window.addEventListener('pageshow', () => {
+    window._marketsHorizon = '5m';
+    window._markets5mLastFingerprint = null;
   });
 
 if (menuBtn) menuBtn.addEventListener('click', () => $('#sidebar').classList.toggle('open'));
@@ -1247,13 +1254,6 @@ fetchAll().then(() => {
     setTimeout(() => { if (window.CexFlow) window.CexFlow.start(); }, 3000);
     // On-chain compressor for BTC/ETH/SOL → Grok packets + size mult (after ChainRouter/Cex warm)
     setTimeout(() => { if (window.OnChainFlow) window.OnChainFlow.start(); }, 4500);
-    setTimeout(() => {
-      try {
-        if (window.WhaleAlertMonitor && typeof window.WhaleAlertMonitor.startMonitoring === 'function') {
-          window.WhaleAlertMonitor.startMonitoring(['BTC', 'ETH', 'SOL']);
-        }
-      } catch (_) {}
-    }, 5000);
     setTimeout(() => { if (window.DerivativesFeed) window.DerivativesFeed.start(); }, 3500);
     setTimeout(() => { if (window.OptionsGammaFeed) window.OptionsGammaFeed.start(); }, 4000);
   }).catch(err => {

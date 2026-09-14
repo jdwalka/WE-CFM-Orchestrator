@@ -63,9 +63,19 @@ const KALSHI_WORKER_URL  = process.env.KALSHI_WORKER_URL || 'http://localhost:30
 // Kalshi sentiment poll interval (30 s — fast enough to track rapid contract price moves)
 const KALSHI_POLL_INTERVAL_MS = 30_000;
 
-const ASSETS = ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'BNB', 'HYPE'];
-const COINBASE_PRODUCTS = ['BTC-USD', 'ETH-USD', 'SOL-USD', 'XRP-USD', 'DOGE-USD', 'HYPE-USD'];
+const ASSETS = ['BTC', 'ETH', 'SOL', 'XRP'];
+const COINBASE_PRODUCTS = ['BTC-USD', 'ETH-USD', 'SOL-USD', 'XRP-USD'];
 const COINBASE_ASSETS = COINBASE_PRODUCTS.map(product => product.split('-')[0]);
+const RECONNECT_BACKOFF_BASE_MS = 5_000;
+const RECONNECT_BACKOFF_MAX_MS = 60_000;
+
+function nextReconnectDelay(name) {
+    const key = `_reconnectAttempts_${name}`;
+    const attempts = Number(this[key] || 0) + 1;
+    this[key] = attempts;
+    const delay = Math.min(RECONNECT_BACKOFF_BASE_MS * Math.pow(2, attempts - 1), RECONNECT_BACKOFF_MAX_MS);
+    return delay;
+}
 
 // --- p-orbital: Rolling VWAP state ---
 // Maintains a per-asset circular buffer of the last 20 Coinbase ticks
@@ -204,7 +214,9 @@ class OrbitalIngestor {
         this.connectCoinbase();
         this.connectHyperliquid();
         this.startPolymarketPoll();
-        this.connectPythLazer();
+        // Pyth Lazer is already connected via the main PythLazerClient pool in
+        // electron/main.js; opening a second direct WebSocket here with the same
+        // token caused the server to kick connections in a reconnect storm.
     }
 
     stop() {
@@ -289,11 +301,14 @@ class OrbitalIngestor {
 
     connectCoinbase() {
         if (this._stopped) return;
+        const stale = this.connections.get('coinbase');
+        if (stale) { try { stale.terminate(); } catch (_) {} this.connections.delete('coinbase'); }
         const ws = new WebSocket(COINBASE_WS_URL);
         this.connections.set('coinbase', ws);
 
         ws.on('open', () => {
             console.log('[OrbitalIngestor] Coinbase connected.');
+            this._reconnectAttempts_coinbase = 0;
             ws.send(JSON.stringify({
                 type: 'subscribe',
                 channel: 'heartbeats'
@@ -360,7 +375,7 @@ class OrbitalIngestor {
         ws.on('error', (err) => console.warn('[OrbitalIngestor] Coinbase error:', err.message));
         ws.on('close', () => {
             this.connections.delete('coinbase');
-            if (!this._stopped) setTimeout(() => this.connectCoinbase(), 5000);
+            if (!this._stopped) setTimeout(() => this.connectCoinbase(), nextReconnectDelay.call(this, 'coinbase'));
         });
     }
 
@@ -368,11 +383,14 @@ class OrbitalIngestor {
 
     connectHyperliquid() {
         if (this._stopped) return;
+        const stale = this.connections.get('hyperliquid');
+        if (stale) { try { stale.terminate(); } catch (_) {} this.connections.delete('hyperliquid'); }
         const ws = new WebSocket(HYPERLIQUID_WS_URL);
         this.connections.set('hyperliquid', ws);
 
         ws.on('open', () => {
             console.log('[OrbitalIngestor] Hyperliquid connected.');
+            this._reconnectAttempts_hyperliquid = 0;
             ASSETS.forEach(asset => {
                 ws.send(JSON.stringify({
                     method: 'subscribe',
@@ -402,7 +420,7 @@ class OrbitalIngestor {
         ws.on('error', (err) => console.warn('[OrbitalIngestor] Hyperliquid error:', err.message));
         ws.on('close', () => {
             this.connections.delete('hyperliquid');
-            if (!this._stopped) setTimeout(() => this.connectHyperliquid(), 5000);
+            if (!this._stopped) setTimeout(() => this.connectHyperliquid(), nextReconnectDelay.call(this, 'hyperliquid'));
         });
     }
 
@@ -482,13 +500,17 @@ class OrbitalIngestor {
     // ─── s + p orbital: Pyth Lazer / Hermes WebSocket ───────────────────────────
     connectPythLazer() {
         if (this._stopped) return;
-        const token = process.env.PYTH_LAZER_TOKEN || process.env.LAZER_TOKEN || process.env.PYTH_API || '4XYJeYbsqoqu7dWPBXhkaWmHc7c8Hutkk3e6AGsoJkJ6';
+        const token = process.env.PYTH_NEW_API || '';
+        if (!token) {
+            console.warn('[OrbitalIngestor] Pyth Lazer disabled: missing PYTH_NEW_API.');
+            return;
+        }
         const wsUrl = `wss://pyth-lazer-1.dourolabs.app/v1/stream`;
         const ws = new WebSocket(wsUrl, { headers: { Authorization: `Bearer ${token}` } });
         this.connections.set('pyth_lazer', ws);
 
         const pythIds = {
-            1: 'BTC', 2: 'ETH', 6: 'SOL', 10: 'DOGE', 13: 'DOGE', 14: 'XRP', 15: 'BNB'
+            1: 'BTC', 2: 'ETH', 6: 'SOL', 10: 'DOGE', 14: 'XRP', 15: 'BNB'
         };
 
         ws.on('open', () => {
@@ -497,7 +519,7 @@ class OrbitalIngestor {
                 ws.send(JSON.stringify({
                     type: 'subscribe',
                     subscriptionId: 1,
-                    priceFeedIds: [1, 2, 6, 13, 14, 15],
+                    priceFeedIds: [1, 2, 6, 10, 14, 15],
                     properties: ["price", "bestBidPrice", "bestAskPrice", "confidence", "exponent"],
                     channel: 'fixed_rate@200ms',
                     deliveryFormat: 'json',

@@ -386,7 +386,7 @@
         const proxy = transport.proxy || {};
         if (proxy.mode || proxy.healthy === false || proxy.bypassActive) {
             update('LocalProxy', {
-                status: proxy.mode === 'proxy' && proxy.healthy ? 'healthy' : 'degraded',
+                status: proxy.mode === 'proxy' && !proxy.healthy ? 'degraded' : 'healthy',
                 lastFetch: proxy.ts || Date.now(),
                 fallback: proxy.mode === 'bypass' || !!proxy.bypassActive,
                 transient: !!proxy.bypassActive || proxy.healthy === false,
@@ -556,6 +556,19 @@
     function refreshPolymarketStatus(now) {
         const predictionMarkets = window.PredictionMarkets;
         if (!predictionMarkets || typeof predictionMarkets.getStatus !== 'function') {
+            const wsStatus = window.PolymarketWS?.getStatus?.() || {};
+            if (wsStatus.clobConnected || wsStatus.rtdsConnected) {
+                bridgeUpdate('Polymarket', {
+                    status: 'healthy',
+                    lastFetch: Date.now(),
+                    fallback: false,
+                    transient: false,
+                    reason: `CLOB/RTDS WS connected (${wsStatus.subscribedAssetsCount || 0} feeds) · PredictionMarkets layer unavailable`,
+                    bucket: BUCKETS.UNKNOWN,
+                    bucketReason: '',
+                });
+                return;
+            }
             if (now - localStatusBridgeStartedAt < POLYMARKET_STARTUP_GRACE_MS) {
                 bridgeUpdate('Polymarket', {
                     status: 'unknown',
@@ -655,25 +668,40 @@
         const initialized = !!payload?.initialized;
         const connected = !!payload?.connected;
         const lastDataTs = Number(payload?.lastDataTs || 0);
+        const lastWsTickTs = Number(payload?.lastWsTickTs || 0);
         const age = lastDataTs ? Math.max(0, now - lastDataTs) : null;
+        const wsAge = lastWsTickTs ? Math.max(0, now - lastWsTickTs) : null;
         const dataCount = Number(payload?.dataCount || 0);
         const timeoutCount = Number(payload?.timeoutCount || 0);
         const currentFreshHealthy = current.status === 'healthy' &&
             Number(current.lastFetch || 0) > 0 &&
             (now - Number(current.lastFetch)) < 30_000;
 
-        if (currentFreshHealthy && !(ok && connected && age != null && age < 15_000)) return;
+        const dataHealthy = ok && connected && age != null && age < 15_000;
+        const wsHealthy = ok && payload?.wsConnected === true && wsAge != null && wsAge < 15_000;
+        const restFallbackHealthy = ok && payload?.restFallbackActive === true && dataHealthy;
+        const sustainedWsOutage = !wsHealthy && wsAge != null && wsAge >= 10_000;
+        if (currentFreshHealthy && !(dataHealthy && (wsHealthy || restFallbackHealthy))) return;
 
         let status = 'degraded';
         let reason = payload?.error || 'Pyth Lazer status unavailable';
         let bucket = BUCKETS.APP_LOGIC;
         let bucketReason = reason;
 
-        if (ok && connected && age != null && age < 15_000) {
+        if (dataHealthy && (wsHealthy || restFallbackHealthy)) {
             status = 'healthy';
-            reason = `${dataCount} ticks · ${Math.round(age / 1000)}s old`;
+            reason = restFallbackHealthy && !wsHealthy
+                ? `${dataCount} ticks · ${sustainedWsOutage ? 'WS reconnecting; ' : ''}REST fallback active (${Math.round(age / 1000)}s old)`
+                : `${dataCount} ticks · ${Math.round(age / 1000)}s old`;
+            if (restFallbackHealthy && !wsHealthy && payload?.wsDisabledReason) {
+                reason = `${dataCount} ticks · REST fallback · WS disabled (${payload.wsDisabledReason})`;
+            }
             bucket = BUCKETS.UNKNOWN;
             bucketReason = '';
+        } else if (dataHealthy && payload?.wsConnected === false) {
+            reason = `${dataCount} ticks · ${sustainedWsOutage ? 'WS reconnecting' : 'REST fallback active'} (${Math.round(age / 1000)}s old)`;
+            bucket = BUCKETS.NETWORK_TRANSPORT;
+            bucketReason = 'Pyth WebSocket reconnecting';
         } else if (ok && dataCount > 0) {
             reason = age == null
                 ? `${dataCount} ticks · stale`
@@ -952,18 +980,19 @@
     };
 
     const ENDPOINT_HOST_PROBES = [
-        { provider: 'Crypto.com', url: 'https://api.crypto.com/v2/public/get-ticker?instrument_name=BTC_USDT' },
-        { provider: 'Mempool.space', url: 'https://mempool.space/api/blocks/tip/height' },
-        { provider: 'Solana RPC', url: 'https://api.mainnet-beta.solana.com', fallbackUrl: 'https://solana-mainnet.g.alchemy.com/v2/UNcUYppLXPl4s0jAkQe_J', method: 'POST', body: '{"jsonrpc":"2.0","id":1,"method":"getEpochInfo"}' },
-        { provider: 'Etherscan', url: 'https://api.etherscan.io/api?module=proxy&action=eth_blockNumber' },
-        { provider: 'XRP Ledger', url: 'https://xrplcluster.com', fallbackUrl: 'https://s1.ripple.com:51234', method: 'POST', body: '{"method":"server_info","params":[{}]}' },
-        { provider: 'Alchemy RPC', url: 'https://ethereum.publicnode.com', fallbackUrl: 'https://cloudflare-eth.com', method: 'POST', body: '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber"}' },
-        { provider: 'Whale Alert', url: 'https://mempool.space/api/blocks/tip/height' },
+        { provider: 'Crypto.com', url: 'https://api.crypto.com/v2/public/get-ticker?instrument_name=BTC_USDT', viaProxy: true },
+        { provider: 'Mempool.space', url: 'https://mempool.space/api/blocks/tip/height', viaProxy: true },
+        { provider: 'Solana RPC', url: 'https://solana-rpc.publicnode.com', fallbackUrl: 'https://api.mainnet-beta.solana.com', method: 'POST', body: '{"jsonrpc":"2.0","id":1,"method":"getEpochInfo"}', viaProxy: true, validateJson: true },
+        { provider: 'Etherscan', url: null, viaProxy: true, validateJson: true },
+        { provider: 'XRP Ledger', url: 'https://xrplcluster.com', fallbackUrl: 'https://s1.ripple.com:51234', method: 'POST', body: '{"method":"server_info","params":[{}]}' , viaProxy: true, validateJson: true },
+        { provider: 'Alchemy RPC', url: 'https://ethereum.publicnode.com', fallbackUrl: 'https://cloudflare-eth.com', method: 'POST', body: '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber"}', viaProxy: true, validateJson: true },
         { provider: 'LocalProxy', url: 'http://127.0.0.1:3010/health' },
     ];
 
     const ENDPOINT_PROBE_STALE_MS = 90_000;
     const ENDPOINT_PROBE_BATCH = 4;
+    const ENDPOINT_PROBE_FAILURE_THRESHOLD = 3;
+    const endpointProbeFailures = {};
     let endpointProbeCursor = 0;
     let endpointProbeInFlight = false;
     let optionalWarmCounter = 0;
@@ -1004,39 +1033,97 @@
             endpointProbeCursor = (endpointProbeCursor + due.length) % ENDPOINT_HOST_PROBES.length;
 
             for (const cfg of due) {
+                // Route RPC/datacenter endpoints through the local proxy (SOCKS
+                // egress) — they are geo-blocked or slow when hit directly and
+                // previously burned 10s timeouts every cycle. LocalProxy is
+                // sourced from the bridge state, not probed over HTTP.
+                const fetchFn = cfg.viaProxy && typeof window.proxyFetch === 'function'
+                    ? (url, opts) => window.proxyFetch(url, { ...opts, retries: 1 })
+                    : fetch;
+
+            const fetchWithTimeout = async (url) => {
                 const ctrl = new AbortController();
-                const timer = setTimeout(() => ctrl.abort(new Error('endpoint-probe-timeout')), 4500);
-                const fetchFn = typeof window.proxyFetch === 'function' ? window.proxyFetch : fetch;
+                const timer = setTimeout(() => ctrl.abort(new Error('endpoint-probe-timeout')), 8000);
                 try {
-                    let res = await fetchFn(cfg.url, {
-                        method: cfg.method || 'GET',
-                        cache: 'no-store',
-                        signal: ctrl.signal,
-                        headers: cfg.body
-                            ? { Accept: 'application/json', 'Content-Type': 'application/json' }
-                            : { Accept: 'application/json,*/*' },
-                        body: cfg.body || undefined,
+                    return await fetchFn(url, {
+                            method: cfg.method || 'GET',
+                            cache: 'no-store',
+                            signal: ctrl.signal,
+                            retries: 1,
+                            headers: cfg.body
+                                ? { Accept: 'application/json', 'Content-Type': 'application/json' }
+                                : { Accept: 'application/json,*/*' },
+                            body: cfg.body || undefined,
+                        });
+                    } finally {
+                        clearTimeout(timer);
+                    }
+                };
+
+                const etherscanKey = window.__env?.ETHERSCAN_API_KEY
+                    || window.__env?.ETHERSCAN_API_KEY_2
+                    || window.__env?.ETHERSCAN_API_KEY_3
+                    || '';
+                if (cfg.provider === 'Etherscan' && !etherscanKey) {
+                    update(cfg.provider, {
+                        status: 'unknown',
+                        lastFetch: now,
+                        fallback: false,
+                        optional: true,
+                        transient: true,
+                        reason: 'Etherscan API key unavailable',
+                        bucket: BUCKETS.UNKNOWN,
+                        bucketReason: '',
                     });
-                    let ok = typeof res?.ok === 'boolean' ? res.ok : (Number(res?.status || 0) > 0 && Number(res?.status || 0) < 500);
+                    continue;
+                }
+
+                const responseOk = async (response) => {
+                    if (!response?.ok) return false;
+                    if (!cfg.validateJson) return true;
+                    try {
+                        const payload = await response.clone().json();
+                        if (payload?.error) return false;
+                        if (cfg.provider === 'Etherscan' && String(payload?.status) !== '1') return false;
+                        return payload?.result !== undefined && payload?.result !== null;
+                    } catch (_) {
+                        return false;
+                    }
+                };
+
+                try {
+                    const primaryUrl = cfg.provider === 'Etherscan'
+                        ? `https://api.etherscan.io/v2/api?chainid=1&module=block&action=eth_block_number&apikey=${encodeURIComponent(etherscanKey)}`
+                        : cfg.url;
+                    let res = await fetchWithTimeout(primaryUrl);
+                    let ok = await responseOk(res);
+                    let usedFallback = false;
                     if (!ok && cfg.fallbackUrl) {
                         try {
-                            const res2 = await fetchFn(cfg.fallbackUrl, {
-                                method: cfg.method || 'GET',
-                                cache: 'no-store',
-                                signal: ctrl.signal,
-                                headers: cfg.body ? { Accept: 'application/json', 'Content-Type': 'application/json' } : { Accept: 'application/json,*/*' },
-                                body: cfg.body || undefined,
-                            });
-                            if (typeof res2?.ok === 'boolean' ? res2.ok : (Number(res2?.status || 0) > 0 && Number(res2?.status || 0) < 500)) {
+                            const res2 = await fetchWithTimeout(cfg.fallbackUrl);
+                            if (await responseOk(res2)) {
                                 res = res2;
                                 ok = true;
+                                usedFallback = true;
                             }
                         } catch (_) {}
                     }
+                    endpointProbeFailures[cfg.provider] = ok ? 0 : (endpointProbeFailures[cfg.provider] || 0) + 1;
+                    const shouldDegrade = !ok && endpointProbeFailures[cfg.provider] >= ENDPOINT_PROBE_FAILURE_THRESHOLD;
+                    const current = state[cfg.provider];
+                    if (!shouldDegrade && current?.status === 'healthy') {
+                        current.lastFetch = now;
+                        current.transient = !ok;
+                        current.reason = ok ? 'Endpoint probe OK' : `Endpoint probe failed (${endpointProbeFailures[cfg.provider]}/${ENDPOINT_PROBE_FAILURE_THRESHOLD})`;
+                        current.bucket = BUCKETS.UNKNOWN;
+                        current.bucketReason = '';
+                        recomputeBucketCounters();
+                        continue;
+                    }
                     update(cfg.provider, {
-                        status: ok ? 'healthy' : 'degraded',
+                        status: ok ? 'healthy' : (shouldDegrade ? 'degraded' : 'unknown'),
                         lastFetch: now,
-                        fallback: fetchFn !== fetch,
+                        fallback: usedFallback,
                         optional: true,
                         transient: !ok,
                         reason: ok ? 'Endpoint probe OK' : `Endpoint probe HTTP ${res?.status || 'error'}`,
@@ -1047,13 +1134,7 @@
                     let recovered = false;
                     if (cfg.fallbackUrl) {
                         try {
-                            const res2 = await fetchFn(cfg.fallbackUrl, {
-                                method: cfg.method || 'GET',
-                                cache: 'no-store',
-                                signal: ctrl.signal,
-                                headers: cfg.body ? { Accept: 'application/json', 'Content-Type': 'application/json' } : { Accept: 'application/json,*/*' },
-                                body: cfg.body || undefined,
-                            });
+                            const res2 = await fetchWithTimeout(cfg.fallbackUrl);
                             if (typeof res2?.ok === 'boolean' ? res2.ok : (Number(res2?.status || 0) > 0 && Number(res2?.status || 0) < 500)) {
                                 recovered = true;
                                 update(cfg.provider, {
@@ -1070,10 +1151,22 @@
                         } catch (_) {}
                     }
                     if (!recovered) {
+                        endpointProbeFailures[cfg.provider] = (endpointProbeFailures[cfg.provider] || 0) + 1;
+                        const shouldDegrade = endpointProbeFailures[cfg.provider] >= ENDPOINT_PROBE_FAILURE_THRESHOLD;
+                        const current = state[cfg.provider];
+                        if (!shouldDegrade && current?.status === 'healthy') {
+                            current.lastFetch = now;
+                            current.transient = true;
+                            current.reason = `Endpoint probe failed (${endpointProbeFailures[cfg.provider]}/${ENDPOINT_PROBE_FAILURE_THRESHOLD})`;
+                            current.bucket = BUCKETS.UNKNOWN;
+                            current.bucketReason = '';
+                            recomputeBucketCounters();
+                            continue;
+                        }
                         update(cfg.provider, {
-                            status: 'degraded',
+                            status: shouldDegrade ? 'degraded' : 'unknown',
                             lastFetch: now,
-                            fallback: fetchFn !== fetch,
+                            fallback: false,
                             optional: true,
                             transient: true,
                             reason: String(err?.message || err || 'endpoint probe failed').slice(0, 120),
@@ -1081,8 +1174,6 @@
                             bucketReason: String(err?.message || err || 'endpoint probe failed'),
                         });
                     }
-                } finally {
-                    clearTimeout(timer);
                 }
             }
         } finally {

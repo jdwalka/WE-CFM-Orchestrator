@@ -90,7 +90,7 @@ function readEnvValue(names) {
 
 function decodeJsonStringFragment(value) {
   try {
-    return JSON.parse(`"${String(value).replace(/"/g, '\\"')}"`);
+    return JSON.parse(`"${String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`);
   } catch (_) {
     return String(value || '').replace(/\\"/g, '"').replace(/\\r\\n/g, '\n').replace(/\\n/g, '\n');
   }
@@ -141,7 +141,7 @@ function readSecretScalar(raw) {
     }
   }
 
-  const jsonKey = String(raw).match(/"(?:COINGECKO_API_KEY|COINGECKO_PRO_API_KEY|COINGECKO_DEMO_API_KEY|apiKey|key)"\s*:\s*"((?:\\.|[^"])*)"/i);
+  const jsonKey = String(raw).match(/"(?:COINGECKO_API_KEY|COINGECKO_PRO_API_KEY|COINGECKO_DEMO_API_KEY|apiKey|key)"\s*:\s*"((?:\\[\s\S]|[^"\\])*)"/i);
   if (jsonKey) return stripEnvValue(decodeJsonStringFragment(jsonKey[1]));
 
   return stripEnvValue(lines.reduce((longest, line) => line.length > longest.length ? line : longest, ''));
@@ -198,12 +198,8 @@ function readCMCSecret() {
 }
 
 function readPythLazerSecret() {
-  // Prefer PYTH_API (upgraded key name), then PYTH_NEW, then legacy
+  // PYTH_NEW_API is the sole Lazer streaming-token alias.
   return readSecretFileValue([
-    'PYTH_API',
-    'PYTH_API.txt',
-    'PYTH_NEW',
-    'PYTH_NEW.txt',
     'PYTH_NEW_API',
     'PYTH_NEW_API.txt'
   ]);
@@ -269,16 +265,11 @@ function readPublicEnv() {
     if (value) out[name] = value;
   }
 
-  // Pyth key for realtime feeds (Hermes, Lazer, snapshots) — newest secret files first
+  // Canonical Pyth Lazer key for realtime feeds (Hermes, Lazer, snapshots)
   const pythSecret = readPythLazerSecret();
-  const pythKey = pythSecret.value || readEnvValue(['PYTH_NEW', 'PYTH_API', 'PYTH_NEW_API', 'LAZER_TOKEN']);
+  const pythKey = pythSecret.value || readEnvValue(['PYTH_NEW_API']);
   if (pythKey) {
-    out.PYTH_NEW = pythKey;
-    out.PYTH_API = pythKey;
     out.PYTH_NEW_API = pythKey;
-    out.PYTH_API_KEY = pythKey;
-    out.PYTH_LAZER_TOKEN = pythKey;
-    out.LAZER_TOKEN = pythKey;
   }
 
   // Pyth Pro key (secrets/PYTH_PRO_API_KEY.txt) -- distinct from the Lazer
@@ -443,6 +434,7 @@ contextBridge.exposeInMainWorld('electron', {
     setMode: (mode) => ipcRenderer.invoke('asi1:desk-mode', mode),
     infer: (payload) => ipcRenderer.invoke('asi1:desk-infer', payload),
     chat: (payload) => ipcRenderer.invoke('asi1:desk-chat', payload),
+    resetChatMemory: (payload) => ipcRenderer.invoke('asi1:desk-chat-reset', payload),
     hunt: (payload) => ipcRenderer.invoke('asi1:agentverse-hunt', payload),
     auditAgents: () => ipcRenderer.invoke('asi1:agentverse-audit'),
     getHuntStatus: () => ipcRenderer.invoke('asi1:agentverse-status'),

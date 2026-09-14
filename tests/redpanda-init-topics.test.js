@@ -8,7 +8,7 @@ const path = require('path');
 // the Grok tick topic is defined correctly and kept separate from the
 // existing orbital s/p/d/f topics (different signal types, see the module's
 // own comments).
-const modulePath = path.join(__dirname, '..', 'scripts', 'redpanda-init-topics.js');
+const modulePath = path.join(__dirname, '..', 'src', 'infra', 'redpanda-init-topics.js');
 const src = fs.readFileSync(modulePath, 'utf8');
 
 let passed = 0;

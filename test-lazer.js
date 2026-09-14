@@ -1,7 +1,9 @@
 const { PythLazerClient } = require("@pythnetwork/pyth-lazer-sdk");
 async function test() {
+  const token = process.env.PYTH_LAZER_TOKEN;
+  if (!token) throw new Error("PYTH_LAZER_TOKEN is required");
   const c = await PythLazerClient.create({
-    token: "9AowRQwEELKpsMosei146CTHcxeNoHuSUWuDhGfFxkXZ",
+    token,
     webSocketPoolConfig: { urls: ["wss://pyth-lazer-0.dourolabs.app/v1/stream"] }
   });
   console.log("Connected");

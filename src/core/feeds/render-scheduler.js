@@ -1,7 +1,7 @@
 /**
  * render-scheduler.js — High-performance rAF Render Scheduler
- * Decouples 100ms (10Hz) Pyth Lazer feed ingest from the browser paint cycle.
- * Ingest stays at 100ms; DOM and HUD paints are batched and capped at 60fps via rAF.
+ * Decouples 50ms (20Hz) Pyth Lazer feed ingest from the browser paint cycle.
+ * Ingest stays at 50ms; DOM and HUD paints are batched and capped at 60fps via rAF.
  */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) {

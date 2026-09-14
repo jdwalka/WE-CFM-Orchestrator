@@ -1094,7 +1094,7 @@
 
   function translate(sym, pred, cfm) {
     var pm = window.PredictionMarkets && window.PredictionMarkets.getCoin && window.PredictionMarkets.getCoin(sym);
-    var polyMarket = (pm && (pm.poly15m || pm.poly5m || pm.poly)) || null;
+    var polyMarket = (pm && (pm.kalshi15m || pm.poly5m || pm.poly)) || null;
     var kAlign = pred && pred.projections && pred.projections.p15
       ? pred.projections.p15.polyAlign
       : null;

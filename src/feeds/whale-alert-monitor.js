@@ -12,17 +12,18 @@
 (function () {
   'use strict';
 
-  const WHALE_ALERT_BASE = 'https://api.whale-alert.io/v1';
+  const WHALE_ALERT_BASE = 'https://leviathan.whale-alert.io';
 
-  // Resolved lazily from secrets/WHALE_ALERT_API.txt, env, localStorage.
-  // (Old code only checked localStorage — key sat unused in secrets/ → 401s.)
+  // Resolved lazily from secrets/WHALE_ALERT_API.txt and trusted process/env sources.
   let _apiKey = '';
   let _apiKeyResolved = false;
   let _apiKeyResolveInFlight = null;
   let _authRejectedUntil = 0; // backoff after 401/403 so we don't hot-loop
   let _rateLimitedUntil = 0; // backoff after 429 -- whale-alert.io's limit is per API key
+  let _apiUnavailableUntil = 0; // backoff while the API host is unreachable
                               // (shared across chains), so this is global, not per-chain.
   const RATE_LIMIT_BACKOFF_MS = 60_000; // used when the API doesn't send Retry-After
+  const API_UNAVAILABLE_BACKOFF_MS = 10 * 60_000;
 
   const CHAIN_MAP = {
     BTC: 'bitcoin',
@@ -82,15 +83,6 @@
       }
     } catch (_) {}
     try {
-      if (typeof localStorage !== 'undefined') {
-        const k = localStorage.getItem('whaleAlertApiKey')
-          || localStorage.getItem('WHALE_ALERT_KEY')
-          || localStorage.getItem('WHALE_ALERT_API_KEY')
-          || '';
-        if (k) return String(k).trim();
-      }
-    } catch (_) {}
-    try {
       if (typeof process !== 'undefined' && process.env) {
         const k = process.env.WHALE_ALERT_KEY
           || process.env.WHALE_ALERT_API_KEY
@@ -99,7 +91,7 @@
         if (k) return String(k).trim();
       }
     } catch (_) {}
-    return '3QdbUuaagCfzZuUBOxeeMNvqeQsp1RwE';
+    return '';
   }
 
   async function resolveApiKey(force = false) {
@@ -132,11 +124,6 @@
       _apiKey = key || '';
       _apiKeyResolved = true;
       if (_apiKey) {
-        try {
-          if (typeof localStorage !== 'undefined' && !localStorage.getItem('whaleAlertApiKey')) {
-            localStorage.setItem('whaleAlertApiKey', _apiKey);
-          }
-        } catch (_) {}
         console.log('[WhaleAlert] API key loaded (len=' + _apiKey.length + ')');
       } else {
         console.warn('[WhaleAlert] No API key — put key in secrets/WHALE_ALERT_API.txt (calls will 401)');
@@ -214,6 +201,9 @@
       if (Date.now() < _rateLimitedUntil) {
         return _whaleCache.get(chain)?.txs || [];
       }
+      if (Date.now() < _apiUnavailableUntil) {
+        return _whaleCache.get(chain)?.txs || [];
+      }
 
       // Rate limit check
       const lastFetch = _rateLimits.lastFetch[chain] || 0;
@@ -230,10 +220,9 @@
         return _whaleCache.get(chain)?.txs || [];
       }
 
-      const url = new URL(`${WHALE_ALERT_BASE}/transactions`);
-      url.searchParams.set('blockchain', whaleChain);
-      url.searchParams.set('min_value', threshold);
+      const url = new URL(`${WHALE_ALERT_BASE}/${whaleChain}/transactions`);
       url.searchParams.set('limit', 50);
+      url.searchParams.set('order', 'desc');
       url.searchParams.set('api_key', apiKey);
 
       const ctrl = new AbortController();
@@ -249,6 +238,12 @@
       clearTimeout(tid);
 
       if (!res.ok) {
+        if (res.status === 404 || res.status === 410) {
+          _apiUnavailableUntil = Date.now() + API_UNAVAILABLE_BACKOFF_MS;
+          _reportHealth(false, res.status, `Whale Alert endpoint unavailable (HTTP ${res.status}) — backoff 10m`);
+          console.warn(`[WhaleAlert] endpoint unavailable (${res.status}) — backoff 10m`);
+          return _whaleCache.get(chain)?.txs || [];
+        }
         _markFail('whaleAlert');
         _health.whaleAlert.lastStatus = res.status;
         _health.whaleAlert.lastReason = `HTTP ${res.status}`;
@@ -281,34 +276,46 @@
       _markOk('whaleAlert');
       _reportHealth(true, 200, 'transactions OK');
 
-      // `(data.result || [])` used to fall through as truthy on a non-array
-      // result (e.g. a 200 response carrying an error string/object instead
-      // of transactions), then throw "(...).map is not a function" -- seen
-      // live on every BTC/ETH/SOL cycle. Guard with Array.isArray instead.
-      if (data.result != null && !Array.isArray(data.result)) {
-        console.warn(`[WhaleAlert] ${chain} unexpected result shape:`, data.result);
+      const transactions = Array.isArray(data.transactions)
+        ? data.transactions
+        : (Array.isArray(data) ? data : []);
+      if (!transactions.length && data.result != null && !Array.isArray(data.result)) {
+        console.warn('[WhaleAlert] Unexpected result shape:', chain, data.result || data);
       }
-      const txs = (Array.isArray(data.result) ? data.result : []).map(tx => ({
+
+      const txs = transactions.map(tx => {
+        const subTransactions = tx.sub_transactions || [];
+        const inputs = subTransactions.flatMap(entry => entry.inputs || []);
+        const outputs = subTransactions.flatMap(entry => entry.outputs || []);
+        const valueUsd = subTransactions.reduce((sum, entry) => sum + (Number(entry.value_usd) || 0), 0)
+          || (tx.amounts || []).reduce((sum, entry) => sum + (Number(entry.value_usd) || 0), 0);
+        const from = inputs[0]?.address;
+        const to = outputs[0]?.address;
+        const fromLabel = inputs[0]?.owner_type || inputs[0]?.owner;
+        const toLabel = outputs[0]?.owner_type || outputs[0]?.owner;
+        return {
         hash: tx.hash,
         timestamp: tx.timestamp,
-        amount: tx.amount,
-        amount_usd: tx.amount_usd,
-        from: tx.from?.address,
-        to: tx.to?.address,
-        from_label: tx.from?.owner_type,
-        to_label: tx.to?.owner_type,
+        amount: subTransactions[0]?.amount ?? tx.amount,
+        amount_usd: valueUsd,
+        from,
+        to,
+        from_label: fromLabel,
+        to_label: toLabel,
         chain,
-        score: tx.amount_usd || 0,
-        direction: tx.to?.owner_type === 'exchange' ? 'sell' : 
-                   tx.from?.owner_type === 'exchange' ? 'buy' : 'transfer',
-      }));
+        score: valueUsd,
+        direction: /exchange|cex/i.test(String(toLabel || '')) ? 'sell'
+          : /exchange|cex/i.test(String(fromLabel || '')) ? 'buy'
+          : 'transfer',
+        };
+      }).filter(tx => (tx.score || 0) >= threshold);
 
       _whaleCache.set(chain, { txs, timestamp: Date.now() });
       return txs;
 
     } catch (err) {
       _markFail('whaleAlert');
-      console.error(`[WhaleAlert] ${chain} fetch failed:`, err.message);
+      console.error('[WhaleAlert] Fetch failed:', chain, err.message);
       return _whaleCache.get(chain)?.txs || [];
     }
   }
@@ -319,7 +326,7 @@
     const allTxs = [];
 
     for (const chain of chains) {
-      const txs = await _fetchWhaleTransactions(chain);
+      const txs = await _fetchWhaleTransactions(chain) || [];
       if (txs.length > 0) {
         allTxs.push(...txs);
         const mon = _monitored.get(chain);

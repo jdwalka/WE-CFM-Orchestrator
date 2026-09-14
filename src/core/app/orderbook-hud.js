@@ -1,5 +1,12 @@
 // Orderbook HUD & Depth Logic
 (function() {
+  function fallbackPriceDecimals(sym) {
+    const key = String(sym || '').toUpperCase();
+    if (key === 'DOGE') return 7;
+    if (key === 'SOL' || key === 'HYPE' || key === 'XRP') return 4;
+    return 2;
+  }
+
 function startDepthLive(sym) {
     if (_depthLiveCleanup) { _depthLiveCleanup(); _depthLiveCleanup = null; }
     if (!window.OB) return;
@@ -62,7 +69,7 @@ function updateDepthBook(sym) {
         return window.CoinPrecision.formatCoinPrice(sym, p, { prefix: '' });
       }
       const s = String(sym || '').toUpperCase();
-      const d = (s === 'XRP' || s === 'DOGE') ? 4 : 2;
+      const d = fallbackPriceDecimals(s);
       return Number(p).toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
     };
     const fmtQty = (q) => window.OB?.formatQty?.(sym, q) ?? q.toFixed(2);
@@ -403,7 +410,7 @@ function drawLiqMap(sym) {
     const fmtP = (p) => {
       if (p >= 1000) return '$' + (p / 1000).toFixed(1) + 'K';
       if (window.CoinPrecision?.formatCoinPrice) return window.CoinPrecision.formatCoinPrice(sym, p);
-      return (sym === 'XRP' || sym === 'DOGE') ? '$' + p.toFixed(4) : '$' + p.toFixed(2);
+      return '$' + p.toFixed(fallbackPriceDecimals(sym));
     };
     for (let i = 0; i <= 4; i++) {
 
@@ -533,7 +540,7 @@ function initOBHud() {
           return window.CoinPrecision.formatCoinPrice(coinSym, p, { prefix: '' });
         }
         const s = String(coinSym || '').toUpperCase();
-        const d = (s === 'XRP' || s === 'DOGE') ? 4 : 2;
+        const d = fallbackPriceDecimals(s);
         return Number(p).toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
       };
 

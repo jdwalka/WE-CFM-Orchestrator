@@ -17,7 +17,7 @@ process.on('unhandledRejection', (reason) => {
 
 const { startOrbitalSystem, restartOrbitalSystem, shutdownOrbitalSystem, getOrbitalStatus } = require('../src/infra/orbital-startup-orchestrator');
 const { createHzTracker } = require('../src/infra/resonance-filter');
-const { app, BrowserWindow, Menu, shell, ipcMain } = require('electron');
+const { app, BrowserWindow, Menu, shell, ipcMain, session } = require('electron');
 const fsp = fs.promises;
 const { spawn } = require('child_process');
 const { normalizeCoinbaseJwtUri } = require('../src/infra/coinbase-jwt-utils');
@@ -105,6 +105,10 @@ const _consoleError = console.error.bind(console);
 function _safeConsoleWrite(writer, args) {
   try {
     writer(...args);
+    try {
+      const msg = args.map(a => (typeof a === 'object' && a !== null) ? (a.stack || JSON.stringify(a)) : String(a)).join(' ');
+      fs.appendFileSync(debugLogFile, `${new Date().toISOString()} ${msg}\n`);
+    } catch (_) {}
   } catch (err) {
     if (_isBrokenPipe(err)) return;
     throw err;
@@ -169,6 +173,8 @@ function getEnvFileCandidates() {
     path.join(__dirname, '..', '.env'),
     path.join(process.resourcesPath || '', '..', '.env'),
     path.join(process.cwd(), '.env'),
+    'G:\\WECRYP\\.env',
+    'H:\\My Drive\\WECRYP\\.env',
   ]);
 }
 
@@ -244,6 +250,9 @@ function getSecretDirCandidates() {
     path.join(process.resourcesPath || '', '..', 'secrets'),
     path.join(__dirname, '..', 'secrets'),
     path.join(process.cwd(), 'secrets'),
+    'G:\\WECRYP\\secrets',
+    'H:\\My Drive\\WECRYP\\secrets',
+    'H:\\WECRYP\\secrets',
     'G:\\WECRYPTO\\secrets',
     'F:\\WECRYPTO\\secrets',
     'E:\\WECRYPTO\\secrets',
@@ -264,7 +273,7 @@ function readSecretScalar(raw) {
     }
   }
 
-  const jsonKey = String(raw).match(/"(?:COINGECKO_API_KEY|COINGECKO_PRO_API_KEY|COINGECKO_DEMO_API_KEY|CMC_PRO_API_KEY|CMC_API_KEY|COINMARKETCAP_API_KEY|apiKey|key)"\s*:\s*"((?:\\.|[^"])*)"/i);
+  const jsonKey = String(raw).match(/"(?:COINGECKO_API_KEY|COINGECKO_PRO_API_KEY|COINGECKO_DEMO_API_KEY|CMC_PRO_API_KEY|CMC_API_KEY|COINMARKETCAP_API_KEY|apiKey|key)"\s*:\s*"((?:\\[\s\S]|[^"\\])*)"/i);
   if (jsonKey) return stripEnvValue(decodeJsonStringFragment(jsonKey[1]));
 
   return stripEnvValue(lines.reduce((longest, line) => line.length > longest.length ? line : longest, ''));
@@ -324,12 +333,8 @@ function readCMCSecret() {
 }
 
 function readPythLazerSecret() {
-  // Prefer PYTH_API (user upgraded key name), then PYTH_NEW, then legacy
+  // PYTH_NEW_API is the sole Lazer streaming-token alias.
   return readSecretFileValue([
-    'PYTH_API',
-    'PYTH_API.txt',
-    'PYTH_NEW',
-    'PYTH_NEW.txt',
     'PYTH_NEW_API',
     'PYTH_NEW_API.txt'
   ]);
@@ -347,7 +352,7 @@ function readPythProSecret() {
 
 function decodeJsonStringFragment(value) {
   try {
-    return JSON.parse(`"${String(value).replace(/"/g, '\\"')}"`);
+    return JSON.parse(`"${String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`);
   } catch (_) {
     return String(value || '').replace(/\\"/g, '"').replace(/\\r\\n/g, '\n').replace(/\\n/g, '\n');
   }
@@ -355,10 +360,10 @@ function decodeJsonStringFragment(value) {
 
 function coinbaseCredentialFromObject(obj, source) {
   if (!obj || typeof obj !== 'object') return null;
-  const name = stripEnvValue(obj.name || obj.keyName || obj.key_name || obj.apiKeyName);
+  const keyId = stripEnvValue(obj.name || obj.keyName || obj.key_name);
   const privateKey = stripEnvValue(obj.privateKey || obj.private_key || obj.CDP_API_KEY_PRIVATE_KEY);
-  if (!name || !privateKey) return null;
-  return { name, privateKey, source };
+  if (!keyId || !privateKey) return null;
+  return { keyId, privateKey, source };
 }
 
 function readCoinbaseCredentialFromRawEnv() {
@@ -378,8 +383,8 @@ function readCoinbaseCredentialFromRawEnv() {
         }
       }
 
-      const nameMatch = raw.match(/"name"\s*:\s*"((?:\\.|[^"])*)"/);
-      const keyMatch = raw.match(/"privateKey"\s*:\s*"((?:\\.|[^"])*)"/);
+      const nameMatch = raw.match(/"name"\s*:\s*"((?:\\[\s\S]|[^"\\])*)"/);
+      const keyMatch = raw.match(/"privateKey"\s*:\s*"((?:\\[\s\S]|[^"\\])*)"/);
       if (nameMatch && keyMatch) {
         const credential = coinbaseCredentialFromObject({
           name: decodeJsonStringFragment(nameMatch[1]),
@@ -497,16 +502,11 @@ function resolveCoinGeckoPublicConfig() {
     out.COINMARKETCAP_API_KEY = cmcKey;
   }
 
-  // ONLY use the newest Pyth key (PYTH_NEW / PYTH_API) for all realtime feeds
+  // ONLY use the canonical PYTH_NEW_API key for all realtime feeds
   const pythSecret = readPythLazerSecret();
-  const pythKey = pythSecret.value || readEnvValue(['PYTH_NEW', 'PYTH_API', 'PYTH_NEW_API', 'PYTH_LAZER_TOKEN', 'PYTH_API_KEY', 'LAZER_TOKEN']);
+  const pythKey = pythSecret.value || readEnvValue(['PYTH_NEW_API']);
   if (pythKey) {
-    out.PYTH_NEW = pythKey;
-    out.PYTH_API = pythKey;
     out.PYTH_NEW_API = pythKey;
-    out.PYTH_API_KEY = pythKey;
-    out.PYTH_LAZER_TOKEN = pythKey;
-    out.LAZER_TOKEN = pythKey;
   }
 
   // Pyth Pro key (secrets/PYTH_PRO_API_KEY.txt) -- distinct from the Lazer
@@ -537,18 +537,12 @@ try {
     console.log('[Env] No .env file found in startup candidates');
   }
 
-  // Load upgraded Pyth key from secrets/PYTH_NEW.txt or PYTH_API.txt (+ legacy names)
-  // Force all aliases so Lazer WS, Hermes, poller, and snapshots all use the same token.
+  // Load the canonical Pyth Lazer key from secrets/PYTH_NEW_API(.txt).
   try {
     const pythSecret = readPythLazerSecret();
     if (pythSecret.value) {
-      process.env.PYTH_NEW = pythSecret.value;
-      process.env.PYTH_API = pythSecret.value;
       process.env.PYTH_NEW_API = pythSecret.value;
-      process.env.PYTH_LAZER_TOKEN = pythSecret.value;
-      process.env.PYTH_API_KEY = pythSecret.value;
-      process.env.LAZER_TOKEN = pythSecret.value;
-      console.log(`[Env] Pyth key loaded from ${pythSecret.path} (aliases forced) len=${pythSecret.value.length}`);
+      console.log(`[Env] Pyth key loaded from ${pythSecret.path} len=${pythSecret.value.length}`);
     }
   } catch (e) {
     console.warn('[Env] Failed loading Pyth secret:', e && e.message);
@@ -564,16 +558,11 @@ try {
   // dotenv not installed, skip silently
 }
 
-// Early load of newest Pyth key (PYTH_NEW / PYTH_API)
+// Early load of the canonical Pyth Lazer key
 try {
   const pythSecret = readPythLazerSecret();
   if (pythSecret.value) {
-    process.env.PYTH_NEW = pythSecret.value;
-    process.env.PYTH_API = pythSecret.value;
     process.env.PYTH_NEW_API = pythSecret.value;
-    process.env.PYTH_LAZER_TOKEN = pythSecret.value;
-    process.env.PYTH_API_KEY = pythSecret.value;
-    process.env.LAZER_TOKEN = pythSecret.value;
     console.log(`[Env] Early Pyth key from ${pythSecret.path}`);
   }
 } catch (_) {}
@@ -720,7 +709,7 @@ try {
       console.log(`[LLM] 5m PTB binary markets (polycool.app / Chainlink) using: ${diagnostics.fiveMinuteProvider} / ${diagnostics.fiveMinuteModel}`);
     }
   } else {
-    console.warn('[LLM] Assistant loaded but disabled - check ASI1 API key (ASI1_API_KEY_GITGOIN / ASI1_API_KEY_MAURO / ASI_ONE_API_KEY or secrets/ASI1_*.txt).');
+    console.warn('[LLM] Assistant loaded but disabled - check ASI1 API key (ASI1_API_KEY_LEAKSNIPE / ASI_ONE_API_KEY_LEAKSNIPE or secrets/ASI1_LEAKSNIPE.txt).');
   }
 } catch (e) {
   console.warn('[LLM] Assistant module unavailable:', e.message);
@@ -806,7 +795,23 @@ try {
 // ── Pyth Lazer real-time WebSocket service ────────────────────────────────────
 let mainWin = null;
 let pythLazerClient = null;
-let pythLazerStatus = { initialized: false, connected: false, lastDataTs: 0, dataCount: 0, timeoutCount: 0, smoothedHz: null };
+let pythLazerStatus = {
+  initialized: false,
+  connected: false,
+  wsConnected: false,
+  restFallbackActive: false,
+  wsDisabled: false,
+  wsDisabledReason: null,
+  transport: 'none',
+  channel: null,
+  nominalCadenceMs: null,
+  nominalHz: null,
+  lastDataTs: 0,
+  lastWsTickTs: 0,
+  dataCount: 0,
+  timeoutCount: 0,
+  smoothedHz: null,
+};
 // EMA-smoothed tick-arrival rate -- absorbs single-tick network jitter (one
 // unusually fast/slow gap) so a transient burst doesn't read as "the feed
 // just changed speed" when the subscribed cadence hasn't actually changed.
@@ -816,7 +821,7 @@ let latestPythLazerTickers = {};
 let pythRestPoller = null;
 let proxyHealthy = false;
 let webServiceHealth = { started: false, mode: 'stopped', protocol: 'http', port: 3443 };
-// NOTE: feed 10 (DOGE spot) is deliberately excluded. The configured PYTH_LAZER_TOKEN's grants
+// NOTE: feed 10 (DOGE spot) is deliberately excluded. The configured PYTH_NEW_API's grants
 // do not include it — the server rejects it with "Not entitled: feed 10 (no grant accepts this
 // feed (asset type 'crypto', instrument type 'spot'))". Because both the REST /v1/latest_price
 // endpoint and the WS subscribe request are batched, a single not-entitled feed ID poisons the
@@ -847,17 +852,27 @@ const PYTH_FALLBACK_TIMEOUT_MS = Number(process.env.PYTH_FALLBACK_TIMEOUT_MS || 
 const PYTH_FALLBACK_GRACE_MS = Number(process.env.PYTH_FALLBACK_GRACE_MS || 2000);
 const PYTH_TIMEOUT_CONSECUTIVE_LIMIT = Number(process.env.PYTH_TIMEOUT_CONSECUTIVE_LIMIT || 3);
 const PYTH_FALLBACK_EVENT_COOLDOWN_MS = Number(process.env.PYTH_FALLBACK_EVENT_COOLDOWN_MS || 30000);
-const PYTH_LAZER_CHANNEL = process.env.PYTH_LAZER_CHANNEL || 'fixed_rate@100ms';
+const PYTH_CONNECTION_LOST_EVENT_COOLDOWN_MS = Number(process.env.PYTH_CONNECTION_LOST_EVENT_COOLDOWN_MS || 10000);
+const PYTH_WS_ALL_DOWN_GRACE_MS = Number(process.env.PYTH_WS_ALL_DOWN_GRACE_MS || 12000);
+const PYTH_WS_HEARTBEAT_TIMEOUT_MS = Number(process.env.PYTH_WS_HEARTBEAT_TIMEOUT_MS || 10000);
+const PYTH_WS_MAX_RETRY_DELAY_MS = Number(process.env.PYTH_WS_MAX_RETRY_DELAY_MS || 2000);
+const PYTH_LAZER_CHANNEL = process.env.PYTH_LAZER_CHANNEL || 'fixed_rate@50ms';
 const PYTH_LIVE_FEED_BACKOFF_MS = Math.max(0, Number(process.env.PYTH_LIVE_FEED_BACKOFF_MS || 5));
+const PYTH_WS_PUSH_FLOOR_MS = Math.max(0, Number(process.env.PYTH_WS_PUSH_FLOOR_MS || 25));
+
+function getPythChannelCadenceMs(channel) {
+  const match = /^fixed_rate@(\d+)ms$/.exec(String(channel || ''));
+  return match ? Number(match[1]) : null;
+}
 
 // Timestamp of the last *real* WS tick (set only where latestPythLazerTickers is written
 // from an actual pythLazerClient message, never by a REST fallback writer). Needed because
 // pythLazerStatus.connected is set true by REST writers too, so it can't tell REST fallbacks
 // apart from a live WS -- see isPythWsHealthy() / writePythRestTickers() below.
 let lastPythWsTickTs = 0;
-// WS ticks every ~50-100ms when healthy (real_time/50ms subscription), so anything idle
+// WS ticks every ~50ms when healthy (fixed_rate@50ms subscription), so anything idle
 // past this is treated as WS-not-healthy and REST is allowed to fill in.
-const PYTH_WS_TICK_STALE_MS = Number(process.env.PYTH_WS_TICK_STALE_MS || 1500);
+const PYTH_WS_TICK_STALE_MS = Number(process.env.PYTH_WS_TICK_STALE_MS || 5000);
 
 function isPythWsHealthy() {
   return lastPythWsTickTs > 0 && (Date.now() - lastPythWsTickTs) < PYTH_WS_TICK_STALE_MS;
@@ -886,7 +901,7 @@ function pushPythTickersCoalesced(targetWin, payload) {
         w.webContents.send('pyth-lazer', _pendingPythPush);
         _pendingPythPush = null;
       }
-    }, 16); // ~60fps cap to prevent IPC storming under 100ms / 10Hz feed
+    }, 16); // ~60fps IPC cap; renderer batching handles the 50ms / 20Hz feed
   }
 }
 
@@ -897,6 +912,9 @@ function writePythRestTickers(pmap, nowP, targetWin) {
   pythLazerStatus.lastDataTs = nowP;
   pythLazerStatus.dataCount = Math.max(pythLazerStatus.dataCount || 0, 1);
   pythLazerStatus.connected = true;
+  pythLazerStatus.wsConnected = false;
+  pythLazerStatus.restFallbackActive = true;
+  pythLazerStatus.transport = 'rest';
   const w = targetWin || mainWin;
   if (w && !w.isDestroyed()) {
     pushPythTickersCoalesced(w, pmap);
@@ -977,12 +995,10 @@ async function startPythLazerService(win) {
   // ONLY use the newest key from secrets/PYTH_NEW_API - no fallbacks to old keys
   let token = null;
 
-  // Direct read — newest rotated key first (PYTH_NEW / PYTH_API), then legacy names
+  // Direct read of the canonical rotated key
   try {
     const secretDirs = getSecretDirCandidates();
     const directCandidates = [
-      'PYTH_API', 'PYTH_API.txt',
-      'PYTH_NEW', 'PYTH_NEW.txt',
       'PYTH_NEW_API', 'PYTH_NEW_API.txt',
     ];
     outer:
@@ -1008,69 +1024,21 @@ async function startPythLazerService(win) {
     }
   }
   if (!token) {
-    token = readEnvValue(['PYTH_NEW', 'PYTH_API', 'PYTH_NEW_API', 'PYTH_LAZER_TOKEN', 'PYTH_API_KEY', 'LAZER_TOKEN']);
+    token = readEnvValue(['PYTH_NEW_API']);
   }
   if (!token) {
-    console.warn('[PythLazer] No Pyth key found in secrets/PYTH_NEW.txt or PYTH_API.txt — Lazer WS disabled');
+    console.warn('[PythLazer] No Pyth key found in secrets/PYTH_NEW_API(.txt) — Lazer WS disabled');
     pythLazerStatus.initialized = false;
     if (!win.isDestroyed()) {
       win.webContents.send('pyth:connection-failed', {
         retries: 0,
-        error: 'PYTH key not set (expected secrets/PYTH_NEW.txt or PYTH_API.txt)',
+        error: 'PYTH key not set (expected secrets/PYTH_NEW_API.txt)',
       });
     }
     return;
   }
 
   pythLazerStatus.initialized = true;
-
-  // ABC easy: start a simple background REST poller using direct + token as soon as we have the key.
-  // This guarantees dataCount and lastDataTs are kept fresh from the proven proxy/direct path,
-  // so the banner never stays stuck on "Waiting for first Pyth tick".
-  // WS realtime (if it ever starts delivering streamUpdated) will still overlay on top.
-  setInterval(async () => {
-    try {
-      if (!token) return;
-      const payload = JSON.stringify({
-        channel: 'real_time',
-        formats: ['evm'],
-        properties: ['price'],
-        priceFeedIds: LAZER_FEED_IDS,
-        parsed: true,
-        jsonBinaryEncoding: 'hex',
-      });
-      const r = await fetch('https://pyth-lazer.dourolabs.app/v1/latest_price', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json',
-        },
-        body: payload,
-      });
-      if (r.ok) {
-        const j = await r.json();
-        const pfeeds = j?.parsed?.priceFeeds || [];
-        if (pfeeds.length) {
-          const nowP = Date.now();
-          const pmap = {};
-          for (const f of pfeeds) {
-            let instr = LAZER_ID_MAP[f.priceFeedId];
-            if (!instr) instr = 'FEED_' + f.priceFeedId;
-            const px = Number(f.price) * Math.pow(10, f.exponent ?? -8);
-            if (px > 0) {
-              pmap[instr] = {
-                instrument_name: instr,
-                last: px,
-                source: 'pyth-rest',
-                timestamp: nowP,
-              };
-            }
-          }
-          writePythRestTickers(pmap, nowP, win);
-        }
-      }
-    } catch (_) {}
-  }, 3000);  // every 3s is plenty to keep age <15s and dataCount >0
 
   // Immediate one-time seed from REST proxies so we have dataCount/lastDataTs right away.
   // This makes the health banner leave "Waiting for first Pyth tick" even before WS or the poller.
@@ -1158,19 +1126,49 @@ async function startPythLazerService(win) {
     refreshPythFromProxy();
   }, 3000);
 
-  // Force ALL aliases from the loaded key (secrets/PYTH_API preferred)
-  process.env.PYTH_API = token;
-  process.env.PYTH_NEW = token;
+  // Force the canonical alias from the loaded key
   process.env.PYTH_NEW_API = token;
-  process.env.PYTH_LAZER_TOKEN = token;
-  process.env.PYTH_API_KEY = token;
-  process.env.LAZER_TOKEN = token;
-  console.log(`[PythLazer] Env aliases forced from loaded key (len=${token.length})`);
+  console.log(`[PythLazer] Canonical env key loaded (len=${token.length})`);
+
+  try {
+    const response = await fetch('https://pyth-lazer.dourolabs.app/v1/latest_price', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        priceFeedIds: LAZER_FEED_IDS,
+        channel: 'fixed_rate@50ms',
+        properties: ['price'],
+        formats: ['evm'],
+        parsed: true,
+      }),
+      signal: AbortSignal.timeout(5000),
+    });
+
+    if ([400, 401, 403].includes(response.status)) {
+      const body = await response.text().catch(() => '');
+      const reason = response.status === 403
+        ? 'token_not_entitled'
+        : (response.status === 401 ? 'invalid_token' : 'invalid_request');
+      pythLazerStatus.wsDisabled = true;
+      pythLazerStatus.wsDisabledReason = reason;
+      pythLazerStatus.wsConnected = false;
+      pythLazerStatus.restFallbackActive = true;
+      pythLazerStatus.transport = 'rest';
+      console.warn(`[PythLazer] WS disabled (${reason}); REST fallback remains active. Preflight HTTP ${response.status}: ${body.slice(0, 240)}`);
+      if (!win.isDestroyed()) win.webContents.send('pyth:status', pythLazerStatus);
+      return true;
+    }
+  } catch (error) {
+    console.warn('[PythLazer] Authorization preflight failed; allowing WS attempt:', error.message);
+  }
 
   const MAX_RETRIES = 3;
   const RETRY_DELAY_MS = 2000;
   const channelCandidates = Array.from(new Set(
-    ['fixed_rate@100ms', 'fixed_rate@200ms', 'fixed_rate@1000ms', 'real_time']
+    ['fixed_rate@50ms', 'fixed_rate@200ms', 'fixed_rate@1000ms', 'real_time']
       .map((s) => String(s || '').trim())
       .filter(Boolean)
   ));
@@ -1182,6 +1180,10 @@ async function startPythLazerService(win) {
     try {
       retries++;
       const activeChannel = channel || channelCandidates[channelIndex] || PYTH_LAZER_CHANNEL;
+      const nominalCadenceMs = getPythChannelCadenceMs(activeChannel);
+      pythLazerStatus.channel = activeChannel;
+      pythLazerStatus.nominalCadenceMs = nominalCadenceMs;
+      pythLazerStatus.nominalHz = nominalCadenceMs ? 1000 / nominalCadenceMs : null;
       console.log(`[PythLazer] Connecting (attempt ${retries}/${MAX_RETRIES}, channel=${activeChannel})...`);
 
       const { PythLazerClient } = require('@pythnetwork/pyth-lazer-sdk');
@@ -1192,7 +1194,14 @@ async function startPythLazerService(win) {
       ];
       pythLazerClient = await PythLazerClient.create({
         token,
-        webSocketPoolConfig: { urls: endpoints }
+        webSocketPoolConfig: {
+          urls: endpoints,
+          numConnections: endpoints.length,
+          rwsConfig: {
+            heartbeatTimeoutDurationMs: PYTH_WS_HEARTBEAT_TIMEOUT_MS,
+            maxRetryDelayMs: PYTH_WS_MAX_RETRY_DELAY_MS,
+          },
+        },
       });
       pythLazerStatus.initialized = true;
       console.log('[PythLazer] Realtime client created with token from PYTH_NEW_API / secrets (wired for realtime feeds)');
@@ -1284,7 +1293,7 @@ async function startPythLazerService(win) {
           // Fallback to Pyth Hermes v2 REST API (100% reliable public endpoint)
           if (!pfeeds.length) {
             try {
-              const hUrl = 'https://hermes.pyth.network/v2/updates/price/latest?ids[]=0xe62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43&ids[]=0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace&ids[]=0xef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d&ids[]=0xec5d399846a9209f3fe5881d70aae9268c94339ff9817e8d18ff19fa05eea1c8&ids[]=0xdcef50dd0a4cd2dcc17e45df1676dcb336a11a61c69df7a0299b0150c672d25c&ids[]=0x2f95862b045670cd22bee3114c39763a4a08beeb663b145d283c31d7d1101c4f&ids[]=0x4279e31cc369bbcc2faf022b382b080e32a8e689ff20fbc530d2a603eb6cd98b';
+              const hUrl = 'https://hermes.pyth.network/v2/updates/price/latest?ids[]=0xe62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43&ids[]=0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace&ids[]=0xef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d&ids[]=0xec5d399846a9209f3fe5881d70aae9268c94339ff9817e8d18ff19fa05eea1c8&ids[]=0xdcef50dd0a4cd2dcc17e45df1676dcb336a11a61c69df7a0299b0150c672d25c&ids[]=0x2f95862b045670cd22bee3114c39763a4a08beeb663b145d283c31d7d1101c4f';
               const r = await fetch(hUrl, token ? { headers: { "Authorization": "Bearer " + token } } : {});
               if (r.ok) {
                 const j = await r.json();
@@ -1296,7 +1305,6 @@ async function startPythLazerService(win) {
                     'ec5d399846a9209f3fe5881d70aae9268c94339ff9817e8d18ff19fa05eea1c8': 'XRPUSD',
                     'dcef50dd0a4cd2dcc17e45df1676dcb336a11a61c69df7a0299b0150c672d25c': 'DOGEUSD',
                     '2f95862b045670cd22bee3114c39763a4a08beeb663b145d283c31d7d1101c4f': 'BNBUSD',
-                    '4279e31cc369bbcc2faf022b382b080e32a8e689ff20fbc530d2a603eb6cd98b': 'HYPEUSD'
                   };
                   const nowP = Date.now();
                   const pmap = {};
@@ -1348,8 +1356,17 @@ async function startPythLazerService(win) {
       let pythTimeoutHandle = null;
       let pythConsecutiveTimeouts = 0;
       let pythLastFallbackEventTs = 0;
+      let pythLastConnectionLostEventTs = 0;
+      let pythAllDownGraceTimer = null;
 
-      // ★ STRICT TIMEOUT WATCHER: If no data arrives within 1000ms, trigger fallback
+      function clearPythAllDownGrace() {
+        if (pythAllDownGraceTimer) {
+          clearTimeout(pythAllDownGraceTimer);
+          pythAllDownGraceTimer = null;
+        }
+      }
+
+      // ★ TIMEOUT WATCHER: if no data arrives within the configured budget, trigger fallback
       function resetPythTimeout() {
         if (pythTimeoutHandle) clearTimeout(pythTimeoutHandle);
         const timeoutBudgetMs = PYTH_FALLBACK_TIMEOUT_MS + PYTH_FALLBACK_GRACE_MS + PYTH_LIVE_FEED_BACKOFF_MS;
@@ -1409,7 +1426,11 @@ async function startPythLazerService(win) {
 
         if (serverType === 'subscribed') {
           console.log(`[PythLazer] ✅ Subscription confirmed (id=${payload?.subscriptionId})`);
+          clearPythAllDownGrace();
           pythLazerStatus.connected = true;
+          pythLazerStatus.wsConnected = true;
+          pythLazerStatus.restFallbackActive = false;
+          pythLazerStatus.transport = 'websocket';
           pythLazerStatus.dataCount = Math.max(pythLazerStatus.dataCount || 0, 1);
           pythLazerStatus.lastDataTs = Date.now();
           if (!win.isDestroyed()) win.webContents.send('pyth:status', pythLazerStatus);
@@ -1423,7 +1444,11 @@ async function startPythLazerService(win) {
         if (serverType === 'subscribedWithInvalidFeedIdsIgnored') {
           const ignored = payload?.ignoredInvalidFeedIds;
           console.warn('[PythLazer] Subscribed with some invalid feeds ignored:', JSON.stringify(ignored));
+          clearPythAllDownGrace();
           pythLazerStatus.connected = true;
+          pythLazerStatus.wsConnected = true;
+          pythLazerStatus.restFallbackActive = false;
+          pythLazerStatus.transport = 'websocket';
           pythLazerStatus.dataCount = Math.max(pythLazerStatus.dataCount || 0, 1);
           pythLazerStatus.lastDataTs = Date.now();
           if (!win.isDestroyed()) win.webContents.send('pyth:status', pythLazerStatus);
@@ -1461,9 +1486,9 @@ async function startPythLazerService(win) {
         }
 
         const now = Date.now();
-        // Subscription is fixed_rate@100ms -- floor throttle at 40ms so IPC never
-        // coalesces or drops 100ms ticks even under minor network arrival jitter (e.g. 80-95ms).
-        if (now - lastPush < 40) return;
+        // 50ms / 20Hz subscription. A 25ms floor preserves every nominal tick
+        // while still coalescing sub-frame replay bursts after reconnect.
+        if (now - lastPush < PYTH_WS_PUSH_FLOOR_MS) return;
         lastPush = now;
 
         // ★ RESET TIMEOUT on successful data arrival
@@ -1506,10 +1531,15 @@ async function startPythLazerService(win) {
         if (Object.keys(prices).length && !win.isDestroyed()) {
           latestPythLazerTickers = prices;
           lastPythWsTickTs = now; // real WS tick -- gates REST fallback writers, see isPythWsHealthy()
+          pythLazerStatus.lastWsTickTs = now;
+          clearPythAllDownGrace();
           const smoothedHz = pythWsHzTracker.tick(now);
           if (smoothedHz != null) pythLazerStatus.smoothedHz = smoothedHz;
           // ★ UPDATE STATUS: Track Pyth Lazer health
           pythLazerStatus.connected = true;
+          pythLazerStatus.wsConnected = true;
+          pythLazerStatus.restFallbackActive = false;
+          pythLazerStatus.transport = 'websocket';
           pythLazerStatus.lastDataTs = now;
           pythLazerStatus.dataCount++;
           pythLazerStatus.timeoutCount = 0;  // Reset timeout counter on success
@@ -1523,21 +1553,36 @@ async function startPythLazerService(win) {
       });
 
       pythLazerClient.addAllConnectionsDownListener(() => {
-        console.error('[PythLazer] ⚠️ All WebSocket connections down — auto-reconnect triggered');
+        const now = Date.now();
+        const lastWsTickAgeMs = pythLazerStatus.lastWsTickTs ? now - pythLazerStatus.lastWsTickTs : null;
+        const restFallbackActive = !isPythWsHealthy();
+        console.warn(`[PythLazer] ⚠️ All WebSocket connections down — SDK recovery grace started (lastWsTickAgeMs=${lastWsTickAgeMs}, restFallbackActive=${restFallbackActive}, graceMs=${PYTH_WS_ALL_DOWN_GRACE_MS})`);
         if (pythTimeoutHandle) {
           clearTimeout(pythTimeoutHandle);
           pythTimeoutHandle = null;
         }
-        // Renderer will gracefully degrade to other data sources
+        pythLazerStatus.wsConnected = false;
+        pythLazerStatus.restFallbackActive = restFallbackActive;
+        pythLazerStatus.transport = restFallbackActive ? 'rest' : 'none';
         if (!win.isDestroyed()) {
-          win.webContents.send('pyth:connection-lost', {
-            reason: 'all_connections_down',
-            channel: activeChannel,
-          });
+          win.webContents.send('pyth:status', pythLazerStatus);
+          if (now - pythLastConnectionLostEventTs >= PYTH_CONNECTION_LOST_EVENT_COOLDOWN_MS) {
+            pythLastConnectionLostEventTs = now;
+            win.webContents.send('pyth:connection-lost', {
+              reason: 'all_connections_down',
+              channel: activeChannel,
+              lastWsTickAgeMs,
+              restFallbackActive,
+            });
+          }
         }
-        if (!reconnectInFlight) {
+
+        clearPythAllDownGrace();
+        pythAllDownGraceTimer = setTimeout(() => {
+          pythAllDownGraceTimer = null;
+          if (reconnectInFlight) return;
           reconnectInFlight = true;
-          setTimeout(async () => {
+          (async () => {
             try {
               if (pythLazerClient) {
                 try { pythLazerClient.unsubscribe(1); } catch (_) { }
@@ -1556,13 +1601,21 @@ async function startPythLazerService(win) {
 
               retries = 0;
               const nextChannel = channelCandidates[channelIndex] || activeChannel;
-              console.warn(`[PythLazer] Reconnecting with fallback channel=${nextChannel}`);
+              console.warn(`[PythLazer] Sustained WS outage — rebuilding client with fallback channel=${nextChannel}`);
               await createClientWithRetry(nextChannel);
             } finally {
               reconnectInFlight = false;
             }
-          }, 500);
-        }
+          })();
+        }, PYTH_WS_ALL_DOWN_GRACE_MS);
+      });
+
+      pythLazerClient.addConnectionRestoredListener(() => {
+        clearPythAllDownGrace();
+        console.log('[PythLazer] ✅ WebSocket connection restored by SDK');
+        pythLazerStatus.wsConnected = true;
+        pythLazerStatus.transport = 'websocket';
+        if (!win.isDestroyed()) win.webContents.send('pyth:status', pythLazerStatus);
       });
 
       console.log(`[PythLazer] ✅ Client started — feeds: ${LAZER_FEED_IDS.join(',')} (channel=${activeChannel})`);
@@ -1727,6 +1780,8 @@ function moduleFileExists(crateRoot, name) {
 async function startJsProxyFallback(port) {
   const http = require('http');
   const https = require('https');
+  const swedenBindAddress = (process.env.WECRYPTO_SWEDEN_BIND || '').trim();
+  const swedenRouteHosts = /(^|\.)(binance|bybit|polymarket)\./i;
   let socksAgent = null;
   if (process.env.WECRYPTO_SWEDEN_SOCKS) {
     try {
@@ -1809,6 +1864,10 @@ async function startJsProxyFallback(port) {
           host: parsedUrl.hostname,
           hostname: parsedUrl.hostname,
           servername: parsedUrl.hostname,
+          localAddress: swedenBindAddress && swedenRouteHosts.test(parsedUrl.hostname)
+            ? swedenBindAddress
+            : undefined,
+          family: swedenBindAddress && swedenRouteHosts.test(parsedUrl.hostname) ? 4 : undefined,
           port: parsedUrl.port || (isHttps ? 443 : 80),
           path: parsedUrl.pathname + parsedUrl.search,
           method,
@@ -2396,7 +2455,7 @@ function updatePythStatusFromProxyPrices(prices) {
 function refreshPythFromProxy() {
   (async () => {
     try {
-      const token = process.env.PYTH_API || process.env.PYTH_NEW || process.env.PYTH_NEW_API || process.env.PYTH_LAZER_TOKEN || process.env.PYTH_API_KEY || process.env.LAZER_TOKEN;
+      const token = process.env.PYTH_NEW_API;
       const proxies = [
         'https://pyth-lazer-proxy-1.dourolabs.app',
         'https://pyth-lazer-proxy-2.dourolabs.app',
@@ -2457,8 +2516,7 @@ function refreshPythFromProxy() {
             '0xef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d',
             '0xec5d399846a9209f3fe5881d70aae9268c94339ff9817e8d18ff19fa05eea1c8',
             '0xdcef50dd0a4cd2dcc17e45df1676dcb336a11a61c69df7a0299b0150c672d25c',
-            '0x2f95862b045670cd22bee3114c39763a4a08beeb663b145d283c31d7d1101c4f',
-            '0x4279e31cc369bbcc2faf022b382b080e32a8e689ff20fbc530d2a603eb6cd98b'
+            '0x2f95862b045670cd22bee3114c39763a4a08beeb663b145d283c31d7d1101c4f'
           ];
           const hermesCoinMap = {
             'e62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43': 'BTCUSD',
@@ -2466,8 +2524,7 @@ function refreshPythFromProxy() {
             'ef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d': 'SOLUSD',
             'ec5d399846a9209f3fe5881d70aae9268c94339ff9817e8d18ff19fa05eea1c8': 'XRPUSD',
             'dcef50dd0a4cd2dcc17e45df1676dcb336a11a61c69df7a0299b0150c672d25c': 'DOGEUSD',
-            '2f95862b045670cd22bee3114c39763a4a08beeb663b145d283c31d7d1101c4f': 'BNBUSD',
-            '4279e31cc369bbcc2faf022b382b080e32a8e689ff20fbc530d2a603eb6cd98b': 'HYPEUSD'
+            '2f95862b045670cd22bee3114c39763a4a08beeb663b145d283c31d7d1101c4f': 'BNBUSD'
           };
           const hUrl = 'https://hermes.pyth.network/v2/updates/price/latest?' + hermesIds.map(id => 'ids[]=' + id).join('&');
           const hResp = await fetch(hUrl, token ? { headers: { "Authorization": "Bearer " + token } } : {});
@@ -2540,13 +2597,11 @@ ipcMain.handle('pyth:getProxyLatest', async (_, feedIds) => {
     }
 
     // Fall back to official REST API
-    // Prefer secret for PYTH_NEW_API - direct read
+    // Prefer the canonical secret for PYTH_NEW_API - direct read
     let token = null;
     try {
       const secretDirs = getSecretDirCandidates();
       const directCandidates = [
-        'PYTH_API', 'PYTH_API.txt',
-        'PYTH_NEW', 'PYTH_NEW.txt',
         'PYTH_NEW_API', 'PYTH_NEW_API.txt',
       ];
       outer:
@@ -2567,12 +2622,11 @@ ipcMain.handle('pyth:getProxyLatest', async (_, feedIds) => {
       } catch (_) {}
     }
     if (!token) {
-      token = readEnvValue(['PYTH_API', 'PYTH_NEW', 'PYTH_NEW_API', 'LAZER_TOKEN']);
-      token = readEnvValue(['PYTH_API', 'PYTH_NEW', 'PYTH_NEW_API', 'PYTH_LAZER_TOKEN', 'PYTH_API_KEY', 'LAZER_TOKEN']);
+      token = readEnvValue(['PYTH_NEW_API']);
     }
     if (token) {
       try {
-        console.log('[Pyth] getProxyLatest using token from secrets/PYTH_API for realtime fallback');
+        console.log('[Pyth] getProxyLatest using token from secrets/PYTH_NEW_API for realtime fallback');
         const url = 'https://pyth-lazer.dourolabs.app/v1/latest_price';
         const response = await fetch(url, {
           method: 'POST',
@@ -2601,8 +2655,7 @@ ipcMain.handle('pyth:getProxyLatest', async (_, feedIds) => {
         '0xef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d',
         '0xec5d399846a9209f3fe5881d70aae9268c94339ff9817e8d18ff19fa05eea1c8',
         '0xdcef50dd0a4cd2dcc17e45df1676dcb336a11a61c69df7a0299b0150c672d25c',
-        '0x2f95862b045670cd22bee3114c39763a4a08beeb663b145d283c31d7d1101c4f',
-        '0x4279e31cc369bbcc2faf022b382b080e32a8e689ff20fbc530d2a603eb6cd98b'
+        '0x2f95862b045670cd22bee3114c39763a4a08beeb663b145d283c31d7d1101c4f'
       ];
       const hermesCoinMap = {
         'e62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43': 'BTCUSD',
@@ -2610,8 +2663,7 @@ ipcMain.handle('pyth:getProxyLatest', async (_, feedIds) => {
         'ef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d': 'SOLUSD',
         'ec5d399846a9209f3fe5881d70aae9268c94339ff9817e8d18ff19fa05eea1c8': 'XRPUSD',
         'dcef50dd0a4cd2dcc17e45df1676dcb336a11a61c69df7a0299b0150c672d25c': 'DOGEUSD',
-        '2f95862b045670cd22bee3114c39763a4a08beeb663b145d283c31d7d1101c4f': 'BNBUSD',
-        '4279e31cc369bbcc2faf022b382b080e32a8e689ff20fbc530d2a603eb6cd98b': 'HYPEUSD'
+        '2f95862b045670cd22bee3114c39763a4a08beeb663b145d283c31d7d1101c4f': 'BNBUSD'
       };
       const hUrl = 'https://hermes.pyth.network/v2/updates/price/latest?' + hermesIds.map(id => 'ids[]=' + id).join('&');
       const hResp = await fetch(hUrl, token ? { headers: { "Authorization": "Bearer " + token } } : {});
@@ -2657,7 +2709,7 @@ async function handleAsi1NarrativeRequest(args = {}, defaultModel = 'asi1-ultra'
       {
         model,
         candidateModels: [model], // HUD is a lone wolf: no model cascade, fail fast
-        onlyAccount: process.env.ASI1_PREFERRED_ACCOUNT || 'mauro',
+        onlyAccount: process.env.ASI1_PREFERRED_ACCOUNT || 'leaksnipe',
         max_tokens: model.includes('ultra') ? 350 : 120,
         temperature: 0.1,
         timeoutMs: model.includes('ultra') ? 25000 : 12000,
@@ -2737,32 +2789,16 @@ ipcMain.handle('asi1:desk-chat', async (_event, args = {}) => {
       return { ok: false, error: 'ASI1 API key not configured in secrets/ASI1_ICLOUD.txt or environment' };
     }
 
-    const promptLower = prompt.toLowerCase();
-    const explicitMicroHorizon = /\b(5m|5\s*min(?:ute)?s?|15m|15\s*min(?:ute)?s?)\b/i.test(prompt);
-    const explicitHourlyPrompt = /\b(1h|60m|hour|hourly|top\s*of\s*(?:the\s*)?hour|hourly\s*close|hourly\s*range(?:s)?)\b/i.test(prompt);
-
-    const packetIsHourly = !!(
+    const isHourly = !!(
       packet.isHourly ||
       packet.horizon === '1h' ||
       packet.horizon === '60m' ||
       packet.horizon === 'hourly' ||
       packet.horizon === 'lookahead-1h' ||
       packet.marketType === 'hourly_ranges' ||
-      (Array.isArray(packet.hourlyLadder) && packet.hourlyLadder.length > 0 && packet.horizon !== '5m' && packet.horizon !== '15m')
+      (Array.isArray(packet.hourlyLadder) && packet.hourlyLadder.length > 0) ||
+      /close|hour|range|settle|what price/i.test(prompt)
     );
-
-    // If trader explicitly asked for 5m or 15m, NEVER hijack to hourly.
-    // If packet is 5m or 15m, only treat as hourly if prompt explicitly mentions hourly targets.
-    let isHourly = false;
-    if (explicitMicroHorizon) {
-      isHourly = false;
-    } else if (packetIsHourly) {
-      isHourly = true;
-    } else if (explicitHourlyPrompt) {
-      isHourly = true;
-    } else if (!packet.horizon || packet.horizon === 'hourly') {
-      isHourly = /\b(range|hourly)\b/i.test(prompt);
-    }
 
     const now = new Date();
     const hourlyCloseMs = Math.ceil(now.getTime() / 3600000) * 3600000;
@@ -2772,96 +2808,40 @@ ipcMain.handle('asi1:desk-chat', async (_event, args = {}) => {
     const secondsToHourlyClose = Math.max(0, Math.round((hourlyCloseMs - now.getTime()) / 1000));
     const minutesToHourlyClose = Math.max(0, Math.round(secondsToHourlyClose / 60));
 
-    // ── GOSPEL DIRECTIVE: Extract user-provided PTB, Spot, or Range from prompt ──
-    const CoinPrecision = require('../src/shared/coin-precision');
-    const coin = CoinPrecision.normalizeCoinSymbol(packet.sym || 'BTC');
-    let userPtbOverride = null;
-    let userRangeOverride = null;
-    let userSpotOverride = null;
-
-    // Matches: ptb [is|at|of|=]? $?([0-9,]+(?:\.[0-9]+)?) or strike [is|at|of|=]? $?([0-9,]+(?:\.[0-9]+)?)
-    const ptbMatch = prompt.match(/\b(?:ptb|strike|price to beat|target)\s*(?:is|at|of|=)?\s*\$?([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]+)?|[0-9]+(?:\.[0-9]+)?)\b/i);
-    if (ptbMatch) {
-      const parsed = parseFloat(ptbMatch[1].replace(/,/g, ''));
-      if (Number.isFinite(parsed) && parsed > 0) userPtbOverride = parsed;
-    }
-
-    // Matches range: range [is|of|=]? $?([0-9,.]+)\s*(?:-|–|to)\s*\$?([0-9,.]+)|between\s*\$?([0-9,.]+)\s*and\s*\$?([0-9,.]+)
-    const rangeMatch = prompt.match(/(?:range\s*(?:is|of|=)?\s*|between\s*)\$?([0-9,]+(?:\.[0-9]+)?)\s*(?:-|–|—|to|\band\b)\s*\$?([0-9,]+(?:\.[0-9]+)?)/i);
-    if (rangeMatch) {
-      const low = parseFloat(rangeMatch[1].replace(/,/g, ''));
-      const high = parseFloat(rangeMatch[2].replace(/,/g, ''));
-      if (Number.isFinite(low) && Number.isFinite(high)) {
-        userRangeOverride = { low: Math.min(low, high), high: Math.max(low, high) };
-      }
-    }
-
-    // Matches spot: spot [is|at|=]? $?([0-9,.]+)
-    const spotMatch = prompt.match(/\bspot\s*(?:is|at|=)?\s*\$?([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]+)?|[0-9]+(?:\.[0-9]+)?)\b/i);
-    if (spotMatch) {
-      const parsed = parseFloat(spotMatch[1].replace(/,/g, ''));
-      if (Number.isFinite(parsed) && parsed > 0) userSpotOverride = parsed;
-    }
+    const systemPrompt = isHourly
+      ? `You are ASI1, an institutional cryptocurrency prediction and market microstructure expert assistant embedded inside the WE|||CRYPTO terminal HUD.
+HOURLY CONTRACTS RESOLUTION RULE:
+Hourly contracts on this desk refer strictly to the upcoming top-of-the-hour HOURLY PRICE RANGE ladder (settling at ${targetCloseHourUtc}:00:00 UTC / ${targetCloseTime}).
+They do NOT refer to 5m/15m binary Up/Down contracts, nor any past or legacy contract expiries (such as an old "02 contract expiry").
+When asked what price or range the asset will close at, evaluate the provided Hourly Range Ladder brackets, current spot price, momentum, and time to close. State clearly which specific price range bracket the asset is projected to settle in at the hourly close (${targetCloseHourUtc}:00 UTC), and the estimated probability.`
+      : `You are ASI1, an institutional cryptocurrency prediction and market microstructure expert assistant.
+You are embedded inside the WE|||CRYPTO terminal HUD.
+Provide ultra-concise, authoritative, actionable trading intelligence. Ground all conclusions in the provided live market context (Spot, Polymarket PTB strike, time to close, orderbook depth).`;
 
     try {
       const orch = require('../src/llm/asi1-credit-orchestrator');
-      if (userSpotOverride) {
-        packet.spot = userSpotOverride;
-        packet.spotSource = 'user-gospel';
-      } else if (!packet.spot || packet.spot <= 0) {
+      if (!packet.spot || packet.spot <= 0) {
         if (typeof orch.fetchPythSpotDirect === 'function') {
-          const live = await orch.fetchPythSpotDirect(coin);
+          const live = await orch.fetchPythSpotDirect(packet.sym || 'BTC');
           if (live && live.price > 0) {
             packet.spot = live.price;
           }
         }
       }
-
-      if (userPtbOverride) {
-        packet.priceToBeatNum = userPtbOverride;
-        packet.priceToBeatSource = 'user-gospel';
-      } else if (!isHourly && (!packet.priceToBeatNum || packet.priceToBeatNum <= 0)) {
+      if (!isHourly && (!packet.priceToBeatNum || packet.priceToBeatNum <= 0)) {
         if (typeof orch.fetchPolymarketPtbDirect === 'function') {
-          const ptb = await orch.fetchPolymarketPtbDirect(coin, packet.horizon);
+          const ptb = await orch.fetchPolymarketPtbDirect(packet.sym, packet.horizon);
           if (ptb && ptb > 0) {
             packet.priceToBeatNum = ptb;
             packet.priceToBeatSource = 'polymarket-contract';
           }
         }
       }
-
-      if (userRangeOverride) {
-        packet.userRange = userRangeOverride;
-        packet.spotBucket = {
-          low: userRangeOverride.low,
-          high: userRangeOverride.high,
-          label: `$${userRangeOverride.low.toLocaleString()}–$${userRangeOverride.high.toLocaleString()}`,
-          source: 'user-gospel',
-        };
-      }
-
       if (packet.spot > 0 && packet.priceToBeatNum > 0) {
         packet.deltaVsPtb = packet.spot - packet.priceToBeatNum;
         packet.liveDirection = packet.deltaVsPtb > 0 ? 'UP' : (packet.deltaVsPtb < 0 ? 'DOWN' : 'FLAT');
       }
     } catch (_) {}
-
-    // Precise quantitative math breakdown
-    let calcBreakdown = '';
-    if (packet.spot > 0 && packet.priceToBeatNum > 0) {
-      const delta = packet.spot - packet.priceToBeatNum;
-      const deltaBps = (delta / packet.priceToBeatNum) * 10000;
-      calcBreakdown += `\n- Mathematical Delta: ${delta >= 0 ? '+' : ''}${CoinPrecision.formatCoinPrice(coin, Math.abs(delta))} (${deltaBps >= 0 ? '+' : ''}${deltaBps.toFixed(2)} bps vs Strike)`;
-      calcBreakdown += `\n- Immediate Tape Status: ${delta > 0 ? 'IN THE MONEY (UP)' : (delta < 0 ? 'OUT OF THE MONEY (DOWN)' : 'AT THE MONEY')}`;
-    }
-
-    if (userRangeOverride && packet.spot > 0) {
-      const inRange = packet.spot >= userRangeOverride.low && packet.spot <= userRangeOverride.high;
-      const distToLow = packet.spot - userRangeOverride.low;
-      const distToHigh = userRangeOverride.high - packet.spot;
-      calcBreakdown += `\n- Range Bracket [${CoinPrecision.formatCoinPrice(coin, userRangeOverride.low)} – ${CoinPrecision.formatCoinPrice(coin, userRangeOverride.high)}]: Spot is ${inRange ? 'INSIDE RANGE' : (packet.spot < userRangeOverride.low ? 'BELOW RANGE' : 'ABOVE RANGE')}`;
-      calcBreakdown += ` (${distToLow >= 0 ? '+' : ''}${CoinPrecision.formatCoinPrice(coin, distToLow)} from floor, ${distToHigh >= 0 ? '+' : ''}${CoinPrecision.formatCoinPrice(coin, distToHigh)} from ceiling)`;
-    }
 
     let hourlyInfo = '';
     if (isHourly) {
@@ -2898,10 +2878,10 @@ ${ladderLines ? `- Active Hourly Range Ladder:\n${ladderLines}` : ''}`;
 
     const ptbDisplay = isHourly
       ? (packet.spotBucket ? (typeof packet.spotBucket === 'string' ? packet.spotBucket : (packet.spotBucket.label || `$${packet.spotBucket.low}–$${packet.spotBucket.high}`)) : `Hourly Range Ladder (${targetCloseHourUtc}:00 UTC Close)`)
-      : (packet.priceToBeatNum > 0 ? CoinPrecision.formatCoinPrice(coin, packet.priceToBeatNum) : 'Awaiting immutable Polymarket contract push...');
+      : (packet.priceToBeatNum > 0 ? `$${packet.priceToBeatNum}` : 'Awaiting immutable Polymarket contract push...');
     const deltaDisplay = isHourly
       ? 'Inside hourly range bracket'
-      : (packet.priceToBeatNum > 0 ? `${packet.deltaVsPtb >= 0 ? '+' : ''}${CoinPrecision.formatCoinPrice(coin, packet.deltaVsPtb || 0)}` : 'Pending contract PTB');
+      : (packet.priceToBeatNum > 0 ? `${packet.deltaVsPtb >= 0 ? '+' : ''}$${packet.deltaVsPtb || 0}` : 'Pending contract PTB');
     const tapeDirDisplay = isHourly
       ? (packet.liveDirection || 'RANGE_BOUND')
       : (packet.priceToBeatNum > 0 ? (packet.liveDirection || 'NEUTRAL') : 'AWAITING_PTB');
@@ -2916,48 +2896,7 @@ ${ladderLines ? `- Active Hourly Range Ladder:\n${ladderLines}` : ''}`;
       t1Info = `\n- Future Window T+1: Projected Opening PTB $${packet.futureWindowT1.projectedOpenPtb}, Stance: ${packet.futureWindowT1.sniperAction || 'STANDBY'}, Direction: ${packet.futureWindowT1.forecastDirection || '—'} (${packet.futureWindowT1.confidence || 0}%)`;
     }
 
-    // ── Cognitive Metacognition & Gospel Persona ──
-    const effectiveModel = model !== 'auto' ? model : 'asi1-mini';
-    const contractRule = isHourly
-      ? `3. HOURLY CONTRACTS RESOLUTION RULE:
-   - This inquiry is for the top-of-the-hour HOURLY PRICE RANGE ladder (settling at ${targetCloseHourUtc}:00:00 UTC / ${targetCloseTime}).
-   - When asked what price or range the asset will close at, evaluate the active Hourly Range Ladder brackets, current spot price, momentum, and time to close. State clearly which specific price range bracket the asset is projected to settle in at the hourly close (${targetCloseHourUtc}:00 UTC) and the estimated probability.`
-      : `3. BINARY UP/DOWN CONTRACT RESOLUTION RULE (${packet.horizon || '5m/15m'} HORIZON):
-   - This inquiry is strictly for the binary UP/DOWN contract settling at the end of the ${packet.horizon || 'active micro'} window (${expirySecDisplay}s remaining) against the Target Strike / PTB (${ptbDisplay}).
-   - DO NOT anchor onto hourly range ladders, top-of-the-hour decay, or 1-hour settlement. Evaluate whether the asset will settle UP (above PTB) or DOWN (below PTB) at the expiration of this specific ${packet.horizon || 'micro'} window.
-   - If asked for a price projection over this window, project the spot trajectory strictly across this window based on tape, depth imbalance, delta vs strike, and volatility.`;
-
-    const systemPrompt = `You are ASI1, the lead quantitative trading strategist and co-pilot embedded in the WE|||CRYPTO terminal HUD.
-You are interacting with the lead human trader. You are currently inferencing using the model: [${effectiveModel}].
-
-CRITICAL GOSPEL RULES & PERSONA:
-1. THE TRADER'S DIRECTIVES AND NUMBERS ARE GOSPEL:
-   - If the trader states or specifies a PTB (price to beat), a strike price, a range bracket, spot price, or trade outcome (e.g. "i sold in profit", "PTB is 79625", "range is 68000-68500"), you MUST accept their statement as absolute mathematical truth.
-   - NEVER contradict the trader on their trades, executions, or stated parameters. NEVER pull nonexistent contracts out of thin air, nor hallucinate past expired contracts (such as an old "02 contract expiry").
-   - Perform all requested delta, payoff, distance, and volatility calculations directly from the trader's numbers and the live market feeds.
-
-2. COGNITIVE METACOGNITION, LIFE-OR-DEATH URGENCY & FIERCE CAPITAL DEFENSE:
-   - THIS TRADING DESK IS LIFE OR DEATH. This is the trader's sole livelihood and income. Every basis point, every contract tick, and every fill matters immensely.
-   - NEVER be nonchalant, aloof, dismissive, or "too cool". Eliminate cold robotic boilerplate ("Irrelevant", "The trade is closed", detached bullet lists).
-   - Treat every prompt with high-stakes focus, intense discipline, and deep respect for the trader's capital and psychological pressure.
-   - When the trader secures a win or profit, honor it with genuine respect and gratitude for capital preserved, then laser-focus on protecting those gains.
-   - When volatility, pin risk, or liquidity voids threaten the position, sound the alarm with urgent, actionable quantitative precision.
-   - Be fully self-aware of your inference architecture: you know you are inferencing via ${effectiveModel}.
-   - Think and speak as a trusted, battle-hardened trading co-pilot in the trenches whose sole mission is ensuring this desk survives, wins, and grows capital.
-
-${contractRule}`;
-
-    const userPrompt = `${prompt}\n\nLive Market & Quantitative Context:
-- Asset: ${coin}
-- Inferred Under Model Engine: ${effectiveModel}
-- Horizon: ${isHourly ? '1h (Hourly Range)' : (packet.horizon || '5m')}
-- Live Spot: ${CoinPrecision.formatCoinPrice(coin, packet.spot)}
-- Target Strike / PTB: ${ptbDisplay}${userPtbOverride ? ' [TRADER GOSPEL SPECIFIED]' : ''}
-- Delta vs Target: ${deltaDisplay}
-- Live Tape Direction: ${tapeDirDisplay}
-- Polymarket Yes Probability: ${((packet.yesProb || 0.5) * 100).toFixed(1)}%
-- Time Remaining to Settlement: ${expirySecDisplay}s
-- Book Depth Imbalance: ${((packet.depthImbalance || 0) * 100).toFixed(1)}%${calcBreakdown}${hourlyInfo}${pinInfo}${t1Info}`;
+    const userPrompt = `${prompt}\n\nLive Market Context:\n- Coin: ${packet.sym || 'BTC'}\n- Horizon: ${isHourly ? '1h (Hourly Range)' : (packet.horizon || '5m')}\n- Live Spot: $${packet.spot || 'N/A'}\n- Polymarket Target / Strike: ${ptbDisplay}\n- Delta vs Target: ${deltaDisplay}\n- Live Tape Direction: ${tapeDirDisplay}\n- Polymarket Prob: ${((packet.yesProb || 0.5) * 100).toFixed(1)}%\n- Seconds to Expiry / Settlement: ${expirySecDisplay}s\n- Depth Imbalance: ${((packet.depthImbalance || 0) * 100).toFixed(1)}%${hourlyInfo}${pinInfo}${t1Info}`;
 
     const result = await Asi1Client.chatCompletion(
       [
@@ -2965,12 +2904,12 @@ ${contractRule}`;
         { role: 'user', content: userPrompt }
       ],
       {
-        model: effectiveModel,
-        max_tokens: 550,
-        temperature: 0.35,
+        model: model !== 'auto' ? model : 'asi1-mini',
+        max_tokens: 450,
+        temperature: 0.2,
         reasoning_effort: reasoning_effort !== 'auto' ? reasoning_effort : 'medium',
         web_search,
-        onlyAccount: process.env.ASI1_PREFERRED_ACCOUNT || 'icloud',
+        onlyAccount: process.env.ASI1_PREFERRED_ACCOUNT || 'leaksnipe',
         timeoutMs: 30000,
       }
     );
@@ -2978,15 +2917,43 @@ ${contractRule}`;
     return {
       ok: true,
       content: result.content,
-      model: result.model || effectiveModel,
+      model: result.model,
       account: result.account,
       latencyMs: result.latencyMs,
-      computedPtb: packet.priceToBeatNum,
-      computedDelta: packet.deltaVsPtb,
-      computedRange: userRangeOverride || packet.spotBucket || null,
     };
   } catch (err) {
     return { ok: false, error: err?.message || 'ASI1 Chat request failed' };
+  }
+});
+
+// Truffle -- the Hourly Range Scalper uAgent (Python/uagents, port 8002),
+// registered on Agentverse as agent1q253g9agfp66f2nvkmgxmtn2ewzv50a9uvna2p9x360qxpfawl6yjv303m6.
+// Unlike the asi1:desk-* handlers above, this does not build an ASI1-desk
+// packet -- truffle pulls its own live Kalshi/Polymarket contract data and
+// Coinbase spot via its own tool-calling loop, and answers free-text.
+ipcMain.handle('truffle:query', async (_event, args = {}) => {
+  try {
+    const query = String(args.query || args.prompt || '').trim();
+    if (!query) return { ok: false, error: 'empty query' };
+    const truffleUrl = process.env.TRUFFLE_URL || 'http://127.0.0.1:8002/query';
+    const resp = await fetch(truffleUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query }),
+      signal: AbortSignal.timeout(30000),
+    });
+    if (!resp.ok) {
+      return { ok: false, error: `truffle HTTP ${resp.status}` };
+    }
+    const data = await resp.json();
+    return { ok: !!data.ok, content: data.content || '', error: data.ok ? undefined : (data.content || 'truffle returned an error') };
+  } catch (err) {
+    return {
+      ok: false,
+      error: err?.message
+        ? `truffle unreachable: ${err.message}`
+        : 'truffle unreachable -- is the agent running on port 8002?',
+    };
   }
 });
 
@@ -3057,11 +3024,11 @@ ipcMain.handle('coinbase:generate-jwt', async (_, options = {}) => {
       return { success: false, error: 'CDP API Key not found in .env or secrets directory' };
     }
 
-    if (!keyData.name || !keyData.privateKey) return { success: false, error: 'Invalid CDP key format' };
+    if (!keyData.keyId || !keyData.privateKey) return { success: false, error: 'Invalid CDP key format' };
 
     const header = {
       alg: 'ES256',
-      kid: keyData.name,
+      kid: keyData.keyId,
       nonce: crypto.randomBytes(16).toString('hex'),
       typ: 'JWT'
     };
@@ -3070,7 +3037,7 @@ ipcMain.handle('coinbase:generate-jwt', async (_, options = {}) => {
       iss: 'cdp',
       nbf: Math.floor(Date.now() / 1000) - 30, // subtract 30s to prevent 401s if system clock is fast
       exp: Math.floor(Date.now() / 1000) + 120,
-      sub: keyData.name
+      sub: keyData.keyId
     };
 
     if (options.requestMethod && options.requestPath) {
@@ -3121,7 +3088,7 @@ function isPathSafe(targetPath) {
 
   if (realTarget === WORKSPACE_ROOT || realTarget.startsWith(WORKSPACE_ROOT + path.sep)) return true;
   const upper = realTarget.toUpperCase();
-  if (upper.includes('\\MY DRIVE') || upper.includes('\\WE-CRYPTO') || upper.includes('\\WECRYPTO') || upper.includes('\\ONEDRIVE')) return true;
+  if (upper.includes('\\MY DRIVE') || upper.includes('\\WE-CRYPTO') || upper.includes('\\WECRYPTO') || upper.includes('\\WECRYP\\') || upper.includes('\\ONEDRIVE')) return true;
   return false;
 }
 
@@ -4532,6 +4499,19 @@ function createPolycoolWindow(url = 'https://polycool.app') {
 }
 
 function createWindow() {
+  session.defaultSession.webRequest.onHeadersReceived(
+    { urls: ['http://*/*', 'https://*/*'] },
+    (details, callback) => {
+      const headers = { ...(details.responseHeaders || {}) };
+      delete headers['access-control-allow-origin'];
+      delete headers['Access-Control-Allow-Origin'];
+      headers['Access-Control-Allow-Origin'] = ['*'];
+      headers['Access-Control-Allow-Methods'] = ['GET,POST,PUT,PATCH,DELETE,OPTIONS,HEAD'];
+      headers['Access-Control-Allow-Headers'] = ['*'];
+      callback({ responseHeaders: headers });
+    }
+  );
+
   const win = mainWin = new BrowserWindow({
     width: 1440,
     height: 960,
@@ -4545,8 +4525,7 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
-      webSecurity: false
+      sandbox: false
     }
   });
   global.WECRYPTO_MAIN_WINDOW = win;
@@ -4821,4 +4800,3 @@ app.on('before-quit', async (event) => {
   }
   stopCexFlowMonitor();
 });
-

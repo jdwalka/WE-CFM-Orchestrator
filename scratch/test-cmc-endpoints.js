@@ -1,4 +1,5 @@
-const apiKey = '2f84e1a8fd0346568a51bbc18657bd5f';
+const apiKey = process.env.COINMARKETCAP_API_KEY;
+if (!apiKey) throw new Error("COINMARKETCAP_API_KEY is required");
 
 async function testEndpoint(urlName, url) {
   console.log(`\nTesting ${urlName}:`);
