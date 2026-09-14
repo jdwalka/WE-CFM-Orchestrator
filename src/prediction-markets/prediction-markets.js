@@ -910,13 +910,8 @@
 
   // ---- Kalshi 15M -----------------------------------------------------
 
-  // User no longer trades Kalshi. Rather than delete the large surface of
-  // code across this file and its many downstream consumers (app-init,
-  // observability, crash-analysis, quant-layer, etc.) that read Kalshi
-  // fields defensively (kalshi15m/kalshi5m stay null, combinedProb already
-  // falls back to Polymarket-only -- see below), kill it at the source: no
-  // network calls are made, so every consumer just sees "no Kalshi data",
-  // which they already handle. Flip to re-enable.
+  // Kalshi owns the 15-minute product surface. KALSHI_DISABLED remains the
+  // single source kill switch; Polymarket 15m is only a legacy fallback.
   async function fetchKalshi15M() {
     if (KALSHI_DISABLED) return {};
     const result = {};
@@ -1710,7 +1705,7 @@
     'provisional',
   ]);
 
-  /** Coin quote decimals: BTC/ETH/BNB/SOL/HYPE = 2 (cents); XRP/DOGE = 4. */
+  /** Coin quote decimals: BTC/ETH/BNB = 2; SOL/HYPE/XRP = 4; DOGE = 7. */
   function _priceDecimalsForSymbol(symbol = '', value) {
     if (typeof window !== 'undefined' && window.CoinPrecision?.getCoinDecimals) {
       return window.CoinPrecision.getCoinDecimals(symbol, value);
@@ -1718,8 +1713,9 @@
     const s = String(symbol || '').toUpperCase();
     const m = s.match(/^(BTC|ETH|SOL|XRP|DOGE|BNB|HYPE)/);
     const sym = m ? m[1] : s.replace(/[^A-Z]/g, '').slice(0, 5);
-    if (sym === 'BTC' || sym === 'ETH' || sym === 'BNB' || sym === 'SOL' || sym === 'HYPE') return 2;
-    if (sym === 'XRP' || sym === 'DOGE') return 4;
+    if (sym === 'BTC' || sym === 'ETH' || sym === 'BNB') return 2;
+    if (sym === 'SOL' || sym === 'HYPE' || sym === 'XRP') return 4;
+    if (sym === 'DOGE') return 7;
     const n = Number(value);
     if (Number.isFinite(n) && n > 0 && n < 1) return 4;
     return 2;
@@ -3723,8 +3719,20 @@ function polymarketSentiment(markets, sym) {
     };
   }
 
-  if (typeof window !== 'undefined' && window.PredictionMarkets && typeof window.PredictionMarkets.start === 'function') {
-    try { window.PredictionMarkets.start(); } catch (_) {}
+  if (typeof window !== 'undefined') {
+    if (typeof document === 'undefined') {
+      // Non-DOM environments (tests, worker contexts) intentionally skip auto-start.
+    } else if (document.readyState !== 'loading') {
+      if (window.PredictionMarkets && !window.PredictionMarkets._started) {
+        try { window.PredictionMarkets.start(); } catch (_) {}
+      }
+    } else {
+      document.addEventListener('DOMContentLoaded', () => {
+        if (window.PredictionMarkets && !window.PredictionMarkets._started) {
+          try { window.PredictionMarkets.start(); } catch (_) {}
+        }
+      });
+    }
   }
 
 })();

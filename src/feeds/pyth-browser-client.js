@@ -171,6 +171,14 @@
     const feedIds = Object.values(PYTH_FEEDS);
     const v2Url = `${PYTH_HERMES_V2}?${feedIds.map(id => 'ids[]=' + encodeURIComponent(id)).join('&')}`;
 
+    // Douro Labs' Lazer proxy is public, sub-100ms, and currently the most
+    // reliable route. Prefer it and avoid the noisy Hermes 403/401 console
+    // response entirely; Hermes remains a fully authenticated fallback.
+    const lazerFirst = await _fetchDouroLazerProxy();
+    if (lazerFirst && Object.keys(lazerFirst.feeds).length >= 4) {
+      return lazerFirst;
+    }
+
     const headers = pythHermesProKey ? { Authorization: `Bearer ${pythHermesProKey}` } : {};
     let resp = null;
     try {

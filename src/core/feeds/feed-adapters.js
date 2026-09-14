@@ -745,8 +745,7 @@ async function fetchPythTickers() {
       const params = feedIds.map(id => `ids[]=${id}`).join('&');
       const pythKey = resolveRuntimeKeyLocal('PYTH_PRO_API_KEY') ||
         resolveRuntimeKeyLocal('PYTH_HERMES_TOKEN') ||
-        resolveRuntimeKeyLocal('PYTH_HERMES_PRO_KEY') ||
-        '9AowRQwEELKpsMosei146CTHcxeNoHuSUWuDhGfFxkXZ';
+        resolveRuntimeKeyLocal('PYTH_HERMES_PRO_KEY') || '';
       const headers = { 'Accept': 'application/json' };
       if (pythKey) headers['Authorization'] = `Bearer ${pythKey}`;
 

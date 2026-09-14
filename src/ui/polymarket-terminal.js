@@ -1,5 +1,5 @@
 // polymarket-terminal.js — Polymarket Pro Suite Terminal UI
-// Features: Dual Predictions (5m/15m) + Perpetuals, Live CLOB Orderbook,
+// Features: 5-Minute TWAP PTB Predictions + Perpetuals, Live CLOB Orderbook,
 //           Token-Bucket Telemetry, Geoblock Badge, Gasless 1-Click Relayer Execution
 // WalkerEnterprise WE|||CRYPTO Engine
 (function () {
@@ -45,7 +45,7 @@
   /**
    * Live CLOB place via Electron IPC (poly:placeOrder).
    * @param {string} side - 'UP' | 'DOWN' (also accepts legacy YES=UP, NO=DOWN)
-   * @param {string} contractType - '5M' | '15M'
+   * @param {string} contractType - '5M' (Polymarket terminal is 5m-only)
    * @param {number} [size=10]
    */
   async function handleQuickTrade(side, contractType = '5M', size = 10) {
@@ -61,8 +61,8 @@
 
     try {
       const coin = window.PredictionMarkets?.getCoin?.(_activeSymbol);
-      const cType = (contractType || (window._terminalHorizon === '15m' ? '15M' : '5M')).toUpperCase();
-      const mkt = cType === '15M' ? coin?.poly15m : coin?.poly5m;
+      const cType = '5M';
+      const mkt = coin?.poly5m;
       if (!mkt) throw new Error(`No Polymarket ${cType} market for ${_activeSymbol}`);
 
       const tokenID = isUp
@@ -168,9 +168,8 @@
     const perpTicker = window.PolymarketPerpsClient?.getTicker?.(_activeSymbol) || {};
     const perpFunding = window.PolymarketPerpsClient?.getFundingRate?.(_activeSymbol) || {};
     const coinData = window.PredictionMarkets?.getCoin?.(_activeSymbol) || {};
-    const horizon = window._terminalHorizon || '5m';
-    const is15m = horizon === '15m';
-    const poly5m = (is15m ? coinData?.poly15m : coinData?.poly5m) || {};
+    const horizon = '5m';
+    const poly5m = coinData?.poly5m || {};
 
     const yesProb = Math.round((poly5m.probability || 0.5) * 100);
     const noProb = 100 - yesProb;
@@ -178,7 +177,7 @@
       if (typeof v === 'string' && /^\$\s*[0-9]/.test(v)) return v.trim();
       const raw = typeof v === 'string' ? parseFloat(v.replace(/[^0-9.-]+/g, '')) : Number(v);
       if (!Number.isFinite(raw) || raw <= 0) return null;
-      const d = /^DOGE$/i.test(_activeSymbol) ? 6 : /^XRP$/i.test(_activeSymbol) ? 4 : 2;
+      const d = /^DOGE$/i.test(_activeSymbol) ? 7 : /^XRP$/i.test(_activeSymbol) ? 4 : 2;
       return '$' + raw.toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
     };
     const targetPrice = poly5m.targetPrice
@@ -267,22 +266,18 @@
             `).join('')}
           </div>
 
-          <!-- Dual Mode Switch -->
+          <!-- 5m TWAP Mode -->
           <div style="display:flex;gap:8px;align-items:center;">
             ${_activeTab === 'predictions' ? `
             <div style="display:flex;background:var(--color-surface-2);border-radius:6px;padding:2px;border:1px solid var(--color-border);">
               <button onclick="window.PolymarketTerminal.selectHorizon('5m')"
                 style="padding:5px 10px;border-radius:4px;font-size:11px;font-weight:700;border:none;cursor:pointer;
-                       background:${!is15m ? 'var(--color-surface)' : 'transparent'};
-                       color:${!is15m ? '#00e5ff' : 'var(--color-text-muted)'};">
+                       background:var(--color-surface);color:#00e5ff;">
                 5M
               </button>
-              <button onclick="window.PolymarketTerminal.selectHorizon('15m')"
-                style="padding:5px 10px;border-radius:4px;font-size:11px;font-weight:700;border:none;cursor:pointer;
-                       background:${is15m ? 'var(--color-surface)' : 'transparent'};
-                       color:${is15m ? '#00e5ff' : 'var(--color-text-muted)'};">
-                15M
-              </button>
+              <span style="padding:5px 10px;font-size:10px;color:var(--color-text-faint);">
+                15m → Kalshi panel
+              </span>
             </div>
             ` : ''}
             <div style="display:flex;background:var(--color-surface-2);border-radius:6px;padding:2px;border:1px solid var(--color-border);">
@@ -290,7 +285,7 @@
                 style="padding:5px 12px;border-radius:4px;font-size:11px;font-weight:700;border:none;cursor:pointer;
                        background:${_activeTab === 'predictions' ? 'var(--color-surface)' : 'transparent'};
                        color:${_activeTab === 'predictions' ? '#00e5ff' : 'var(--color-text-muted)'};">
-                ▲▼ 5M/15M Up/Down
+                ▲▼ 5M TWAP Up/Down
               </button>
               <button onclick="window.PolymarketTerminal.selectTab('perps')"
                 style="padding:5px 12px;border-radius:4px;font-size:11px;font-weight:700;border:none;cursor:pointer;
@@ -305,7 +300,7 @@
         <!-- Metric KPI Cards -->
         <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;">
           <div style="background:var(--color-surface);border:1px solid var(--color-border);border-radius:8px;padding:14px;">
-            <div style="font-size:10px;color:var(--color-text-faint);text-transform:uppercase;letter-spacing:0.05em;">${is15m ? '15M' : '5M'} Target (PTB)</div>
+            <div style="font-size:10px;color:var(--color-text-faint);text-transform:uppercase;letter-spacing:0.05em;">5M Target (PTB)</div>
             <div style="font-size:20px;font-weight:800;color:#00e5ff;margin-top:4px;">${targetPrice}</div>
             <div style="font-size:11px;color:var(--color-text-muted);margin-top:4px;">Chainlink 60s TWAP Benchmark</div>
           </div>
@@ -322,8 +317,7 @@
           ${(() => {
             try {
               const b5 = window.Asi1PreContract?.get?.(_activeSymbol, '5m');
-              const b15 = window.Asi1PreContract?.get?.(_activeSymbol, '15m');
-              const b = b5 || b15;
+              const b = b5;
               if (!b?.call && !b?.notes) {
                 return `<div style="background:var(--color-surface);border:1px solid var(--color-border);border-radius:8px;padding:14px;">
                   <div style="font-size:10px;color:var(--color-text-faint);text-transform:uppercase;">ASI1 Pre-Contract</div>
@@ -370,7 +364,7 @@
             <!-- Rolling Contract Queue -->
             <div style="background:var(--color-surface);border:1px solid var(--color-border);border-radius:8px;padding:14px;">
               <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
-                <span style="font-size:11px;font-weight:700;color:var(--color-text-faint);text-transform:uppercase;">Upcoming ${is15m ? '15M' : '5M'} Queue (${is15m ? '45' : '25'}-Min Horizon)</span>
+                <span style="font-size:11px;font-weight:700;color:var(--color-text-faint);text-transform:uppercase;">Upcoming 5M Queue (25-Min Horizon)</span>
                 <span style="font-size:10px;color:#00e5ff;">Auto-syncing PTB</span>
               </div>
               <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;">
@@ -380,17 +374,17 @@
                   <div style="font-size:10px;color:var(--color-text);">${targetPrice}</div>
                 </div>
                 <div style="background:var(--color-surface-2);border:1px solid var(--color-border);border-radius:6px;padding:8px;text-align:center;">
-                  <div style="font-size:10px;color:var(--color-text-muted);">+${is15m ? '15' : '5'} Min</div>
+                  <div style="font-size:10px;color:var(--color-text-muted);">+5 Min</div>
                   <div style="font-size:16px;font-weight:800;color:var(--color-text);margin:2px 0;">50%</div>
                   <div style="font-size:10px;color:var(--color-text-muted);">Awaiting Lock</div>
                 </div>
                 <div style="background:var(--color-surface-2);border:1px solid var(--color-border);border-radius:6px;padding:8px;text-align:center;">
-                  <div style="font-size:10px;color:var(--color-text-muted);">+${is15m ? '30' : '10'} Min</div>
+                  <div style="font-size:10px;color:var(--color-text-muted);">+10 Min</div>
                   <div style="font-size:16px;font-weight:800;color:var(--color-text);margin:2px 0;">50%</div>
                   <div style="font-size:10px;color:var(--color-text-muted);">Awaiting Lock</div>
                 </div>
                 <div style="background:var(--color-surface-2);border:1px solid var(--color-border);border-radius:6px;padding:8px;text-align:center;">
-                  <div style="font-size:10px;color:var(--color-text-muted);">+${is15m ? '45' : '15'} Min</div>
+                  <div style="font-size:10px;color:var(--color-text-muted);">+15 Min</div>
                   <div style="font-size:16px;font-weight:800;color:var(--color-text);margin:2px 0;">50%</div>
                   <div style="font-size:10px;color:var(--color-text-muted);">Awaiting Lock</div>
                 </div>
@@ -420,12 +414,12 @@
 
                 <!-- 1-Click Buy Buttons (Polymarket Up/Down) -->
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:6px;">
-                  <button id="btn-quick-yes" onclick="window.PolymarketTerminal.handleQuickTrade('UP', '${is15m ? '15M' : '5M'}')"
+                  <button id="btn-quick-yes" onclick="window.PolymarketTerminal.handleQuickTrade('UP', '5M')"
                     style="padding:14px;border-radius:6px;background:#00e676;color:#000;font-size:13px;font-weight:800;border:none;cursor:pointer;box-shadow:0 0 14px rgba(0,230,118,0.4);transition:all 0.15s;">
                     BUY UP ↗ (${yesProb}¢)
                   </button>
 
-                  <button id="btn-quick-no" onclick="window.PolymarketTerminal.handleQuickTrade('DOWN', '${is15m ? '15M' : '5M'}')"
+                  <button id="btn-quick-no" onclick="window.PolymarketTerminal.handleQuickTrade('DOWN', '5M')"
                     style="padding:14px;border-radius:6px;background:#ff5252;color:#fff;font-size:13px;font-weight:800;border:none;cursor:pointer;box-shadow:0 0 14px rgba(255,82,82,0.4);transition:all 0.15s;">
                     BUY DOWN ↘ (${noProb}¢)
                   </button>
@@ -465,13 +459,12 @@
   function _reconcileEmbed(container, poly5m) {
     const slot = container.querySelector('#poly-pro-embed-slot');
     if (!slot) return;
-    const horizon = window._terminalHorizon || '5m';
-    const is15m = horizon === '15m';
+    const horizon = '5m';
     const nowSec = Math.floor(Date.now() / 1000);
-    const stepSec = is15m ? 900 : 300;
+    const stepSec = 300;
     const windowSec = nowSec - (nowSec % stepSec);
     const coinPrefix = (window.PredictionMarkets?.POLY_5M_COIN_SLUGS?.[_activeSymbol] || _activeSymbol.toLowerCase());
-    const slug = poly5m.slug || `${coinPrefix}-updown-${is15m ? '15m' : '5m'}-${windowSec}`;
+    const slug = poly5m.slug || `${coinPrefix}-updown-5m-${windowSec}`;
 
     // The panel's innerHTML rewrite always produces a brand-new slot div, so
     // any previously-loaded iframe is now detached (its old parent is gone).
@@ -484,7 +477,7 @@
 
     const iframe = document.createElement('iframe');
     iframe.id = `poly-pro-embed-${_activeSymbol}`;
-    iframe.title = `${_activeSymbol} Polymarket Live (${is15m ? '15m' : '5m'})`;
+    iframe.title = `${_activeSymbol} Polymarket 5m TWAP Live`;
     iframe.src = `https://embed.polymarket.com/market?market=${encodeURIComponent(slug)}&theme=dark&border=false&creator=JohnDaWalka&height=340`;
     iframe.style.cssText = 'width:100%;height:340px;border:0;border-radius:6px;display:block;';
     iframe.setAttribute('frameborder', '0');

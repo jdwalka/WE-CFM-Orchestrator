@@ -112,6 +112,12 @@
     return refPrice * 0.002;
   }
 
+  function getFallbackDecimals(sym) {
+    if (sym === 'SOL' || sym === 'HYPE' || sym === 'XRP') return 4;
+    if (sym === 'DOGE') return 7;
+    return 2;
+  }
+
   function buildSpotCenteredRanges(sym, refPrice, closeTimeIso) {
     if (!Number.isFinite(refPrice) || refPrice <= 0) return [];
     const step = getStepSize(sym, refPrice);
@@ -324,7 +330,7 @@
     const priceStr = price
       ? (window.CoinPrecision?.formatCoinPrice
           ? window.CoinPrecision.formatCoinPrice(sym, price)
-          : `$${Number(price).toLocaleString('en-US', { minimumFractionDigits: (sym === 'XRP' || sym === 'DOGE') ? 4 : 2, maximumFractionDigits: (sym === 'XRP' || sym === 'DOGE') ? 4 : 2 })}`)
+          : `$${Number(price).toLocaleString('en-US', { minimumFractionDigits: getFallbackDecimals(sym), maximumFractionDigits: getFallbackDecimals(sym) })}`)
       : '—';
 
 
@@ -430,7 +436,7 @@
           const ptbLabel = ptb
             ? (window.CoinPrecision?.formatCoinStrike
                 ? window.CoinPrecision.formatCoinStrike(sym, ptb)
-                : `$${Number(ptb).toLocaleString('en-US', { minimumFractionDigits: (sym === 'XRP' || sym === 'DOGE') ? 4 : 2, maximumFractionDigits: (sym === 'XRP' || sym === 'DOGE') ? 4 : 2 })}`)
+                : `$${Number(ptb).toLocaleString('en-US', { minimumFractionDigits: getFallbackDecimals(sym), maximumFractionDigits: getFallbackDecimals(sym) })}`)
             : (priceStr !== '—' ? priceStr : '');
 
           if (slug) metaLine += ` · id: ${escapeHTML(slug.length > 20 ? slug.substring(0, 12) + '...' : slug)}`;
@@ -499,9 +505,15 @@
       const ptbLabel = k15?.targetPrice || (Number.isFinite(ptbNum) && ptbNum > 0
           ? (window.CoinPrecision?.formatCoinStrike
               ? window.CoinPrecision.formatCoinStrike(sym, ptbNum)
-              : `$${ptbNum.toLocaleString('en-US', { minimumFractionDigits: (sym === 'XRP' || sym === 'DOGE') ? 4 : 2, maximumFractionDigits: (sym === 'XRP' || sym === 'DOGE') ? 4 : 2 })}`)
+              : `$${ptbNum.toLocaleString('en-US', { minimumFractionDigits: getFallbackDecimals(sym), maximumFractionDigits: getFallbackDecimals(sym) })}`)
           : 'pending');
       const closeLabel15 = k15?.closeTime ? timeToClose(k15.closeTime) : null;
+      const currentPrice15 = _prices[sym] || readLivePrice(sym);
+      const prediction15 = window._predictions?.[sym] || window.PredictionEngine?.get?.(sym) || null;
+      const fair15 = window.GrokRangeOverlay?.get15mModelFair?.(k15, currentPrice15, prediction15);
+      const fair15Label = fair15?.model_fair_cents != null
+        ? `Model fair ${Number(fair15.model_fair_cents).toFixed(1)}¢${fair15.residual_cents != null ? ` · residual ${Number(fair15.residual_cents).toFixed(1)}¢` : ''}`
+        : 'Model fair pending';
 
       if (ticker) {
         kalshi15mHtml = `<div class="hr-kalshi15m" style="margin-bottom:8px;">
@@ -511,7 +523,8 @@
           </div>
           <div class="hr-grok-row" style="margin-top:4px;">
             <span class="hr-grok-call" style="color:${col}">${hasProb ? `${call === 'UP' ? '▲' : '▼'} ${Math.round(upProb * 100)}% YES` : 'awaiting odds'}</span>
-            <span class="hr-grok-meta">PTB ${ptbLabel}${closeLabel15 ? ` · closes ${closeLabel15}` : ''}</span>
+            <span class="hr-grok-meta">Strike ${ptbLabel}${closeLabel15 ? ` · closes ${closeLabel15}` : ''}</span>
+            <div class="hr-grok-notes">${fair15Label}${fair15?.flagged ? ' · ask above model' : ''}</div>
           </div>
         </div>`;
       }

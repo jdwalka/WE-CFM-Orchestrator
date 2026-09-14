@@ -10,6 +10,19 @@
   const escapeHTML = (str) => String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 
   const COINS = ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'BNB', 'HYPE'];
+  const fallbackPriceDecimals = (coin) => {
+    const key = String(coin || '').toUpperCase();
+    if (key === 'DOGE') return 7;
+    if (key === 'SOL' || key === 'HYPE' || key === 'XRP') return 4;
+    return 2;
+  };
+  const fallbackFormatPrice = (coin, value) => {
+    const decimals = fallbackPriceDecimals(coin);
+    return Number(value).toLocaleString('en-US', {
+      minimumFractionDigits: decimals,
+      maximumFractionDigits: decimals,
+    });
+  };
   const MODE_KEY = 'wecrypto.asi1Desk.mode';
   const MIN_KEY = 'wecrypto.asi1Desk.minimized';
   const MODEL_KEY = 'wecrypto.asi1Desk.model';
@@ -19,6 +32,11 @@
   const PROMPT_CACHE_KEY = 'wecrypto.asi1Desk.customPrompt';
   const ANSWER_CACHE_KEY = 'wecrypto.asi1Desk.customAnswer';
   const SESSION_ID_KEY = 'wecrypto.asi1Desk.sessionId';
+  const newDeskSessionId = () => {
+    const bytes = new Uint8Array(16);
+    window.crypto.getRandomValues(bytes);
+    return `asi1-desk-${Date.now()}-${Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')}`;
+  };
 
   const dash = document.createElement('div');
   dash.id = 'asi1-desk';
@@ -79,6 +97,7 @@
           <option value="lookahead-15m">Look Ahead (15m)</option>
           <option value="anytime">Look Ahead (Anytime)</option>
           <option value="mispricings">Contract Mispricings</option>
+          <option value="truffle">🍄 Truffle (Live Agent)</option>
         </select>
       </div>
       <div class="ad-selects">
@@ -299,7 +318,7 @@
         const coin = document.getElementById('adCoin')?.value || 'BTC';
         const distStr = window.CoinPrecision?.formatCoinDelta
           ? window.CoinPrecision.formatCoinDelta(coin, dist, { showSign: false })
-          : `$${dist.toFixed((coin === 'XRP' || coin === 'DOGE') ? 4 : 2)}`;
+          : `$${dist.toFixed(fallbackPriceDecimals(coin))}`;
         pinBanner.style.display = 'block';
         pinBanner.textContent = `⚠ PIN RISK DEFENSE DETECTED: Spot within ${distStr} (${distBps.toFixed(1)} bps) of PTB with ${remainingSec}s left. MM defense walls active; high probability of 1-2s post-expiry snap. Focus automatically honed on T+1 Pre-Open below.`;
       }
@@ -372,6 +391,7 @@
         setMode: 'asi1:desk-mode',
         infer: 'asi1:desk-infer',
         chat: 'asi1:desk-chat',
+        truffleQuery: 'truffle:query',
         hunt: 'asi1:agentverse-hunt',
         auditAgents: 'asi1:agentverse-audit',
         agentverseStatus: 'asi1:agentverse-status',
@@ -493,7 +513,7 @@
       if (coneEl) {
         const fmtCone = (v) => window.CoinPrecision?.formatCoinPrice
           ? window.CoinPrecision.formatCoinPrice(coin, v)
-          : `$${Number(v).toLocaleString('en-US', { minimumFractionDigits: (coin === 'XRP' || coin === 'DOGE') ? 4 : 2, maximumFractionDigits: (coin === 'XRP' || coin === 'DOGE') ? 4 : 2 })}`;
+          : `$${fallbackFormatPrice(coin, v)}`;
         coneEl.textContent = `${fmtCone(rangeData.safeBoundLower)} — ${fmtCone(rangeData.safeBoundUpper)} (±${fmtCone(rangeData.expectedMoveDollar)})`;
       }
       const zoneEl = document.getElementById('adActiveStrikeZone');
@@ -508,7 +528,7 @@
       if (optEl && rangeData.bestTarget) {
         const optStrike = window.CoinPrecision?.formatCoinStrike
           ? window.CoinPrecision.formatCoinStrike(coin, rangeData.bestTarget.strike)
-          : `$${Number(rangeData.bestTarget.strike).toLocaleString('en-US', { minimumFractionDigits: (coin === 'XRP' || coin === 'DOGE') ? 4 : 2, maximumFractionDigits: (coin === 'XRP' || coin === 'DOGE') ? 4 : 2 })}`;
+          : `$${fallbackFormatPrice(coin, rangeData.bestTarget.strike)}`;
         optEl.textContent = `${optStrike} (${rangeData.bestTarget.name})`;
       }
     }
@@ -534,8 +554,8 @@
 
     const pmCoin = (typeof window !== 'undefined' && window.PredictionMarkets?.getCoin?.(coin)) || {};
     const poly = horizon === 'anytime' ? {} : (
-      (isHourly ? pmCoin.poly60m : (is5m ? pmCoin.poly5m : pmCoin.poly15m))
-      || (isHourly ? pmCoin.poly60m : pmCoin.poly15m)
+      (isHourly ? pmCoin.poly60m : (is5m ? pmCoin.poly5m : pmCoin.kalshi15m))
+      || (isHourly ? pmCoin.poly60m : (is5m ? pmCoin.poly5m : pmCoin.poly15m))
       || pmCoin.poly5m
       || {}
     );
@@ -612,17 +632,18 @@
         binaryIV = window.QuantStatUtils.calculateBinaryIV(prob5m, spot, ptb5m, ttc5m / 86400, 'polymarket');
       }
       
-      // Calculate for 15m
-      const poly15m = pmCoin.poly15m || {};
-      const ptb15m = Number(poly15m.priceToBeatNum || poly15m.targetPriceNum);
-      const prob15m = Number(poly15m.probability || 0.5);
-      const ttc15m = Number(poly15m.secondsToClose || 900);
+      // Calculate for 15m — Kalshi is primary, Polymarket is legacy fallback.
+      const market15m = pmCoin.kalshi15m || pmCoin.poly15m || {};
+      const ptb15m = Number(market15m.targetPriceNum || market15m.priceToBeatNum);
+      const prob15m = Number(market15m.probability || 0.5);
+      const ttc15m = Number(market15m.secondsToClose || 900);
+      const venue15m = pmCoin.kalshi15m?.ticker ? 'kalshi' : 'polymarket';
       if (spot != null && !isNaN(ptb15m) && !isNaN(prob15m) && !isNaN(ttc15m) && ttc15m > 0) {
-        binaryIV_15m = window.QuantStatUtils.calculateBinaryIV(prob15m, spot, ptb15m, ttc15m / 86400, 'polymarket');
+        binaryIV_15m = window.QuantStatUtils.calculateBinaryIV(prob15m, spot, ptb15m, ttc15m / 86400, venue15m);
       }
     }
 
-    const activeSlug = pkt.slug || poly.slug || (isHourly ? `${coin.toLowerCase()}-hourly-ranges-${targetCloseTime}` : (is5m ? `${coin.toLowerCase()}-updown-5m` : `${coin.toLowerCase()}-updown-15m`));
+    const activeSlug = pkt.slug || poly.ticker || poly.slug || (isHourly ? `${coin.toLowerCase()}-hourly-ranges-${targetCloseTime}` : (is5m ? `${coin.toLowerCase()}-updown-5m` : `${coin.toLowerCase()}-updown-15m`));
 
     return {
       sym: coin,
@@ -650,7 +671,7 @@
       ...(isLookahead && forecast?.projectedOpenPtb ? { projectedOpenPtb: forecast.projectedOpenPtb } : {}),
       ...(isLookahead && forecast?.msToNextBoundary ? { msToNextBoundary: forecast.msToNextBoundary } : {}),
       ...(binaryIV !== null ? { binaryIV_5m: binaryIV } : {}),
-      ...(binaryIV_15m !== null ? { binaryIV_15m: binaryIV_15m } : {}),
+      ...(binaryIV_15m !== null ? { binaryIV_15m, binaryIV_15m_venue: venue15m } : {}),
       pinRisk: (spot > 0 && ptb > 0 && !isHourly)
         ? (window.PredictionEngine?.getPinRisk?.(coin, spot, ptb, ttc, Number(pkt.depthImbalance) || 0) || null)
         : null,
@@ -704,7 +725,7 @@
       ptbEl.textContent = forecast.projectedOpenPtb != null
         ? (window.CoinPrecision?.formatCoinStrike
             ? window.CoinPrecision.formatCoinStrike(coin, forecast.projectedOpenPtb)
-            : `$${Number(forecast.projectedOpenPtb).toLocaleString('en-US', { minimumFractionDigits: (coin === 'XRP' || coin === 'DOGE') ? 4 : 2, maximumFractionDigits: (coin === 'XRP' || coin === 'DOGE') ? 4 : 2 })}`)
+            : `$${fallbackFormatPrice(coin, forecast.projectedOpenPtb)}`)
         : '—';
     }
 
@@ -858,9 +879,7 @@
     if (spotEl) {
       spotEl.textContent = window.CoinPrecision?.formatCoinPrice
         ? window.CoinPrecision.formatCoinPrice(coin, price, { prefix: '' })
-        : (price >= 1000
-            ? price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-            : price.toFixed((coin === 'XRP' || coin === 'DOGE') ? 4 : 2));
+        : fallbackFormatPrice(coin, price);
     }
 
     const ptbTxt = document.getElementById('adPtb')?.textContent?.replace(/,/g, '');
@@ -875,7 +894,7 @@
         if (isDefended) {
           const distStr = window.CoinPrecision?.formatCoinDelta
             ? window.CoinPrecision.formatCoinDelta(coin, dist, { showSign: false })
-            : `$${dist.toFixed((coin === 'XRP' || coin === 'DOGE') ? 4 : 2)}`;
+            : `$${dist.toFixed(fallbackPriceDecimals(coin))}`;
           pinBanner.style.display = 'block';
           pinBanner.textContent = `⚠ PIN RISK DEFENSE DETECTED: Spot within ${distStr} (${distBps.toFixed(1)} bps) of PTB. MM defense walls active.`;
         } else if (pinBanner.dataset.persisted !== '1') {
@@ -901,6 +920,34 @@
     btn.disabled = true;
     btn.textContent = 'Asking…';
     try {
+      const horizonNow = document.getElementById('adHorizon')?.value || '15m';
+      if (horizonNow === 'truffle') {
+        const coinNow = document.getElementById('adCoin')?.value || 'BTC';
+        const askedEl = document.getElementById('adAskedAt');
+        if (askedEl) askedEl.textContent = new Date().toLocaleTimeString();
+        const query = `Give me your live read on ${coinNow} right now: current spot, the live Kalshi hourly range ladder (or the 15m/5m contracts if more relevant), and the best out-of-range scalp setup if there is one.`;
+        const res = await invoke('truffleQuery', { query });
+        const content = res?.ok
+          ? (res.content || 'No response from truffle.')
+          : `Truffle error: ${res?.error || 'unknown — is the agent running on port 8002?'}`;
+        const truffleContract = {
+          call: '—',
+          action: 'HOLD_FLAT',
+          confidence: null,
+          regime: '—',
+          edge_vs_crowd: '—',
+          urgency: '—',
+          size_hint: '—',
+          invalidation: '',
+          notes: content,
+          warnings: [],
+          _meta: { model: 'truffle', account: 'truffle-live-agent' },
+        };
+        paintContract(truffleContract, {});
+        window.dispatchEvent(new CustomEvent('asi1:desk', { detail: { contract: truffleContract } }));
+        return;
+      }
+
       const packet = buildPacket();
 
       const spotEl = document.getElementById('adSpot');
@@ -908,7 +955,7 @@
         spotEl.textContent = packet?.spot != null
           ? (window.CoinPrecision?.formatCoinPrice
               ? window.CoinPrecision.formatCoinPrice(coin, packet.spot, { prefix: '' })
-              : Number(packet.spot).toLocaleString('en-US', { minimumFractionDigits: (coin === 'XRP' || coin === 'DOGE') ? 4 : 2, maximumFractionDigits: (coin === 'XRP' || coin === 'DOGE') ? 4 : 2 }))
+              : fallbackFormatPrice(coin, packet.spot))
           : '—';
       }
       const ptbEl = document.getElementById('adPtb');
@@ -924,7 +971,7 @@
           ptbEl.textContent = packet?.priceToBeatNum != null
             ? (window.CoinPrecision?.formatCoinStrike
                 ? window.CoinPrecision.formatCoinStrike(coin, packet.priceToBeatNum, { prefix: '' })
-                : Number(packet.priceToBeatNum).toLocaleString('en-US', { minimumFractionDigits: (coin === 'XRP' || coin === 'DOGE') ? 4 : 2, maximumFractionDigits: (coin === 'XRP' || coin === 'DOGE') ? 4 : 2 }))
+                : fallbackFormatPrice(coin, packet.priceToBeatNum))
             : '—';
         }
       }
@@ -974,6 +1021,28 @@
   }
 
   let truffleActive = false;
+  let truffleAvailable = false;
+
+  async function refreshTruffleAvailability() {
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(new Error('probe-timeout')), 1500);
+      const res = await fetch('http://127.0.0.1:8002/health', { signal: ctrl.signal, cache: 'no-store' });
+      truffleAvailable = res.ok;
+    } catch (_) {
+      truffleAvailable = false;
+    }
+    const btn = document.getElementById('adTruffleToggle');
+    if (btn) {
+      if (!truffleAvailable) {
+        btn.title = 'Truffle offline — no service on 127.0.0.1:8002';
+        btn.style.borderColor = '#ff5252';
+      } else {
+        btn.title = 'Route query to local Truffle agent (port 8002)';
+        btn.style.borderColor = truffleActive ? '#00d4ff' : '#2a2f38';
+      }
+    }
+  }
 
   async function askTruffle(query) {
     const r = await fetch('http://127.0.0.1:8002/query', {
@@ -1030,6 +1099,12 @@
         }
       }
       if (truffleActive) {
+        if (!truffleAvailable) {
+          if (answerEl) {
+            answerEl.textContent = 'Truffle offline — start the agent on 127.0.0.1:8002, then retry. This prompt was not sent to ASI1.';
+          }
+          return;
+        }
         try {
           const truffleAnswer = await askTruffle(query);
           if (answerEl) {
@@ -1056,7 +1131,7 @@
       let sessionId = null;
       try { sessionId = window.localStorage.getItem(SESSION_ID_KEY); } catch (_) {}
       if (!sessionId) {
-        sessionId = `asi1-desk-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+        sessionId = newDeskSessionId();
         try { window.localStorage.setItem(SESSION_ID_KEY, sessionId); } catch (_) {}
       }
       try {
@@ -1158,6 +1233,8 @@
       truffleBtn.textContent = truffleActive ? '🍄 Truffle ON' : '🍄 Truffle';
     });
   }
+  setInterval(refreshTruffleAvailability, 5000);
+  void refreshTruffleAvailability();
   document.getElementById('adResetMemory')?.addEventListener('click', async () => {
     try {
       let sessionId = null;
@@ -1167,7 +1244,7 @@
       } else if (window.electron?.invoke) {
         await window.electron.invoke('asi1:desk-chat-reset', { sessionId });
       }
-      const newSessionId = `asi1-desk-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+      const newSessionId = newDeskSessionId();
       try { window.localStorage.setItem(SESSION_ID_KEY, newSessionId); } catch (_) {}
       const answerEl = document.getElementById('adAnswer');
       if (answerEl) {

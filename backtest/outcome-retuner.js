@@ -41,6 +41,7 @@ const LOOKBACK_INTERVAL = '5m';
 const OUTCOME_INTERVAL = '15m';
 const MIN_CHANGE_PCT = 0.05;  // ignore FLAT windows (< 0.05% move)
 const WRITE_CHANGE_THRESHOLD_PCT = 1; // write materially changed weights, but avoid tiny noise
+const BINANCE_DATA_BASE = 'https://data-api.binance.vision/api/v3';
 
 // ── 4. Indicator functions — copied VERBATIM from backtest-runner.js ──
 
@@ -478,7 +479,7 @@ function generateWindows(days) {
  * Returns { open, close, high, low, vol, pct, direction } or null.
  */
 async function fetchOutcome(symbol, windowStart) {
-  const url = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=15m&startTime=${windowStart}&endTime=${windowStart + 15 * 60000}&limit=1`;
+  const url = `${BINANCE_DATA_BASE}/klines?symbol=${symbol}&interval=15m&startTime=${windowStart}&endTime=${windowStart + 15 * 60000}&limit=1`;
   const data = await binanceGet(url);
   if (!Array.isArray(data) || !data[0]) return null;
   const open = parseFloat(data[0][1]);
@@ -502,7 +503,7 @@ async function fetchOutcome(symbol, windowStart) {
  */
 async function fetchLookback(symbol, windowStart) {
   const startTime = windowStart - LOOKBACK_BARS * 5 * 60000;
-  const url = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${LOOKBACK_INTERVAL}&startTime=${startTime}&endTime=${windowStart}&limit=${LOOKBACK_BARS}`;
+  const url = `${BINANCE_DATA_BASE}/klines?symbol=${symbol}&interval=${LOOKBACK_INTERVAL}&startTime=${startTime}&endTime=${windowStart}&limit=${LOOKBACK_BARS}`;
   const data = await binanceGet(url);
   if (!Array.isArray(data) || data.length < 30) return null;
   return data.map(k => ({
@@ -511,6 +512,87 @@ async function fetchLookback(symbol, windowStart) {
     l: parseFloat(k[3]), c: parseFloat(k[4]),
     v: parseFloat(k[5]),
   }));
+}
+
+function intervalMs(interval) {
+  if (interval === '5m') return 5 * 60_000;
+  if (interval === '15m') return 15 * 60_000;
+  return 60_000;
+}
+
+function normalizeKline(row) {
+  return {
+    t: Number(row[0]),
+    o: parseFloat(row[1]),
+    h: parseFloat(row[2]),
+    l: parseFloat(row[3]),
+    c: parseFloat(row[4]),
+    v: parseFloat(row[5]),
+  };
+}
+
+/**
+ * Fetch an entire historical range in 1000-candle pages. The old per-window
+ * path made two requests for every 15m observation; 60 days required >11k
+ * requests and was unusable whenever the main Binance API was geo-blocked.
+ */
+async function fetchKlinesRange(symbol, interval, startTime, endTime) {
+  const stepMs = intervalMs(interval);
+  const rows = [];
+  const seen = new Set();
+  let cursor = Math.floor(startTime / stepMs) * stepMs;
+
+  while (cursor < endTime) {
+    const url = `${BINANCE_DATA_BASE}/klines?symbol=${symbol}&interval=${interval}&startTime=${cursor}&endTime=${endTime}&limit=1000`;
+    const data = await binanceGet(url);
+    if (!Array.isArray(data)) {
+      throw new Error(`Binance data API returned non-array response for ${symbol} ${interval}`);
+    }
+    if (!data.length) break;
+
+    for (const row of data) {
+      const candle = normalizeKline(row);
+      if (candle.t < endTime && !seen.has(candle.t)) {
+        seen.add(candle.t);
+        rows.push(candle);
+      }
+    }
+
+    const nextCursor = Number(data[data.length - 1][0]) + stepMs;
+    if (nextCursor <= cursor) break;
+    cursor = nextCursor;
+    await sleep(150);
+    if (data.length < 1000) break;
+  }
+
+  return rows.sort((a, b) => a.t - b.t);
+}
+
+function outcomeFromCandle(candle) {
+  const open = candle.o;
+  const close = candle.c;
+  if (!open || open === 0) return null;
+  const pct = (close - open) / open * 100;
+  return {
+    open,
+    close,
+    high: candle.h,
+    low: candle.l,
+    vol: candle.v,
+    pct,
+    direction: pct > MIN_CHANGE_PCT ? 'UP' : pct < -MIN_CHANGE_PCT ? 'DOWN' : 'FLAT',
+  };
+}
+
+function candlesBefore(candles, endTime, count = LOOKBACK_BARS) {
+  let lo = 0;
+  let hi = candles.length;
+  while (lo < hi) {
+    const mid = Math.floor((lo + hi) / 2);
+    if (candles[mid].t < endTime) lo = mid + 1;
+    else hi = mid;
+  }
+  return candles.slice(Math.max(0, lo - count), lo);
 }
 
 // ── 9. computeSignalVector ───────────────────────────────────────
@@ -1011,40 +1093,54 @@ async function main() {
     const observations = [];
     let fetched = 0, flat = 0, errors = 0, skipped = 0;
 
-    for (let i = 0; i < useWindows.length; i++) {
-      const win = useWindows[i];
+    let outcomeCandles = [];
+    let lookbackCandles = [];
+    try {
+      const firstStart = useWindows[0].startMs;
+      const lastEnd = useWindows[useWindows.length - 1].endMs;
+      const lookbackStart = firstStart - LOOKBACK_BARS * 5 * 60_000;
+      console.log(`  Fetching ${OUTCOME_INTERVAL} outcomes and ${LOOKBACK_INTERVAL} lookback candles...`);
+      outcomeCandles = await fetchKlinesRange(sym, OUTCOME_INTERVAL, firstStart, lastEnd);
+      lookbackCandles = await fetchKlinesRange(sym, LOOKBACK_INTERVAL, lookbackStart, lastEnd);
+      const outcomeByStart = new Map(outcomeCandles.map(c => [c.t, c]));
+      console.log(`  Loaded ${outcomeCandles.length} outcome candles and ${lookbackCandles.length} lookback candles`);
 
-      if (i > 0 && i % BATCH_SIZE === 0) {
-        console.log(`  Progress: ${i}/${useWindows.length} — ${fetched} usable, ${flat} flat, ${errors} errors`);
+      for (let i = 0; i < useWindows.length; i++) {
+        const win = useWindows[i];
+
+        if (i > 0 && i % BATCH_SIZE === 0) {
+          console.log(`  Progress: ${i}/${useWindows.length} — ${fetched} usable, ${flat} flat, ${errors} errors`);
+        }
+
+        const outcomeCandle = outcomeByStart.get(win.startMs);
+        const outcome = outcomeCandle ? outcomeFromCandle(outcomeCandle) : null;
+        if (!outcome) { errors++; continue; }
+        if (outcome.direction === 'FLAT') { flat++; continue; }
+
+        const candles = candlesBefore(lookbackCandles, win.startMs);
+        if (!candles || candles.length < 30) { skipped++; continue; }
+
+        let sigVec;
+        try {
+          sigVec = computeSignalVector(candles);
+        } catch (e) {
+          errors++;
+          continue;
+        }
+        if (!sigVec) { skipped++; continue; }
+
+        observations.push({
+          coin,
+          signalVector: sigVec,
+          actualDirection: outcome.direction,
+          windowStart: win.startMs,
+          pct: outcome.pct,
+        });
+        fetched++;
       }
-
-      // Rate-limit: 150ms minimum between requests (spec requirement)
-      await sleep(150);
-      const outcome = await fetchOutcome(sym, win.startMs);
-      if (!outcome) { errors++; continue; }
-      if (outcome.direction === 'FLAT') { flat++; continue; }
-
-      await sleep(150);
-      const candles = await fetchLookback(sym, win.startMs);
-      if (!candles || candles.length < 30) { skipped++; continue; }
-
-      let sigVec;
-      try {
-        sigVec = computeSignalVector(candles);
-      } catch (e) {
-        errors++;
-        continue;
-      }
-      if (!sigVec) { skipped++; continue; }
-
-      observations.push({
-        coin,
-        signalVector: sigVec,
-        actualDirection: outcome.direction,
-        windowStart: win.startMs,
-        pct: outcome.pct,
-      });
-      fetched++;
+    } catch (e) {
+      console.error(`  Historical candle fetch failed for ${coin}: ${e.message}`);
+      errors += Math.max(0, useWindows.length - observations.length);
     }
 
     console.log(`\n  ${coin} complete: ${fetched} usable windows, ${flat} flat (skipped), ${skipped} insufficient data, ${errors} fetch errors`);

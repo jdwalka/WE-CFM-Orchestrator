@@ -22,6 +22,7 @@ include:
 
 default:
   interruptible: true
+  tags: [local]
 
 cache:
   key:
@@ -58,7 +59,7 @@ test-node-contracts:
   script:
     - echo "Running ASI1 Desk Contract & Model Cascade tests..."
     - node tests/asi1-desk-contract.test.js
-    - node tests/asi1-dual-account.test.js
+    - node tests/asi1-leaksnipe-account.test.js
     - node tests/asi1-credit-orchestrator.test.js
     - echo "Running Orbital Matrix & Signal Calibrator tests..."
     - node tests/orbital-quantum-state.test.js

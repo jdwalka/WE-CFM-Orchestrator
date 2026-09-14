@@ -10,6 +10,7 @@
     "install:firebase-service-account": "node scripts/install-firebase-service-account.js",
     "security:scan-secrets": "node scripts/secret-scan.js",
     "security:scan-secrets:staged": "node scripts/secret-scan.js --staged",
+    "security:scan:local": "bash scripts/security-scan.sh",
     "cloud:precheck": "node -e \"const g=require('./src/cloud/google-cloud-bridge'); g.probeCloudSql({force:true}).then(r=>{console.log('[cloud-precheck]', JSON.stringify({configured:r.configured, success:r.success, cached:!!r.cached, state:r.instanceState||null, dbExists:r.databaseExists ?? null, error:r.error||null}, null, 2)); if(process.env.WECRYPTO_REQUIRE_CLOUD_READY==='1' && (!r.configured || !r.success)){process.exit(1);} }).catch(err=>{console.error('[cloud-precheck] fatal', err?.message||err); process.exit(1);});\"",
     "cloud:ensure-db": "node -e \"const g=require('./src/cloud/google-cloud-bridge'); g.ensureCloudSqlDatabase({force:true}).then(r=>{console.log('[cloud-ensure-db]', JSON.stringify(r,null,2)); if(!r.success){process.exit(1);} }).catch(err=>{console.error('[cloud-ensure-db] fatal', err?.message||err); process.exit(1);});\"",
     "firebase:precheck": "node scripts/firebase-precheck.js",
