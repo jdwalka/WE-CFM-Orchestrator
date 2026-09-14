@@ -39,7 +39,8 @@ in `.github/agents/` and listed in `.github/AGENTS.md`.
 - [x] Hourly model must not depend on GAMD/laptop uptime
 
 ### A3. `we-cfm-orchestrator` observability — LOW (Worker Health Agent)
-- [x] Flip observability to enabled (head_sampling_rate 1) — deployed and live
+- [x] Enable observability on `scalper-market-data` (head_sampling_rate 1)
+- [x] Flip observability to enabled on `we-cfm-orchestrator` (head_sampling_rate 1)
 
 ### A4. Tail adjustment never fires — MEDIUM (Model Calibration Agent)
 - [x] Backtest OR-logic with smaller per-condition adjustments vs lower thresholds
