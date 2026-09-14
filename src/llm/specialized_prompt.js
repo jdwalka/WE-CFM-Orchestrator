@@ -663,12 +663,16 @@ function resolvePolymarketPtb(snapshot) {
     return { ptb: null, source: null, slug: null, pending: true, coin: null, decimals: 2 };
   }
   const oracle = snapshot.polymarketOracle || {};
+  const snapshotHorizon = String(snapshot.horizon || '').toLowerCase();
+  const horizonMinutes = Number(snapshot.horizonMinutes || (snapshotHorizon === '5m' ? 5 : (snapshotHorizon === '15m' ? 15 : (snapshotHorizon === '60m' || snapshotHorizon === '1h' ? 60 : 15))));
+  const is5m = horizonMinutes === 5;
+  const is15m = horizonMinutes === 15;
   const blocks = [
-    snapshot.activeContract,
-    snapshot.poly5m,
-    snapshot.poly15m,
-    snapshot.market && snapshot.market.poly5m,
-    snapshot.market && snapshot.market.poly15m,
+    is5m && snapshot.poly5m,
+    is15m && snapshot.poly15m,
+    !is5m && !is15m && snapshot.activeContract,
+    is5m && snapshot.market && snapshot.market.poly5m,
+    is15m && snapshot.market && snapshot.market.poly15m,
     oracle,
     snapshot,
     snapshot.market,
@@ -696,7 +700,7 @@ function resolvePolymarketPtb(snapshot) {
       display: formatUsdForCoin(coin || slug, raw),
     };
   }
-  const slug = snapshot.poly5m?.slug || snapshot.poly15m?.slug || snapshot.activeContract?.slug || null;
+  const slug = (is5m ? snapshot.poly5m?.slug : (is15m ? snapshot.poly15m?.slug : snapshot.activeContract?.slug)) || null;
   const coin = _coinFromSnapshot(snapshot, slug);
   return {
     ptb: null,

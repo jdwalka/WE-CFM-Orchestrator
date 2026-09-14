@@ -62,9 +62,7 @@
     try {
       const coin = window.PredictionMarkets?.getCoin?.(_activeSymbol);
       const cType = (contractType || (window._terminalHorizon === '15m' ? '15M' : '5M')).toUpperCase();
-      const mkt = cType === '15M'
-        ? (coin?.poly15m || coin?.poly5m)
-        : (coin?.poly5m || coin?.poly15m);
+      const mkt = cType === '15M' ? coin?.poly15m : coin?.poly5m;
       if (!mkt) throw new Error(`No Polymarket ${cType} market for ${_activeSymbol}`);
 
       const tokenID = isUp
@@ -172,7 +170,7 @@
     const coinData = window.PredictionMarkets?.getCoin?.(_activeSymbol) || {};
     const horizon = window._terminalHorizon || '5m';
     const is15m = horizon === '15m';
-    const poly5m = (is15m ? (coinData?.poly15m || coinData?.poly5m) : coinData?.poly5m) || {};
+    const poly5m = (is15m ? coinData?.poly15m : coinData?.poly5m) || {};
 
     const yesProb = Math.round((poly5m.probability || 0.5) * 100);
     const noProb = 100 - yesProb;
