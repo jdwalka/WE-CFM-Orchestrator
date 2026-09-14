@@ -15,6 +15,12 @@ This repository includes workspace-specific agents for the WE CFM Orchestrator p
 - `Smart Money Flow Agent` — specialized for spoofing heuristics, iceberg detection, absorption, delta, and order-flow toxicity.
 - `Signal Clarity Agent` — specialized in UP/DOWN, YES/NO, green/red label semantics, confidence presentation, and execution cue clarity.
 - `ASI1 GitHub Agent` — reviews pull requests and implements `/asi1 fix` requests from the GitHub UI.
+- `Calibration Storage Agent` — specialized in calibration storage errors, D1 migration, and authoritative ledger consolidation.
+- `Dependency Independence Agent` — specialized in removing Tauri/GAMD local-proxy coupling from the prediction pipeline.
+- `Model Calibration Agent` — specialized in tail-adjustment tuning, regime-conditional calibration, and backtested probability corrections.
+- `Trade Ladder Agent` — specialized in `p_settle`, decay-aware entry scoring, and settlement-venue-aware strike ladders.
+- `Signal Hygiene Agent` — specialized in gating unstable lead-lag, wick-slope, divergence, and funding/OI signals.
+- `Worker Health Agent` — specialized in observability, `/health` endpoints, and degraded-state surfacing.
 
 ## Security Scanning Policy
 

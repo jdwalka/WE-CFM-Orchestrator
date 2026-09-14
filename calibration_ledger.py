@@ -1,33 +1,51 @@
 """Persistent prediction/outcome ledger for Truffle calibration."""
 import math
+import os
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
 import requests
 
-DB_PATH = Path(__file__).with_name("data") / "truffle_calibration.sqlite3"
+LEDGER_PATH_ENV_VAR = "CALIBRATION_LEDGER_PATH"
+DEFAULT_DB_PATH = Path(__file__).with_name("data") / "truffle_calibration.sqlite3"
+DB_PATH = DEFAULT_DB_PATH
 MODEL_VERSION = "truffle-tail-v2"
 _HEADERS = {"User-Agent": "wecryp-truffle/1.0 (+https://agentverse.ai)"}
 _TAIL_EVENT_NORMAL_P = 0.20
 DISTRIBUTION_FALLBACK_MIN_SAMPLE = 500
 DISTRIBUTION_FALLBACK_BRIER_IMPROVEMENT = 0.05
 PROBABILITY_CORRECTION_PRIOR_STRENGTH = 200.0
-PROBABILITY_CORRECTION_MIN_SAMPLES = 30
+PROBABILITY_CORRECTION_MIN_SAMPLES = 12
 PROBABILITY_CORRECTION_MAX_SHRINK = 0.85
 PROBABILITY_CORRECTION_FLOOR = 0.0005
-TAIL_PROBABILITY_THRESHOLD = 0.20
-TAIL_CORRECTION_MIN_SAMPLES = 30
+TAIL_PROBABILITY_THRESHOLD = 0.30
+TAIL_CORRECTION_MIN_SAMPLES = 10
 TAIL_CORRECTION_PRIOR_STRENGTH = 100.0
-TAIL_CORRECTION_MAX_FACTOR = 5.0
+TAIL_CORRECTION_MAX_FACTOR = 2.0
+TAIL_UNDERPREDICTION_GAP = 0.03
+TIME_TO_EXPIRY_BUCKETS = (
+    (5, "0-5m"),
+    (15, "6-15m"),
+    (30, "16-30m"),
+    (60, "31-60m"),
+)
 
 
 def _connect() -> sqlite3.Connection:
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(DB_PATH, timeout=10)
+    database_path = ledger_path()
+    database_path.parent.mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(database_path, timeout=10)
     connection.execute("PRAGMA journal_mode=WAL")
     connection.execute("PRAGMA busy_timeout=5000")
     return connection
+
+
+def ledger_path() -> Path:
+    configured_path = os.getenv(LEDGER_PATH_ENV_VAR)
+    if configured_path:
+        return Path(configured_path).expanduser()
+    return Path(DB_PATH)
 
 
 def _initialize(connection: sqlite3.Connection) -> None:
@@ -49,7 +67,9 @@ def _initialize(connection: sqlite3.Connection) -> None:
             calibration_factor REAL,
             tail_adjustment REAL NOT NULL,
             alt_aligned INTEGER NOT NULL,
+            regime TEXT NOT NULL DEFAULT 'UNKNOWN',
             minutes_to_expiry INTEGER NOT NULL,
+            time_to_expiry_bucket TEXT NOT NULL DEFAULT '31-60m',
             model_version TEXT NOT NULL,
             touched INTEGER,
             resolved_at_utc TEXT,
@@ -81,6 +101,10 @@ def _migrate(connection: sqlite3.Connection) -> None:
         "p_calibrated": "ALTER TABLE predictions ADD COLUMN p_calibrated REAL",
         "calibration_factor": "ALTER TABLE predictions ADD COLUMN calibration_factor REAL",
         "tail_arrived": "ALTER TABLE predictions ADD COLUMN tail_arrived INTEGER",
+        "regime": "ALTER TABLE predictions ADD COLUMN regime TEXT DEFAULT 'UNKNOWN'",
+        "time_to_expiry_bucket": (
+            "ALTER TABLE predictions ADD COLUMN time_to_expiry_bucket TEXT"
+        ),
         "resolution_source": "ALTER TABLE predictions ADD COLUMN resolution_source TEXT",
         "outcome_window_start_utc": "ALTER TABLE predictions ADD COLUMN outcome_window_start_utc TEXT",
         "outcome_window_end_utc": "ALTER TABLE predictions ADD COLUMN outcome_window_end_utc TEXT",
@@ -96,6 +120,18 @@ def _migrate(connection: sqlite3.Connection) -> None:
     connection.execute(
         "UPDATE predictions SET calibration_factor = COALESCE(calibration_factor, 1.0) "
         "WHERE calibration_factor IS NULL"
+    )
+    connection.execute(
+        """
+        UPDATE predictions
+        SET time_to_expiry_bucket = CASE
+            WHEN minutes_to_expiry <= 5 THEN '0-5m'
+            WHEN minutes_to_expiry <= 15 THEN '6-15m'
+            WHEN minutes_to_expiry <= 30 THEN '16-30m'
+            ELSE '31-60m'
+        END
+        WHERE time_to_expiry_bucket IS NULL OR time_to_expiry_bucket = ''
+        """
     )
     connection.commit()
 
@@ -141,43 +177,48 @@ def record_prediction(
     p_base: float | None = None,
     p_calibrated: float | None = None,
     calibration_factor: float = 1.0,
+    regime: str = "UNKNOWN",
 ) -> bool:
     """Append one prediction; duplicate timestamp/band/expiry rows are ignored."""
+    connection = _connect()
     try:
-        with _connect() as connection:
-            _initialize(connection)
-            connection.execute(
-                """
-                INSERT OR IGNORE INTO predictions (
-                    prediction_key, timestamp_utc, band, low, high, expiry_utc,
-                    p_touch, p_normal, p_student_t, p_base, p_calibrated,
-                    calibration_factor, tail_adjustment, alt_aligned,
-                    minutes_to_expiry, model_version
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    _prediction_key(timestamp, band, expiry),
-                    timestamp.isoformat(),
-                    band,
-                    float(low),
-                    float(high),
-                    expiry.isoformat(),
-                    float(p_touch),
-                    float(p_normal),
-                    float(p_student_t),
-                    float(p_base if p_base is not None else p_student_t),
-                    float(p_calibrated if p_calibrated is not None else p_touch),
-                    float(calibration_factor),
-                    float(tail_adjustment),
-                    int(alt_aligned),
-                    int(minutes_to_expiry),
-                    MODEL_VERSION,
-                ),
-            )
-            connection.commit()
+        _initialize(connection)
+        connection.execute(
+            """
+            INSERT OR IGNORE INTO predictions (
+                prediction_key, timestamp_utc, band, low, high, expiry_utc,
+                p_touch, p_normal, p_student_t, p_base, p_calibrated,
+                calibration_factor, tail_adjustment, alt_aligned,
+                regime, minutes_to_expiry, time_to_expiry_bucket, model_version
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                _prediction_key(timestamp, band, expiry),
+                timestamp.isoformat(),
+                band,
+                float(low),
+                float(high),
+                expiry.isoformat(),
+                float(p_touch),
+                float(p_normal),
+                float(p_student_t),
+                float(p_base if p_base is not None else p_student_t),
+                float(p_calibrated if p_calibrated is not None else p_touch),
+                float(calibration_factor),
+                float(tail_adjustment),
+                int(alt_aligned),
+                str(regime),
+                int(minutes_to_expiry),
+                _time_to_expiry_bucket(minutes_to_expiry),
+                MODEL_VERSION,
+            ),
+        )
+        connection.commit()
         return True
     except sqlite3.Error:
         return False
+    finally:
+        connection.close()
 
 
 def _bucket(p_touch: float, p_normal: float, touched: bool) -> str:
@@ -187,6 +228,14 @@ def _bucket(p_touch: float, p_normal: float, touched: bool) -> str:
     if touched and p_normal < 0.5:
         return "model_right_underpriced_tail" if model_right else "model_wrong_underpriced_tail"
     return "model_right" if model_right else "model_wrong"
+
+
+def _time_to_expiry_bucket(minutes_to_expiry: int) -> str:
+    minutes = max(0, int(minutes_to_expiry))
+    for upper_bound, bucket in TIME_TO_EXPIRY_BUCKETS:
+        if minutes <= upper_bound:
+            return bucket
+    return TIME_TO_EXPIRY_BUCKETS[-1][1]
 
 
 def resolve_pending_predictions() -> int:
@@ -383,16 +432,36 @@ def _tail_probability_correction(connection: sqlite3.Connection) -> dict:
             "reason": "insufficient resolved tail outcomes; correction disabled",
         }
 
-    raw_ratio = realized_sum / predicted_sum
+    avg_predicted = predicted_sum / sample_count
+    avg_realized = realized_sum / sample_count
+    underprediction_gap = avg_realized - avg_predicted
+    if underprediction_gap <= TAIL_UNDERPREDICTION_GAP:
+        return {
+            "active": False,
+            "samples": sample_count,
+            "threshold": TAIL_PROBABILITY_THRESHOLD,
+            "min_samples": TAIL_CORRECTION_MIN_SAMPLES,
+            "max_factor": TAIL_CORRECTION_MAX_FACTOR,
+            "factor": 1.0,
+            "avg_predicted_probability": round(avg_predicted, 4),
+            "realized_frequency": round(avg_realized, 4),
+            "underprediction_gap": round(underprediction_gap, 4),
+            "reason": "no material tail underprediction in rolling outcomes",
+        }
+
+    raw_ratio = avg_realized / avg_predicted
     evidence_weight = sample_count / (sample_count + TAIL_CORRECTION_PRIOR_STRENGTH)
     posterior_ratio = evidence_weight * raw_ratio + (1.0 - evidence_weight)
-    factor = max(1.0, min(posterior_ratio, TAIL_CORRECTION_MAX_FACTOR))
+    factor = max(1.0, min(raw_ratio, TAIL_CORRECTION_MAX_FACTOR))
     return {
         "active": True,
         "samples": sample_count,
         "threshold": TAIL_PROBABILITY_THRESHOLD,
         "sum_predicted": round(predicted_sum, 4),
         "sum_realized": round(realized_sum, 4),
+        "avg_predicted_probability": round(avg_predicted, 4),
+        "realized_frequency": round(avg_realized, 4),
+        "underprediction_gap": round(underprediction_gap, 4),
         "raw_ratio": round(raw_ratio, 4),
         "posterior_ratio": round(posterior_ratio, 4),
         "factor": round(factor, 4),
@@ -456,6 +525,26 @@ def get_calibration_report() -> dict:
                 "arrived": _window_stats(connection, "AND tail_arrived=1"),
                 "not_arrived": _window_stats(connection, "AND tail_arrived=0"),
             }
+            report["regime_expiry_buckets"] = {}
+            regime_rows = connection.execute(
+                """
+                SELECT regime, time_to_expiry_bucket
+                FROM predictions
+                WHERE resolved_at_utc IS NOT NULL
+                  AND regime IS NOT NULL
+                  AND time_to_expiry_bucket IS NOT NULL
+                GROUP BY regime, time_to_expiry_bucket
+                ORDER BY regime, time_to_expiry_bucket
+                """
+            ).fetchall()
+            for regime, expiry_bucket in regime_rows:
+                report["regime_expiry_buckets"].setdefault(regime, {})[expiry_bucket] = (
+                    _window_stats(
+                        connection,
+                        "AND regime=? AND time_to_expiry_bucket=?",
+                        (regime, expiry_bucket),
+                    )
+                )
             report["ledger_health"] = {
                 "total_predictions": prediction_count,
                 "resolved": connection.execute(

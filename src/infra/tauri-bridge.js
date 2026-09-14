@@ -6,7 +6,12 @@
   'use strict';
 
   // ── Port discovery ───────────────────────────────────────────────────────────
+  const TAURI_INVOKE_TIMEOUT_MS = 250;
+  const PROXY_HEALTH_TIMEOUT_MS = 350;
+  const PROXY_PORT_CACHE_KEY = '__we_tauri_proxy_port_cache__';
+  const PROXY_DISABLED_CACHE_KEY = '__we_disable_tauri_db_proxy__';
   let _proxyPort = 3010;
+  let _cachedProxyPort = null;
   let _initPromise = null;
   let _proxyAvailable = false;
   let _lastInitAt = 0;
@@ -22,6 +27,42 @@
 
   function _jitter(baseMs) {
     return baseMs + Math.floor(Math.random() * Math.max(60, Math.floor(baseMs * 0.4)));
+  }
+
+  function _readCachedProxyPort() {
+    try {
+      const port = Number(window.localStorage?.getItem?.(PROXY_PORT_CACHE_KEY));
+      return Number.isInteger(port) && port > 0 && port <= 65535 ? port : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function _writeCachedProxyPort(port) {
+    try {
+      window.localStorage?.setItem?.(PROXY_PORT_CACHE_KEY, String(port));
+    } catch (_) { }
+  }
+
+  function _readProxyDisabledFlag() {
+    try {
+      const configValue = window.__WECRYPTO_CONFIG__?.disableTauriDbProxy;
+      const explicitValue = window.__WE_DISABLE_TAURI_DB_PROXY__;
+      const persistedValue = window.localStorage?.getItem?.(PROXY_DISABLED_CACHE_KEY);
+      return configValue === true || explicitValue === true || persistedValue === 'true';
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function _withTimeout(promise, timeoutMs, label) {
+    let timeoutId = null;
+    const timeout = new Promise((_, reject) => {
+      timeoutId = setTimeout(() => {
+        reject(new Error(`${label} timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+    });
+    return Promise.race([promise, timeout]).finally(() => clearTimeout(timeoutId));
   }
 
   function _isRouteChurnError(err) {
@@ -120,12 +161,16 @@
     return {
       available: !!_proxyAvailable,
       healthy: !!_proxyAvailable && _proxyFailures < 3,
+      enabled: !_proxyDisabled,
       mode: _proxyMode,
       reason: _proxyModeReason,
       bypassActive: now < _proxyBypassUntil,
       bypassMsLeft: Math.max(0, _proxyBypassUntil - now),
       failures: _proxyFailures,
       port: _proxyPort,
+      cachedPort: _cachedProxyPort,
+      tauriInvokeTimeoutMs: TAURI_INVOKE_TIMEOUT_MS,
+      healthTimeoutMs: PROXY_HEALTH_TIMEOUT_MS,
       lastInitAt: _lastInitAt || null,
       lastInitErr: _lastInitErr || '',
       ts: now,
@@ -160,15 +205,36 @@
 
   let _lastLoggedPort = null;
   let _lastForceReinitTs = 0;
+  let _proxyDisabled = _readProxyDisabledFlag();
+  _cachedProxyPort = _readCachedProxyPort();
 
   async function _init() {
+    _proxyDisabled = _readProxyDisabledFlag();
+    if (_proxyDisabled) {
+      _proxyAvailable = false;
+      _lastInitAt = Date.now();
+      _lastInitErr = 'proxy-disabled';
+      _setProxyMode('bypass', 'proxy-disabled');
+      return;
+    }
+
     // 1. Try Tauri invoke to get the port the sidecar is on
     const invoke = window.__TAURI__?.core?.invoke;
     if (invoke) {
       try {
-        const port = await invoke('get_proxy_port');
+        const port = await _withTimeout(invoke('get_proxy_port'), TAURI_INVOKE_TIMEOUT_MS, 'Tauri proxy discovery');
         if (port && port > 0) {
           _proxyPort = port;
+          _cachedProxyPort = port;
+          _proxyAvailable = true;
+          _writeCachedProxyPort(port);
+          if (Date.now() >= _proxyBypassUntil) {
+            _proxyFailures = 0;
+            _proxyBypassUntil = 0;
+            _setProxyMode('proxy', 'tauri-discovered');
+          }
+          _lastInitAt = Date.now();
+          _lastInitErr = '';
           if (_lastLoggedPort !== _proxyPort) {
             _lastLoggedPort = _proxyPort;
             console.log(`[BRIDGE] Tauri sidecar proxy on :${port}`);
@@ -178,16 +244,24 @@
       } catch (_) { /* fall through */ }
     }
 
-    // 2. Poll /health on the default cascade
-    for (const tryPort of [3010, 3011, 3012, 3013, 3014, 3015, 3016, 3017, 3018, 3019, 3020]) {
+    // 2. Verify a cached last-good port before scanning the default cascade.
+    const ports = _cachedProxyPort ? [_cachedProxyPort] : [];
+    ports.push(3010, 3011, 3012, 3013, 3014, 3015, 3016, 3017, 3018, 3019, 3020);
+    for (const tryPort of ports) {
       try {
-        const r = await fetch(`http://127.0.0.1:${tryPort}/health`, { signal: AbortSignal.timeout(1500) });
+        const r = await fetch(`http://127.0.0.1:${tryPort}/health`, {
+          signal: AbortSignal.timeout(PROXY_HEALTH_TIMEOUT_MS),
+        });
         if (r.ok) {
           const txt = await r.text();
           if (txt.trim() === 'OK') {
-            const d = await fetch(`http://127.0.0.1:${tryPort}/port`).then(r => r.json()).catch(() => ({ port: tryPort }));
+            const d = await fetch(`http://127.0.0.1:${tryPort}/port`)
+              .then(r => r.json())
+              .catch(() => ({ port: tryPort }));
             _proxyPort = d.port || tryPort;
+            _cachedProxyPort = _proxyPort;
             _proxyAvailable = true;
+            _writeCachedProxyPort(_proxyPort);
             if (Date.now() >= _proxyBypassUntil) {
               _proxyFailures = 0;
               _proxyBypassUntil = 0;
@@ -426,6 +500,21 @@
   window.refreshProxyRoute = (reason) => forceReinit(reason || 'manual-refresh');
   window.ProxyTransport = {
     getState: _proxyState,
+    setEnabled(enabled, reason = 'runtime-toggle') {
+      _proxyDisabled = !enabled;
+      try {
+        window.localStorage?.setItem?.(PROXY_DISABLED_CACHE_KEY, _proxyDisabled ? 'true' : 'false');
+      } catch (_) { }
+      _initPromise = null;
+      if (!_proxyDisabled) {
+        return initOnce().then(() => _proxyState());
+      }
+      _proxyAvailable = false;
+      _lastInitAt = Date.now();
+      _lastInitErr = reason || 'proxy-disabled';
+      _setProxyMode('bypass', reason || 'proxy-disabled');
+      return Promise.resolve(_proxyState());
+    },
     forceBypass(ms = 15_000, reason = 'manual') {
       _proxyBypassUntil = Date.now() + Math.max(1000, Number(ms) || 15_000);
       _setProxyMode('bypass', reason);

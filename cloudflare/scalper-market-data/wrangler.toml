@@ -1,0 +1,24 @@
+name = "scalper-market-data"
+main = "src/index.js"
+compatibility_date = "2026-09-10"
+
+# D1 binding for calibration persistence and health checks.
+[[d1_databases]]
+binding = "CALIBRATION_DB"
+database_name = "scalper-calibration"
+database_id = "48536b22-03b3-42dd-92fa-44feab144d84"
+
+[observability]
+enabled = true
+head_sampling_rate = 1
+
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+invocation_logs = true
+persist = true
+
+[observability.traces]
+enabled = true
+head_sampling_rate = 1
+persist = true
