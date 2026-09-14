@@ -80,7 +80,7 @@ function predictionCard(p) {
     }
 
     const modelDir = p.score > 0.02 ? 'up' : p.score < -0.02 ? 'down' : 'wait';
-    const polymarketDir = polymarketProb !== null ? (polymarketProb >= 0.5 ? _yesDirEarly : _noDirEarly) : null;
+    const polymarketDir = live15mProb !== null ? (live15mProb >= 0.5 ? _yesDirEarly : _noDirEarly) : null;
 
     const livePathApi = (typeof window !== 'undefined' && window.LivePath15m) || null;
     const livePath = livePathApi
@@ -189,7 +189,8 @@ function predictionCard(p) {
       : modelVerdictDir === 'down' ? `${_modelDownPct}% DOWN` : 'NEUTRAL';
     const _modelProbColor = modelVerdictDir === 'up' ? 'var(--color-green)'
       : modelVerdictDir === 'down' ? 'var(--color-red)' : 'var(--color-text-muted)';
-    const _liveKProbCard = window.PredictionMarkets?.getCoin?.(p.sym)?.kalshi15m?.probability ?? polymarketProb;
+    const _liveKProbCard = window.PredictionMarkets?.getCoin?.(p.sym)?.kalshi15m?.probability ?? live15mProb;
+    const _liveVenueCard = window.PredictionMarkets?.getCoin?.(p.sym)?.kalshi15m?.ticker ? 'Kalshi' : 'Polymarket';
     const _liveKPctCard = _liveKProbCard != null ? Math.round(_liveKProbCard * 100) : null;
     const _edgePpCard = _liveKPctCard != null ? Math.abs(_modelYesPctCard - _liveKPctCard) : null;
     const _liveKDirCard = _liveKProbCard == null ? null : (_liveKProbCard >= 0.5 ? _yesDirEarly : _noDirEarly);
@@ -682,10 +683,10 @@ function predictionCard(p) {
           </div>
           <!-- Model vs Polymarket Comparison Bar -->
           ${_liveKPctCard !== null ? `
-            <div class="pred-comparison-bar-wrap" title="Model vs Market: shows where model (top) differs from Polymarket crowd (bottom)">
+            <div class="pred-comparison-bar-wrap" title="Model vs Market: shows where model (top) differs from the live ${_liveVenueCard} market (bottom)">
               <div style="font-size:9px;color:var(--color-text-muted);margin-bottom:4px;display:flex;justify-content:space-between">
                 <span>Model: ${_modelProbStr}</span>
-                <span>Polymarket: ${_liveKPctCard}% YES</span>
+                <span>${_liveVenueCard}: ${_liveKPctCard}% YES</span>
               </div>
               <div style="display:flex;gap:8px;align-items:center">
                 <div style="flex:1;height:12px;background:rgba(0,0,0,0.1);border-radius:3px;position:relative;overflow:hidden">
