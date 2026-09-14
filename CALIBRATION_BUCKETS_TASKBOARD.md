@@ -24,4 +24,5 @@
 - [ ] Enable only after the pre-registered gate passes; do not lower thresholds retroactively.
 - [ ] If 0–5m degradation persists, evaluate a pre-registered low-probability scaling floor.
 - [ ] After two passing runs, wire `BucketedCalibration` into `prediction_engine.py` behind a feature flag.
-- [ ] Rebuild the Electron app so the packaged UI includes the latest source fixes.
+- [x] Rebuild the Electron app so the packaged UI includes the latest source fixes.
+  - Build label: `build-20260914-132223`
