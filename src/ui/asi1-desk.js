@@ -554,8 +554,8 @@
 
     const pmCoin = (typeof window !== 'undefined' && window.PredictionMarkets?.getCoin?.(coin)) || {};
     const poly = horizon === 'anytime' ? {} : (
-      (isHourly ? pmCoin.poly60m : (is5m ? pmCoin.poly5m : pmCoin.poly15m))
-      || (isHourly ? pmCoin.poly60m : pmCoin.poly15m)
+      (isHourly ? pmCoin.poly60m : (is5m ? pmCoin.poly5m : pmCoin.kalshi15m))
+      || (isHourly ? pmCoin.poly60m : (is5m ? pmCoin.poly5m : pmCoin.poly15m))
       || pmCoin.poly5m
       || {}
     );
@@ -643,7 +643,7 @@
       }
     }
 
-    const activeSlug = pkt.slug || poly.slug || (isHourly ? `${coin.toLowerCase()}-hourly-ranges-${targetCloseTime}` : (is5m ? `${coin.toLowerCase()}-updown-5m` : `${coin.toLowerCase()}-updown-15m`));
+    const activeSlug = pkt.slug || poly.ticker || poly.slug || (isHourly ? `${coin.toLowerCase()}-hourly-ranges-${targetCloseTime}` : (is5m ? `${coin.toLowerCase()}-updown-5m` : `${coin.toLowerCase()}-updown-15m`));
 
     return {
       sym: coin,
