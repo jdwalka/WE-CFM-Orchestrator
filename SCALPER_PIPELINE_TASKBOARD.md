@@ -3,6 +3,9 @@
 Generated 2026-09-14 from the live incident review. Owner agents are defined
 in `.github/agents/` and listed in `.github/AGENTS.md`.
 
+## Follow-up taskboard
+- Expiry-bucketed calibration: see `CALIBRATION_BUCKETS_TASKBOARD.md`.
+
 ## Architecture correction (verified live)
 - **Ledger split-brain is resolved.** There is one authoritative runtime ledger:
   `G:\WECRYP\data\truffle_calibration.sqlite3` — 2209 predictions / 2137 resolved.

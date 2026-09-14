@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import requests
+from calibration_buckets import replay_resolved_outcomes
 
 LEDGER_PATH_ENV_VAR = "CALIBRATION_LEDGER_PATH"
 DEFAULT_DB_PATH = Path(__file__).with_name("data") / "truffle_calibration.sqlite3"
@@ -474,6 +475,44 @@ def _tail_probability_correction(connection: sqlite3.Connection) -> dict:
     }
 
 
+def _bucketed_correction(connection: sqlite3.Connection) -> dict:
+    """Report-only expiry/regime bucket correction and replay gate."""
+    global_factor = float(
+        _probability_correction(connection).get("correction_factor", 1.0) or 1.0
+    )
+    rows = connection.execute(
+        """
+        SELECT p_base, touched, minutes_to_expiry, regime
+        FROM predictions
+        WHERE resolved_at_utc IS NOT NULL
+          AND p_base IS NOT NULL
+          AND touched IS NOT NULL
+          AND minutes_to_expiry IS NOT NULL
+        ORDER BY resolved_at_utc, id
+        """
+    ).fetchall()
+    if not rows:
+        return {
+            "status": "empty",
+            "active": False,
+            "live_path": "report_only",
+            "reason": "no resolved outcomes available for bucket replay",
+        }
+
+    replay = replay_resolved_outcomes(rows, global_factor)
+    enabled = replay["activation"]["enabled"]
+    return {
+        **replay,
+        "active": enabled,
+        "live_path": "report_only",
+        "reason": (
+            "bucketed replay passed the pre-registered Brier gate"
+            if enabled
+            else "bucketed replay failed the pre-registered Brier gate; global correction retained"
+        ),
+    }
+
+
 def get_calibration_report() -> dict:
     """Rolling and bucketed Brier/calibration report for recent predictions."""
     now = datetime.now(timezone.utc)
@@ -563,6 +602,7 @@ def get_calibration_report() -> dict:
             report["distribution_selection"] = _distribution_selection(report)
             report["probability_correction"] = _probability_correction(connection)
             report["tail_probability_correction"] = _tail_probability_correction(connection)
+            report["bucketed_correction"] = _bucketed_correction(connection)
             return report
     except sqlite3.Error as error:
         return {"status": "storage_error", "error": str(error)}
