@@ -2,6 +2,7 @@
 import math
 import os
 import sqlite3
+from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -242,7 +243,7 @@ def resolve_pending_predictions() -> int:
     """Resolve predictions against the price path from prediction time to expiry."""
     now = datetime.now(timezone.utc)
     try:
-        with _connect() as connection:
+        with closing(_connect()) as connection:
             _initialize(connection)
             rows = connection.execute(
                 """
@@ -280,7 +281,7 @@ def resolve_pending_predictions() -> int:
         brier = (float(p_touch) - (1 if touched else 0)) ** 2
         normal_brier = (float(p_normal) - (1 if touched else 0)) ** 2
         try:
-            with _connect() as connection:
+            with closing(_connect()) as connection:
                 _initialize(connection)
                 connection.execute(
                     """
@@ -478,7 +479,7 @@ def get_calibration_report() -> dict:
     now = datetime.now(timezone.utc)
     resolve_pending_predictions()
     try:
-        with _connect() as connection:
+        with closing(_connect()) as connection:
             _initialize(connection)
             prediction_count = connection.execute(
                 "SELECT COUNT(*) FROM predictions"
