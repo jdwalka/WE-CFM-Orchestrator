@@ -1,7 +1,7 @@
 /**
  * tests/hud-perf.test.js
  * Verification of render-scheduler decoupling:
- * 1. Feed ticks arrive at 10Hz (100ms) or rapid bursts.
+ * 1. Feed ticks arrive at 20Hz (50ms) or rapid bursts.
  * 2. Ingest is decoupled from render via rAF batching (flush called <= 60fps).
  * 3. Single DOM/state update pass batches all dirty symbols.
  * 4. Prediction card normalization dirty-check avoids layout thrashing.
@@ -24,7 +24,7 @@ test('RenderScheduler: onPythTick buffers dirty symbols without immediate flush'
   assert.strictEqual(latest.SOL.price, 150.75);
 });
 
-test('RenderScheduler: flush coalesces rapid 10Hz and 100Hz ticks into single batch <= 60fps', async () => {
+test('RenderScheduler: flush coalesces rapid 20Hz and 100Hz ticks into single batch <= 60fps', async () => {
   RenderScheduler.resetForTesting();
 
   let batchDispatched = 0;

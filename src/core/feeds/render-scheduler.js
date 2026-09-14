@@ -1,7 +1,7 @@
 /**
  * render-scheduler.js — High-performance rAF Render Scheduler
- * Decouples 100ms (10Hz) Pyth Lazer feed ingest from the browser paint cycle.
- * Ingest stays at 100ms; DOM and HUD paints are batched and capped at 60fps via rAF.
+ * Decouples 50ms (20Hz) Pyth Lazer feed ingest from the browser paint cycle.
+ * Ingest stays at 50ms; DOM and HUD paints are batched and capped at 60fps via rAF.
  */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) {
@@ -14,6 +14,10 @@
   }
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   'use strict';
+
+  const GarvonixHarmonizer = typeof module === 'object' && module.exports && typeof require === 'function'
+    ? require('./garvonix-harmonizer.js')
+    : (root.GarvonixHarmonizer || null);
 
   let rafPending = false;
   const dirtySyms = new Set();
@@ -39,9 +43,16 @@
     const numPrice = Number(price);
     if (!Number.isFinite(numPrice) || numPrice <= 0) return;
 
+    GarvonixHarmonizer?.onTick(s, numPrice, meta);
+    const latestSample = GarvonixHarmonizer?.getSamples?.(s, 1)?.[0] || null;
+    const harmonizedStats = GarvonixHarmonizer?.getStats?.(s);
+
     latestPrices[s] = {
       price: numPrice,
-      meta,
+      rawPrice: numPrice,
+      filteredPrice: latestSample?.filtered ?? null,
+      residualSignal: latestSample?.residualSignal ?? null,
+      meta: harmonizedStats ? { ...meta, garvonix: harmonizedStats } : meta,
       ts: getPerfNow(),
     };
     dirtySyms.add(s);
@@ -62,11 +73,15 @@
     if (typeof window !== 'undefined') {
       window._pythPrices = window._pythPrices || {};
       window._pythPythMetadata = window._pythPythMetadata || {};
+      window._pythFilteredPrices = window._pythFilteredPrices || {};
+      window._pythResidualSignals = window._pythResidualSignals || {};
       for (const sym of syms) {
         const data = latestPrices[sym];
         if (!data) continue;
         window._pythPrices[sym] = data.price;
         window._pythPythMetadata[sym] = data.meta;
+        window._pythFilteredPrices[sym] = data.filteredPrice;
+        window._pythResidualSignals[sym] = data.residualSignal;
       }
 
       // Notify desk and HUD once per animation frame, not per tick
@@ -95,6 +110,7 @@
     rafPending = false;
     dirtySyms.clear();
     for (const k of Object.keys(latestPrices)) delete latestPrices[k];
+    GarvonixHarmonizer?.resetForTesting?.();
   }
 
   return {

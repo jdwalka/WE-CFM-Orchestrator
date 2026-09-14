@@ -63,6 +63,15 @@
   let DEFAULT_SHORT_HORIZON_MIN = 15;  // Primary target: next 15-min candle session (Polymarket contracts)
   const STATIC_HORIZONS = [1, 5, 10, 15];
 
+  function coinPriceDecimals(sym) {
+    const central = Number(window.CoinPrecision?.getCoinDecimals?.(sym));
+    if (Number.isFinite(central)) return central;
+    const key = String(sym || '').toUpperCase();
+    if (key === 'DOGE') return 7;
+    if (key === 'SOL' || key === 'HYPE' || key === 'XRP') return 4;
+    return 2;
+  }
+
   const {
     POLYMARKET_VERIFY_ONLY,
     getPolymarketNextBoundaryMinutes,
@@ -6079,8 +6088,8 @@
       msToNextBoundary,
       minsToNextBoundary: parseFloat(minsToNextBoundary.toFixed(2)),
       currentPrice: lastPrice,
-      projectedOpenPtb: parseFloat(projectedOpenPtb.toFixed(sym === 'XRP' ? 4 : sym === 'DOGE' ? 6 : 2)),
-      projectedSettlement: parseFloat(projectedSettlement.toFixed(sym === 'XRP' ? 4 : sym === 'DOGE' ? 6 : 2)),
+      projectedOpenPtb: parseFloat(projectedOpenPtb.toFixed(coinPriceDecimals(sym))),
+      projectedSettlement: parseFloat(projectedSettlement.toFixed(coinPriceDecimals(sym))),
       forecastDirection,
       pUp: parseFloat(pUp.toFixed(4)),
       confidence,
@@ -6137,7 +6146,7 @@
       spot: s,
       ptb: p,
       secondsToClose: ttc,
-      distance: parseFloat(distance.toFixed(sym === 'XRP' ? 4 : sym === 'DOGE' ? 6 : 2)),
+      distance: parseFloat(distance.toFixed(coinPriceDecimals(sym))),
       distanceBps: parseFloat(distanceBps.toFixed(2)),
       pinNoiseThreshold: parseFloat(pinNoiseThreshold.toFixed(2)),
       isDefendedPinZone,
@@ -6207,7 +6216,7 @@
 
       return {
         ...stk,
-        strike: parseFloat(stk.strike.toFixed(sym === 'XRP' ? 4 : sym === 'DOGE' ? 6 : 2)),
+        strike: parseFloat(stk.strike.toFixed(coinPriceDecimals(sym))),
         distanceDollar: parseFloat(dist.toFixed(2)),
         distanceBps: parseFloat(distBps.toFixed(1)),
         sigmaDist: parseFloat(sigmaDist.toFixed(2)),

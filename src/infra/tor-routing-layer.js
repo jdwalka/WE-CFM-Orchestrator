@@ -30,7 +30,7 @@
             polymarket: { enabled: false, name: 'Polymarket' },       // ⚠️ NO - too slow for live data
             coingecko: { enabled: true, name: 'CoinGecko' },         // ✓ OK - non-time-critical
             crypto_com: { enabled: false, name: 'Crypto.com' },      // ⚠️ NO - live candles needed
-            whale_alert: { enabled: true, name: 'Whale Alert' },     // ✓ OK - non-time-critical
+            whale_alert: { enabled: false, name: 'Whale Alert' },    // disabled — removed from net stack
             dex_scan: { enabled: true, name: 'DEX Scanners' },       // ✓ OK - analysis only
             portfolio: { enabled: true, name: 'Portfolio Tools' },   // ✓ OK - analytics only
             cex_flow: { enabled: false, name: 'CEX Flow' },          // ⚠️ NO - needs speed

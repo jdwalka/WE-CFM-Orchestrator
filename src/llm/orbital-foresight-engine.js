@@ -226,11 +226,12 @@
     const coin = String(sym || 'BTC').toUpperCase();
     const coinPrec = (typeof window !== 'undefined' && window.CoinPrecision)
       || (typeof require === 'function' ? (() => { try { return require('../shared/coin-precision'); } catch (_) { return null; } })() : null);
+    const fallbackDecimals = coin === 'DOGE' ? 7 : (coin === 'SOL' || coin === 'HYPE' || coin === 'XRP' ? 4 : 2);
     const spotStr = ctx.spot
-      ? `Spot: ${coinPrec ? coinPrec.formatCoinPrice(coin, ctx.spot) : '$' + Number(ctx.spot).toFixed(coin === 'XRP' || coin === 'DOGE' ? 4 : 2)}`
+      ? `Spot: ${coinPrec ? coinPrec.formatCoinPrice(coin, ctx.spot) : '$' + Number(ctx.spot).toFixed(fallbackDecimals)}`
       : '';
     const ptbStr = ctx.ptb
-      ? `PTB: ${coinPrec ? coinPrec.formatCoinStrike(coin, ctx.ptb) : '$' + Number(ctx.ptb).toFixed(coin === 'XRP' || coin === 'DOGE' ? 4 : 2)}`
+      ? `PTB: ${coinPrec ? coinPrec.formatCoinStrike(coin, ctx.ptb) : '$' + Number(ctx.ptb).toFixed(fallbackDecimals)}`
       : '';
     const horStr  = ctx.horizon || _cfg.horizon || '15m';
 

@@ -4,11 +4,11 @@
  * Rules:
  * - BTC: 2 decimals (.00 cents)
  * - ETH: 2 decimals (.00 cents)
- * - SOL: 2 decimals (.00 cents)
+ * - SOL: 4 decimals (.0000)
  * - BNB: 2 decimals (.00 cents)
- * - HYPE: 2 decimals (.00 cents)
+ * - HYPE: 4 decimals (.0000)
  * - XRP: 4 decimals (.0000)
- * - DOGE: 4 decimals (.0000)
+ * - DOGE: 7 decimals (.0000000)
  *
  * Supports Browser (window.CoinPrecision) and Node.js (module.exports).
  */
@@ -22,11 +22,11 @@
   const COIN_PRECISION_CONFIG = {
     BTC:  { decimals: 2, deltaDecimals: 2, minDisplay: 2, maxDisplay: 2 },
     ETH:  { decimals: 2, deltaDecimals: 2, minDisplay: 2, maxDisplay: 2 },
-    SOL:  { decimals: 2, deltaDecimals: 2, minDisplay: 2, maxDisplay: 2 },
+    SOL:  { decimals: 4, deltaDecimals: 4, minDisplay: 4, maxDisplay: 4 },
     BNB:  { decimals: 2, deltaDecimals: 2, minDisplay: 2, maxDisplay: 2 },
-    HYPE: { decimals: 2, deltaDecimals: 2, minDisplay: 2, maxDisplay: 2 },
+    HYPE: { decimals: 4, deltaDecimals: 4, minDisplay: 4, maxDisplay: 4 },
     XRP:  { decimals: 4, deltaDecimals: 4, minDisplay: 4, maxDisplay: 4 },
-    DOGE: { decimals: 4, deltaDecimals: 4, minDisplay: 4, maxDisplay: 4 },
+    DOGE: { decimals: 7, deltaDecimals: 7, minDisplay: 7, maxDisplay: 7 },
   };
 
   /**
@@ -74,8 +74,9 @@
 
   /**
    * Returns exact decimal precision for a coin.
-   * BTC & ETH -> 2 (.00 cents)
-   * XRP & DOGE -> 4 (.0000)
+   * BTC, ETH, BNB -> 2 (.00 cents)
+   * SOL, HYPE, XRP -> 4 (.0000)
+   * DOGE -> 7 (.0000000)
    */
   function getCoinDecimals(coinOrSlug, value) {
     const sym = normalizeCoinSymbol(coinOrSlug);

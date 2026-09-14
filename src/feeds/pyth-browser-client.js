@@ -13,16 +13,15 @@
   const PYTH_HERMES_V2 = 'https://hermes.pyth.network/v2/updates/price/latest';
   const PYTH_HERMES = 'https://hermes.pyth.network/api/latest_price_feeds';
   // Hermes' /v2/updates/price/latest requires a Pyth Pro-entitled key (secrets/PYTH_PRO_API_KEY.txt)
-  // -- the Lazer streaming token (PYTH_API/PYTH_NEW/...) 401s/403s on this endpoint even though it's
-  // valid for Lazer WS. Try PRO first, keep the Lazer names as a fallback in case that changes again.
+  // -- the Lazer streaming token (PYTH_NEW_API) is a distinct product and 401s/403s here.
   // hermes.pyth.network is Pyth's PUBLIC Hermes instance: the standard price
   // endpoints take NO auth. We therefore fetch anonymously first and only
   // attach `Authorization: Bearer` as a *retry* on 401/403/429, and only with a
   // key that is actually Pro-entitled. The Lazer streaming token
-  // (PYTH_LAZER_TOKEN / PYTH_API / PYTH_NEW*) is NOT valid here -- sending it as
+  // PYTH_NEW_API is NOT valid here -- sending it as
   // a Bearer makes the gateway 401 a request that would have succeeded with no
   // header at all, which is what took the spot feed down. Keep it out entirely.
-  let PYTH_API_KEY = '9AowRQwEELKpsMosei146CTHcxeNoHuSUWuDhGfFxkXZ'; // Pro key
+  let pythHermesProKey = '';
   const PRO_KEY_NAMES = ['PYTH_PRO_API_KEY', 'PYTH_HERMES_PRO_KEY', 'HERMES_PRO_API_KEY', 'PYTH_HERMES_TOKEN'];
   function _firstKey(getter) {
     for (const name of PRO_KEY_NAMES) {
@@ -34,21 +33,21 @@
     if (typeof window !== 'undefined') {
       if (window.resolveRuntimeKey) {
         const k = _firstKey(window.resolveRuntimeKey);
-        if (k) PYTH_API_KEY = k;
+        if (k) pythHermesProKey = k;
       }
       if (window.__env) {
         const k = _firstKey((n) => window.__env[n]);
-        if (k) PYTH_API_KEY = k;
+        if (k) pythHermesProKey = k;
       }
       if (typeof process !== 'undefined' && process.env) {
         const k = _firstKey((n) => process.env[n]);
-        if (k) PYTH_API_KEY = k;
+        if (k) pythHermesProKey = k;
       }
       if (window.electron && typeof window.electron.getPublicEnv === 'function') {
         window.electron.getPublicEnv().then(cfg => {
           if (cfg) {
             const k = _firstKey((n) => cfg[n]);
-            if (k) PYTH_API_KEY = k;
+            if (k) pythHermesProKey = k;
           }
         }).catch(() => {});
       }
@@ -172,12 +171,20 @@
     const feedIds = Object.values(PYTH_FEEDS);
     const v2Url = `${PYTH_HERMES_V2}?${feedIds.map(id => 'ids[]=' + encodeURIComponent(id)).join('&')}`;
 
-    const headers = PYTH_API_KEY ? { Authorization: `Bearer ${PYTH_API_KEY}` } : {};
+    // Douro Labs' Lazer proxy is public, sub-100ms, and currently the most
+    // reliable route. Prefer it and avoid the noisy Hermes 403/401 console
+    // response entirely; Hermes remains a fully authenticated fallback.
+    const lazerFirst = await _fetchDouroLazerProxy();
+    if (lazerFirst && Object.keys(lazerFirst.feeds).length >= 4) {
+      return lazerFirst;
+    }
+
+    const headers = pythHermesProKey ? { Authorization: `Bearer ${pythHermesProKey}` } : {};
     let resp = null;
     try {
       resp = await _timedFetch(v2Url, headers);
-      if ((resp.status === 401 || resp.status === 403) && !headers.Authorization && PYTH_API_KEY) {
-        resp = await _timedFetch(v2Url, { Authorization: `Bearer ${PYTH_API_KEY}` });
+      if ((resp.status === 401 || resp.status === 403) && !headers.Authorization && pythHermesProKey) {
+        resp = await _timedFetch(v2Url, { Authorization: `Bearer ${pythHermesProKey}` });
       }
     } catch (e) {
       console.warn(`[PythClient] Hermes v2 network error: ${e.message}`);
@@ -282,7 +289,7 @@
         const cfg = await window.electron.getPublicEnv().catch(() => null);
         if (cfg) {
           const k = _firstKey((n) => cfg[n]);
-          if (k) { PYTH_API_KEY = k; console.log('[PythClient] Hermes Pro key available for auth retry'); }
+          if (k) { pythHermesProKey = k; console.log('[PythClient] Hermes Pro key available for auth retry'); }
         }
       }
     } catch (_) {}
