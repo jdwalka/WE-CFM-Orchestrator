@@ -207,13 +207,8 @@ function fmtPrice(n, sym) {
     }
     n = Number(n);
     if (sym) {
-      const s = String(sym).toUpperCase();
-      if (s === 'XRP' || s === 'DOGE') {
-        return '$' + n.toLocaleString('en-US', { minimumFractionDigits: 4, maximumFractionDigits: 4 });
-      }
-      if (s === 'BTC' || s === 'ETH' || s === 'SOL' || s === 'BNB' || s === 'HYPE') {
-        return '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-      }
+      const decimals = fallbackPriceDecimals(sym);
+      return '$' + n.toLocaleString('en-US', { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
     }
     if (n >= 1000) return '$' + fmt(n, 2);
     if (n >= 1) return '$' + fmt(n, 2);
@@ -669,7 +664,7 @@ function renderMarkets5M() {
       if (window.CoinPrecision?.formatCoinDelta) {
         return window.CoinPrecision.formatCoinDelta(sym, v);
       }
-      const dp = /^DOGE$/i.test(sym) ? 4 : /^XRP$/i.test(sym) ? 4 : 2;
+      const dp = fallbackPriceDecimals(sym);
       return `${v >= 0 ? '+' : '-'}$${Math.abs(v).toFixed(dp)}`;
     }
 
@@ -739,7 +734,7 @@ function renderMarkets5M() {
       const ptbLabel = p5?.targetPrice || (Number.isFinite(ptbNum) && ptbNum > 0
         ? (window.CoinPrecision?.formatCoinStrike
             ? window.CoinPrecision.formatCoinStrike(sym, ptbNum)
-            : `$${ptbNum.toLocaleString('en-US', { minimumFractionDigits: (sym === 'XRP' || sym === 'DOGE') ? 4 : 2, maximumFractionDigits: (sym === 'XRP' || sym === 'DOGE') ? 4 : 2 })}`)
+            : `$${ptbNum.toLocaleString('en-US', { minimumFractionDigits: fallbackPriceDecimals(sym), maximumFractionDigits: fallbackPriceDecimals(sym) })}`)
         : null);
 
       // Record this window's call for later grading against the real
@@ -1602,7 +1597,7 @@ function renderMarkets5M() {
                 <div style="flex:0 0 108px;min-width:108px;padding:7px 6px;border-radius:4px;background:var(--color-surface);border:1px solid ${activeColor};text-align:center;">
                   <div style="font-size:9px;color:var(--color-text-muted);margin-bottom:2px;">${timeLabel}</div>
                   <div style="font-size:13px;font-weight:700;color:${probColor}">${Math.round(m.yes * 100)}%</div>
-                  <div style="font-size:10px;color:${m.targetPrice || m.targetPriceNum ? 'var(--color-text)' : 'var(--color-orange)'};margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="${m.priceToBeatSource || 'Awaiting fixed benchmark'}">${m.targetPrice || (Number.isFinite(Number(m.targetPriceNum)) ? (window.CoinPrecision?.formatCoinStrike ? window.CoinPrecision.formatCoinStrike(sym, m.targetPriceNum) : `$${Number(m.targetPriceNum).toLocaleString('en-US', { minimumFractionDigits: (sym === 'XRP' || sym === 'DOGE') ? 4 : 2, maximumFractionDigits: (sym === 'XRP' || sym === 'DOGE') ? 4 : 2 })}`) : 'PTB pending')}</div>
+                  <div style="font-size:10px;color:${m.targetPrice || m.targetPriceNum ? 'var(--color-text)' : 'var(--color-orange)'};margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="${m.priceToBeatSource || 'Awaiting fixed benchmark'}">${m.targetPrice || (Number.isFinite(Number(m.targetPriceNum)) ? (window.CoinPrecision?.formatCoinStrike ? window.CoinPrecision.formatCoinStrike(sym, m.targetPriceNum) : `$${Number(m.targetPriceNum).toLocaleString('en-US', { minimumFractionDigits: fallbackPriceDecimals(sym), maximumFractionDigits: fallbackPriceDecimals(sym) })}`) : 'PTB pending')}</div>
                 </div>`;
               }).join('')}
             </div>
@@ -1912,7 +1907,7 @@ function renderDebugLog() {
         <td>${actionBadge}</td>
         <td style="color:var(--color-text-muted)">${e.entryProb != null ? Math.round(e.entryProb * 100) + '%' : '—'}</td>
       </tr>`;
-    }).join('') : `<tr><td colspan="8" style="color:var(--color-text-faint);text-align:center;padding:20px">No settlements recorded yet — data accumulates as Polymarket 15M contracts expire.</td></tr>`;
+    }).join('') : `<tr><td colspan="8" style="color:var(--color-text-faint);text-align:center;padding:20px">No settlements recorded yet — data accumulates as 15m contracts expire.</td></tr>`;
 
     // ── Missed opportunities list ───────────────────────────────────
     const missedRows = missedOps.length ? [...missedOps].reverse().slice(0, 20).map(e => {
@@ -2027,6 +2022,13 @@ function renderTelegramFeedsHtml() {
       <div style="white-space:pre-wrap; word-break:break-all">\${_obsEsc(msg.text)}</div>
     </div>`;
   }).join('');
+}
+
+function fallbackPriceDecimals(sym) {
+  const key = String(sym || '').toUpperCase();
+  if (key === 'DOGE') return 7;
+  if (key === 'SOL' || key === 'HYPE' || key === 'XRP') return 4;
+  return 2;
 }
 
 function renderObservability() {
@@ -2910,7 +2912,7 @@ function ensureChart(container) {
 function applyChartPriceFormat() {
     const coin = WATCHLIST.find(c => c.instrument === chartCoin) || (typeof findCoinByInstrument === 'function' ? findCoinByInstrument(chartCoin) : null);
     const sym = coin?.sym || chartCoin;
-    const decimals = window.CoinPrecision?.getCoinDecimals?.(sym, 1) ?? (sym === 'XRP' || sym === 'DOGE' ? 4 : 2);
+    const decimals = window.CoinPrecision?.getCoinDecimals?.(sym, 1) ?? fallbackPriceDecimals(sym);
     const minMove = Math.pow(10, -decimals);
     const priceFormat = { type: 'price', precision: decimals, minMove };
     ['candles', 'ema9', 'ema21', 'vwap', 'support', 'resistance', 'trend'].forEach(key => {

@@ -16,6 +16,10 @@ PROBABILITY_CORRECTION_PRIOR_STRENGTH = 200.0
 PROBABILITY_CORRECTION_MIN_SAMPLES = 30
 PROBABILITY_CORRECTION_MAX_SHRINK = 0.85
 PROBABILITY_CORRECTION_FLOOR = 0.0005
+TAIL_PROBABILITY_THRESHOLD = 0.20
+TAIL_CORRECTION_MIN_SAMPLES = 30
+TAIL_CORRECTION_PRIOR_STRENGTH = 100.0
+TAIL_CORRECTION_MAX_FACTOR = 5.0
 
 
 def _connect() -> sqlite3.Connection:
@@ -340,6 +344,66 @@ def _probability_correction(connection: sqlite3.Connection) -> dict:
     }
 
 
+def _tail_probability_correction(connection: sqlite3.Connection) -> dict:
+    """Empirical correction for the low-probability tail regime.
+
+    This is intentionally separate from the global probability correction:
+    the live miscalibration is concentrated in late-window tail events, and a
+    global shrink would either overcorrect the mid-band or leave the tail
+    regime underpriced. The correction is active only after enough resolved
+    low-probability outcomes exist and is bounded so a small bad sample cannot
+    turn noise into a trade signal.
+    """
+    row = connection.execute(
+        """
+        SELECT COUNT(*), SUM(p_touch), SUM(touched)
+        FROM (
+            SELECT p_touch, touched
+            FROM predictions
+            WHERE resolved_at_utc IS NOT NULL AND p_touch < ?
+            ORDER BY resolved_at_utc DESC, id DESC
+            LIMIT 200
+        )
+        """,
+        (TAIL_PROBABILITY_THRESHOLD,),
+    ).fetchone()
+    sample_count, predicted_sum, realized_sum = row
+    sample_count = int(sample_count or 0)
+    predicted_sum = float(predicted_sum or 0.0)
+    realized_sum = float(realized_sum or 0.0)
+
+    if sample_count < TAIL_CORRECTION_MIN_SAMPLES or predicted_sum <= 0:
+        return {
+            "active": False,
+            "samples": sample_count,
+            "threshold": TAIL_PROBABILITY_THRESHOLD,
+            "min_samples": TAIL_CORRECTION_MIN_SAMPLES,
+            "max_factor": TAIL_CORRECTION_MAX_FACTOR,
+            "factor": 1.0,
+            "reason": "insufficient resolved tail outcomes; correction disabled",
+        }
+
+    raw_ratio = realized_sum / predicted_sum
+    evidence_weight = sample_count / (sample_count + TAIL_CORRECTION_PRIOR_STRENGTH)
+    posterior_ratio = evidence_weight * raw_ratio + (1.0 - evidence_weight)
+    factor = max(1.0, min(posterior_ratio, TAIL_CORRECTION_MAX_FACTOR))
+    return {
+        "active": True,
+        "samples": sample_count,
+        "threshold": TAIL_PROBABILITY_THRESHOLD,
+        "sum_predicted": round(predicted_sum, 4),
+        "sum_realized": round(realized_sum, 4),
+        "raw_ratio": round(raw_ratio, 4),
+        "posterior_ratio": round(posterior_ratio, 4),
+        "factor": round(factor, 4),
+        "max_factor": TAIL_CORRECTION_MAX_FACTOR,
+        "reason": (
+            "bounded empirical-Bayes correction for the low-probability "
+            "late-window regime"
+        ),
+    }
+
+
 def get_calibration_report() -> dict:
     """Rolling and bucketed Brier/calibration report for recent predictions."""
     now = datetime.now(timezone.utc)
@@ -408,6 +472,7 @@ def get_calibration_report() -> dict:
             }
             report["distribution_selection"] = _distribution_selection(report)
             report["probability_correction"] = _probability_correction(connection)
+            report["tail_probability_correction"] = _tail_probability_correction(connection)
             return report
     except sqlite3.Error as error:
         return {"status": "storage_error", "error": str(error)}

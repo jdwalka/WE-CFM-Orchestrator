@@ -51,7 +51,7 @@
     'Start notes with UP or DOWN (or HOLD_FLAT). Cite spot, PTB, TTC, yesProb, imbalance.',
     'Format and Tone: Write notes in clear, objective, and transparent language for traders.',
     'Avoid dark-pool or insider jargon such as "fade", "pierces PTB", or cryptic acronyms.',
-    'Respect exact coin precision without float noise (BTC/ETH/SOL/BNB/HYPE: 2 decimals, e.g. $79,566.58; XRP/DOGE: 4 decimals, e.g. $0.5842).',
+    'Respect exact coin precision without float noise (BTC/ETH/BNB: 2 decimals, e.g. $79,566.58; SOL/HYPE/XRP: 4 decimals, e.g. $101.1420; DOGE: 7 decimals, e.g. $0.0835346).',
     'Format time-to-close (TTC) in clean human-readable durations (e.g. 10m 27s or 45s).',
     'Format near-touch liquidity with commas and 2 decimals (e.g. $2,572.46), never raw IEEE-754 floats.',
     'Timing: secondsToClose is TTC in seconds, authoritative. urgency=late_window when TTC<90; ' +

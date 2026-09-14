@@ -20,6 +20,13 @@
     return score > 0.02 ? 1 : score < -0.02 ? -1 : fallback;
   }
 
+  function _fallbackPriceDecimals(sym) {
+    const key = String(sym || '').toUpperCase();
+    if (key === 'DOGE') return 7;
+    if (key === 'SOL' || key === 'HYPE' || key === 'XRP') return 4;
+    return 2;
+  }
+
 function predictionCard(p) {
     if (!p || !p.sym) {
       console.warn('[predictionCard] Missing prediction object or sym:', p);
@@ -42,13 +49,12 @@ function predictionCard(p) {
     // modelYesPct = P(projected target ≥ strike) via normal CDF — this is the RIGHT metric.
     const _k15mCV = window.PredictionMarkets?.getCoin(p.sym);
     const _k15mV = _k15mCV?.kalshi15m ?? null;
-    // Kalshi fetching is disabled (user no longer trades there) -- _k15mV is
-    // always null now. Prefer the Polymarket 15m Up/Down market directly
-    // (fresher/more precise than the blended combinedProb fallback).
+    // Kalshi owns the 15-minute surface. Polymarket 15m remains a legacy
+    // fallback only when Kalshi has not published the active contract yet.
     const _poly15mV = p.poly15m ?? _k15mCV?.poly15m ?? null;
-    const polymarketProb = _poly15mV?.probability ?? _poly15mV?.upProbability ?? _poly15mV?.clobProbability ?? _poly15mV?.yesProb ?? _k15mV?.probability ?? _k15mCV?.combinedProb ?? null;
-    const polymarketPct = polymarketProb !== null ? Math.round(polymarketProb * 100) : null;
-    const polymarketEdge = polymarketProb !== null ? Math.abs(polymarketProb - 0.5) : null;
+    const live15mProb = _k15mV?.probability ?? _poly15mV?.probability ?? _poly15mV?.upProbability ?? _poly15mV?.clobProbability ?? _poly15mV?.yesProb ?? _k15mCV?.combinedProb ?? null;
+    const polymarketPct = live15mProb !== null ? Math.round(live15mProb * 100) : null;
+    const polymarketEdge = live15mProb !== null ? Math.abs(live15mProb - 0.5) : null;
     let _kAlignEarly = p.projections?.p15?.polyAlign ?? null;
     if (_kAlignEarly && _k15mV && _kAlignEarly.ticker && _k15mV.ticker && _kAlignEarly.ticker !== _k15mV.ticker) {
       _kAlignEarly = null;
@@ -375,16 +381,12 @@ function predictionCard(p) {
     const scalpCount = mySetups.filter(s => s.type.startsWith('scalp_')).length;
     const contrarianCount = mySetups.filter(s => s.type.startsWith('contrarian_')).length;
 
-    // ---- Polymarket 15M Up/Down live market row ----
-    // YES resolves if closePrice ≥ targetPriceNum (meet or exceed the reference).
-    // NO  resolves if closePrice  < targetPriceNum (falls below the reference).
-    // Kalshi fetching is disabled -- _k15m is always null now. Source this row
-    // from Polymarket's 15m Up/Down market instead (poly15m), which is always
-    // "beat the opening price" (no variable strike direction like Kalshi had).
+    // ---- Kalshi 15M Up/Down live market row ----
+    // Kalshi is primary; Polymarket 15m is a legacy fallback only.
     const _k15mCoin = window.PredictionMarkets?.getCoin(p.sym);
     const _k15m = _k15mCoin?.kalshi15m ?? null;
     const _poly15m = p.poly15m ?? _k15mCoin?.poly15m ?? null;
-    const _kProb = ind.mktSentiment?.kalshi ?? _poly15m?.probability ?? _poly15m?.upProbability ?? _poly15m?.clobProbability ?? _poly15m?.yesProb ?? _k15m?.probability ?? _k15mCoin?.combinedProb ?? null;
+    const _kProb = _k15m?.probability ?? ind.mktSentiment?.kalshi ?? _poly15m?.probability ?? _poly15m?.upProbability ?? _poly15m?.clobProbability ?? _poly15m?.yesProb ?? _k15mCoin?.combinedProb ?? null;
     let _kAlign = p.projections?.p15?.polyAlign ?? null;
     if (_kAlign && _k15m && _kAlign.ticker && _k15m.ticker && _kAlign.ticker !== _k15m.ticker) {
       _kAlign = null;
@@ -393,11 +395,11 @@ function predictionCard(p) {
     // Debug: log data availability on first few renders
     const _debugPolymarket = window._debugPolymarketCount = (window._debugPolymarketCount || 0) + 1;
     if (_debugPolymarket <= 3) {
-      console.log(`[polymarket15mRow] ${p.sym}: _k15mCoin=${!!_k15mCoin}, _k15m=${!!_k15m}, _kProb=${_kProb}, combinedProb=${_k15mCoin?.combinedProb}, mktSentiment.kalshi=${ind.mktSentiment?.kalshi}`);
+      console.log(`[kalshi15mRow] ${p.sym}: _k15mCoin=${!!_k15mCoin}, _k15m=${!!_k15m}, _kProb=${_kProb}, combinedProb=${_k15mCoin?.combinedProb}, mktSentiment.kalshi=${ind.mktSentiment?.kalshi}`);
     }
 
-    const polymarket15mRow = (() => {
-      const _rowLabel = 'Polymarket 15M';
+    const kalshi15mRow = (() => {
+      const _rowLabel = _k15m?.ticker ? 'Kalshi 15M' : 'Polymarket 15M';
       const cfmRow = (() => {
         const cfmData = window.CFMEngine?.getAll ? window.CFMEngine.getAll()[p.sym] : null;
         if (!cfmData || !cfmData.bias) return '';
@@ -409,20 +411,17 @@ function predictionCard(p) {
       const coinPrefix = (window.PredictionMarkets?.POLY_5M_COIN_SLUGS?.[p.sym] || p.sym.toLowerCase());
       const nowSec = Math.floor(Date.now() / 1000);
       const windowTs = nowSec - (nowSec % 900);
-      const activeSlug = _poly15m?.slug || `${coinPrefix}-updown-15m-${windowTs}`;
+      const activeSlug = _k15m?.ticker || _poly15m?.slug || `${coinPrefix}-updown-15m-${windowTs}`;
       const defaultCloseMs = (windowTs + 900) * 1000;
 
-      // Polymarket Up/Down has no variable strike direction like Kalshi did --
-      // it's always "beat the opening price" -- so default to 'above' unless
-      // an actual Kalshi alignment object is still present with one set.
-      const _rowStrikeDir = _poly15m ? 'above' : ((_kAlign?.strikeDir ?? _k15m?.strikeDir ?? _strikeDirEarly) === 'below' ? 'below' : 'above');
+      const _rowStrikeDir = ((_k15m?.strikeDir ?? _kAlign?.strikeDir ?? (_poly15m ? 'above' : _strikeDirEarly)) === 'below' ? 'below' : 'above');
       const _rowYesDir = _rowStrikeDir === 'below' ? 'down' : 'up';
       const _rowNoDir = _rowYesDir === 'up' ? 'down' : 'up';
 
       // Reference threshold — "Beat $85.32" for above, "Below $85.32" for below.
       // Prefer the raw API string (targetPrice) to avoid rounding.
-      const _refStrikeNum = _kAlign?.ref ?? _poly15m?.priceToBeatNum ?? _poly15m?.targetPriceNum ?? null;
-      const refTarget = _poly15m?.targetPrice ?? _k15m?.targetPrice ?? (_refStrikeNum != null ? (window.CoinPrecision?.formatCoinStrike ? window.CoinPrecision.formatCoinStrike(p.sym, _refStrikeNum) : fmtPrice(_refStrikeNum, p.sym)) : null);
+      const _refStrikeNum = _k15m?.targetPriceNum ?? _kAlign?.ref ?? _poly15m?.priceToBeatNum ?? _poly15m?.targetPriceNum ?? null;
+      const refTarget = _k15m?.targetPrice ?? _poly15m?.targetPrice ?? (_refStrikeNum != null ? (window.CoinPrecision?.formatCoinStrike ? window.CoinPrecision.formatCoinStrike(p.sym, _refStrikeNum) : fmtPrice(_refStrikeNum, p.sym)) : null);
       const refVerb = _rowStrikeDir === 'below' ? 'Below' : 'Beat';
       const refLine = refTarget
         ? ` <span class="k15-target">${refVerb} ${refTarget}</span>`
@@ -440,7 +439,7 @@ function predictionCard(p) {
         ? (_refStrikeNum - p.price) : null;
       const _gapDec = window.CoinPrecision?.getCoinDeltaDecimals
         ? window.CoinPrecision.getCoinDeltaDecimals(p.sym)
-        : (/^DOGE$/i.test(p.sym) ? 4 : /^XRP$/i.test(p.sym) ? 4 : 2);
+        : _fallbackPriceDecimals(p.sym);
       const _gapDollarStr = _gapDollar !== null
         ? (window.CoinPrecision?.formatCoinDelta
             ? window.CoinPrecision.formatCoinDelta(p.sym, Math.abs(_gapDollar), { showSign: false })
@@ -456,7 +455,7 @@ function predictionCard(p) {
 
       // Countdown to settlement
       let countdown = '';
-      const _closeTimeRow = _poly15m?.closeTime ?? _k15m?.closeTime;
+      const _closeTimeRow = _k15m?.closeTime ?? _poly15m?.closeTime;
       const closeMs = _closeTimeRow ? new Date(_closeTimeRow).getTime() : defaultCloseMs;
       const msl = closeMs - Date.now();
       const _fmtUtc4 = typeof formatUtc4Time === 'function' ? formatUtc4Time : (window.formatUtc4Time || ((input) => {
@@ -472,7 +471,8 @@ function predictionCard(p) {
       }
 
       if (_kProb === null) {
-        return `<div class="ind-item k15m-row"><span class="ind-name">${_rowLabel}</span><span class="ind-val flat"><span class="k15-side-label" style="opacity:0.6">15M</span>${refLine ? refLine : '<span class="k15-target">Awaiting PTB lock</span>'}<span class="k15-gap" style="opacity:0.6">⏱ odds loading</span>${countdown}</span></div>${cfmRow}`;
+        const pendingLabel = _k15m ? 'Awaiting Kalshi strike' : 'Awaiting PTB lock';
+        return `<div class="ind-item k15m-row"><span class="ind-name">${_rowLabel}</span><span class="ind-val flat"><span class="k15-side-label" style="opacity:0.6">15M</span>${refLine ? refLine : `<span class="k15-target">${pendingLabel}</span>`}<span class="k15-gap" style="opacity:0.6">⏱ odds loading</span>${countdown}</span></div>${cfmRow}`;
       }
 
       // YES and NO are complementary — always sum to 100%
@@ -534,7 +534,7 @@ function predictionCard(p) {
       const gapDollar = Math.abs(p5.target - p.price);
       const gapDec = window.CoinPrecision?.getCoinDeltaDecimals
         ? window.CoinPrecision.getCoinDeltaDecimals(p.sym)
-        : (/^DOGE$/i.test(p.sym) ? 4 : /^XRP$/i.test(p.sym) ? 4 : 2);
+        : _fallbackPriceDecimals(p.sym);
       const targetStr = window.CoinPrecision?.formatCoinStrike
         ? window.CoinPrecision.formatCoinStrike(p.sym, p5.target)
         : fmtPrice(p5.target, p.sym);
@@ -703,7 +703,7 @@ function predictionCard(p) {
           ` : ''}
           ${lazerRow}
           ${model5mRow}
-          ${polymarket15mRow}
+          ${kalshi15mRow}
           ${_k15mCoin ? (typeof renderFifteenMinuteMovePlan === 'function' ? renderFifteenMinuteMovePlan(_k15mCoin, true) : (typeof window !== 'undefined' && typeof window.renderFifteenMinuteMovePlan === 'function' ? window.renderFifteenMinuteMovePlan(_k15mCoin, true) : '')) : ''}
           ${(() => {
         // ── Market Divergence row ─────────────────────────────────────
@@ -734,15 +734,15 @@ function predictionCard(p) {
           : secElapsed + 's';
 
         // Read live Polymarket probability directly — don't rely on stale snapshot value
-        const livePolymarketPct = window.PredictionMarkets?.getCoin?.(p.sym)?.kalshi15m?.probability != null
+        const liveKalshiPct = window.PredictionMarkets?.getCoin?.(p.sym)?.kalshi15m?.probability != null
           ? window.PredictionMarkets.getCoin(p.sym).kalshi15m.probability * 100
           : (_md.currentPolymarketPct ?? null);
 
         // Recompute catchupDelta from live odds
-        const liveCatchupDelta = (livePolymarketPct != null && _md.entryPolymarketPct != null)
+        const liveCatchupDelta = (liveKalshiPct != null && _md.entryPolymarketPct != null)
           ? (_md.entryModelDir === 'up' || _md.entryModelDir === 'UP'
-            ? livePolymarketPct - _md.entryPolymarketPct
-            : _md.entryPolymarketPct - livePolymarketPct)
+            ? liveKalshiPct - _md.entryPolymarketPct
+            : _md.entryPolymarketPct - liveKalshiPct)
           : (_md.catchupDelta ?? 0);
 
         const deltaStr = Math.abs(liveCatchupDelta) >= 0.5
@@ -769,10 +769,10 @@ function predictionCard(p) {
                   <span style="font-weight:700;color:var(--color-text)" data-mdiv-ts="${_md.firstDivTs ?? ''}">${minSec}</span>
                   ${deltaStr ? `<span style="margin-left:auto;color:var(--color-text-muted)">${deltaStr}</span>` : ''}
                 </div>
-                <div style="margin-top:3px;color:var(--color-text-muted);font-size:10px;font-family:var(--font-sans)">${entryHint}${_md.entryPolymarketPct != null ? ` · Entry K: ${_md.entryPolymarketPct.toFixed(0)}% → now ${livePolymarketPct != null ? livePolymarketPct.toFixed(0) : '?'}%` : ''}</div>
+                <div style="margin-top:3px;color:var(--color-text-muted);font-size:10px;font-family:var(--font-sans)">${entryHint}${_md.entryPolymarketPct != null ? ` · Entry K: ${_md.entryPolymarketPct.toFixed(0)}% → now ${liveKalshiPct != null ? liveKalshiPct.toFixed(0) : '?'}%` : ''}</div>
               </div>`;
       })()}
-          <!-- Kalshi order-routing box removed -- no Polymarket equivalent, user no longer trades Kalshi -->
+          <!-- Kalshi order routing remains manual; live 15m quote context is shown above. -->
         </div>
 
         ${rfRow}
@@ -983,7 +983,7 @@ function buildMarketDebugPanel() {
         const n = Number(v);
         if (!Number.isFinite(n) || n <= 0) return '–';
         const s = String(sym || '').toUpperCase();
-        const d = (s === 'XRP' || s === 'DOGE') ? 4 : (n < 1 ? 4 : 2);
+        const d = _fallbackPriceDecimals(s);
         return `$${n.toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d })}`;
       };
 
@@ -1513,22 +1513,21 @@ function getDecisionRationale(pred) {
     let primary = '';
     let secondary = '';
 
-    // ---- 0. Polymarket odds — primary ground truth ────────────────────────
-    // Kalshi fetching is disabled -- kalshi15m is always null now, so this
-    // was already resolving through to combinedProb (Polymarket-derived) via
-    // the fallback below, just mislabeled "Kalshi".
+    // ---- 0. Live 15m odds — Kalshi is primary, Polymarket is fallback ----
     const _kCoinR = window.PredictionMarkets?.getCoin(pred?.sym);
-    const _kProbR = _kCoinR?.poly15m?.probability ?? _kCoinR?.kalshi15m?.probability ?? _kCoinR?.combinedProb ?? null;
-    const _strikeR = 'above'; // Polymarket Up/Down is always "beat the opening price"
+    const _k15mR = _kCoinR?.kalshi15m ?? null;
+    const _kProbR = _k15mR?.probability ?? _kCoinR?.poly15m?.probability ?? _kCoinR?.combinedProb ?? null;
+    const _venueR = _k15mR?.ticker ? 'Kalshi' : (_kCoinR?.poly15m ? 'Polymarket' : 'Market');
+    const _strikeR = (_k15mR?.strikeDir ?? 'above') === 'below' ? 'below' : 'above';
     const _yesDirR = _strikeR === 'below' ? 'DOWN' : 'UP';
     const _noDirR = _yesDirR === 'UP' ? 'DOWN' : 'UP';
     if (_kProbR !== null) {
       const kp = Math.round(_kProbR * 100);
-      if (_kProbR >= 0.68) primary = `Polymarket ${kp}% YES — crowd strongly pricing ${_yesDirR} for this strike`;
-      else if (_kProbR <= 0.32) primary = `Polymarket ${100 - kp}% NO — crowd strongly pricing ${_noDirR}`;
-      else if (_kProbR >= 0.55) primary = `Polymarket ${kp}% YES — market leans ${_yesDirR}`;
-      else if (_kProbR <= 0.45) primary = `Polymarket ${100 - kp}% NO — market leans ${_noDirR}`;
-      else primary = `Polymarket near 50/50 (${kp}%) — uncertain, model drives verdict`;
+      if (_kProbR >= 0.68) primary = `${_venueR} ${kp}% YES — crowd strongly pricing ${_yesDirR} for this strike`;
+      else if (_kProbR <= 0.32) primary = `${_venueR} ${100 - kp}% NO — crowd strongly pricing ${_noDirR}`;
+      else if (_kProbR >= 0.55) primary = `${_venueR} ${kp}% YES — market leans ${_yesDirR}`;
+      else if (_kProbR <= 0.45) primary = `${_venueR} ${100 - kp}% NO — market leans ${_noDirR}`;
+      else primary = `${_venueR} near 50/50 (${kp}%) — uncertain, model drives verdict`;
     }
 
     if (!primary) {

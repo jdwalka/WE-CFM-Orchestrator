@@ -10,6 +10,19 @@
   const escapeHTML = (str) => String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 
   const COINS = ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'BNB', 'HYPE'];
+  const fallbackPriceDecimals = (coin) => {
+    const key = String(coin || '').toUpperCase();
+    if (key === 'DOGE') return 7;
+    if (key === 'SOL' || key === 'HYPE' || key === 'XRP') return 4;
+    return 2;
+  };
+  const fallbackFormatPrice = (coin, value) => {
+    const decimals = fallbackPriceDecimals(coin);
+    return Number(value).toLocaleString('en-US', {
+      minimumFractionDigits: decimals,
+      maximumFractionDigits: decimals,
+    });
+  };
   const MODE_KEY = 'wecrypto.asi1Desk.mode';
   const MIN_KEY = 'wecrypto.asi1Desk.minimized';
   const MODEL_KEY = 'wecrypto.asi1Desk.model';
@@ -305,7 +318,7 @@
         const coin = document.getElementById('adCoin')?.value || 'BTC';
         const distStr = window.CoinPrecision?.formatCoinDelta
           ? window.CoinPrecision.formatCoinDelta(coin, dist, { showSign: false })
-          : `$${dist.toFixed((coin === 'XRP' || coin === 'DOGE') ? 4 : 2)}`;
+          : `$${dist.toFixed(fallbackPriceDecimals(coin))}`;
         pinBanner.style.display = 'block';
         pinBanner.textContent = `⚠ PIN RISK DEFENSE DETECTED: Spot within ${distStr} (${distBps.toFixed(1)} bps) of PTB with ${remainingSec}s left. MM defense walls active; high probability of 1-2s post-expiry snap. Focus automatically honed on T+1 Pre-Open below.`;
       }
@@ -500,7 +513,7 @@
       if (coneEl) {
         const fmtCone = (v) => window.CoinPrecision?.formatCoinPrice
           ? window.CoinPrecision.formatCoinPrice(coin, v)
-          : `$${Number(v).toLocaleString('en-US', { minimumFractionDigits: (coin === 'XRP' || coin === 'DOGE') ? 4 : 2, maximumFractionDigits: (coin === 'XRP' || coin === 'DOGE') ? 4 : 2 })}`;
+          : `$${fallbackFormatPrice(coin, v)}`;
         coneEl.textContent = `${fmtCone(rangeData.safeBoundLower)} — ${fmtCone(rangeData.safeBoundUpper)} (±${fmtCone(rangeData.expectedMoveDollar)})`;
       }
       const zoneEl = document.getElementById('adActiveStrikeZone');
@@ -515,7 +528,7 @@
       if (optEl && rangeData.bestTarget) {
         const optStrike = window.CoinPrecision?.formatCoinStrike
           ? window.CoinPrecision.formatCoinStrike(coin, rangeData.bestTarget.strike)
-          : `$${Number(rangeData.bestTarget.strike).toLocaleString('en-US', { minimumFractionDigits: (coin === 'XRP' || coin === 'DOGE') ? 4 : 2, maximumFractionDigits: (coin === 'XRP' || coin === 'DOGE') ? 4 : 2 })}`;
+          : `$${fallbackFormatPrice(coin, rangeData.bestTarget.strike)}`;
         optEl.textContent = `${optStrike} (${rangeData.bestTarget.name})`;
       }
     }
@@ -619,13 +632,14 @@
         binaryIV = window.QuantStatUtils.calculateBinaryIV(prob5m, spot, ptb5m, ttc5m / 86400, 'polymarket');
       }
       
-      // Calculate for 15m
-      const poly15m = pmCoin.poly15m || {};
-      const ptb15m = Number(poly15m.priceToBeatNum || poly15m.targetPriceNum);
-      const prob15m = Number(poly15m.probability || 0.5);
-      const ttc15m = Number(poly15m.secondsToClose || 900);
+      // Calculate for 15m — Kalshi is primary, Polymarket is legacy fallback.
+      const market15m = pmCoin.kalshi15m || pmCoin.poly15m || {};
+      const ptb15m = Number(market15m.targetPriceNum || market15m.priceToBeatNum);
+      const prob15m = Number(market15m.probability || 0.5);
+      const ttc15m = Number(market15m.secondsToClose || 900);
+      const venue15m = pmCoin.kalshi15m?.ticker ? 'kalshi' : 'polymarket';
       if (spot != null && !isNaN(ptb15m) && !isNaN(prob15m) && !isNaN(ttc15m) && ttc15m > 0) {
-        binaryIV_15m = window.QuantStatUtils.calculateBinaryIV(prob15m, spot, ptb15m, ttc15m / 86400, 'polymarket');
+        binaryIV_15m = window.QuantStatUtils.calculateBinaryIV(prob15m, spot, ptb15m, ttc15m / 86400, venue15m);
       }
     }
 
@@ -657,7 +671,7 @@
       ...(isLookahead && forecast?.projectedOpenPtb ? { projectedOpenPtb: forecast.projectedOpenPtb } : {}),
       ...(isLookahead && forecast?.msToNextBoundary ? { msToNextBoundary: forecast.msToNextBoundary } : {}),
       ...(binaryIV !== null ? { binaryIV_5m: binaryIV } : {}),
-      ...(binaryIV_15m !== null ? { binaryIV_15m: binaryIV_15m } : {}),
+      ...(binaryIV_15m !== null ? { binaryIV_15m, binaryIV_15m_venue: venue15m } : {}),
       pinRisk: (spot > 0 && ptb > 0 && !isHourly)
         ? (window.PredictionEngine?.getPinRisk?.(coin, spot, ptb, ttc, Number(pkt.depthImbalance) || 0) || null)
         : null,
@@ -711,7 +725,7 @@
       ptbEl.textContent = forecast.projectedOpenPtb != null
         ? (window.CoinPrecision?.formatCoinStrike
             ? window.CoinPrecision.formatCoinStrike(coin, forecast.projectedOpenPtb)
-            : `$${Number(forecast.projectedOpenPtb).toLocaleString('en-US', { minimumFractionDigits: (coin === 'XRP' || coin === 'DOGE') ? 4 : 2, maximumFractionDigits: (coin === 'XRP' || coin === 'DOGE') ? 4 : 2 })}`)
+            : `$${fallbackFormatPrice(coin, forecast.projectedOpenPtb)}`)
         : '—';
     }
 
@@ -865,9 +879,7 @@
     if (spotEl) {
       spotEl.textContent = window.CoinPrecision?.formatCoinPrice
         ? window.CoinPrecision.formatCoinPrice(coin, price, { prefix: '' })
-        : (price >= 1000
-            ? price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-            : price.toFixed((coin === 'XRP' || coin === 'DOGE') ? 4 : 2));
+        : fallbackFormatPrice(coin, price);
     }
 
     const ptbTxt = document.getElementById('adPtb')?.textContent?.replace(/,/g, '');
@@ -882,7 +894,7 @@
         if (isDefended) {
           const distStr = window.CoinPrecision?.formatCoinDelta
             ? window.CoinPrecision.formatCoinDelta(coin, dist, { showSign: false })
-            : `$${dist.toFixed((coin === 'XRP' || coin === 'DOGE') ? 4 : 2)}`;
+            : `$${dist.toFixed(fallbackPriceDecimals(coin))}`;
           pinBanner.style.display = 'block';
           pinBanner.textContent = `⚠ PIN RISK DEFENSE DETECTED: Spot within ${distStr} (${distBps.toFixed(1)} bps) of PTB. MM defense walls active.`;
         } else if (pinBanner.dataset.persisted !== '1') {
@@ -943,7 +955,7 @@
         spotEl.textContent = packet?.spot != null
           ? (window.CoinPrecision?.formatCoinPrice
               ? window.CoinPrecision.formatCoinPrice(coin, packet.spot, { prefix: '' })
-              : Number(packet.spot).toLocaleString('en-US', { minimumFractionDigits: (coin === 'XRP' || coin === 'DOGE') ? 4 : 2, maximumFractionDigits: (coin === 'XRP' || coin === 'DOGE') ? 4 : 2 }))
+              : fallbackFormatPrice(coin, packet.spot))
           : '—';
       }
       const ptbEl = document.getElementById('adPtb');
@@ -959,7 +971,7 @@
           ptbEl.textContent = packet?.priceToBeatNum != null
             ? (window.CoinPrecision?.formatCoinStrike
                 ? window.CoinPrecision.formatCoinStrike(coin, packet.priceToBeatNum, { prefix: '' })
-                : Number(packet.priceToBeatNum).toLocaleString('en-US', { minimumFractionDigits: (coin === 'XRP' || coin === 'DOGE') ? 4 : 2, maximumFractionDigits: (coin === 'XRP' || coin === 'DOGE') ? 4 : 2 }))
+                : fallbackFormatPrice(coin, packet.priceToBeatNum))
             : '—';
         }
       }

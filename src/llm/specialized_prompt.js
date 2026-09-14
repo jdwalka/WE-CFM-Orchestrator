@@ -550,7 +550,7 @@ function _numPtb(v) {
 
 /**
  * Display decimals for quote prices / PTB (avoid float trails like 62814.80096237142).
- * BTC/ETH/BNB/SOL/HYPE → 2 (cents); XRP/DOGE → 4; else by magnitude.
+ * BTC/ETH/BNB → 2; SOL/HYPE/XRP → 4; DOGE → 7; else by magnitude.
  */
 function priceDecimalsForCoin(coinOrSlug, value) {
   const raw = String(coinOrSlug || '');
@@ -558,8 +558,9 @@ function priceDecimalsForCoin(coinOrSlug, value) {
   // slug like btc-updown-15m-… or plain BTC
   const fromSlug = (raw.match(/^(btc|eth|sol|xrp|doge|bnb|hype)/i) || [])[1];
   const sym = (fromSlug || key.replace(/[^A-Z]/g, '').slice(0, 5) || key).toUpperCase();
-  if (sym === 'BTC' || sym === 'ETH' || sym === 'BNB' || sym === 'SOL' || sym === 'HYPE') return 2;
-  if (sym === 'XRP' || sym === 'DOGE') return 4;
+  if (sym === 'BTC' || sym === 'ETH' || sym === 'BNB') return 2;
+  if (sym === 'SOL' || sym === 'HYPE' || sym === 'XRP') return 4;
+  if (sym === 'DOGE') return 7;
   const n = Number(value);
   if (Number.isFinite(n) && n > 0 && n < 1) return 4;
   return 2;
@@ -715,6 +716,35 @@ function resolvePolymarketPtb(snapshot) {
 }
 
 function formatOracleStrictBlock(snapshot) {
+  const isKalshi15m = !!(snapshot?.kalshi15mContract || snapshot?.venue === 'kalshi-15m');
+  if (isKalshi15m) {
+    const contract = snapshot.kalshi15m || snapshot.activeContract || {};
+    const coin = _coinFromSnapshot(snapshot, contract.ticker || contract.slug);
+    const targetRaw = _numPtb(contract.targetPriceNum ?? contract.priceToBeatNum);
+    const target = targetRaw != null ? roundPriceForCoin(coin, targetRaw) : null;
+    const targetDisplay = targetRaw != null ? formatUsdForCoin(coin, targetRaw) : null;
+    const spotRaw = _numPtb(snapshot.currentPrice ?? snapshot.price ?? snapshot.kalshiOracle?.pythSpot);
+    const spot = spotRaw != null ? roundPriceForCoin(coin, spotRaw) : null;
+    const delta = target != null && spot != null ? spot - target : null;
+    const path = delta == null ? 'n/a' : (Math.abs(delta / target) < 0.00005 ? 'FLAT' : (delta > 0 ? 'UP' : 'DOWN'));
+    const deltaStr = delta != null
+      ? `${delta >= 0 ? '+' : '-'}${formatUsdForCoin(coin, Math.abs(delta)).slice(1)}`
+      : 'n/a';
+    const tf = snapshot.temporalForecast || null;
+    const forecastLine = (tf && tf.probUp != null)
+      ? `\nTemporal forecast (SUPPLEMENTARY ONLY): probUp=${(tf.probUp * 100).toFixed(1)}% probDown=${(tf.probDown * 100).toFixed(1)}% secToExpiry=${tf.secToExpiry ?? 'n/a'}`
+      : '';
+    return `## ORACLE STRICT (MANDATORY — quote these numbers, never invent)
+Policy: Kalshi strike/RTI is authoritative for 15m. Spot is Pyth only.
+Ticker: ${contract.ticker || 'n/a'}
+Coin: ${coin || 'n/a'} (quote USD to ${priceDecimalsForCoin(coin || contract.ticker, targetRaw)} decimal places — no float trails)
+Kalshi target/strike: ${targetDisplay || 'PENDING (do not invent)'}
+Settlement: ${contract.settlementVenue || 'CF Benchmarks RTI'} · ${contract.settlementRule || '60-second CF Benchmarks RTI average before expiry'}
+Pyth spot: ${spotRaw != null ? formatUsdForCoin(coin, spotRaw) : 'n/a'} (${snapshot.priceSource || 'pyth'})
+Spot vs Kalshi strike: ${deltaStr} (${path})
+RULE: Quote the Kalshi target/strike exactly as shown. Never substitute Polymarket PTB for a Kalshi 15m strike.${forecastLine}`.trim();
+  }
+
   const { ptb, source, slug, pending, coin, decimals, display } = resolvePolymarketPtb(snapshot);
   const spotRaw = _numPtb(
     snapshot.currentPrice ?? snapshot.price ?? snapshot.polymarketOracle?.pythSpot
@@ -920,7 +950,7 @@ ORACLE LAW (NON-NEGOTIABLE):
 - The ONLY valid PTB is the number in the user message labeled "Polymarket PTB" / "Price-to-beat (fixed settlement target)" from Polymarket (source: event page, chainlink-candles, or Gamma priceToBeat).
 - NEVER invent a PTB from Pyth, Coinbase, Binance, RTI, Gecko, RTDS TWAP, or "about $X".
 - If the snapshot says PTB is PENDING / unavailable, say so and do not fabricate a dollar level.
-- When you cite PTB in notes, copy the formatted PTB exactly (BTC/ETH/SOL: 2 decimals; XRP: 4; DOGE: 6). Never emit long floats (e.g. write $62,814.80 not $62814.80096237142).
+- When you cite PTB in notes, copy the formatted PTB exactly (BTC/ETH/BNB: 2 decimals; SOL/HYPE/XRP: 4; DOGE: 7). Never emit long floats (e.g. write $62,814.80 not $62814.80096237142).
 
 SYSTEM CONTEXT YOU MUST INTERNALIZE:
 - Spot for path context is Pyth; settlement reference for the binary is Polymarket PTB.
@@ -1309,7 +1339,7 @@ RULES:
 - Valid JSON only.`.trim();
   }
 
-  return `You are ASI1 (Fetch.ai ASI:One) — hourly crypto RANGE pre-positioning advisor for Polymarket-related decisions.
+  return `You are ASI1 (Fetch.ai ASI:One) — hourly crypto RANGE pre-positioning advisor for Kalshi hourly/15m decisions.
 
 NEVER say WAIT as the call. Call UP or DOWN only.
 Use rangeLadder buckets (low–high, spot-centered) and spotBucket. Pick preferredRange to the bucket you think price lands in.
@@ -1328,7 +1358,7 @@ function generateRangeUserPrompt(snapshot) {
   const tr = snapshot.tailRisk;
   const xs = snapshot.xSentiment || {};
   const onchain = snapshot.onChainSideScan || snapshot.onChainRecent || {};
-  const k15 = snapshot.poly15m || {};
+  const k15 = snapshot.kalshi15m || snapshot.poly15m || {};
   const ladder = Array.isArray(snapshot.rangeLadder) ? snapshot.rangeLadder : [];
   const here = snapshot.spotBucket || null;
   const modelDir = snapshot.direction || snapshot.modelDirection || 'n/a';
@@ -1342,29 +1372,31 @@ function generateRangeUserPrompt(snapshot) {
     const imb = ac.depthImbalance ?? k15.depthImbalance;
     const spread = ac.spread ?? k15.spread;
     const mid = ac.mid ?? k15.mid;
-    const ptbMeta = resolvePolymarketPtb(snapshot);
-    const ptbDisplay = ptbMeta.ptb != null
-      ? ptbMeta.ptb
-      : (ac.priceToBeatNum ?? k15.priceToBeatNum ?? null);
-    // If resolve rejected provisional sources, force pending for the model
-    const ptbForModel = ptbMeta.ptb != null ? ptbMeta.ptb : null;
-    return `ASI1 pre-contract brief — Polymarket 15M (this market only):
+    const strikeNum = ac.targetPriceNum ?? k15.targetPriceNum ?? null;
+    const strikeDisplay = strikeNum != null
+      ? (ac.targetPrice || formatUsdForCoin(coin, strikeNum))
+      : 'PENDING — do not invent';
+    const fair = ac.model_fair || k15.model_fair || null;
+    return `ASI1 pre-contract brief — Kalshi 15M (this market only):
 
 Coin: ${coin}
 Timestamp: ${new Date().toISOString()}
 
 ${formatOracleStrictBlock(snapshot)}
 
-## LIVE POLYMARKET CONTRACT
-Slug: ${ac.slug || k15.slug || 'n/a'}
+## LIVE KALSHI CONTRACT
+Ticker: ${ac.ticker || k15.ticker || 'n/a'}
 P(Up) / yesProb: ${yesP != null ? (Number(yesP) * 100).toFixed(1) + '%' : 'n/a'}
-Price-to-beat (PTB — Polymarket only): ${ptbForModel != null ? (ptbMeta.display || formatUsdForCoin(coin, ptbForModel)) : 'PENDING — do not invent'}
-PTB source: ${ptbMeta.source || ac.priceToBeatSource || k15.priceToBeatSource || 'waiting-for-polymarket'}
-Quote decimals: ${ptbMeta.decimals ?? priceDecimalsForCoin(coin, ptbForModel)} (BTC/SOL=2, XRP=4 — no float trails)
+Target / strike: ${strikeDisplay}
+Settlement venue: ${ac.settlementVenue || k15.settlementVenue || 'CF Benchmarks RTI'}
+Settlement rule: ${ac.settlementRule || k15.settlementRule || '60-second CF Benchmarks RTI average before expiry'}
+Quote decimals: ${priceDecimalsForCoin(coin, strikeNum)} — no float trails
 Seconds to close: ${ac.secondsToClose ?? k15.secondsToClose ?? 'n/a'}
 Best bid/ask (Up): ${ac.bestBid ?? k15.bestBid ?? 'n/a'} / ${ac.bestAsk ?? k15.bestAsk ?? 'n/a'}
+Model fair: ${fair?.model_fair_cents != null ? `${Number(fair.model_fair_cents).toFixed(1)}¢` : 'n/a'}
+Residual (ask - fair): ${fair?.residual_cents != null ? `${Number(fair.residual_cents).toFixed(1)}¢` : 'n/a'}
 Mid / spread / depthImbalance: ${mid ?? 'n/a'} / ${spread ?? 'n/a'} / ${imb != null ? Number(imb).toFixed(2) : 'n/a'}
-Live direction vs Polymarket PTB: ${ac.liveDirection || k15.liveDirection || 'n/a'}
+Live direction vs Kalshi strike: ${ac.liveDirection || k15.liveDirection || 'n/a'}
 
 ## Orbital infra signal (supplementary — non-authoritative, may be offline)
 ${orbitalLine}
@@ -1374,15 +1406,16 @@ ${formatModelGuideBlock(snapshot)}
 ## ACTIVE 15M MARKET (MUST bind call to this)
 ${JSON.stringify({
   ...ac,
-  priceToBeatNum: ptbForModel,
-  priceToBeatSource: ptbMeta.source || ac.priceToBeatSource || null,
-  _rawPtbIfAny: ptbDisplay,
+  targetPriceNum: strikeNum,
+  strikeDir: ac.strikeDir || k15.strikeDir || null,
+  settlementVenue: ac.settlementVenue || k15.settlementVenue || null,
+  settlementRule: ac.settlementRule || k15.settlementRule || null,
 }, null, 2).slice(0, 1200)}
 
-Settlement: ${ac.settlementRule || 'Up if price finishes above Polymarket window open (price-to-beat) at 15m close'}
+Settlement: ${ac.settlementRule || 'Up if price finishes above the Kalshi target/strike at 15m close (CF Benchmarks RTI 60s average)'}
 Market Up mid: ${ac.yesProb != null ? (Number(ac.yesProb) * 100).toFixed(1) + '%' : 'n/a'}
 Seconds to close: ${ac.secondsToClose ?? 'n/a'}
-Price-to-beat (quote this exactly): ${ptbForModel != null ? (ptbMeta.display || formatUsdForCoin(coin, ptbForModel)) : 'PENDING'}
+Target / strike (quote this exactly): ${strikeDisplay}
 
 ## Session memory (support only)
 samples=${mem.sampleCount ?? 0}, sessionMin=${mem.sessionMinutes ?? 0}, pathReturnPct=${mem.pathReturnPct ?? 'n/a'},
@@ -1420,16 +1453,16 @@ X score=${xs.score ?? 0} "${xs.summary || 'n/a'}"
 On-chain: ${typeof onchain === 'string' ? onchain : JSON.stringify(onchain).slice(0, 350)}
 
 TASK:
-1. Synthesize Quantitative Model Prediction (${modelDir}, conf=${modelConf}) with the live Polymarket 15M market state.
+1. Synthesize Quantitative Model Prediction (${modelDir}, conf=${modelConf}) with the live Kalshi 15M market state.
 1b. Fold the 5m PTB carry block into the 15m call: if carryInto15m is UP/DOWN or lean is DEFEND_CONTINUES/BREAK_CONTINUES, say how that 5m path supports or fights the 15m Up token. Cite closedInThis15m / last5mOutcome when present. Do not write "no 5m PTB data" when ptbCarry15m.open5m or recent5m is non-empty.
-2. Decide Up or Down on market ${ac.slug || 'ACTIVE_15M'} only.
-3. Up token means price finished above Polymarket PTB; Down means below. Never WAIT.
-4. notes start with UP|DOWN then slug then Up% then exact Polymarket PTB (or "PTB pending") then ttc.
-5. polyPeg.slug must equal ${ac.slug || 'the market slug'}.
+2. Decide Up or Down on market ${ac.ticker || 'ACTIVE_15M'} only.
+3. Up means price finishes above the Kalshi target/strike; Down means below. Never WAIT.
+4. notes start with UP|DOWN then ticker then Up% then exact Kalshi target/strike (or "strike pending") then ttc.
+5. polyPeg.slug must equal ${ac.ticker || 'the active Kalshi ticker'}.
 6. Valid JSON only.`.trim();
   }
 
-  return `Grok Polymarket HOURLY RANGE snapshot:
+  return `Grok Kalshi HOURLY RANGE snapshot:
 
 Coin: ${coin}
 Horizon: 60 minutes

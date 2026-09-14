@@ -143,7 +143,7 @@
     const ptbOk = Number.isFinite(rawPtb) && rawPtb > 0 && isCanonicalPtbSource(ptbSource);
     const roundPtb = (n) => {
       if (!Number.isFinite(n) || n <= 0) return null;
-      const d = /^DOGE$/i.test(sym) ? 6 : /^XRP$/i.test(sym) ? 4 : 2;
+      const d = /^DOGE$/i.test(sym) ? 7 : /^(SOL|HYPE|XRP)$/i.test(sym) ? 4 : 2;
       const f = 10 ** d;
       return Math.round(n * f) / f;
     };
@@ -419,7 +419,7 @@
         s = s.replace(/\$\s*([0-9]{1,3}(?:,[0-9]{3})*|[0-9]+)\.([0-9]{3,})/g, (full, intP, frac) => {
           const raw = Number(String(intP).replace(/,/g, '') + '.' + frac);
           if (!Number.isFinite(raw) || raw <= 0) return full;
-          const d = /^DOGE$/i.test(sym) ? 6 : /^XRP$/i.test(sym) ? 4 : 2;
+          const d = /^DOGE$/i.test(sym) ? 7 : /^(SOL|HYPE|XRP)$/i.test(sym) ? 4 : 2;
           const f = 10 ** d;
           const n = Math.round(raw * f) / f;
           return '$' + n.toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });

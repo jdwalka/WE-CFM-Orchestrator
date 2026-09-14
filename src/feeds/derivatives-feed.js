@@ -26,6 +26,9 @@
 
   const POLL_MS = 45000;          // OI/funding REST cadence (liquidations are real-time WS push)
   const TIMEOUT_MS = 9000;
+  const FETCH_ATTEMPTS = 3;
+  const RETRYABLE_HTTP_STATUS = new Set([408, 425, 429, 500, 502, 503, 504]);
+  const RETRY_DELAY_MS = 250;
   const OI_HISTORY_MAX = 30;      // ~10 min of 20s samples
   const FUND_HISTORY_MAX = 12;
   const LIQ_WINDOW_MS = 5 * 60_000;  // rolling liquidation window (matches 5m/15m horizon)
@@ -51,10 +54,27 @@
       new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), TIMEOUT_MS)),
     ]);
   }
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
   async function getJson(url, opts = {}) {
-    const res = await timedFetch(url, opts);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return res.json();
+    let lastError = null;
+    for (let attempt = 1; attempt <= FETCH_ATTEMPTS; attempt++) {
+      try {
+        const res = await timedFetch(url, opts);
+        if (!res.ok) {
+          const error = new Error(`HTTP ${res.status}`);
+          if (!RETRYABLE_HTTP_STATUS.has(res.status) || attempt === FETCH_ATTEMPTS) throw error;
+          lastError = error;
+        } else {
+          return await res.json();
+        }
+      } catch (e) {
+        lastError = e;
+        if (attempt === FETCH_ATTEMPTS) throw e;
+      }
+      await sleep(RETRY_DELAY_MS * attempt);
+    }
+    throw lastError || new Error('fetch failed');
   }
   function pushBounded(arr, item, max) {
     arr.push(item);
@@ -133,7 +153,12 @@
       return {
         venue: 'bybit',
         funding: parseFloat(row.fundingRate || 0) * 100,
+        mark: parseFloat(row.markPrice || 0) || null,
+        index: parseFloat(row.indexPrice || 0) || null,
         oiUsd: parseFloat(row.openInterestValue || 0),
+        basisPct: Number(row.indexPrice) > 0
+          ? ((parseFloat(row.markPrice || 0) - parseFloat(row.indexPrice)) / parseFloat(row.indexPrice)) * 100
+          : null,
       };
     } catch (_) { return null; }
   }
@@ -227,6 +252,17 @@
     }
 
     const liq = summarizeLiquidations(sym);
+    const basisPct = oi?.basisPct ?? bybit?.basisPct ?? null;
+    const basisSource = oi?.basisPct != null ? oi.venue : (bybit?.basisPct != null ? 'bybit' : null);
+    const basisDirection = Number.isFinite(basisPct)
+      ? (basisPct > 0 ? 'perp_above_spot' : basisPct < 0 ? 'perp_below_spot' : 'flat')
+      : null;
+    const futuresSpotDivergence = Number.isFinite(basisPct) ? {
+      basis_pct: basisPct,
+      direction: basisDirection,
+      strength: Math.abs(basisPct),
+      source: basisSource,
+    } : null;
 
     // Composite "deriv pressure" ∈ roughly [-1, +1]; positive = bullish positioning tilt.
     // Combines: liquidation imbalance (cascades), funding extreme (contrarian), OI build direction.
@@ -261,7 +297,8 @@
       oiTrend,
       funding: aggFunding,
       fundingVelocity,
-      basisPct: oi?.basisPct ?? null,
+      basisPct,
+      futures_spot_divergence: futuresSpotDivergence,
       venues: [oi?.venue, bybit ? 'bybit' : null].filter(Boolean),
       liquidations: liq,
       pressure,
@@ -290,6 +327,7 @@
         funding_pct: state.funding,
         funding_velocity: state.fundingVelocity,
         basis_pct: state.basisPct,
+        futures_spot_divergence: state.futures_spot_divergence,
         liq_long_usd: state.liquidations.longLiqUsd,
         liq_short_usd: state.liquidations.shortLiqUsd,
         liq_imbalance: state.liquidations.imbalance,
@@ -316,6 +354,7 @@
           try { window.DataLogger?.logDerivatives?.(sym, state.parsed || {
             oiUsd: state.oiUsd, oiDeltaPct: state.oiDeltaPct, funding: state.funding,
             fundingVelocity: state.fundingVelocity, basisPct: state.basisPct,
+            futuresSpotDivergence: state.futures_spot_divergence,
             liqImbalance: state.liquidations?.imbalance, liqTotalUsd: state.liquidations?.totalUsd,
             pressure: state.pressure, label: state.label, ts: state.ts,
           }); } catch (_) {}

@@ -50,12 +50,26 @@ ALT_ALIGNMENT_RATIO_DOWN = 0.45
 ALT_ALIGNMENT_MINUTES = 10
 ALT_LEAD_LAG_MINUTES = [1, 2, 3, 4, 5]
 ALT_LEAD_LAG_SAMPLE_SIZE = 120
+ALT_SIGNAL_MIN_STRENGTH = 0.002
+SPOT_STALENESS_MIN_PCT_OF_SPOT = 0.0003
+SPOT_STALENESS_BAND_WIDTH_PCT = 0.10
+KALSHI_SETTLEMENT_VENUE = "CF Benchmarks RTI"
+KALSHI_SETTLEMENT_RULE = "60-second RTI average before expiry"
+KALSHI_MARKETS_URL = "https://api.elections.kalshi.com/trade-api/v2/markets"
+KALSHI_15M_SERIES = "KXBTC15M"
 
 _HEADERS = {"User-Agent": "wecryp-truffle/1.0 (+https://agentverse.ai)"}
 COINBASE_CANDLES = "https://api.exchange.coinbase.com/products/BTC-USD/candles"
 MARKET_DATA_WORKER_URL = os.getenv(
     "MARKET_DATA_WORKER_URL", "https://scalper-market-data.gitgoin87.workers.dev"
 )
+
+
+def _format_kalshi_strike(value) -> str:
+    """Format a Kalshi BTC strike at the venue's 2-decimal settlement precision."""
+    if value is None or not isinstance(value, (int, float)) or not math.isfinite(value):
+        return "—"
+    return f"${value:,.2f}"
 
 
 # ---------------------------------------------------------------------------
@@ -137,6 +151,59 @@ def get_kalshi_ladder() -> dict:
         return payload
     except requests.RequestException as e:
         return {"status": "error", "candidate_bands": [], "error": str(e)}
+
+
+def _parse_kalshi_time(value) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+
+
+def get_kalshi_15m_contract(series_ticker: str = KALSHI_15M_SERIES) -> dict | None:
+    """Fetch the nearest live Kalshi 15m up/down market."""
+    try:
+        response = requests.get(
+            KALSHI_MARKETS_URL,
+            params={"series_ticker": series_ticker, "status": "open", "limit": 100},
+            headers=_HEADERS,
+            timeout=15,
+        )
+        response.raise_for_status()
+        markets = response.json().get("markets", [])
+    except (requests.RequestException, AttributeError, ValueError):
+        return None
+
+    now = datetime.now(timezone.utc)
+    candidates = []
+    for market in markets:
+        close_time = _parse_kalshi_time(market.get("close_time"))
+        target = market.get("floor_strike")
+        if target is None:
+            target = market.get("floor_price")
+        try:
+            target = float(target)
+        except (TypeError, ValueError):
+            continue
+        if close_time is None or close_time <= now or target <= 0:
+            continue
+        candidates.append((close_time, target, market))
+    if not candidates:
+        return None
+    _, target, market = min(candidates, key=lambda row: row[0])
+    close_time = _parse_kalshi_time(market.get("close_time"))
+    return {
+        "ticker": market.get("ticker"),
+        "title": market.get("title"),
+        "subtitle": market.get("yes_sub_title") or market.get("subtitle"),
+        "strike_type": market.get("strike_type"),
+        "target": target,
+        "close_time": close_time,
+        "yes_bid": market.get("yes_bid"),
+        "yes_ask": market.get("yes_ask"),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -574,9 +641,15 @@ def get_alt_signal() -> dict:
             direction = "down"
 
     strength = max(abs(eth_return_5m), abs(sol_return_5m))
+    strength_is_actionable = strength >= ALT_SIGNAL_MIN_STRENGTH
+    if not strength_is_actionable:
+        direction = "neutral"
+        aligned = False
     return {
         "direction": direction,
         "strength": round(strength, 6),
+        "strength_status": "actionable" if strength_is_actionable else "below_floor",
+        "strength_floor": ALT_SIGNAL_MIN_STRENGTH,
         "aligned": aligned,
         "lead_lag_corr": round(best_correlation, 4),
         "best_lag_minutes": best_lag,
@@ -812,6 +885,28 @@ def predict_hourly_range() -> dict:
         "floor": 0.0,
         "reason": "calibration report unavailable; correction disabled",
     })
+    tail_probability_correction = calibration_report.get("tail_probability_correction", {
+        "active": False,
+        "factor": 1.0,
+        "threshold": 0.20,
+        "reason": "calibration report unavailable; tail correction disabled",
+    })
+
+    def correction_for_probability(probability: float) -> dict:
+        if (
+            tail_probability_correction.get("active")
+            and probability < tail_probability_correction.get("threshold", 0.20)
+        ):
+            return {
+                "correction_factor": tail_probability_correction.get("factor", 1.0),
+                "floor": probability_correction.get("floor", 0.0),
+                "regime": "tail",
+            }
+        return {
+            "correction_factor": probability_correction.get("correction_factor", 1.0),
+            "floor": probability_correction.get("floor", 0.0),
+            "regime": "global",
+        }
 
     range_pct = max(expected_move, MIN_RANGE_PCT)
     center_shift = bias * range_pct * CENTER_SHIFT_FACTOR
@@ -857,53 +952,172 @@ def predict_hourly_range() -> dict:
         low, high = band.get("low"), band.get("high")
         ask, bid = band.get("yes_ask"), band.get("yes_bid")
         side = band.get("side_vs_spot", "ABOVE_SPOT")
-        if low is None or high is None or ask is None:
-            continue
-
-        low_pct = (low - spot) / spot * 100
-        high_pct = (high - spot) / spot * 100
-        p_normal = _band_probability(
-            low, high, spot, sigma_hourly_pct, drift_pct, df, minutes_to_expiry,
-            distribution="normal",
+        band_is_valid = (
+            low is not None
+            and high is not None
+            and isinstance(low, (int, float))
+            and isinstance(high, (int, float))
+            and math.isfinite(low)
+            and math.isfinite(high)
         )
-        p_student_t = _band_probability(
-            low, high, spot, sigma_hourly_pct, drift_pct, df, minutes_to_expiry
+        band_label = (
+            f"{_format_kalshi_strike(low)}-{_format_kalshi_strike(high)}"
+            if band_is_valid
+            else "n/a"
         )
-        p_selected = p_normal if active_distribution == "normal" else p_student_t
-        p_base = p_selected
-        p_calibrated = _apply_probability_correction(p_base, probability_correction)
-        p_touch = _apply_tail_adjustment(p_calibrated, tail_adjustment)
-
-        fair_value = p_touch * 100
-        residual = ask - fair_value
-        tail_delta = p_student_t - p_normal
-
-        strike_probs.append({
-            "band": f"${low:,.0f}-${high:,.0f}",
+        row = {
+            "band": band_label,
             "side": side,
             "yes_ask": ask,
             "yes_bid": bid,
+            "model_fair_cents": None,
+            "residual_cents": None,
+            "flagged": False,
+            "fair_status": "invalid_band",
+            "fair_stale": None,
+            "fair_recomputed": False,
+            "fair_staleness": {
+                "status": "invalid_band",
+                "threshold_points": None,
+                "spot_delta_points": None,
+            },
+            "spot_at_fair": round(spot, 2),
+            "settlement_venue": KALSHI_SETTLEMENT_VENUE,
+            "settlement_rule": KALSHI_SETTLEMENT_RULE,
+            "p_normal": None,
+            "p_student_t": None,
+            "p_selected": None,
+            "selected_distribution": active_distribution,
+            "p_base": None,
+            "p_calibrated": None,
+            "calibration_factor": None,
+            "calibration_regime": None,
+            "tail_delta": None,
+            "tail_premium_cents": None,
+            "p_touch_raw": None,
+            "tail_adjustment": tail_adjustment,
+            "p_touch_adjusted": None,
+            "p_touch": None,
+            "low": low,
+            "high": high,
+        }
+
+        if band_is_valid:
+            p_normal = _band_probability(
+                low, high, spot, sigma_hourly_pct, drift_pct, df, minutes_to_expiry,
+                distribution="normal",
+            )
+            p_student_t = _band_probability(
+                low, high, spot, sigma_hourly_pct, drift_pct, df, minutes_to_expiry
+            )
+            p_selected = p_normal if active_distribution == "normal" else p_student_t
+            p_base = p_selected
+            selected_correction = correction_for_probability(p_base)
+            p_calibrated = _apply_probability_correction(p_base, selected_correction)
+            p_touch = _apply_tail_adjustment(p_calibrated, tail_adjustment)
+            fair_value = p_touch * 100
+            residual = ask - fair_value if ask is not None else None
+            tail_delta = p_student_t - p_normal
+
+            row.update({
+                "model_fair_cents": round(fair_value, 1),
+                "residual_cents": round(residual, 1) if residual is not None else None,
+                "flagged": residual is not None and residual > RESIDUAL_FLAG_THRESHOLD_CENTS,
+                "fair_status": "ok" if ask is not None else "fair_only",
+                "p_normal": round(p_normal, 3),
+                "p_student_t": round(p_student_t, 3),
+                "p_selected": round(p_selected, 3),
+                "p_base": round(p_base, 5),
+                "p_calibrated": round(p_calibrated, 5),
+                "calibration_factor": selected_correction["correction_factor"],
+                "calibration_regime": selected_correction["regime"],
+                "tail_delta": round(tail_delta, 3),
+                "tail_premium_cents": round(tail_delta * 100, 1),
+                "p_touch_raw": round(p_base, 3),
+                "p_touch_adjusted": round(p_touch, 3),
+                "p_touch": round(p_touch, 3),
+            })
+        strike_probs.append(row)
+
+    live_spot_data = get_spot()
+    live_spot = live_spot_data.get("price")
+    spot_delta_at_return = (
+        live_spot - spot
+        if live_spot is not None and isinstance(live_spot, (int, float))
+        else None
+    )
+    for strike in strike_probs:
+        if strike["fair_status"] == "invalid_band":
+            continue
+        band_width = strike["high"] - strike["low"]
+        staleness_threshold = max(
+            abs(spot) * SPOT_STALENESS_MIN_PCT_OF_SPOT,
+            abs(band_width) * SPOT_STALENESS_BAND_WIDTH_PCT,
+        )
+        strike["fair_staleness"] = {
+            "status": "current",
+            "threshold_points": round(staleness_threshold, 2),
+            "spot_delta_points": round(spot_delta_at_return, 2) if spot_delta_at_return is not None else None,
+        }
+        if spot_delta_at_return is None:
+            strike["fair_stale"] = None
+            strike["fair_recomputed"] = False
+            continue
+        if abs(spot_delta_at_return) <= staleness_threshold:
+            strike["fair_stale"] = False
+            strike["fair_recomputed"] = False
+            continue
+
+        low = strike["low"]
+        high = strike["high"]
+        p_normal = _band_probability(
+            low, high, live_spot, sigma_hourly_pct, drift_pct, df, minutes_to_expiry,
+            distribution="normal",
+        )
+        p_student_t = _band_probability(
+            low, high, live_spot, sigma_hourly_pct, drift_pct, df, minutes_to_expiry
+        )
+        p_selected = p_normal if active_distribution == "normal" else p_student_t
+        p_base = p_selected
+        selected_correction = correction_for_probability(p_base)
+        p_calibrated = _apply_probability_correction(p_base, selected_correction)
+        p_touch = _apply_tail_adjustment(p_calibrated, tail_adjustment)
+        fair_value = p_touch * 100
+        ask = strike.get("yes_ask")
+        residual = ask - fair_value if ask is not None else None
+        tail_delta = p_student_t - p_normal
+
+        strike["model_fair_initial_cents"] = strike["model_fair_cents"]
+        strike.update({
             "model_fair_cents": round(fair_value, 1),
-            "residual_cents": round(residual, 1),
-            "flagged": residual > RESIDUAL_FLAG_THRESHOLD_CENTS,
+            "residual_cents": round(residual, 1) if residual is not None else None,
+            "flagged": residual is not None and residual > RESIDUAL_FLAG_THRESHOLD_CENTS,
+            "fair_status": "recomputed_after_spot_move",
+            "fair_stale": True,
+            "fair_recomputed": True,
+            "fair_staleness": {
+                "status": "stale_recomputed",
+                "threshold_points": round(staleness_threshold, 2),
+                "spot_delta_points": round(spot_delta_at_return, 2),
+            },
+            "spot_at_fair": round(live_spot, 2),
             "p_normal": round(p_normal, 3),
             "p_student_t": round(p_student_t, 3),
             "p_selected": round(p_selected, 3),
-            "selected_distribution": active_distribution,
             "p_base": round(p_base, 5),
             "p_calibrated": round(p_calibrated, 5),
-            "calibration_factor": probability_correction.get("correction_factor", 1.0),
+            "calibration_factor": selected_correction["correction_factor"],
+            "calibration_regime": selected_correction["regime"],
             "tail_delta": round(tail_delta, 3),
             "tail_premium_cents": round(tail_delta * 100, 1),
             "p_touch_raw": round(p_base, 3),
-            "tail_adjustment": tail_adjustment,
             "p_touch_adjusted": round(p_touch, 3),
             "p_touch": round(p_touch, 3),
-            "low": low,
-            "high": high,
         })
 
-    ladder_feed_status["usable_band_count"] = len(strike_probs)
+    ladder_feed_status["usable_band_count"] = sum(
+        1 for strike in strike_probs if strike["fair_status"] != "invalid_band"
+    )
 
     # --- Regime classification ---
     hourly_history = get_hourly_candle_history(REGIME_LOOKBACK_HOURS)
@@ -918,8 +1132,10 @@ def predict_hourly_range() -> dict:
         if low is None or high is None:
             continue
         row = {
-            "band": f"${low:,.0f}-${high:,.0f}",
+            "band": f"{_format_kalshi_strike(low)}-{_format_kalshi_strike(high)}",
             "side": side,
+            "settlement_venue": KALSHI_SETTLEMENT_VENUE,
+            "settlement_rule": KALSHI_SETTLEMENT_RULE,
         }
         for m in DECAY_TABLE_MINUTES:
             if minutes_to_expiry > m:
@@ -933,16 +1149,16 @@ def predict_hourly_range() -> dict:
                 p_student_t = p
                 p_selected = p_normal if active_distribution == "normal" else p_student_t
                 p_base = p_selected
-                p_calibrated = _apply_probability_correction(p_base, probability_correction)
+                selected_correction = correction_for_probability(p_base)
+                p_calibrated = _apply_probability_correction(p_base, selected_correction)
                 adjusted = _apply_tail_adjustment(p_calibrated, tail_adjustment)
                 row[f"p_{m}m"] = round(adjusted, 3)
                 row[f"p_normal_{m}m"] = round(p_normal, 3)
                 row[f"p_student_t_{m}m"] = round(p_student_t, 3)
                 row[f"p_base_{m}m"] = round(p_base, 5)
                 row[f"p_calibrated_{m}m"] = round(p_calibrated, 5)
-                row[f"calibration_factor_{m}m"] = probability_correction.get(
-                    "correction_factor", 1.0
-                )
+                row[f"calibration_factor_{m}m"] = selected_correction["correction_factor"]
+                row[f"calibration_regime_{m}m"] = selected_correction["regime"]
                 row[f"selected_distribution_{m}m"] = active_distribution
                 row[f"tail_adjustment_{m}m"] = tail_adjustment
         decay_table.append(row)
@@ -951,6 +1167,8 @@ def predict_hourly_range() -> dict:
 
     from calibration_ledger import record_prediction
     for strike in strike_probs:
+        if strike["fair_status"] == "invalid_band":
+            continue
         record_prediction(
             timestamp=now,
             band=strike["band"],
@@ -981,9 +1199,19 @@ def predict_hourly_range() -> dict:
     return {
         "timestamp_utc": now.isoformat(),
         "minutes_to_hourly_expiry": minutes_to_expiry,
-        "spot": spot,
+        "spot": round(spot, 2),
+        "spot_at_fair": round(spot, 2),
+        "spot_at_return": round(live_spot, 2) if live_spot is not None else None,
+        "spot_delta_at_return": round(spot_delta_at_return, 2) if spot_delta_at_return is not None else None,
+        "fair_staleness_policy": {
+            "min_spot_pct": SPOT_STALENESS_MIN_PCT_OF_SPOT,
+            "band_width_pct": SPOT_STALENESS_BAND_WIDTH_PCT,
+            "action": "recompute_and_flag",
+        },
         "spot_source": spot_data.get("source", "unavailable"),
         "canonical_spot_source": spot_data.get("canonical_source", "BRTI"),
+        "settlement_venue": KALSHI_SETTLEMENT_VENUE,
+        "settlement_rule": KALSHI_SETTLEMENT_RULE,
         "range": {
             "upper": round(upper_bound, 2),
             "lower": round(lower_bound, 2),
@@ -1009,6 +1237,7 @@ def predict_hourly_range() -> dict:
         "calibration": calibration_report,
         "distribution_selection": distribution_selection,
         "probability_correction": probability_correction,
+        "tail_probability_correction": tail_probability_correction,
         "ladder_feed_status": ladder_feed_status,
         "regime": regime,
         "strike_probs": strike_probs,
@@ -1020,6 +1249,157 @@ def predict_hourly_range() -> dict:
             "most of that final minute moves the average hard. Polymarket "
             "Chainlink TWAP: window unconfirmed, read off live market rules."
         ),
+    }
+
+
+def predict_15m_range(contract: dict | None = None, series_ticker: str = KALSHI_15M_SERIES) -> dict:
+    """Model fair for the active Kalshi 15-minute up/down contract."""
+    now = datetime.now(timezone.utc)
+    contract = contract or get_kalshi_15m_contract(series_ticker)
+    if not contract:
+        return {
+            "timestamp_utc": now.isoformat(),
+            "error": "no_live_kalshi_15m_contract",
+            "settlement_venue": KALSHI_SETTLEMENT_VENUE,
+            "settlement_rule": KALSHI_SETTLEMENT_RULE,
+        }
+
+    spot_data = get_spot()
+    spot = spot_data.get("price")
+    candles = get_minute_candles(360)
+    if spot is None or len(candles) < 20:
+        return {
+            "timestamp_utc": now.isoformat(),
+            "ticker": contract.get("ticker"),
+            "error": "live_data_unavailable",
+            "spot": spot,
+            "settlement_venue": KALSHI_SETTLEMENT_VENUE,
+            "settlement_rule": KALSHI_SETTLEMENT_RULE,
+        }
+
+    target = float(contract["target"])
+    close_time = contract["close_time"]
+    seconds_to_expiry = max(0, (close_time - now).total_seconds())
+    minutes_to_expiry = max(0.25, seconds_to_expiry / 60)
+    if seconds_to_expiry <= 0:
+        return {
+            "timestamp_utc": now.isoformat(),
+            "ticker": contract.get("ticker"),
+            "error": "contract_expired",
+        }
+
+    closes = [float(c["close"]) for c in candles if c.get("close")]
+    log_returns = [
+        math.log(closes[i] / closes[i - 1])
+        for i in range(1, len(closes))
+        if closes[i - 1] > 0 and closes[i] > 0
+    ]
+    pct_returns = [
+        (closes[i] / closes[i - 1] - 1) * 100
+        for i in range(1, len(closes))
+        if closes[i - 1] > 0 and closes[i] > 0
+    ]
+    if len(pct_returns) < 20:
+        return {
+            "timestamp_utc": now.isoformat(),
+            "ticker": contract.get("ticker"),
+            "error": "insufficient_volatility_samples",
+            "sample_count": len(pct_returns),
+        }
+
+    mean_return = sum(pct_returns) / len(pct_returns)
+    variance = sum((value - mean_return) ** 2 for value in pct_returns) / (len(pct_returns) - 1)
+    minute_sigma_pct = math.sqrt(max(0.0, variance))
+    sigma_pct = max(0.0001, minute_sigma_pct * math.sqrt(minutes_to_expiry))
+    drift_pct = sum(pct_returns[-15:]) / len(pct_returns[-15:]) * 0.40
+    df = _fit_student_t(log_returns)
+
+    target_pct = (target - spot) / spot * 100
+    z_score = (target_pct - drift_pct) / sigma_pct
+    strike_dir = str(contract.get("strike_type") or contract.get("subtitle") or "").lower()
+    below = "below" in strike_dir or "under" in strike_dir
+    p_above = 1 - _student_t_cdf(z_score, df)
+    p_base = p_above if not below else 1 - p_above
+
+    from calibration_ledger import get_calibration_report
+    calibration_report = get_calibration_report()
+    probability_correction = calibration_report.get("probability_correction", {})
+    tail_probability_correction = calibration_report.get("tail_probability_correction", {})
+    if (
+        tail_probability_correction.get("active")
+        and p_base < tail_probability_correction.get("threshold", 0.20)
+    ):
+        correction_factor = tail_probability_correction.get("factor", 1.0)
+        calibration_regime = "tail"
+    else:
+        correction_factor = probability_correction.get("correction_factor", 1.0)
+        calibration_regime = "global"
+    p_calibrated = _apply_probability_correction(p_base, {
+        "correction_factor": correction_factor,
+        "floor": probability_correction.get("floor", 0.0),
+    })
+    tail_adjustment = get_tail_diagnostics(compute_wick_stats(candles))["tail_adjustment"]
+    p_final = _apply_tail_adjustment(p_calibrated, tail_adjustment)
+
+    raw_ask = contract.get("yes_ask_dollars", contract.get("yes_ask"))
+    try:
+        ask_cents = float(raw_ask) * (100 if float(raw_ask) > 1 else 1)
+    except (TypeError, ValueError):
+        ask_cents = None
+
+    fair_cents = p_final * 100
+    residual_cents = ask_cents - fair_cents if ask_cents is not None else None
+
+    live_spot_data = get_spot()
+    live_spot = live_spot_data.get("price")
+    spot_delta = live_spot - spot if live_spot is not None else None
+    staleness_threshold = max(abs(spot) * 0.0003, abs(target - spot) * 0.10)
+    fair_stale = spot_delta is not None and abs(spot_delta) > staleness_threshold
+    if fair_stale:
+        live_target_pct = (target - live_spot) / live_spot * 100
+        live_z = (live_target_pct - drift_pct) / sigma_pct
+        live_p_above = 1 - _student_t_cdf(live_z, df)
+        p_base = live_p_above if not below else 1 - live_p_above
+        p_calibrated = _apply_probability_correction(p_base, {
+            "correction_factor": correction_factor,
+            "floor": probability_correction.get("floor", 0.0),
+        })
+        p_final = _apply_tail_adjustment(p_calibrated, tail_adjustment)
+        fair_cents = p_final * 100
+        residual_cents = ask_cents - fair_cents if ask_cents is not None else None
+
+    return {
+        "timestamp_utc": now.isoformat(),
+        "ticker": contract.get("ticker"),
+        "contract_title": contract.get("title"),
+        "strike_dir": "below" if below else "above",
+        "target": round(target, 2),
+        "spot": round(spot, 2),
+        "spot_at_return": round(live_spot, 2) if live_spot is not None else None,
+        "spot_delta_at_return": round(spot_delta, 2) if spot_delta is not None else None,
+        "minutes_to_expiry": round(minutes_to_expiry, 2),
+        "seconds_to_expiry": round(seconds_to_expiry),
+        "model_fair_cents": round(fair_cents, 1),
+        "residual_cents": round(residual_cents, 1) if residual_cents is not None else None,
+        "flagged": residual_cents is not None and residual_cents > RESIDUAL_FLAG_THRESHOLD_CENTS,
+        "fair_status": "ok" if ask_cents is not None else "fair_only",
+        "fair_stale": fair_stale,
+        "fair_recomputed": fair_stale,
+        "fair_staleness": {
+            "threshold_points": round(staleness_threshold, 2),
+            "spot_delta_points": round(spot_delta, 2) if spot_delta is not None else None,
+        },
+        "p_base": round(p_base, 5),
+        "p_calibrated": round(p_calibrated, 5),
+        "p_final": round(p_final, 5),
+        "calibration_factor": correction_factor,
+        "calibration_regime": calibration_regime,
+        "tail_adjustment": tail_adjustment,
+        "sigma_15m_pct": round(sigma_pct, 5),
+        "student_t_df": round(df, 2),
+        "market_ask_cents": ask_cents,
+        "settlement_venue": KALSHI_SETTLEMENT_VENUE,
+        "settlement_rule": KALSHI_SETTLEMENT_RULE,
     }
 
 

@@ -2,7 +2,7 @@
  * Oracle Snapshot — STRICT sources for LLM inference
  * --------------------------------------------------
  * Spot  = Pyth only (Lazer / Hermes / _pythPrices / PythBrowser)
- * PTB   = Polymarket only (poly5m / poly15m / poly60m opening strike locked at T0)
+ * PTB   = Polymarket 5m/60m only. Kalshi owns 15m and hourly strike/RTI data.
  * Odds  = Polymarket CLOB/Gamma only
  * Hourly = HourlyRangesPanel ladder when available
  *
@@ -18,6 +18,98 @@
   function num(v) {
     const n = Number(v);
     return Number.isFinite(n) ? n : null;
+  }
+
+  /**
+   * Kalshi owns the 15-minute product surface. This returns only the live
+   * Kalshi contract; Polymarket 15m remains available as a deprecated alias
+   * and is never substituted into the 15m decision path.
+   */
+  function getKalshi15mWindow(sym) {
+    const key = String(sym || '').toUpperCase();
+    if (typeof window === 'undefined' || !window.PredictionMarkets?.getCoin) return null;
+    const market = window.PredictionMarkets.getCoin(key)?.kalshi15m;
+    if (!market?.ticker) return null;
+
+    const target = num(market.targetPriceNum ?? market.floorPrice);
+    const closeMs = market.closeTime ? Date.parse(market.closeTime) : NaN;
+    const valid = !!market.ticker && target != null && target > 0
+      && Number.isFinite(closeMs) && closeMs > Date.now();
+    return {
+      valid,
+      horizon: '15m',
+      venue: 'kalshi',
+      slug: market.ticker,
+      ticker: market.ticker,
+      title: market.title || null,
+      live: valid,
+      yesProb: num(market.probability ?? market.yesProb),
+      targetPriceNum: valid ? target : null,
+      targetPrice: valid ? formatUsd(key, target) : null,
+      strikeDir: market.strikeDir || null,
+      secondsToClose: Number.isFinite(closeMs)
+        ? Math.max(0, Math.round((closeMs - Date.now()) / 1000))
+        : null,
+      closeTime: market.closeTime || null,
+      bestBid: num(market.yesBid ?? market.bestBid),
+      bestAsk: num(market.yesAsk ?? market.bestAsk),
+      settlementVenue: 'CF Benchmarks RTI',
+      settlementRule: 'Kalshi 15m: 60-second CF Benchmarks RTI average before expiry.',
+    };
+  }
+
+  /**
+   * Cross-venue divergence uses book-mid to book-mid only. Retail-last
+   * divergence is reported separately because it measures venue-specific
+   * trade pressure, not a cross-venue price gap.
+   */
+  function getCrossVenueDivergence(sym) {
+    try {
+      if (typeof window === 'undefined' || !window.ExchangeWS?.getTicker) return null;
+      const key = String(sym || '').toUpperCase();
+      const providers = ['BINANCE', 'COINBASE', 'BYBIT'];
+      const venues = providers
+        .map((provider) => window.ExchangeWS.getTicker(provider, key, 10_000))
+        .filter((ticker) => ticker?.mid != null && ticker.mid > 0)
+        .map((ticker) => {
+          const retailDelta = ticker.price != null ? ticker.price - ticker.mid : null;
+          return {
+            provider: ticker.provider,
+            bookMid: ticker.mid,
+            spreadBps: ticker.spreadBps ?? null,
+            ts: ticker.ts ?? null,
+            retailLastDivergence: retailDelta == null ? null : {
+              delta: retailDelta,
+              delta_pct: (retailDelta / ticker.mid) * 100,
+              direction: retailDelta > 0 ? 'last_above_book' : retailDelta < 0 ? 'last_below_book' : 'flat',
+            },
+          };
+        });
+      if (venues.length < 2) return null;
+
+      const reference = venues.find((v) => v.provider === 'BINANCE') || venues[0];
+      const deltas = venues
+        .filter((v) => v !== reference)
+        .map((v) => ({
+          provider: v.provider,
+          delta: v.bookMid - reference.bookMid,
+          delta_pct: ((v.bookMid - reference.bookMid) / reference.bookMid) * 100,
+        }));
+      const maxMid = Math.max(...venues.map((v) => v.bookMid));
+      const minMid = Math.min(...venues.map((v) => v.bookMid));
+      const spread = maxMid - minMid;
+      return {
+        method: 'book_mid_to_book_mid',
+        reference_provider: reference.provider,
+        max_spread: spread,
+        max_spread_pct: (spread / reference.bookMid) * 100,
+        direction: spread > 0 ? 'book_mids_diverged' : 'book_mids_aligned',
+        reference_deltas: deltas,
+        venues,
+      };
+    } catch (_) {
+      return null;
+    }
   }
 
   // Push-driven Pyth Lazer ticker cache, mirrored from the working pattern in
@@ -39,12 +131,12 @@
       })()
     : (typeof globalThis !== 'undefined' ? globalThis.CoinPrecision : null);
 
-  /** BTC/ETH/SOL/BNB/HYPE → 2dp; XRP/DOGE → 4dp. No float trails for AI/UI. */
+  /** BTC/ETH/BNB → 2dp; SOL/HYPE/XRP → 4dp; DOGE → 7dp. No float trails. */
   function priceDecimals(sym, value) {
     if (CoinPrecision?.getCoinDecimals) return CoinPrecision.getCoinDecimals(sym, value);
     const s = String(sym || '').toUpperCase();
-    if (s === 'BTC' || s === 'ETH' || s === 'BNB' || s === 'SOL' || s === 'HYPE') return 2;
-    if (s === 'XRP' || s === 'DOGE') return 4;
+    if (s === 'SOL' || s === 'HYPE' || s === 'XRP') return 4;
+    if (s === 'DOGE') return 7;
     const n = Number(value);
     if (Number.isFinite(n) && n > 0 && n < 1) return 4;
     return 2;
@@ -366,6 +458,7 @@
     const spot = pyth?.price ?? null;
 
     const poly5 = getPolymarketWindow(key, '5m');
+    const kalshi15 = getKalshi15mWindow(key);
     const poly15 = getPolymarketWindow(key, '15m');
 
     // A specific preferHorizon means the caller wants THAT window, or nothing —
@@ -380,8 +473,9 @@
     let primary = null;
     const poly60 = getPolymarketWindow(key, '60m');
     if (preferHorizon === '5m') primary = (poly5?.valid && poly5.slug) ? poly5 : null;
-    else if (preferHorizon === '15m') primary = (poly15?.valid && poly15.slug) ? poly15 : null;
+    else if (preferHorizon === '15m') primary = (kalshi15?.valid && kalshi15.slug) ? kalshi15 : null;
     else if (preferHorizon === '60m' || preferHorizon === '1h' || preferHorizon === 'hourly') primary = (poly60?.valid && poly60.slug) ? poly60 : null;
+    else if (kalshi15?.valid && kalshi15.slug) primary = kalshi15;
     else if (poly15?.valid && poly15.slug) primary = poly15;
     else if (poly5?.valid && poly5.slug) primary = poly5;
     else if (poly60?.valid && poly60.slug) primary = poly60;
@@ -410,6 +504,7 @@
       spotTs: pyth?.ts || null,
       oraclePolicy: 'pyth_spot_plus_polymarket_ptb_only',
       poly5m: poly5,
+      kalshi15m: kalshi15,
       poly15m: poly15,
       poly60m: poly60,
       active: primary,
@@ -428,6 +523,7 @@
       orbitalMomentum: getOrbitalMomentum(key),
       temporalForecast: getTemporalForecast(key),
       derivativesPositioning: getDerivativesPositioning(key),
+      crossVenueDivergence: getCrossVenueDivergence(key),
       warnings: [
         ...(spot == null ? ['no_pyth_spot'] : []),
         ...(primary && primary.priceToBeatNum == null ? ['no_polymarket_ptb'] : []),
@@ -474,7 +570,34 @@
       };
     };
 
+    const kalshiBlock = (w) => {
+      if (!w || !w.valid) return null;
+      return {
+        ticker: w.ticker,
+        slug: w.ticker,
+        live: !!w.live,
+        yesProb: w.yesProb,
+        probability: w.yesProb,
+        targetPriceNum: w.targetPriceNum,
+        priceToBeatNum: w.targetPriceNum,
+        targetPrice: w.targetPrice,
+        strikeDir: w.strikeDir,
+        secondsToClose: w.secondsToClose,
+        closeTime: w.closeTime,
+        bestBid: w.bestBid,
+        bestAsk: w.bestAsk,
+        settlementVenue: w.settlementVenue,
+        settlementRule: w.settlementRule,
+        oracle: {
+          spot: o.spot,
+          spotSource: o.spotSource,
+          policy: o.oraclePolicy,
+        },
+      };
+    };
+
     const p5 = polyBlock(o.poly5m);
+    const k15 = kalshiBlock(o.kalshi15m);
     const p15 = polyBlock(o.poly15m);
     const p60 = polyBlock(o.poly60m);
     const is60 = o.horizon === '60m' || o.horizon === '1h' || preferHorizon === 60 || preferHorizon === '60m';
@@ -487,7 +610,7 @@
       rangeHorizonMinutes: is60 ? 60 : 15,
       horizonMinutes: is5 ? 5 : (is60 ? 60 : 15),
       horizon: is5 ? '5m' : (is60 ? '60m' : '15m'),
-      venue: is5 ? 'polymarket-5m' : (is60 ? 'polymarket-60m' : 'polymarket-15m'),
+      venue: is5 ? 'polymarket-5m' : (is60 ? 'polymarket-60m' : (k15 ? 'kalshi-15m' : 'polymarket-15m')),
       // STRICT spot
       currentPrice: o.spot,
       price: o.spot,
@@ -500,9 +623,10 @@
       modelScore: pred?.score ?? null,
       confidence: pred?.confidence != null ? pred.confidence / (pred.confidence > 1 ? 100 : 1) : null,
       poly5m: p5,
+      kalshi15m: k15,
       poly15m: p15,
       poly60m: p60,
-      activeContract: is5 ? p5 : (is60 ? p60 : p15),
+      activeContract: is5 ? p5 : (is60 ? p60 : (k15 || p15)),
       rangeLadder: o.hourlyLadder,
       spotBucket: o.spotBucket,
       hourlyRanges: true,
@@ -512,6 +636,7 @@
       // Forward-looking probUp/probDown forecast (OrbitalEngine/TemporalEdge)
       // — supplementary, never spot/PTB, distinct from Polymarket's own odds.
       temporalForecast: o.temporalForecast,
+      crossVenueDivergence: o.crossVenueDivergence,
       // Explicit PTB block so models cannot invent
       polymarketOracle: {
         slug: o.slug,
@@ -525,6 +650,17 @@
         secondsToClose: o.secondsToClose,
         rule: 'PTB is Polymarket window open only. Spot is Pyth only. Do not invent PTB.',
       },
+      kalshiOracle: k15 ? {
+        ticker: k15.ticker,
+        targetPriceNum: k15.targetPriceNum,
+        pythSpot: o.spot,
+        pythSource: o.spotSource,
+        pathDir: o.pathDir,
+        yesProb: k15.yesProb,
+        secondsToClose: k15.secondsToClose,
+        settlementVenue: k15.settlementVenue,
+        settlementRule: k15.settlementRule,
+      } : null,
       sessionMemory: extras.sessionMemory || null,
       analyticsMemory: extras.sessionMemory || null,
     };

@@ -30,7 +30,7 @@ from calibration_ledger import get_calibration_report
 from kodak_bridge import get_kodak_derived, get_kodak_snapshot
 from mcp_client import LeakSnipeMCPClient
 from model_introspection import format_for_llm, get_decision_trees, get_model_weights
-from prediction_engine import get_alt_signal, predict_hourly_range
+from prediction_engine import get_alt_signal, predict_15m_range, predict_hourly_range
 from scalper_tools import LOCAL_TOOL_NAMES, call_local_tool
 from scalper_tools import TOOL_SCHEMAS as SCALPER_TOOL_SCHEMAS
 
@@ -256,6 +256,17 @@ MEMORY_TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
+            "name": "get_kalshi_15m_model",
+            "description": (
+                "Live Kalshi 15m up/down model fair, market residual, and "
+                "spot-staleness status for fast-market quote verification."
+            ),
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "get_tail_diagnostics",
             "description": (
                 "Late-window wick pressure and the tail adjustment currently "
@@ -283,6 +294,7 @@ async def process_query(query: str, sender: str = "local") -> str:
         "Content-Type": "application/json",
     }
     prediction = predict_hourly_range()
+    prediction["kalshi_15m_model"] = predict_15m_range()
     kodak_derived = get_kodak_derived()
     if isinstance(prediction, dict) and "error" not in kodak_derived:
         prediction["cross_venue_market"] = kodak_derived
@@ -337,6 +349,8 @@ async def process_query(query: str, sender: str = "local") -> str:
                 result_text = format_for_llm(get_alt_signal())
             elif name == "get_calibration_report":
                 result_text = format_for_llm(get_calibration_report())
+            elif name == "get_kalshi_15m_model":
+                result_text = format_for_llm(predict_15m_range())
             elif name == "get_tail_diagnostics":
                 result_text = format_for_llm(
                     predict_hourly_range().get("tail_diagnostics", {})
@@ -505,6 +519,11 @@ async def handle_tail_diagnostics(_ctx: Context, _msg: HUDQuery) -> HUDResponse:
     return HUDResponse(ok=True, content=format_for_llm(
         predict_hourly_range().get("tail_diagnostics", {})
     ))
+
+
+@agent.on_rest_post("/kalshi-15m-model", HUDQuery, HUDResponse)
+async def handle_kalshi_15m_model(_ctx: Context, _msg: HUDQuery) -> HUDResponse:
+    return HUDResponse(ok=True, content=format_for_llm(predict_15m_range()))
 
 # --- Lifecycle -------------------------------------------------------------
 @agent.on_event("startup")
