@@ -119,7 +119,7 @@ services:
       LLM_MODEL: ${LLM_MODEL:-gpt-4o-mini}
       GEMINI_API_KEY: ${GEMINI_API_KEY}
       GOOGLE_API_KEY: ${GOOGLE_API_KEY}
-      PYTH_LAZER_TOKEN: ${PYTH_LAZER_TOKEN}
+      PYTH_NEW_API: ${PYTH_NEW_API}
 
       # Firebase Emulators
       FIRESTORE_EMULATOR_HOST: "firebase-emulator:8080"

@@ -41,19 +41,20 @@ test('CoinPrecision: XRP has exactly 4 decimals (.0000) and never truncates to 2
 });
 
 test('CoinPrecision: DOGE, SOL, BNB, HYPE decimal rules', () => {
-  // DOGE is sub-cent with 4 decimals
-  assert.equal(CoinPrecision.getCoinDecimals('DOGE'), 4);
-  assert.equal(CoinPrecision.formatCoinPrice('DOGE', 0.1345), '$0.1345');
-  assert.equal(CoinPrecision.formatCoinPrice('DOGE', 0.13), '$0.1300');
-  assert.equal(CoinPrecision.formatCoinDelta('DOGE', 0.0008), '+$0.0008');
+  // DOGE is sub-cent with 7 decimals
+  assert.equal(CoinPrecision.getCoinDecimals('DOGE'), 7);
+  assert.equal(CoinPrecision.formatCoinPrice('DOGE', 0.0835346), '$0.0835346');
+  assert.equal(CoinPrecision.formatCoinPrice('DOGE', 0.13), '$0.1300000');
+  assert.equal(CoinPrecision.formatCoinDelta('DOGE', 0.0008), '+$0.0008000');
 
-  // SOL, BNB, HYPE have 2 decimals (.00 cents)
-  assert.equal(CoinPrecision.getCoinDecimals('SOL'), 2);
+  // SOL, HYPE use 4 decimals; BNB uses 2
+  assert.equal(CoinPrecision.getCoinDecimals('SOL'), 4);
   assert.equal(CoinPrecision.getCoinDecimals('BNB'), 2);
-  assert.equal(CoinPrecision.getCoinDecimals('HYPE'), 2);
-  assert.equal(CoinPrecision.formatCoinPrice('SOL', 142.8), '$142.80');
+  assert.equal(CoinPrecision.getCoinDecimals('HYPE'), 4);
+  assert.equal(CoinPrecision.formatCoinPrice('SOL', 142.8), '$142.8000');
+  assert.equal(CoinPrecision.formatCoinPrice('SOL', 142.87654), '$142.8765');
   assert.equal(CoinPrecision.formatCoinPrice('BNB', 582.4), '$582.40');
-  assert.equal(CoinPrecision.formatCoinPrice('HYPE', 34.1), '$34.10');
+  assert.equal(CoinPrecision.formatCoinPrice('HYPE', 34.1), '$34.1000');
 });
 
 test('CoinPrecision: Symbol normalization handles all slug formats', () => {

@@ -1092,131 +1092,15 @@ Use this recall only as context, and prioritize current market snapshot data if 
    * enable_thinking:false and a larger budget.
    */
   async callTokenMixAPI(systemPrompt, userPrompt, config = {}) {
-    if (!TOKENMIX_API_KEY) throw new Error('TOKENMIX_API_KEY missing');
-    if (this._isTokenmixInCooldown()) {
-      throw new Error('TokenMix in credit-exhaustion cooldown');
-    }
-    const model = config.model || TOKENMIX_MODEL;
-    const baseMaxTokens = Number(config.maxTokens || TOKENMIX_MAX_TOKENS);
-    const timeoutMs = Number(config.timeoutMs || TOKENMIX_TIMEOUT_MS);
-    const preferThinking = config.enableThinking != null ? !!config.enableThinking : TOKENMIX_ENABLE_THINKING;
-
-    const jsonFirst = TOKENMIX_FORCE_JSON && preferThinking;
-    const modeAttempts = jsonFirst
-      ? [{ jsonMode: true }, { jsonMode: false }]
-      : TOKENMIX_FORCE_JSON
-        ? [{ jsonMode: false }, { jsonMode: true }]
-        : [{ jsonMode: false }];
-
-    const attempts = [
-      ...modeAttempts.map((m) => ({ ...m, enableThinking: preferThinking, maxTokens: baseMaxTokens })),
-      { jsonMode: false, enableThinking: false, maxTokens: Math.max(baseMaxTokens, 2000), rescue: true },
-      { jsonMode: true, enableThinking: false, maxTokens: Math.max(baseMaxTokens, 2000), rescue: true },
-    ];
-    const seen = new Set();
-    const uniqueAttempts = attempts.filter((a) => {
-      const k = `${a.jsonMode}|${a.enableThinking}|${a.maxTokens}`;
-      if (seen.has(k)) return false;
-      seen.add(k);
-      return true;
-    });
-
-    let lastErr = null;
-    for (const attempt of uniqueAttempts) {
-      try {
-        const content = await this.callCompatibleAPI(systemPrompt, userPrompt, {
-          url: TOKENMIX_BASE_URL,
-          model,
-          key: TOKENMIX_API_KEY,
-          maxTokens: attempt.maxTokens,
-          timeoutMs,
-          responseFormat: attempt.jsonMode ? { type: 'json_object' } : null,
-          enableThinking: attempt.enableThinking,
-          providerLabel: 'tokenmix',
-        });
-        return { content, model, thinking: attempt.enableThinking };
-      } catch (err) {
-        lastErr = err;
-        this._markTokenmixCooldown(err);
-        const msg = String(err?.message || err);
-        const reasoningStarve = /empty content|reasoning_tokens|finish=length|Unexpected LLM API response format/i.test(msg);
-        console.warn(
-          `[TokenMix] attempt json=${attempt.jsonMode} think=${attempt.enableThinking}`
-          + ` maxTok=${attempt.maxTokens}${attempt.rescue ? ' rescue' : ''} failed: ${msg.slice(0, 180)}`
-        );
-        if (/\b(401|402|403)\b/.test(msg)) break;
-        if (!reasoningStarve && attempt.rescue) continue;
-      }
-    }
-    throw lastErr || new Error('TokenMix DeepSeek failed');
+    console.warn('[DISABLED] Non-ASI1 provider call disabled'); return null;
   }
 
   async callOpenAIAPI(systemPrompt, userPrompt, config = {}) {
-    if (!OPENAI_API_KEY) throw new Error('OPENAI_API_KEY missing');
-    const model = config.model || OPENAI_MODEL;
-    const maxTokens = Number(config.maxTokens || OPENAI_MAX_TOKENS);
-    const timeoutMs = Number(config.timeoutMs || OPENAI_TIMEOUT_MS);
-    const content = await this.callCompatibleAPI(systemPrompt, userPrompt, {
-      url: OPENAI_BASE_URL,
-      model,
-      key: OPENAI_API_KEY,
-      maxTokens,
-      timeoutMs,
-      providerLabel: 'openai',
-    });
-    return { content, model };
+    console.warn('[DISABLED] Non-ASI1 provider call disabled'); return null;
   }
 
   async callAnthropicAPI(systemPrompt, userPrompt, config = {}) {
-    if (!ANTHROPIC_API_KEY) throw new Error('ANTHROPIC_API_KEY missing');
-    const model = config.model || ANTHROPIC_MODEL;
-    const maxTokens = Number(config.maxTokens || 4096);
-    const timeoutMs = Number(config.timeoutMs || 45000);
-
-    const payload = {
-      model,
-      max_tokens: maxTokens,
-      system: systemPrompt,
-      messages: [
-        { role: 'user', content: userPrompt }
-      ],
-      temperature: 0.1
-    };
-
-    const controller = new AbortController();
-    const timer = setTimeout(() => {
-      try { controller.abort(new Error(`anthropic timeout after ${timeoutMs}ms`)); } catch (_) {}
-    }, timeoutMs);
-
-    let response;
-    try {
-      response = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: {
-          "x-api-key": ANTHROPIC_API_KEY,
-          "anthropic-version": "2023-06-01",
-          "content-type": "application/json"
-        },
-        body: JSON.stringify(payload),
-        signal: controller.signal
-      });
-    } finally {
-      clearTimeout(timer);
-    }
-
-    if (!response.ok) {
-      const errBody = await response.text().catch(() => '');
-      const err = new Error(`Anthropic API error ${response.status}: ${response.statusText} - ${errBody.slice(0, 220)}`);
-      err.status = response.status;
-      throw err;
-    }
-
-    const data = await response.json();
-    const content = data.content?.[0]?.text;
-    if (!content) {
-      throw new Error(`Unexpected Anthropic API response format: ${JSON.stringify(data).slice(0, 200)}`);
-    }
-    return { content, model };
+    console.warn('[DISABLED] Non-ASI1 provider call disabled'); return null;
   }
 
   /**
@@ -1696,8 +1580,8 @@ Use this recall only as context, and prioritize current market snapshot data if 
     const lastProvider = this._lastProvider || this.provider || null;
     const lastModel = this._lastModel || null;
     const asi1Diag = (() => { try { return Asi1Client.getDiagnostics(); } catch (_) { return {}; } })();
-    const currentAccount = asi1Diag.currentAccount || 'maurofanellijr@gmail.com';
-    const currentAccountId = asi1Diag.currentAccountId || 'mauro';
+    const currentAccount = asi1Diag.currentAccount || 'mauro@leaksnipe.win';
+    const currentAccountId = asi1Diag.currentAccountId || 'leaksnipe';
     return {
       enabled: this.enabled,
       provider: lastProvider || this.provider,

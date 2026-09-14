@@ -20,6 +20,13 @@
     return score > 0.02 ? 1 : score < -0.02 ? -1 : fallback;
   }
 
+  function _fallbackPriceDecimals(sym) {
+    const key = String(sym || '').toUpperCase();
+    if (key === 'DOGE') return 7;
+    if (key === 'SOL' || key === 'HYPE' || key === 'XRP') return 4;
+    return 2;
+  }
+
 function predictionCard(p) {
     if (!p || !p.sym) {
       console.warn('[predictionCard] Missing prediction object or sym:', p);
@@ -42,13 +49,12 @@ function predictionCard(p) {
     // modelYesPct = P(projected target ≥ strike) via normal CDF — this is the RIGHT metric.
     const _k15mCV = window.PredictionMarkets?.getCoin(p.sym);
     const _k15mV = _k15mCV?.kalshi15m ?? null;
-    // Kalshi fetching is disabled (user no longer trades there) -- _k15mV is
-    // always null now. Prefer the Polymarket 15m Up/Down market directly
-    // (fresher/more precise than the blended combinedProb fallback).
+    // Kalshi owns the 15-minute surface. Polymarket 15m remains a legacy
+    // fallback only when Kalshi has not published the active contract yet.
     const _poly15mV = p.poly15m ?? _k15mCV?.poly15m ?? null;
-    const polymarketProb = _poly15mV?.probability ?? _poly15mV?.upProbability ?? _poly15mV?.clobProbability ?? _poly15mV?.yesProb ?? _k15mV?.probability ?? _k15mCV?.combinedProb ?? null;
-    const polymarketPct = polymarketProb !== null ? Math.round(polymarketProb * 100) : null;
-    const polymarketEdge = polymarketProb !== null ? Math.abs(polymarketProb - 0.5) : null;
+    const live15mProb = _k15mV?.probability ?? _poly15mV?.probability ?? _poly15mV?.upProbability ?? _poly15mV?.clobProbability ?? _poly15mV?.yesProb ?? _k15mCV?.combinedProb ?? null;
+    const polymarketPct = live15mProb !== null ? Math.round(live15mProb * 100) : null;
+    const polymarketEdge = live15mProb !== null ? Math.abs(live15mProb - 0.5) : null;
     let _kAlignEarly = p.projections?.p15?.polyAlign ?? null;
     if (_kAlignEarly && _k15mV && _kAlignEarly.ticker && _k15mV.ticker && _kAlignEarly.ticker !== _k15mV.ticker) {
       _kAlignEarly = null;
@@ -74,7 +80,7 @@ function predictionCard(p) {
     }
 
     const modelDir = p.score > 0.02 ? 'up' : p.score < -0.02 ? 'down' : 'wait';
-    const polymarketDir = polymarketProb !== null ? (polymarketProb >= 0.5 ? _yesDirEarly : _noDirEarly) : null;
+    const polymarketDir = live15mProb !== null ? (live15mProb >= 0.5 ? _yesDirEarly : _noDirEarly) : null;
 
     const livePathApi = (typeof window !== 'undefined' && window.LivePath15m) || null;
     const livePath = livePathApi
@@ -183,7 +189,8 @@ function predictionCard(p) {
       : modelVerdictDir === 'down' ? `${_modelDownPct}% DOWN` : 'NEUTRAL';
     const _modelProbColor = modelVerdictDir === 'up' ? 'var(--color-green)'
       : modelVerdictDir === 'down' ? 'var(--color-red)' : 'var(--color-text-muted)';
-    const _liveKProbCard = window.PredictionMarkets?.getCoin?.(p.sym)?.kalshi15m?.probability ?? polymarketProb;
+    const _liveKProbCard = window.PredictionMarkets?.getCoin?.(p.sym)?.kalshi15m?.probability ?? live15mProb;
+    const _liveVenueCard = window.PredictionMarkets?.getCoin?.(p.sym)?.kalshi15m?.ticker ? 'Kalshi' : 'Polymarket';
     const _liveKPctCard = _liveKProbCard != null ? Math.round(_liveKProbCard * 100) : null;
     const _edgePpCard = _liveKPctCard != null ? Math.abs(_modelYesPctCard - _liveKPctCard) : null;
     const _liveKDirCard = _liveKProbCard == null ? null : (_liveKProbCard >= 0.5 ? _yesDirEarly : _noDirEarly);
@@ -216,11 +223,12 @@ function predictionCard(p) {
       !verdictSource.startsWith('safety-') &&
       confNorm >= hcConfThreshold &&
       compositeEdge >= hcEdgeThreshold;
-    const hcBadge = isHighConfidenceOverlayOn()
+    const _isHcOn = typeof isHighConfidenceOverlayOn === 'function' ? isHighConfidenceOverlayOn() : (window.isHighConfidenceOverlayOn?.() ?? false);
+    const hcBadge = _isHcOn
       ? `<span class="pred-source-badge ${hcPass ? 'polymarket-align' : 'polymarket-fade'}" title="Advisory overlay only; does not alter model verdict routing">${hcPass ? '✅ HC PASS' : '⏸ HC HOLD'}</span>`
       : '';
     const hcRationale = (() => {
-      if (!isHighConfidenceOverlayOn()) return '';
+      if (!_isHcOn) return '';
       if (hcPass) {
         return `High-confidence overlay: PASS (conf ${Math.round(confNorm * 100)}%, edge ${compositeEdge.toFixed(2)}).`;
       }
@@ -263,7 +271,7 @@ function predictionCard(p) {
     const llmRegime = p.llm?.regime || p.diagnostics?.llmRegime || null;
     const llmConfidence = Number(p.llm?.confidence || p.diagnostics?.llmConfidence || 0);
     const llmNotes = String(p.llm?.notes || p.diagnostics?.llmNotes || '').trim();
-    const asi1Brief = window.Asi1PreContract?.get?.(p.sym);
+    const asi1Brief = window.Asi1PreContract?.get?.(p.sym, '15m');
     const asi1Notes = String(asi1Brief?.notes || asi1Brief?.primaryRationale || '').trim();
     const displayNotes = asi1Notes || llmNotes;
     const thoughtsProvider = String(
@@ -351,10 +359,11 @@ function predictionCard(p) {
     const liquidityMeta = ind.liquidityDepth?.meta || null;
     const fmtDepthImb = value => Number.isFinite(Number(value)) ? `${Number(value) >= 0 ? '+' : ''}${(Number(value) * 100).toFixed(0)}%` : '—';
     const depthClass = value => Number(value) > 0.12 ? 'bull' : Number(value) < -0.12 ? 'bear' : 'flat';
+    const _fmtUsd = typeof fmtCompactUsd === 'function' ? fmtCompactUsd : (window.fmtCompactUsd || (n => '$' + Number(n||0).toLocaleString()));
     const depthRows = depthMeta ? `
       <div class="ind-item"><span class="ind-name">Depth 10/20</span><span class="ind-val ${depthClass(depthMeta.rawImbalance)}">10L ${fmtDepthImb(depth10?.imbalance)} / 20L ${fmtDepthImb(depth20?.imbalance)}</span></div>
       <div class="ind-item"><span class="ind-name">Imb Velocity</span><span class="ind-val ${depthClass(velocityMeta?.value)}">${velocityMeta?.band || 'stable'} · ${fmtDepthImb(velocityMeta?.value)}</span></div>
-      <div class="ind-item"><span class="ind-name">Liquidity</span><span class="ind-val ${liquidityMeta?.band === 'fragile' || liquidityMeta?.band === 'thin' ? 'bear' : liquidityMeta?.band === 'deep' ? 'bull' : 'flat'}">${liquidityMeta?.band || 'unknown'} · 20L ${fmtCompactUsd(liquidityMeta?.notional20)}</span></div>
+      <div class="ind-item"><span class="ind-name">Liquidity</span><span class="ind-val ${liquidityMeta?.band === 'fragile' || liquidityMeta?.band === 'thin' ? 'bear' : liquidityMeta?.band === 'deep' ? 'bull' : 'flat'}">${liquidityMeta?.band || 'unknown'} · 20L ${_fmtUsd(liquidityMeta?.notional20)}</span></div>
     ` : '';
 
     function indClass(sig) { return sig > 0.15 ? 'bull' : sig < -0.15 ? 'bear' : 'flat'; }
@@ -373,16 +382,12 @@ function predictionCard(p) {
     const scalpCount = mySetups.filter(s => s.type.startsWith('scalp_')).length;
     const contrarianCount = mySetups.filter(s => s.type.startsWith('contrarian_')).length;
 
-    // ---- Polymarket 15M Up/Down live market row ----
-    // YES resolves if closePrice ≥ targetPriceNum (meet or exceed the reference).
-    // NO  resolves if closePrice  < targetPriceNum (falls below the reference).
-    // Kalshi fetching is disabled -- _k15m is always null now. Source this row
-    // from Polymarket's 15m Up/Down market instead (poly15m), which is always
-    // "beat the opening price" (no variable strike direction like Kalshi had).
+    // ---- Kalshi 15M Up/Down live market row ----
+    // Kalshi is primary; Polymarket 15m is a legacy fallback only.
     const _k15mCoin = window.PredictionMarkets?.getCoin(p.sym);
     const _k15m = _k15mCoin?.kalshi15m ?? null;
     const _poly15m = p.poly15m ?? _k15mCoin?.poly15m ?? null;
-    const _kProb = ind.mktSentiment?.kalshi ?? _poly15m?.probability ?? _poly15m?.upProbability ?? _poly15m?.clobProbability ?? _poly15m?.yesProb ?? _k15m?.probability ?? _k15mCoin?.combinedProb ?? null;
+    const _kProb = _k15m?.probability ?? ind.mktSentiment?.kalshi ?? _poly15m?.probability ?? _poly15m?.upProbability ?? _poly15m?.clobProbability ?? _poly15m?.yesProb ?? _k15mCoin?.combinedProb ?? null;
     let _kAlign = p.projections?.p15?.polyAlign ?? null;
     if (_kAlign && _k15m && _kAlign.ticker && _k15m.ticker && _kAlign.ticker !== _k15m.ticker) {
       _kAlign = null;
@@ -391,11 +396,11 @@ function predictionCard(p) {
     // Debug: log data availability on first few renders
     const _debugPolymarket = window._debugPolymarketCount = (window._debugPolymarketCount || 0) + 1;
     if (_debugPolymarket <= 3) {
-      console.log(`[polymarket15mRow] ${p.sym}: _k15mCoin=${!!_k15mCoin}, _k15m=${!!_k15m}, _kProb=${_kProb}, combinedProb=${_k15mCoin?.combinedProb}, mktSentiment.kalshi=${ind.mktSentiment?.kalshi}`);
+      console.log(`[kalshi15mRow] ${p.sym}: _k15mCoin=${!!_k15mCoin}, _k15m=${!!_k15m}, _kProb=${_kProb}, combinedProb=${_k15mCoin?.combinedProb}, mktSentiment.kalshi=${ind.mktSentiment?.kalshi}`);
     }
 
-    const polymarket15mRow = (() => {
-      const _rowLabel = 'Polymarket 15M';
+    const kalshi15mRow = (() => {
+      const _rowLabel = _k15m?.ticker ? 'Kalshi 15M' : 'Polymarket 15M';
       const cfmRow = (() => {
         const cfmData = window.CFMEngine?.getAll ? window.CFMEngine.getAll()[p.sym] : null;
         if (!cfmData || !cfmData.bias) return '';
@@ -407,32 +412,35 @@ function predictionCard(p) {
       const coinPrefix = (window.PredictionMarkets?.POLY_5M_COIN_SLUGS?.[p.sym] || p.sym.toLowerCase());
       const nowSec = Math.floor(Date.now() / 1000);
       const windowTs = nowSec - (nowSec % 900);
-      const activeSlug = _poly15m?.slug || `${coinPrefix}-updown-15m-${windowTs}`;
+      const activeSlug = _k15m?.ticker || _poly15m?.slug || `${coinPrefix}-updown-15m-${windowTs}`;
       const defaultCloseMs = (windowTs + 900) * 1000;
 
-      // Polymarket Up/Down has no variable strike direction like Kalshi did --
-      // it's always "beat the opening price" -- so default to 'above' unless
-      // an actual Kalshi alignment object is still present with one set.
-      const _rowStrikeDir = _poly15m ? 'above' : ((_kAlign?.strikeDir ?? _k15m?.strikeDir ?? _strikeDirEarly) === 'below' ? 'below' : 'above');
+      const _rowStrikeDir = ((_k15m?.strikeDir ?? _kAlign?.strikeDir ?? (_poly15m ? 'above' : _strikeDirEarly)) === 'below' ? 'below' : 'above');
       const _rowYesDir = _rowStrikeDir === 'below' ? 'down' : 'up';
       const _rowNoDir = _rowYesDir === 'up' ? 'down' : 'up';
 
       // Reference threshold — "Beat $85.32" for above, "Below $85.32" for below.
       // Prefer the raw API string (targetPrice) to avoid rounding.
-      const _refStrikeNum = _kAlign?.ref ?? _poly15m?.priceToBeatNum ?? _poly15m?.targetPriceNum ?? null;
-      const refTarget = _poly15m?.targetPrice ?? _k15m?.targetPrice ?? (_refStrikeNum != null ? (window.CoinPrecision?.formatCoinStrike ? window.CoinPrecision.formatCoinStrike(p.sym, _refStrikeNum) : fmtPrice(_refStrikeNum, p.sym)) : null);
+      const _refStrikeNum = _k15m?.targetPriceNum ?? _kAlign?.ref ?? _poly15m?.priceToBeatNum ?? _poly15m?.targetPriceNum ?? null;
+      const refTarget = _k15m?.targetPrice ?? _poly15m?.targetPrice ?? (_refStrikeNum != null ? (window.CoinPrecision?.formatCoinStrike ? window.CoinPrecision.formatCoinStrike(p.sym, _refStrikeNum) : fmtPrice(_refStrikeNum, p.sym)) : null);
       const refVerb = _rowStrikeDir === 'below' ? 'Below' : 'Beat';
       const refLine = refTarget
         ? ` <span class="k15-target">${refVerb} ${refTarget}</span>`
         : (p.price > 0 ? ` <span class="k15-target" style="opacity:0.75" title="Live spot anchor while PTB benchmark locks">Live ${fmtPrice(p.price, p.sym)}</span>` : '');
 
       // Gap from current price to reference — show dollar amount + % + BORDERLINE warning
-      const _gapRaw = _kAlign?.gapPct ?? (_refStrikeNum != null && p.price > 0 ? ((p.price - _refStrikeNum) / _refStrikeNum) * 100 : null);
+      // _kAlign.gapPct must be validated: malformed/stale polyAlign payloads (e.g. a
+      // non-numeric or missing gapPct) previously crashed the whole card via
+      // `_gapRaw.toFixed()` below, taking out the ETH/SOL 15m Up/Down row.
+      const _gapRawCandidate = Number(_kAlign?.gapPct);
+      const _gapRaw = Number.isFinite(_gapRawCandidate)
+        ? _gapRawCandidate
+        : (_refStrikeNum != null && p.price > 0 ? ((p.price - _refStrikeNum) / _refStrikeNum) * 100 : null);
       const _gapDollar = (_refStrikeNum != null && p.price > 0)
         ? (_refStrikeNum - p.price) : null;
       const _gapDec = window.CoinPrecision?.getCoinDeltaDecimals
         ? window.CoinPrecision.getCoinDeltaDecimals(p.sym)
-        : (/^DOGE$/i.test(p.sym) ? 4 : /^XRP$/i.test(p.sym) ? 4 : 2);
+        : _fallbackPriceDecimals(p.sym);
       const _gapDollarStr = _gapDollar !== null
         ? (window.CoinPrecision?.formatCoinDelta
             ? window.CoinPrecision.formatCoinDelta(p.sym, Math.abs(_gapDollar), { showSign: false })
@@ -448,10 +456,14 @@ function predictionCard(p) {
 
       // Countdown to settlement
       let countdown = '';
-      const _closeTimeRow = _poly15m?.closeTime ?? _k15m?.closeTime;
+      const _closeTimeRow = _k15m?.closeTime ?? _poly15m?.closeTime;
       const closeMs = _closeTimeRow ? new Date(_closeTimeRow).getTime() : defaultCloseMs;
       const msl = closeMs - Date.now();
-      const closeUtc4 = formatUtc4Time(closeMs);
+      const _fmtUtc4 = typeof formatUtc4Time === 'function' ? formatUtc4Time : (window.formatUtc4Time || ((input) => {
+        const ms = typeof input === 'number' ? input : new Date(input).getTime();
+        return Number.isFinite(ms) ? new Date(ms - 14400000).toISOString().slice(11, 19) : '—';
+      }));
+      const closeUtc4 = _fmtUtc4(closeMs);
       if (msl > 0) {
         const ts = Math.floor(msl / 1000);
         countdown = ` <span class="k15-expiry" data-close-ms="${closeMs}">⏱ ${Math.floor(ts / 60)}m${String(ts % 60).padStart(2, '0')}s · UTC-4 ${closeUtc4}</span>`;
@@ -460,7 +472,8 @@ function predictionCard(p) {
       }
 
       if (_kProb === null) {
-        return `<div class="ind-item k15m-row"><span class="ind-name">${_rowLabel}</span><span class="ind-val flat"><span class="k15-side-label" style="opacity:0.6">15M</span>${refLine ? refLine : '<span class="k15-target">Awaiting PTB lock</span>'}<span class="k15-gap" style="opacity:0.6">⏱ odds loading</span>${countdown}</span></div>${cfmRow}`;
+        const pendingLabel = _k15m ? 'Awaiting Kalshi strike' : 'Awaiting PTB lock';
+        return `<div class="ind-item k15m-row"><span class="ind-name">${_rowLabel}</span><span class="ind-val flat"><span class="k15-side-label" style="opacity:0.6">15M</span>${refLine ? refLine : `<span class="k15-target">${pendingLabel}</span>`}<span class="k15-gap" style="opacity:0.6">⏱ odds loading</span>${countdown}</span></div>${cfmRow}`;
       }
 
       // YES and NO are complementary — always sum to 100%
@@ -513,6 +526,7 @@ function predictionCard(p) {
     })();
 
     const model5mRow = (() => {
+      if (p.horizon === '15m' || p.poly15m) return '';
       const p5 = p.projections?.p5;
       if (!p5) return '';
       const dir = p5.target > p.price ? 'UP' : 'DOWN';
@@ -521,7 +535,7 @@ function predictionCard(p) {
       const gapDollar = Math.abs(p5.target - p.price);
       const gapDec = window.CoinPrecision?.getCoinDeltaDecimals
         ? window.CoinPrecision.getCoinDeltaDecimals(p.sym)
-        : (/^DOGE$/i.test(p.sym) ? 4 : /^XRP$/i.test(p.sym) ? 4 : 2);
+        : _fallbackPriceDecimals(p.sym);
       const targetStr = window.CoinPrecision?.formatCoinStrike
         ? window.CoinPrecision.formatCoinStrike(p.sym, p5.target)
         : fmtPrice(p5.target, p.sym);
@@ -669,10 +683,10 @@ function predictionCard(p) {
           </div>
           <!-- Model vs Polymarket Comparison Bar -->
           ${_liveKPctCard !== null ? `
-            <div class="pred-comparison-bar-wrap" title="Model vs Market: shows where model (top) differs from Polymarket crowd (bottom)">
+            <div class="pred-comparison-bar-wrap" title="Model vs Market: shows where model (top) differs from the live ${_liveVenueCard} market (bottom)">
               <div style="font-size:9px;color:var(--color-text-muted);margin-bottom:4px;display:flex;justify-content:space-between">
                 <span>Model: ${_modelProbStr}</span>
-                <span>Polymarket: ${_liveKPctCard}% YES</span>
+                <span>${_liveVenueCard}: ${_liveKPctCard}% YES</span>
               </div>
               <div style="display:flex;gap:8px;align-items:center">
                 <div style="flex:1;height:12px;background:rgba(0,0,0,0.1);border-radius:3px;position:relative;overflow:hidden">
@@ -690,7 +704,7 @@ function predictionCard(p) {
           ` : ''}
           ${lazerRow}
           ${model5mRow}
-          ${polymarket15mRow}
+          ${kalshi15mRow}
           ${_k15mCoin ? (typeof renderFifteenMinuteMovePlan === 'function' ? renderFifteenMinuteMovePlan(_k15mCoin, true) : (typeof window !== 'undefined' && typeof window.renderFifteenMinuteMovePlan === 'function' ? window.renderFifteenMinuteMovePlan(_k15mCoin, true) : '')) : ''}
           ${(() => {
         // ── Market Divergence row ─────────────────────────────────────
@@ -721,15 +735,15 @@ function predictionCard(p) {
           : secElapsed + 's';
 
         // Read live Polymarket probability directly — don't rely on stale snapshot value
-        const livePolymarketPct = window.PredictionMarkets?.getCoin?.(p.sym)?.kalshi15m?.probability != null
+        const liveKalshiPct = window.PredictionMarkets?.getCoin?.(p.sym)?.kalshi15m?.probability != null
           ? window.PredictionMarkets.getCoin(p.sym).kalshi15m.probability * 100
           : (_md.currentPolymarketPct ?? null);
 
         // Recompute catchupDelta from live odds
-        const liveCatchupDelta = (livePolymarketPct != null && _md.entryPolymarketPct != null)
+        const liveCatchupDelta = (liveKalshiPct != null && _md.entryPolymarketPct != null)
           ? (_md.entryModelDir === 'up' || _md.entryModelDir === 'UP'
-            ? livePolymarketPct - _md.entryPolymarketPct
-            : _md.entryPolymarketPct - livePolymarketPct)
+            ? liveKalshiPct - _md.entryPolymarketPct
+            : _md.entryPolymarketPct - liveKalshiPct)
           : (_md.catchupDelta ?? 0);
 
         const deltaStr = Math.abs(liveCatchupDelta) >= 0.5
@@ -756,10 +770,10 @@ function predictionCard(p) {
                   <span style="font-weight:700;color:var(--color-text)" data-mdiv-ts="${_md.firstDivTs ?? ''}">${minSec}</span>
                   ${deltaStr ? `<span style="margin-left:auto;color:var(--color-text-muted)">${deltaStr}</span>` : ''}
                 </div>
-                <div style="margin-top:3px;color:var(--color-text-muted);font-size:10px;font-family:var(--font-sans)">${entryHint}${_md.entryPolymarketPct != null ? ` · Entry K: ${_md.entryPolymarketPct.toFixed(0)}% → now ${livePolymarketPct != null ? livePolymarketPct.toFixed(0) : '?'}%` : ''}</div>
+                <div style="margin-top:3px;color:var(--color-text-muted);font-size:10px;font-family:var(--font-sans)">${entryHint}${_md.entryPolymarketPct != null ? ` · Entry K: ${_md.entryPolymarketPct.toFixed(0)}% → now ${liveKalshiPct != null ? liveKalshiPct.toFixed(0) : '?'}%` : ''}</div>
               </div>`;
       })()}
-          <!-- Kalshi order-routing box removed -- no Polymarket equivalent, user no longer trades Kalshi -->
+          <!-- Kalshi order routing remains manual; live 15m quote context is shown above. -->
         </div>
 
         ${rfRow}
@@ -881,7 +895,15 @@ function normalizePredictionCardData(raw, fallbackSym = '') {
     if (!sym) return { ...incoming, sym: '' };
 
     const prev = (typeof window !== 'undefined' && window._predictions?.[sym]) || null;
-    if (prev && prev.price === incoming.price && prev.score === incoming.score && prev.backtest === incoming.backtest && prev.holderMetrics === incoming.holderMetrics && prev.signal === incoming.signal) {
+    // Cold-start / feed-drop guard: window._predictions[sym] can hold a bare
+    // engine error object (e.g. { error: 'Insufficient data' }) written before
+    // it ever passed through this function, with no `sym` field. Every field
+    // in the equality check below is `undefined` on both sides in that case,
+    // so the bail-out below would return that sym-less object forever and the
+    // coin's card would vanish entirely (predArr.filter(p => p.sym) drops it)
+    // instead of showing a loading/error state. Require prev.sym so a bad
+    // cached value always gets rebuilt into a real object instead of reused.
+    if (prev && prev.sym && prev.price === incoming.price && prev.score === incoming.score && prev.backtest === incoming.backtest && prev.holderMetrics === incoming.holderMetrics && prev.signal === incoming.signal) {
       return prev; // bail - avoid unnecessary object allocation and DOM layout work
     }
 
@@ -962,7 +984,7 @@ function buildMarketDebugPanel() {
         const n = Number(v);
         if (!Number.isFinite(n) || n <= 0) return '–';
         const s = String(sym || '').toUpperCase();
-        const d = (s === 'XRP' || s === 'DOGE') ? 4 : (n < 1 ? 4 : 2);
+        const d = _fallbackPriceDecimals(s);
         return `$${n.toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d })}`;
       };
 
@@ -1380,91 +1402,101 @@ function buildMarketDebugPanel() {
 
 function buildQuickDecisionPanel(predArr) {
     if (!predArr || predArr.length === 0) return '';
+    try {
+      const pCoins = (typeof window !== 'undefined' && Array.isArray(window.PREDICTION_COINS))
+        ? window.PREDICTION_COINS
+        : (typeof PREDICTION_COINS !== 'undefined' && Array.isArray(PREDICTION_COINS) ? PREDICTION_COINS : []);
+      const coinWeights = (typeof window !== 'undefined' && window.COIN_WEIGHT)
+        || (typeof COIN_WEIGHT !== 'undefined' ? COIN_WEIGHT : { BTC: 'heavy', ETH: 'heavy', SOL: 'mid', XRP: 'mid', BNB: 'mid', DOGE: 'light', HYPE: 'light' });
 
-    const ordered = PREDICTION_COINS
-      .map(c => predArr.find(p => p.sym === c.sym))
-      .filter(Boolean);
+      const ordered = pCoins
+        .map(c => predArr.find(p => p.sym === c.sym))
+        .filter(Boolean);
 
-    let upCount = 0, downCount = 0, neutralCount = 0;
+      let upCount = 0, downCount = 0, neutralCount = 0;
 
-    const cards = ordered.map(pred => {
-      const dir = _safePredictionDirection(pred);
-      const dirClass = dir > 0 ? 'up' : dir < 0 ? 'down' : 'neutral';
-      const arrow = dir > 0 ? '▲' : dir < 0 ? '▼' : '→';
-      const label = dir > 0 ? 'UP' : dir < 0 ? 'DOWN' : 'FLAT';
-      const score = Number.isFinite(pred.score) ? (pred.score > 0 ? '+' : '') + pred.score.toFixed(2) : '—';
-      const horizon = pred.backtest?.summary?.preferredHorizon ? `${pred.backtest.summary.preferredHorizon}m` : '';
-      const mkt = pred.indicators?.mktSentiment;
-      const kPct = mkt?.kalshi != null ? Math.round(mkt.kalshi * 100) : null;
-      const pPct = mkt?.poly != null ? Math.round(mkt.poly * 100) : null;
-      const mktRow = (kPct != null || pPct != null) ? `
-        <div class="dc-mkt-row">
-          ${kPct != null ? `<span class="dc-badge-k">K:${kPct}%</span>` : ''}
-          ${pPct != null ? `<span class="dc-badge-p">P:${pPct}%</span>` : ''}
-        </div>` : '';
+      const cards = ordered.map(pred => {
+        const dir = _safePredictionDirection(pred);
+        const dirClass = dir > 0 ? 'up' : dir < 0 ? 'down' : 'neutral';
+        const arrow = dir > 0 ? '▲' : dir < 0 ? '▼' : '→';
+        const label = dir > 0 ? 'UP' : dir < 0 ? 'DOWN' : 'FLAT';
+        const score = Number.isFinite(pred.score) ? (pred.score > 0 ? '+' : '') + pred.score.toFixed(2) : '—';
+        const horizon = pred.backtest?.summary?.preferredHorizon ? `${pred.backtest.summary.preferredHorizon}m` : '';
+        const mkt = pred.indicators?.mktSentiment;
+        const kPct = mkt?.kalshi != null ? Math.round(mkt.kalshi * 100) : null;
+        const pPct = mkt?.poly != null ? Math.round(mkt.poly * 100) : null;
+        const mktRow = (kPct != null || pPct != null) ? `
+          <div class="dc-mkt-row">
+            ${kPct != null ? `<span class="dc-badge-k">K:${kPct}%</span>` : ''}
+            ${pPct != null ? `<span class="dc-badge-p">P:${pPct}%</span>` : ''}
+          </div>` : '';
 
-      // Ground state synthesis for this coin
-      const coin = PREDICTION_COINS.find(c => c.sym === pred.sym);
-      const wClass = COIN_WEIGHT[pred.sym] || 'light';
-      const cfmSnap = window.CFMEngine?.getAll?.()?.[pred.sym];
-      const gsVals = cfmSnap ? {
-        ...cfmSnap,
-        _emaCross: pred.indicators?.ema?.value ?? 0,
-        _obvSlope: pred.indicators?.obv?.slope ?? 0,
-        _volRatio: pred.indicators?.volume?.ratio ?? 1,
-        _bookImbal: pred.indicators?.book?.imbalance ?? 0,
-        _aggrBuy: pred.indicators?.flow?.buyRatio ?? 50,
-        _funding: pred.derivatives?.funding ?? 0,
-        _cvdSlope: pred.cvd?.slope ?? 0,
-        _squeezeScore: pred.squeeze ? (pred.squeeze.severity === 'high' ? 2 : 1) : 0,
-        _squeezeType: pred.squeeze?.type ?? null,
-        _cbPremium: cfmSnap.sources?.CB > 0 && cfmSnap.cfmRate > 0 ? ((cfmSnap.sources.CB - cfmSnap.cfmRate) / cfmSnap.cfmRate) * 100 : 0,
-        _mktConsensus: window.PredictionMarkets?.getCoin(pred.sym)?.combinedProb ?? null,
-        _xSentiment: window.SocialSentiment?.getCoin(pred.sym)?.score ?? null,
-      } : null;
-      const gs = gsVals ? computeGroundState(gsVals, pred, wClass) : null;
-      const eq = gs ? computeEntryQuality(gs, detectMarketRegime(pred), pred) : null;
+        // Ground state synthesis for this coin
+        const coin = pCoins.find(c => c.sym === pred.sym);
+        const wClass = coinWeights[pred.sym] || 'light';
+        const cfmSnap = window.CFMEngine?.getAll?.()?.[pred.sym];
+        const gsVals = cfmSnap ? {
+          ...cfmSnap,
+          _emaCross: pred.indicators?.ema?.value ?? 0,
+          _obvSlope: pred.indicators?.obv?.slope ?? 0,
+          _volRatio: pred.indicators?.volume?.ratio ?? 1,
+          _bookImbal: pred.indicators?.book?.imbalance ?? 0,
+          _aggrBuy: pred.indicators?.flow?.buyRatio ?? 50,
+          _funding: pred.derivatives?.funding ?? 0,
+          _cvdSlope: pred.cvd?.slope ?? 0,
+          _squeezeScore: pred.squeeze ? (pred.squeeze.severity === 'high' ? 2 : 1) : 0,
+          _squeezeType: pred.squeeze?.type ?? null,
+          _cbPremium: cfmSnap.sources?.CB > 0 && cfmSnap.cfmRate > 0 ? ((cfmSnap.sources.CB - cfmSnap.cfmRate) / cfmSnap.cfmRate) * 100 : 0,
+          _mktConsensus: window.PredictionMarkets?.getCoin(pred.sym)?.combinedProb ?? null,
+          _xSentiment: window.SocialSentiment?.getCoin(pred.sym)?.score ?? null,
+        } : null;
+        const gs = gsVals ? computeGroundState(gsVals, pred, wClass) : null;
+        const eq = gs ? computeEntryQuality(gs, detectMarketRegime(pred), pred) : null;
 
-      const gsRow = gs ? `
-        <div class="dc-gs-row">
-          <span class="dc-gs-score ${gs.dir}" title="Ground state: ${gs.stateLabel}">${gs.dir === 'up' ? '▲' : gs.dir === 'down' ? '▼' : '—'} ${gs.score >= 0 ? '+' : ''}${gs.score.toFixed(2)}</span>
-          <span class="gs-grade ${eq?.cls || 'wait'}">${eq?.label || '—'}</span>
-          ${gs.conflicted ? `<span class="dc-conflict">⚠ CONFLICT</span>` : ''}
-        </div>` : '';
+        const gsRow = gs ? `
+          <div class="dc-gs-row">
+            <span class="dc-gs-score ${gs.dir}" title="Ground state: ${gs.stateLabel}">${gs.dir === 'up' ? '▲' : gs.dir === 'down' ? '▼' : '—'} ${gs.score >= 0 ? '+' : ''}${gs.score.toFixed(2)}</span>
+            <span class="gs-grade ${eq?.cls || 'wait'}">${eq?.label || '—'}</span>
+            ${gs.conflicted ? `<span class="dc-conflict">⚠ CONFLICT</span>` : ''}
+          </div>` : '';
 
-      const { primary, secondary } = getDecisionRationale(pred);
+        const { primary, secondary } = getDecisionRationale(pred);
 
-      if (dir > 0) upCount++; else if (dir < 0) downCount++; else neutralCount++;
+        if (dir > 0) upCount++; else if (dir < 0) downCount++; else neutralCount++;
+
+        return `
+          <div class="decision-card ${dirClass}${gs?.conflicted ? ' conflicted' : ''}" data-scroll-pred="${pred.sym}" title="${pred.sym} — ${label}  score ${score}">
+            <span class="dc-sym">${pred.sym}</span>
+            <span class="dc-arrow">${arrow}</span>
+            <span class="dc-label">${label}</span>
+            <span class="dc-score">${score}</span>
+            ${horizon ? `<span class="dc-horizon">${horizon}</span>` : ''}
+            ${mktRow}
+            ${gsRow}
+            ${primary ? `<span class="dc-rationale-primary">${primary}</span>` : ''}
+            ${secondary ? `<span class="dc-rationale-secondary">${secondary}</span>` : ''}
+            ${pred.llm?.narration ? `<span class="dc-rationale-llm" style="color:var(--color-primary); font-style:italic; font-size: 0.9em; display:block; margin-top:4px;">✨ ${pred.llm.narration}</span>` : ''}
+          </div>`;
+      }).join('');
 
       return `
-        <div class="decision-card ${dirClass}${gs?.conflicted ? ' conflicted' : ''}" data-scroll-pred="${pred.sym}" title="${pred.sym} — ${label}  score ${score}">
-          <span class="dc-sym">${pred.sym}</span>
-          <span class="dc-arrow">${arrow}</span>
-          <span class="dc-label">${label}</span>
-          <span class="dc-score">${score}</span>
-          ${horizon ? `<span class="dc-horizon">${horizon}</span>` : ''}
-          ${mktRow}
-          ${gsRow}
-          ${primary ? `<span class="dc-rationale-primary">${primary}</span>` : ''}
-          ${secondary ? `<span class="dc-rationale-secondary">${secondary}</span>` : ''}
-          ${pred.llm?.narration ? `<span class="dc-rationale-llm" style="color:var(--color-primary); font-style:italic; font-size: 0.9em; display:block; margin-top:4px;">✨ ${pred.llm.narration}</span>` : ''}
-        </div>`;
-    }).join('');
-
-    return `
-      <div class="decision-band">
-        <div class="decision-band-header">
-          <span class="decision-band-title">⚡ Market Calls</span>
-          <div class="decision-band-tally">
-            <span class="tally-up">${upCount} ▲ UP</span>
-            <span class="tally-down">${downCount} ▼ DOWN</span>
-            <span class="tally-flat">${neutralCount} → FLAT</span>
+        <div class="decision-band">
+          <div class="decision-band-header">
+            <span class="decision-band-title">⚡ Market Calls</span>
+            <div class="decision-band-tally">
+              <span class="tally-up">${upCount} ▲ UP</span>
+              <span class="tally-down">${downCount} ▼ DOWN</span>
+              <span class="tally-flat">${neutralCount} → FLAT</span>
+            </div>
           </div>
-        </div>
-        <div class="decision-band-coins">
-          ${cards}
-        </div>
-      </div>`;
+          <div class="decision-band-coins">
+            ${cards}
+          </div>
+        </div>`;
+    } catch (err) {
+      console.error('[buildQuickDecisionPanel] Error:', err);
+      return '';
+    }
   }
 
 function getDecisionRationale(pred) {
@@ -1482,22 +1514,21 @@ function getDecisionRationale(pred) {
     let primary = '';
     let secondary = '';
 
-    // ---- 0. Polymarket odds — primary ground truth ────────────────────────
-    // Kalshi fetching is disabled -- kalshi15m is always null now, so this
-    // was already resolving through to combinedProb (Polymarket-derived) via
-    // the fallback below, just mislabeled "Kalshi".
+    // ---- 0. Live 15m odds — Kalshi is primary, Polymarket is fallback ----
     const _kCoinR = window.PredictionMarkets?.getCoin(pred?.sym);
-    const _kProbR = _kCoinR?.poly15m?.probability ?? _kCoinR?.kalshi15m?.probability ?? _kCoinR?.combinedProb ?? null;
-    const _strikeR = 'above'; // Polymarket Up/Down is always "beat the opening price"
+    const _k15mR = _kCoinR?.kalshi15m ?? null;
+    const _kProbR = _k15mR?.probability ?? _kCoinR?.poly15m?.probability ?? _kCoinR?.combinedProb ?? null;
+    const _venueR = _k15mR?.ticker ? 'Kalshi' : (_kCoinR?.poly15m ? 'Polymarket' : 'Market');
+    const _strikeR = (_k15mR?.strikeDir ?? 'above') === 'below' ? 'below' : 'above';
     const _yesDirR = _strikeR === 'below' ? 'DOWN' : 'UP';
     const _noDirR = _yesDirR === 'UP' ? 'DOWN' : 'UP';
     if (_kProbR !== null) {
       const kp = Math.round(_kProbR * 100);
-      if (_kProbR >= 0.68) primary = `Polymarket ${kp}% YES — crowd strongly pricing ${_yesDirR} for this strike`;
-      else if (_kProbR <= 0.32) primary = `Polymarket ${100 - kp}% NO — crowd strongly pricing ${_noDirR}`;
-      else if (_kProbR >= 0.55) primary = `Polymarket ${kp}% YES — market leans ${_yesDirR}`;
-      else if (_kProbR <= 0.45) primary = `Polymarket ${100 - kp}% NO — market leans ${_noDirR}`;
-      else primary = `Polymarket near 50/50 (${kp}%) — uncertain, model drives verdict`;
+      if (_kProbR >= 0.68) primary = `${_venueR} ${kp}% YES — crowd strongly pricing ${_yesDirR} for this strike`;
+      else if (_kProbR <= 0.32) primary = `${_venueR} ${100 - kp}% NO — crowd strongly pricing ${_noDirR}`;
+      else if (_kProbR >= 0.55) primary = `${_venueR} ${kp}% YES — market leans ${_yesDirR}`;
+      else if (_kProbR <= 0.45) primary = `${_venueR} ${100 - kp}% NO — market leans ${_noDirR}`;
+      else primary = `${_venueR} near 50/50 (${kp}%) — uncertain, model drives verdict`;
     }
 
     if (!primary) {
@@ -1734,12 +1765,14 @@ function evaluateSignal(orb, raw, vals = {}) {
 
 function buildCoinPeriodicTable(coin, cfm, pred) {
     const trendColor = cfm.trend === 'rising' ? 'var(--color-green)' : cfm.trend === 'falling' ? 'var(--color-red)' : 'var(--color-text-muted)';
-    const srcKeys = Object.keys(cfm.sources || {});
-    const weightClass = COIN_WEIGHT[coin.sym] || 'light';
-    const coinRank = WEIGHT_RANK[weightClass];
+    const coinWeights = (typeof window !== 'undefined' && window.COIN_WEIGHT) || (typeof COIN_WEIGHT !== 'undefined' ? COIN_WEIGHT : {});
+    const weightRanks = (typeof window !== 'undefined' && window.WEIGHT_RANK) || (typeof WEIGHT_RANK !== 'undefined' ? WEIGHT_RANK : { heavy: 3, mid: 2, light: 1 });
+    const orbitalAccess = (typeof window !== 'undefined' && window.ORBITAL_ACCESS) || (typeof ORBITAL_ACCESS !== 'undefined' ? ORBITAL_ACCESS : { all: 1, mid: 2, heavy: 3 });
+    const weightClass = coinWeights[coin.sym] || 'light';
+    const coinRank = weightRanks[weightClass] || 1;
 
-    const activeOrbitals = SUBORBITALS.filter(orb => {
-      const required = ORBITAL_ACCESS[orb.weight] || 1;
+    const activeOrbitals = (typeof SUBORBITALS !== 'undefined' ? SUBORBITALS : []).filter(orb => {
+      const required = orbitalAccess[orb.weight] || 1;
       return coinRank >= required;
     });
 
@@ -1883,14 +1916,17 @@ function buildCoinPeriodicTable(coin, cfm, pred) {
             ${partitionCards}
             ${sourceCards}
           </div>
-          ${cfm.dexMeta ? `
+          ${cfm.dexMeta ? (() => {
+            const _fmtUsd = typeof fmtCompactUsd === 'function' ? fmtCompactUsd : (window.fmtCompactUsd || (n => '$' + Number(n||0).toLocaleString()));
+            return `
             <div class="cfm-detail-strip">
               <span class="screener-chip">${cfm.dexMeta.chain || 'dex'} / ${cfm.dexMeta.dex || 'aggregated'}</span>
               <span class="screener-chip">${cfm.dexMeta.pair || 'pair n/a'}</span>
-              <span class="screener-chip">DEX Vol ${fmtCompactUsd(cfm.dexMeta.vol)}</span>
-              <span class="screener-chip">DEX Liq ${fmtCompactUsd(cfm.dexMeta.liq)}</span>
+              <span class="screener-chip">DEX Vol ${_fmtUsd(cfm.dexMeta.vol)}</span>
+              <span class="screener-chip">DEX Liq ${_fmtUsd(cfm.dexMeta.liq)}</span>
             </div>
-          ` : ''}
+          `;
+          })() : ''}
         </div>
       </div>
     `;
@@ -2053,13 +2089,17 @@ function computeGroundState(vals, pred, weightClass) {
   }
 
 function buildOpportunitiesPanel(cfmAll, predAll) {
+    const pCoins = (typeof PREDICTION_COINS !== 'undefined' && Array.isArray(PREDICTION_COINS))
+      ? PREDICTION_COINS
+      : (Array.isArray(window?.PREDICTION_COINS) ? window.PREDICTION_COINS : []);
+
     const allSignals = [];
     const coinEdges = {};
 
     const polymarketIntents = window.PolymarketOrchestrator?.update(predAll, cfmAll) ?? {};
 
     try {
-      PREDICTION_COINS.forEach(coin => {
+      pCoins.forEach(coin => {
         const ki = polymarketIntents[coin.sym];
         if (!ki) return;
         maybePlayContractArrivalBell(coin.sym, ki);
@@ -2106,7 +2146,7 @@ function buildOpportunitiesPanel(cfmAll, predAll) {
     } catch (orchLogErr) { console.warn('[orchLog]', orchLogErr.message); }
 
     if (window.DataLogger) {
-      PREDICTION_COINS.forEach(coin => {
+      pCoins.forEach(coin => {
         const pred = predAll[coin.sym];
         const cfm = cfmAll[coin.sym];
         if (!pred || !cfm || cfm.cfmRate === 0) return;
@@ -2136,8 +2176,10 @@ function buildOpportunitiesPanel(cfmAll, predAll) {
       const edge = calcEdge(coin.sym, cfm, pred);
       if (edge) coinEdges[coin.sym] = edge;
 
-      const wc = COIN_WEIGHT[coin.sym] || 'light';
-      const rank = WEIGHT_RANK[wc];
+      const coinWeights = (typeof window !== 'undefined' && window.COIN_WEIGHT) || (typeof COIN_WEIGHT !== 'undefined' ? COIN_WEIGHT : {});
+      const weightRanks = (typeof window !== 'undefined' && window.WEIGHT_RANK) || (typeof WEIGHT_RANK !== 'undefined' ? WEIGHT_RANK : { heavy: 3, mid: 2, light: 1 });
+      const wc = coinWeights[coin.sym] || 'light';
+      const rank = weightRanks[wc] || 1;
       const ind = pred?.indicators || {};
       const dexMeta = cfm.dexMeta || {};
       const cbPrice = cfm.sources?.CB || 0;

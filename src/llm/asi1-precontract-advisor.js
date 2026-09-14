@@ -109,15 +109,15 @@
     } catch (_) { /* fall through */ }
 
     const coin = window.PredictionMarkets?.getCoin?.(sym) || {};
-    const p15 = coin.poly15m || null;
+    const p15 = coin.kalshi15m || coin.poly15m || null;
     const p5 = coin.poly5m || null;
     let m = null;
     let horizon = '15m';
     if (preferHorizon === '5m') {
       if (p5?.slug) { m = p5; horizon = '5m'; }
     } else if (preferHorizon === '15m') {
-      if (p15?.slug) { m = p15; horizon = '15m'; }
-    } else if (p15?.slug) {
+      if (p15?.ticker || p15?.slug) { m = p15; horizon = '15m'; }
+    } else if (p15?.ticker || p15?.slug) {
       m = p15;
       horizon = '15m';
     } else if (p5?.slug) {
@@ -143,22 +143,23 @@
     const ptbOk = Number.isFinite(rawPtb) && rawPtb > 0 && isCanonicalPtbSource(ptbSource);
     const roundPtb = (n) => {
       if (!Number.isFinite(n) || n <= 0) return null;
-      const d = /^DOGE$/i.test(sym) ? 6 : /^XRP$/i.test(sym) ? 4 : 2;
+      const d = /^DOGE$/i.test(sym) ? 7 : /^(SOL|HYPE|XRP)$/i.test(sym) ? 4 : 2;
       const f = 10 ** d;
       return Math.round(n * f) / f;
     };
     const ptb = ptbOk ? roundPtb(rawPtb) : null;
     const ttc = Number(m.secondsToClose);
     const yes = Number(m.probability ?? m.upProbability ?? m.yesProb);
+    const isKalshi15m = horizon === '15m' && !!m.ticker;
 
     return {
       sym,
       horizon,
-      slug: m.slug,
+      slug: m.ticker || m.slug,
       live: m.live !== false,
       yesProb: Number.isFinite(yes) ? yes : null,
       priceToBeatNum: ptb,
-      priceToBeatSource: ptbOk ? (ptbSource || 'polymarket') : null,
+      priceToBeatSource: ptbOk ? (ptbSource || (isKalshi15m ? 'kalshi' : 'polymarket')) : null,
       secondsToClose: Number.isFinite(ttc) ? ttc : null,
       bestBid: m.bestBid ?? null,
       bestAsk: m.bestAsk ?? null,
@@ -170,8 +171,8 @@
       spot: Number.isFinite(spot) && spot > 0 ? spot : null,
       spotSource: 'pyth',
       deltaVsPtb: Number.isFinite(spot) && ptb != null ? spot - ptb : null,
-      oraclePolicy: 'pyth_spot_plus_polymarket_ptb_only',
-      oracleWarnings: ptb == null ? ['no_polymarket_ptb'] : [],
+      oraclePolicy: isKalshi15m ? 'pyth_spot_plus_kalshi_rti_strike_only' : 'pyth_spot_plus_polymarket_ptb_only',
+      oracleWarnings: ptb == null ? (isKalshi15m ? ['no_kalshi_strike'] : ['no_polymarket_ptb']) : [],
     };
   }
 
@@ -234,7 +235,9 @@
           depthImbalance: ctx.depthImbalance,
           nearTouchNotional: ctx.nearTouchNotional,
           liveDirection: ctx.liveDirection,
-          settlementRule: `Polymarket ${ctx.horizon}: Up if finishes above Polymarket PTB at close.`,
+          settlementRule: ctx.horizon === '5m'
+            ? `Polymarket 5m: Up if finishes above Polymarket PTB at close.`
+            : `Kalshi 15m: Up if finishes above the Kalshi strike at close (CF Benchmarks RTI 60s average).`,
         };
         if (ctx.horizon === '5m') snap.poly5m = block;
         else snap.poly15m = block;
@@ -252,7 +255,9 @@
           deltaVsPtb: ctx.deltaVsPtb,
           yesProb: ctx.yesProb,
           secondsToClose: ctx.secondsToClose,
-          rule: 'PTB is Polymarket window open only. Spot is Pyth only. Do not invent PTB.',
+          rule: ctx.horizon === '5m'
+            ? 'PTB is Polymarket window open only. Spot is Pyth only. Do not invent PTB.'
+            : 'Strike is the live Kalshi ticker only. Spot is Pyth only. Do not invent a strike.',
         };
         return applyModelPack(snap, pack);
       }
@@ -287,7 +292,9 @@
       currentPrice: ctx.spot,
       price: ctx.spot,
       priceSource: ctx.spotSource || 'pyth',
-      oraclePolicy: ctx.oraclePolicy || 'pyth_spot_plus_polymarket_ptb_only',
+      oraclePolicy: ctx.oraclePolicy || (is5
+        ? 'pyth_spot_plus_polymarket_ptb_only'
+        : 'pyth_spot_plus_kalshi_rti_strike_only'),
       oracleWarnings: ctx.oracleWarnings || [],
       poly5m: is5 ? polyBlock : null,
       poly15m: !is5 ? polyBlock : (window.PredictionMarkets?.getCoin?.(sym)?.poly15m || null),
@@ -305,7 +312,9 @@
         pythSpot: ctx.spot,
         pythSource: ctx.spotSource || 'pyth',
         deltaVsPtb: ctx.deltaVsPtb,
-        rule: 'PTB is Polymarket window open only. Spot is Pyth only. Do not invent PTB.',
+        rule: is5
+          ? 'PTB is Polymarket window open only. Spot is Pyth only. Do not invent PTB.'
+          : 'Strike is the live Kalshi ticker only. Spot is Pyth only. Do not invent a strike.',
       },
     };
     return applyModelPack(snap, pack);
@@ -419,7 +428,7 @@
         s = s.replace(/\$\s*([0-9]{1,3}(?:,[0-9]{3})*|[0-9]+)\.([0-9]{3,})/g, (full, intP, frac) => {
           const raw = Number(String(intP).replace(/,/g, '') + '.' + frac);
           if (!Number.isFinite(raw) || raw <= 0) return full;
-          const d = /^DOGE$/i.test(sym) ? 6 : /^XRP$/i.test(sym) ? 4 : 2;
+          const d = /^DOGE$/i.test(sym) ? 7 : /^(SOL|HYPE|XRP)$/i.test(sym) ? 4 : 2;
           const f = 10 ** d;
           const n = Math.round(raw * f) / f;
           return '$' + n.toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
