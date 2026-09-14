@@ -5,14 +5,9 @@
  * shape per account: asi1 (default), asi1-ultra (deep), asi1-mini (fast).
  * We also try undocumented `asi1-fast` last because this repo used it.
  *
- * Three Fetch.ai / ASI:One accounts (icloud first — fresh daily quota as of
- * 2026-08-22; gitgoin/mauro both maxed their day request quota that date
- * and neither has ever had asi1-ultra token allowance, limit=0 "eon"):
- *   mauro_fanelli@icloud.com  → ASI1_API_KEY_ICLOUD / secrets/ASI1_ICLOUD.txt
- *   gitgoin87@gmail.com       → ASI1_API_KEY_GITGOIN / secrets/ASI1_GITGOIN.txt
- *   maurofanellijr@gmail.com  → ASI1_API_KEY_MAURO / secrets/ASI1_MAURO.txt
- * Plus legacy aliases (ASI_ONE_API_KEY, ASI1_API_KEY_FALLBACK, ASI1_API.txt).
- * Label lines / `# account=` / `# skip` in those files tag or drop keys.
+ * The only supported ASI:One account is mauro@leaksnipe.win:
+ *   ASI1_API_KEY_LEAKSNIPE / secrets/ASI1_LEAKSNIPE.txt
+ * Secret-file `# role:` lines can route one key to 5m, 15m, or overall.
  *
  * Auth: Authorization: Bearer $ASI_ONE_API_KEY
  * Planner / Agentverse (playground): planner_mode + required x-session-id.
@@ -33,6 +28,15 @@ const ASI1_BASE_URL = (
 ).replace(/\/$/, '');
 
 const ASI1_CHAT_URL = `${ASI1_BASE_URL}/chat/completions`;
+
+function isCloudflareAiGatewayUrl(url) {
+  try {
+    return new URL(String(url)).hostname === 'gateway.ai.cloudflare.com';
+  } catch (_) {
+    return false;
+  }
+}
+
 // Default model selection set to asi1-mini for fast response & low quota usage
 const ASI1_QUICK_TICK_MODEL = process.env.ASI1_QUICK_TICK_MODEL || 'asi1-mini';
 const ASI1_DEEP_INSIGHT_MODEL = process.env.ASI1_DEEP_INSIGHT_MODEL || process.env.ASI1_MODEL || 'asi1-mini';
@@ -44,46 +48,19 @@ const ASI1_OFFICIAL_MODELS = Object.freeze(['asi1-ultra', 'asi1', 'asi1-mini']);
 const ASI1_EXTRA_MODELS = Object.freeze(['asi1-fast']);
 const ASI1_ALL_MODELS = Object.freeze([...ASI1_OFFICIAL_MODELS, ...ASI1_EXTRA_MODELS]);
 
-// mauro (Pro Unlimited primary) first — routes here whenever its key is present
-// and not rate-limited; icloud / gitgoin are secondary fallbacks.
 const ASI1_ACCOUNTS = Object.freeze([
   {
-    id: 'mauro',
-    email: 'maurofanellijr@gmail.com',
-    envNames: ['ASI1_API_KEY_MAURO', 'ASI_ONE_API_KEY_MAURO', 'ASI1_API_KEY', 'ASI_ONE_API_KEY'],
-    sessionEnv: 'ASI1_SESSION_MAURO',
-    secretFiles: [
-      'ASI1_MAUROFANELLIJR_ACCT.txt',
-      'ASI1 MAUROFANELLIJR ACCT.txt',
-      'ASI1_MAURO.txt',
-      'ASI1_maurofanellijr.txt',
-      'ASI1_API.txt',
-    ],
-  },
-  {
-    id: 'icloud',
-    email: 'mauro_fanelli@icloud.com',
-    envNames: ['ASI1_API_KEY_ICLOUD', 'ASI_ONE_API_KEY_ICLOUD'],
-    sessionEnv: 'ASI1_SESSION_ICLOUD',
-    secretFiles: ['ASI1_ICLOUD.txt'],
-  },
-  {
-    id: 'gitgoin',
-    email: 'gitgoin87@gmail.com',
-    envNames: ['ASI1_API_KEY_GITGOIN', 'ASI_ONE_API_KEY_GITGOIN', 'ASI1_API_KEY_GITGOIN87'],
-    sessionEnv: 'ASI1_SESSION_GITGOIN',
-    secretFiles: ['ASI1_GITGOIN.txt', 'ASI1_gitgoin87.txt'],
+    id: 'leaksnipe',
+    email: 'mauro@leaksnipe.win',
+    envNames: ['ASI1_API_KEY_LEAKSNIPE', 'ASI_ONE_API_KEY_LEAKSNIPE'],
+    sessionEnv: 'ASI1_SESSION_LEAKSNIPE',
+    secretFiles: ['ASI1_LEAKSNIPE.txt'],
   },
 ]);
 
 function inferAccountFromLabel(token) {
   const s = String(token || '').toLowerCase();
-  // Check icloud before the generic 'mauro' match below -- the icloud
-  // account's own address ('mauro_fanelli@icloud.com') contains 'mauro'
-  // and would otherwise get misfiled under the gmail/mauro account.
-  if (s.includes('icloud')) return { account: 'icloud', email: 'mauro_fanelli@icloud.com' };
-  if (s.includes('gitgoin')) return { account: 'gitgoin', email: 'gitgoin87@gmail.com' };
-  if (s.includes('mauro')) return { account: 'mauro', email: 'maurofanellijr@gmail.com' };
+  if (s.includes('leaksnipe')) return { account: 'leaksnipe', email: 'mauro@leaksnipe.win' };
   return null;
 }
 
@@ -112,12 +89,6 @@ function defaultCandidateModels(requestedModel, tier) {
 
 const KEY_ENV_NAMES = [
   ...ASI1_ACCOUNTS.flatMap((a) => a.envNames.map((env) => ({ env, account: a.id, email: a.email }))),
-  { env: 'ASI_ONE_API_KEY', account: 'primary', email: null },
-  { env: 'ASI1_API_KEY', account: 'primary', email: null },
-  { env: 'asi1_api_key2_fallback', account: 'fallback', email: null },
-  { env: 'ASI1_API_KEY2_FALLBACK', account: 'fallback', email: null },
-  { env: 'ASI1_API_KEY_FALLBACK', account: 'fallback', email: null },
-  { env: 'asi1_api_key_fallback', account: 'fallback', email: null },
 ];
 
 const fs = require('fs');
@@ -140,8 +111,9 @@ function collectKeysFromFile(fullPath, meta) {
   try {
     if (!fs.existsSync(fullPath)) return found;
     const content = fs.readFileSync(fullPath, 'utf8');
-    let account = meta.account;
-    let email = meta.email;
+  let account = meta.account;
+  let email = meta.email;
+  let roles = [];
     let skipNext = false;
     for (const raw of content.split(/\r?\n/)) {
       const trimmed = raw.trim();
@@ -155,6 +127,15 @@ function collectKeysFromFile(fullPath, meta) {
         } else {
           email = tag[1];
         }
+        skipNext = false;
+        continue;
+      }
+      const roleTag = trimmed.match(/^#\s*roles?\s*[:=]\s*(.+)$/i);
+      if (roleTag) {
+        roles = roleTag[1]
+          .split(/[,|]/)
+          .map((role) => role.trim().toLowerCase())
+          .filter(Boolean);
         skipNext = false;
         continue;
       }
@@ -180,6 +161,7 @@ function collectKeysFromFile(fullPath, meta) {
         value,
         account,
         email,
+        roles,
       });
     }
   } catch (_) { /* */ }
@@ -193,9 +175,6 @@ function readAsi1KeysFromSecrets() {
     ...ASI1_ACCOUNTS.flatMap((a) => a.secretFiles.map((file) => ({
       file, account: a.id, email: a.email,
     }))),
-    { file: 'ASI1_API.txt', account: 'shared', email: null },
-    { file: 'ASI_ONE_API_KEY.txt', account: 'shared', email: null },
-    { file: 'ASI1_API_KEY.txt', account: 'shared', email: null },
   ];
 
   for (const dir of secretSearchDirs()) {
@@ -211,15 +190,7 @@ function readAsi1KeysFromSecrets() {
   return foundKeys;
 }
 
-const _deadAsi1Keys = new Set([
-  'sk_71e8da9b7cb3411c9714acc836ed14232843a372617449ae97de0b5e77c86487', // icloud 402 blocked
-  'sk_6a43cbe47d1d479aa142c1e24be3835ae7553767384c4c6eb1b3b26eb9204650', // mauro old 401
-  'sk_b8b23a6c870b4ac29368ef6734c087da4970cc75244d470eb11a9bb6119a02ed', // fallback 402
-  'sk_46efc14221a74d2eb73c09939e6a7ef647614d6ea6144e5488eb742fc2dfad50', // api 401
-  'sk_64245ce6657948a3aa62a03cfbbecf359c223c31940a45e79ff83b4b57ba22b9', // mauro 402
-  'sk_821df6bdf2cb401b87ba42a4ebdf7d01eb8ebda3d4434220b335dfec3ffaebe5', // mauro 402
-  'sk_4dab599663b94db09603f3f4f73aa3f92e8a14aefbf84524a2b21db691b56e2a', // gitgoin 401
-]);
+const _deadAsi1Keys = new Set();
 
 let _cachedAsi1Keys = null;
 let _cachedAsi1KeysTs = 0;
@@ -230,45 +201,29 @@ function resolveAsi1ApiKeys(force = false) {
   if (!force && _cachedAsi1Keys && (now - _cachedAsi1KeysTs < KEYS_CACHE_TTL_MS)) {
     return _cachedAsi1Keys;
   }
-  const keys = [];
-  const seen = new Set();
+  const accountKeys = new Map();
   for (const spec of KEY_ENV_NAMES) {
     const value = String(process.env[spec.env] || '').trim();
-    if (!value || seen.has(value)) continue;
-    seen.add(value);
-    keys.push({
+    if (!value) continue;
+    const key = {
       env: spec.env,
       value,
-      account: spec.account === 'primary' ? 'mauro' : spec.account,
-      email: spec.email || (spec.account === 'mauro' ? 'maurofanellijr@gmail.com' : null),
-    });
+      account: spec.account,
+      email: spec.email,
+      roles: [],
+    };
+    if (!accountKeys.has(value)) accountKeys.set(value, key);
   }
   for (const k of readAsi1KeysFromSecrets()) {
-    if (seen.has(k.value)) continue;
-    seen.add(k.value);
-    keys.push(k);
+    const existing = accountKeys.get(k.value);
+    if (!existing) accountKeys.set(k.value, k);
+    else if (Array.isArray(k.roles) && k.roles.length && !(Array.isArray(existing.roles) && existing.roles.length)) {
+      accountKeys.set(k.value, k);
+    }
   }
 
-  const primaryKeyVal = 'sk_6e0fd5443f0142cdabb698464e0d1760259cf526025140a4a04d36f5b1e3f1fd';
-  const fallbackKeyVal = 'sk_3b69c96c28364341b1aadff583e38739329767058b0f44f8a17e7b61eaf2e0f9';
-  const preferredAccount = process.env.ASI1_ONLY_ACCOUNT || process.env.ASI1_PREFERRED_ACCOUNT || process.env.ASI1_PRIMARY_ACCOUNT || 'mauro';
-  keys.sort((a, b) => {
-    const aDead = _deadAsi1Keys.has(a.value);
-    const bDead = _deadAsi1Keys.has(b.value);
-    if (aDead && !bDead) return 1;
-    if (!aDead && bDead) return -1;
-
-    if (a.value === primaryKeyVal) return -1;
-    if (b.value === primaryKeyVal) return 1;
-    if (a.value === fallbackKeyVal) return -1;
-    if (b.value === fallbackKeyVal) return 1;
-
-    const aIsPref = a.account === preferredAccount || a.email === 'maurofanellijr@gmail.com';
-    const bIsPref = b.account === preferredAccount || b.email === 'maurofanellijr@gmail.com';
-    if (aIsPref && !bIsPref) return -1;
-    if (!aIsPref && bIsPref) return 1;
-    return 0;
-  });
+  const keys = Array.from(accountKeys.values());
+  if (process.env.ASI1_ONLY_ACCOUNT && process.env.ASI1_ONLY_ACCOUNT !== 'leaksnipe') keys.length = 0;
 
   _cachedAsi1Keys = keys;
   _cachedAsi1KeysTs = now;
@@ -425,19 +380,14 @@ async function chatCompletion(messagesOrOptions, maybeOptions = {}) {
   }
 
   const allKeys = resolveAsi1ApiKeys();
-  // onlyAccount pins a caller (e.g. the HUD's quick-narrative lane) to a
-  // single account with no cross-account fallback -- that cascade through
-  // every key is what makes a lone-wolf HUD poll take minutes instead of
-  // failing fast on its own path. Falls back to the full key list if the
-  // pinned account has no key configured, so a HUD call never hard-fails
-  // just because e.g. icloud creds are momentarily missing.
-  const keys = options.onlyAccount
-    ? (allKeys.filter((k) => k.account === options.onlyAccount).length
-      ? allKeys.filter((k) => k.account === options.onlyAccount)
-      : allKeys)
+  const accountKeys = options.onlyAccount
+    ? allKeys.filter((k) => k.account === options.onlyAccount)
     : allKeys;
+  const keys = options.keyRole
+    ? accountKeys.filter((k) => Array.isArray(k.roles) && k.roles.includes(options.keyRole))
+    : accountKeys;
   if (!keys.length) {
-    throw new Error('ASI:One API key missing — set ASI_ONE_API_KEY or asi1_api_key2_fallback');
+    throw new Error('ASI:One API key missing — set ASI1_API_KEY_LEAKSNIPE or secrets/ASI1_LEAKSNIPE.txt');
   }
 
   const requestedModel = resolveModelForTier(options.tier, options.model) || 'asi1-mini';
@@ -467,18 +417,13 @@ async function chatCompletion(messagesOrOptions, maybeOptions = {}) {
     const rateLimitedAccounts = new Set();
     for (const key of keys) {
       const { env, value, account, email } = key;
-      if (_deadAsi1Keys.has(value)) continue;
       if (account && rateLimitedAccounts.has(`${account}::${targetModel}`)) continue;
       try {
         const headers = {
           'Content-Type': 'application/json',
           ...(options.extraHeaders || {}),
         };
-        const accountSession = account === 'mauro'
-          ? process.env.ASI1_SESSION_MAURO
-          : account === 'gitgoin'
-            ? process.env.ASI1_SESSION_GITGOIN
-            : '';
+        const accountSession = account === 'leaksnipe' ? process.env.ASI1_SESSION_LEAKSNIPE : '';
         const plannerOn = options.plannerMode === true
           || options.planner_mode === true
           || process.env.ASI1_PLANNER_MODE === '1';
@@ -491,7 +436,7 @@ async function chatCompletion(messagesOrOptions, maybeOptions = {}) {
           || (plannerOn ? `wecrypto-${account || 'shared'}-${Date.now().toString(36)}` : '');
         if (sessionId) headers['x-session-id'] = String(sessionId);
         const reqHeaders = { ...headers, Authorization: `Bearer ${value}` };
-        if (ASI1_CHAT_URL.includes('gateway.ai.cloudflare.com') && CF_AIG_TOKEN) {
+        if (isCloudflareAiGatewayUrl(ASI1_CHAT_URL) && CF_AIG_TOKEN) {
           reqHeaders['cf-aig-authorization'] = `Bearer ${CF_AIG_TOKEN}`;
         }
         const response = await fetchWithTimeout(
@@ -679,7 +624,7 @@ function getDiagnostics() {
     lastLatencyMs: routeState.lastLatencyMs,
     lastMeasuredAt: routeState.lastMeasuredAt,
     aiGateway: {
-      enabled: ASI1_BASE_URL.includes('gateway.ai.cloudflare.com'),
+      enabled: isCloudflareAiGatewayUrl(ASI1_BASE_URL),
       accountId: CF_AIG_ACCOUNT_ID,
       gateway: CF_AIG_GATEWAY,
       customProvider: 'custom-asi1',

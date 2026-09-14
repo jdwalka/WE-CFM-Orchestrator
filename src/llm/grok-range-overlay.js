@@ -188,87 +188,70 @@
     return false;
   }
 
-  const POLY_15M_COIN_SLUGS = {
-    BTC: 'btc', ETH: 'eth', SOL: 'sol', XRP: 'xrp', DOGE: 'doge', HYPE: 'hype', BNB: 'bnb',
-  };
-
   /**
-   * Bind 15m Grok to the *active* Polymarket 15m Up/Down market only.
-   * Polymarket's "Up" outcome token IS "price finishes up over the window" --
-   * unlike Kalshi there's no floor_price/strike_type to interpret, and no
-   * inverted-contract case (strikeDir='below'). The window's own open price
-   * (priceToBeatNum, itself TWAP-sourced) is the reference, not a strike.
+   * Bind 15m Grok/ASI1 to the active Kalshi 15m Up/Down contract.
+   * Kalshi supplies the strike, strike direction, book, and venue settlement
+   * rule directly; no synthetic Polymarket PTB is invented here.
    */
-  function buildPoly15m(coin, market) {
-    let p = (market && market.poly15m) || null;
-    if (!p || !p.slug) {
+  function buildKalshi15m(coin, market) {
+    let p = (market && market.kalshi15m) || null;
+    if (!p || !p.ticker) {
       try {
-        const c = window.PredictionMarkets?.getCoin?.(coin);
-        if (c?.poly15m?.slug) p = c.poly15m;
+        const coinData = window.PredictionMarkets?.getCoin?.(coin);
+        if (coinData?.kalshi15m?.ticker) p = coinData.kalshi15m;
       } catch (_) {}
     }
-    if (!p || !p.slug) {
+    if (!p || !p.ticker) {
       try {
         const live15 = window.HourlyRangesPanel?.get15mMarket?.(coin);
-        if (live15?.slug) p = live15;
+        if (live15?.ticker) p = live15;
       } catch (_) {}
     }
 
     const now = Date.now();
-    let closeMs = p && p.closeTime ? Date.parse(p.closeTime) : NaN;
-
-    // Instant transition to the NEXT 15m window if missing or expired.
-    // Pending (no live data yet) rather than fabricating a price -- there's
-    // no synthetic PTB to fall back on the way Kalshi's floor_price allowed.
-    if (!p || !p.slug || !Number.isFinite(closeMs) || closeMs <= now) {
-      let next15mMs = Math.ceil(now / (15 * 60 * 1000)) * (15 * 60 * 1000);
-      if (next15mMs <= now) next15mMs += 15 * 60 * 1000;
-      const closeIso = new Date(next15mMs).toISOString();
-      const prefix = POLY_15M_COIN_SLUGS[coin];
-      const slug = prefix ? `${prefix}-updown-15m-${Math.floor(next15mMs / 1000)}` : null;
-
-      p = {
-        slug,
-        closeTime: closeIso,
-        probability: p?.probability ?? null,
-        priceToBeatNum: null,
-        title: `${coin} Up or Down 15M`,
-      };
-      closeMs = next15mMs;
-    }
-
-    const secondsToClose = Math.max(0, Math.round((closeMs - Date.now()) / 1000));
+    const closeMs = p?.closeTime ? Date.parse(p.closeTime) : NaN;
+    const secondsToClose = Number.isFinite(closeMs)
+      ? Math.max(0, Math.round((closeMs - now) / 1000))
+      : null;
     const yesProb = Number.isFinite(Number(p.probability)) ? Number(p.probability) : null;
-    const rawPtb = Number.isFinite(Number(p.priceToBeatNum)) ? Number(p.priceToBeatNum) : null;
-    const ptbSource = p.priceToBeatSource || p.ptbSource || null;
-    // AI must only see Polymarket-published PTB — not RTDS/title proxies
-    const ptbOk = rawPtb != null && rawPtb > 0 && isCanonicalPtbSource(ptbSource);
-    const dec = /^DOGE$/i.test(coin) ? 6 : /^XRP$/i.test(coin) ? 4 : 2;
-    const ptb = ptbOk ? Math.round(rawPtb * (10 ** dec)) / (10 ** dec) : null;
+    const targetPriceNum = Number.isFinite(Number(p.targetPriceNum)) ? Number(p.targetPriceNum) : null;
+    const targetPrice = p?.targetPrice
+      || (targetPriceNum != null
+        ? (window.CoinPrecision?.formatCoinStrike
+          ? window.CoinPrecision.formatCoinStrike(coin, targetPriceNum)
+          : `$${targetPriceNum}`)
+        : null);
 
     return {
-      live: !!(p.slug && yesProb != null),
-      slug: p.slug,
-      eventTicker: p.slug,
+      live: !!(p?.ticker && yesProb != null && Number.isFinite(closeMs) && closeMs > now),
+      venue: 'kalshi',
+      ticker: p?.ticker || null,
+      slug: p?.ticker || null,
+      eventTicker: p?.ticker || null,
       yesProb: yesProb ?? 0.50,
       noProb: yesProb != null ? Math.max(0.01, Math.min(0.99, 1 - yesProb)) : 0.50,
-      closeTime: p.closeTime,
+      closeTime: p?.closeTime || null,
       secondsToClose,
-      title: p.title || `${coin} Up or Down 15M`,
-      priceToBeatNum: ptb,
-      priceToBeatSource: ptbOk ? (ptbSource || 'polymarket') : null,
-      targetPrice: ptb != null ? (p.targetPrice || `$${ptb}`) : null,
-      targetPriceNum: ptb,
-      volume: p.volume != null ? Number(p.volume) : null,
-      tradable: true,
-      settlementRule: `Polymarket resolves "Up" if ${coin} finishes above Polymarket's published price-to-beat at 15m close.`,
+      title: p?.title || `${coin} Up or Down 15M`,
+      strikeDir: p?.strikeDir || null,
+      strikeType: p?.strikeType || null,
+      floorPrice: p?.floorPrice ?? null,
+      capPrice: p?.capPrice ?? null,
+      targetPrice,
+      targetPriceNum,
+      bestBid: p?.yesBid ?? p?.bestBid ?? null,
+      bestAsk: p?.yesAsk ?? p?.bestAsk ?? null,
+      volume: p?.volume != null ? Number(p.volume) : null,
+      liquidity: p?.liquidity != null ? Number(p.liquidity) : null,
+      tradable: p?.tradable !== false,
+      settlementVenue: 'CF Benchmarks RTI',
+      settlementRule: 'Kalshi 15m settles against the 60-second CF Benchmarks RTI average before expiry.',
     };
   }
-
   function buildHourlyLadder(coin, spot) {
-    // Polymarket has no live multi-strike hourly-range market today (unlike
-    // Kalshi's KX* series), so HourlyRangesPanel always returns its
-    // spot-centered synthetic distribution here -- see hourly-ranges-panel.js.
+    // Kalshi owns the hourly/15m product surface. HourlyRangesPanel supplies
+    // the synthetic range distribution used for the hourly pre-contract view;
+    // live 15m venue quotes come from PredictionMarkets.kalshi15m.
     let ranges = null;
     try {
       if (window.HourlyRangesPanel && typeof window.HourlyRangesPanel.getRanges === 'function') {
@@ -292,12 +275,64 @@
     return { ladder, spotBucket };
   }
 
+  function _normalCdf(value) {
+    const sign = value < 0 ? -1 : 1;
+    const x = Math.abs(value) / Math.SQRT2;
+    const t = 1 / (1 + 0.3275911 * x);
+    const y = 1 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * Math.exp(-x * x);
+    return 0.5 * (1 + sign * y);
+  }
+
+  function estimateKalshi15mFair(contract, currentPrice, prediction) {
+    if (!contract || !contract.live || !contract.ticker) return null;
+    const current = Number(currentPrice);
+    const target = Number(contract.targetPriceNum);
+    const secondsToClose = Number(contract.secondsToClose);
+    if (!Number.isFinite(current) || current <= 0
+      || !Number.isFinite(target) || target <= 0
+      || !Number.isFinite(secondsToClose) || secondsToClose <= 0) {
+      return null;
+    }
+
+    const atrPctRaw = Number(prediction?.volatility?.atrPct);
+    const atrPct = Number.isFinite(atrPctRaw) && atrPctRaw > 0
+      ? atrPctRaw / 100
+      : 0.0055;
+    const remainingFraction = Math.max(0.02, Math.min(1, secondsToClose / 900));
+    const sigma = current * atrPct * Math.sqrt(remainingFraction);
+    const z = (target - current) / (sigma || 1);
+    const pAbove = _normalCdf(z);
+    const strikeDir = String(contract.strikeDir || '').toLowerCase();
+    const probability = strikeDir === 'below' ? 1 - pAbove : pAbove;
+    const fairCents = Math.max(1, Math.min(99, probability * 100));
+    const askCents = Number.isFinite(Number(contract.bestAsk))
+      ? Number(contract.bestAsk) * 100
+      : null;
+    const residualCents = askCents != null ? askCents - fairCents : null;
+
+    return {
+      model_fair_cents: Math.round(fairCents * 10) / 10,
+      residual_cents: residualCents == null ? null : Math.round(residualCents * 10) / 10,
+      flagged: residualCents != null && residualCents > 5,
+      fair_status: askCents != null ? 'ok' : 'fair_only',
+      p_up: Math.round(probability * 1000) / 1000,
+      sigma_points: sigma,
+      seconds_to_close: Math.round(secondsToClose),
+      settlement_venue: 'CF Benchmarks RTI',
+      settlement_rule: '60-second CF Benchmarks RTI average before expiry',
+    };
+  }
+
   function buildRangeSnapshot(coin, horizonMinutes) {
     const rawPred = resolvePred(coin) || {};
     const pack = packPredForLlm(rawPred) || {};
     const market = resolveMarket(coin) || {};
     const current = resolvePrice(coin);
-    const poly15m = buildPoly15m(coin, market);
+    const kalshi15m = buildKalshi15m(coin, market);
+    kalshi15m.model_fair = estimateKalshi15mFair(kalshi15m, current, rawPred);
+    // Backward-compatible alias for legacy consumers. 15m is a Kalshi venue;
+    // new code must read `kalshi15m`.
+    const poly15m = kalshi15m;
     // ptb must be computed before memoryPackForPrompt() so ptbDefenseStats can
     // actually query for this level — it silently returns null without it,
     // which meant "PTB defense history: none recorded" regardless of whether
@@ -343,14 +378,15 @@
       rangePrediction: true,
       rangeHorizon: true,
       // Explicit product flags for LLM routing / prompts
+      kalshi15mContract: is15,
       poly15mContract: is15,
       hourlyRanges: !is15,
-      venue: is15 ? 'polymarket-15m' : 'polymarket-hourly',
+      venue: is15 ? 'kalshi-15m' : 'kalshi-hourly',
       currentPrice: current,
       price: current,
       priceSource: 'pyth',
-      oraclePolicy: 'pyth_spot_plus_polymarket_ptb_only',
-      oracleWarnings: is15 && ptb == null ? ['no_polymarket_ptb'] : [],
+      oraclePolicy: 'pyth_spot_plus_kalshi_rti_strike_only',
+      oracleWarnings: is15 && ptb == null ? ['no_kalshi_strike'] : [],
       direction: modelDir,
       modelDirection: modelDir,
       score: modelScore,
@@ -364,21 +400,24 @@
       sessionMemory,
       analyticsMemory: sessionMemory,
       // THE contract Grok/ASI1 must analyze for 15m
+      kalshi15m,
       poly15m,
-      activeContract: is15 ? poly15m : null,
+      activeContract: is15 ? kalshi15m : null,
       rangeLadder: ladder,
       spotBucket,
-      polymarketOracle: {
-        slug: poly15m.slug,
-        priceToBeatNum: ptb,
-        priceToBeatSource: poly15m.priceToBeatSource || null,
+      kalshiOracle: {
+        ticker: kalshi15m.ticker,
+        targetPriceNum: ptb,
+        strikeDir: kalshi15m.strikeDir,
         pythSpot: current,
         pythSource: 'pyth',
         pathDir: deltaVsPtb == null ? null : (Math.abs(deltaVsPtb / (ptb || 1)) < 0.00005 ? 'FLAT' : (deltaVsPtb > 0 ? 'UP' : 'DOWN')),
         deltaVsPtb,
-        yesProb: poly15m.yesProb,
-        secondsToClose: poly15m.secondsToClose,
-        rule: 'PTB is Polymarket window open only. Spot is Pyth only. Do not invent PTB.',
+        yesProb: kalshi15m.yesProb,
+        secondsToClose: kalshi15m.secondsToClose,
+        settlementVenue: kalshi15m.settlementVenue,
+        model_fair: kalshi15m.model_fair,
+        rule: 'Kalshi strike/RTI is authoritative. Spot is Pyth only. Do not invent the strike.',
       },
       higherTF: {
         '5m': {
@@ -394,12 +433,14 @@
           })(),
         },
         '15m': {
-          prob: poly15m.yesProb ?? null,
-          slug: poly15m.slug,
-          live: poly15m.live,
-          priceToBeatNum: poly15m.priceToBeatNum,
-          priceToBeatSource: poly15m.priceToBeatSource,
-          secondsToClose: poly15m.secondsToClose,
+          prob: kalshi15m.yesProb ?? null,
+          ticker: kalshi15m.ticker,
+          slug: kalshi15m.ticker,
+          live: kalshi15m.live,
+          targetPriceNum: kalshi15m.targetPriceNum,
+          priceToBeatNum: kalshi15m.targetPriceNum,
+          strikeDir: kalshi15m.strikeDir,
+          secondsToClose: kalshi15m.secondsToClose,
           open: sessionMemory.open15m || null,
           closed: sessionMemory.windows15m || null,
         },
@@ -421,10 +462,14 @@
         regime: pack.regime || rawPred.regime || null,
         agreement: pack.agreement || null,
         indicators: pack.indicators || null,
-        poly15mYes: poly15m.yesProb,
-        poly15mSlug: poly15m.slug,
+        kalshi15mYes: kalshi15m.yesProb,
+        kalshi15mTicker: kalshi15m.ticker,
+        kalshi15mModelFairCents: kalshi15m.model_fair?.model_fair_cents ?? null,
+        kalshi15mResidualCents: kalshi15m.model_fair?.residual_cents ?? null,
+        poly15mYes: kalshi15m.yesProb,
+        poly15mSlug: kalshi15m.ticker,
         priceToBeatNum: ptb,
-        priceToBeatSource: poly15m.priceToBeatSource,
+        strikeDir: kalshi15m.strikeDir,
       },
       xaiMaxTokens: 1400,
     };
@@ -759,21 +804,22 @@
       snapshot.rangePrediction = true;
       const sc = snapshot.sessionMemory && snapshot.sessionMemory.sampleCount;
 
-      // 15m: only analyze when we have a live Polymarket 15m market
+      // 15m: only analyze when we have a live Kalshi 15m market
       if (horizonMinutes === 15) {
-        const c = snapshot.poly15m;
-        if (!c || !c.slug || !c.live) {
-          console.warn(`[GrokRange] skip ${coin} 15m — no live Polymarket 15m market (need PredictionMarkets.getCoin().poly15m)`);
+        const c = snapshot.kalshi15m;
+        if (!c || !c.ticker || !c.live) {
+          console.warn(`[GrokRange] skip ${coin} 15m — no live Kalshi 15m market (need PredictionMarkets.getCoin().kalshi15m)`);
           _guidance[key][coin] = {
             ts: now,
             horizonMinutes: 15,
-            error: 'no-live-poly-15m-market',
+            error: 'no-live-kalshi-15m-market',
+            kalshi15m: c || null,
             poly15m: c || null,
           };
           return;
         }
         console.log(
-          `[GrokRange] firing ${coin} 15m (ASI1-primary) ON ${c.slug} yes=${c.yesProb != null ? (c.yesProb * 100).toFixed(1) + '%' : '?'} ttc=${c.secondsToClose}s ptb=${c.priceToBeatNum ?? 'n/a'}`
+          `[GrokRange] firing ${coin} 15m (ASI1-primary) ON ${c.ticker} yes=${c.yesProb != null ? (c.yesProb * 100).toFixed(1) + '%' : '?'} ttc=${c.secondsToClose}s strike=${c.targetPriceNum ?? 'n/a'}`
         );
       } else {
         console.log(`[GrokRange] firing ${coin} ${key} ASI1-primary samples=${sc ?? 0} ladder=${(snapshot.rangeLadder || []).length}`);
@@ -1186,6 +1232,9 @@
     getAll,
     buildRangeSnapshot,
     livePathFromSnapshot,
+    get15mModelFair(contract, currentPrice, prediction) {
+      return estimateKalshi15mFair(contract, currentPrice, prediction || resolvePred(contract?.coin));
+    },
   };
 
   if (typeof window !== 'undefined') {

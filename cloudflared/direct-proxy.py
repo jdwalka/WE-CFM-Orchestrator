@@ -4,7 +4,7 @@
 Binds only to 127.0.0.1:PORT for localhost-only access (not exposed to network).
 Enforces an allowlist of geofenced endpoints to prevent abuse as an unrestricted
 outbound proxy. All CONNECT requests to non-whitelisted hosts are rejected with 403.
-"""HTTP CONNECT proxy for WeCrypto directHosts.
+HTTP CONNECT proxy for WeCrypto directHosts.
 
 Windows Electron sockets are captured by Tailscale RouteAll/exit.
 WSL sockets with a Windows Ethernet /32 punch reach ASI1 in ~15ms.

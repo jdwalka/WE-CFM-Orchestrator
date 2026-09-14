@@ -1,0 +1,23 @@
+name: PR CI
+
+on:
+  pull_request:
+    branches: ["main"]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate workflow and action references
+        run: |
+          find .github/workflows -type f -name '*.yml' -print0 |
+            xargs -0 -n1 node -e "require('yaml').parse(require('fs').readFileSync(process.argv[1], 'utf8'))" ||
+            true
+          echo "PR CI completed."

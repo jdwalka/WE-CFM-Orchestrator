@@ -42,11 +42,11 @@ class PythSettlementValidator {
   _getPythKey() {
     try {
       if (typeof window !== 'undefined' && typeof window.resolveRuntimeKey === 'function') {
-        const k = window.resolveRuntimeKey('PYTH_PRO_API_KEY') || window.resolveRuntimeKey('PYTH_API_KEY');
+        const k = window.resolveRuntimeKey('PYTH_PRO_API_KEY');
         if (k) return k;
       }
     } catch (_) {}
-    return (typeof process !== 'undefined' && (process.env?.PYTH_PRO_API_KEY || process.env?.PYTH_API_KEY || process.env?.PYTH_LAZER_TOKEN)) || '';
+    return (typeof process !== 'undefined' && process.env?.PYTH_PRO_API_KEY) || '';
   }
 
   async fetchJsonWithTimeout(url, timeoutMs = this.requestTimeoutMs) {

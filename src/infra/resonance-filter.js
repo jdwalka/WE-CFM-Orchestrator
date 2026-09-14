@@ -36,8 +36,9 @@
    *   Lower = smoother/laggier, higher = closer to passing the raw signal.
    * @returns {{ update(value: number, nowMs?: number): number, reset(): void, value: number|null }}
    */
-  function createLowPassFilter(cutoffHz) {
+  function createLowPassFilter(cutoffHz, gapReseedMs = 3000) {
     if (!(cutoffHz > 0)) throw new Error('createLowPassFilter: cutoffHz must be > 0');
+    if (!(gapReseedMs >= 0)) throw new Error('createLowPassFilter: gapReseedMs must be >= 0');
     let filtered = null;
     let lastTs = null;
 
@@ -54,8 +55,8 @@
       lastTs = now;
       if (dtSec === 0) return filtered; // duplicate-timestamp tick, no time to filter over
 
-      // After a prolonged disconnection gap (> 3s), reseed directly to avoid lag/ramping
-      if (dtSec > 3.0) {
+      // After a prolonged disconnection gap, reseed directly to avoid lag/ramping
+      if (dtSec * 1000 > gapReseedMs) {
         filtered = v;
         return filtered;
       }
