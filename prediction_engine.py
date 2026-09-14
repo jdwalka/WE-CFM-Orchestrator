@@ -40,17 +40,30 @@ REGIME_LOOKBACK_HOURS = 24 * 30      # 30 days of hourly candles
 DECAY_TABLE_MINUTES = [20, 15, 10, 5]
 RESIDUAL_FLAG_THRESHOLD_CENTS = 5.0  # flag ladder bands >5¢ above model
 STUDENT_T_DF_DEFAULT = 4.0           # fallback if empirical fit is unstable
-TAIL_ADJUSTMENT_MAX = 0.50
+TAIL_ADJUSTMENT_MAX_CENTS = 0.03
+TAIL_SPIKE_COMPONENT_MAX_CENTS = 0.02
+TAIL_WICK_COMPONENT_MAX_CENTS = 0.02
 WICK_RATIO_MIN_BODY_PCT = 0.01       # ignore near-zero-body ratio artifacts
 WICK_RATIO_MAX = 10.0                 # clamp one-candle ratio spikes
-TAIL_SPIKE_FREQUENCY_MIN = 0.001
-TAIL_WICK_SLOPE_MIN = 0.50
+TAIL_SPIKE_FREQUENCY_MIN = 0.0005
+TAIL_WICK_SLOPE_MIN = 0.25
 ALT_ALIGNMENT_RATIO_UP = 0.55
 ALT_ALIGNMENT_RATIO_DOWN = 0.45
 ALT_ALIGNMENT_MINUTES = 10
 ALT_LEAD_LAG_MINUTES = [1, 2, 3, 4, 5]
 ALT_LEAD_LAG_SAMPLE_SIZE = 120
 ALT_SIGNAL_MIN_STRENGTH = 0.002
+LEAD_LAG_BACKTEST_MIN_LAGS = 3
+LEAD_LAG_BACKTEST_MIN_CORRELATION = 0.05
+LEAD_LAG_BACKTEST_MIN_CONSISTENT_LAGS = 3
+CROSS_VENUE_DIVERGENCE_HISTORY_SIZE = 100
+CROSS_VENUE_DIVERGENCE_MIN_HISTORY = 20
+CROSS_VENUE_TAIL_PROBABILITY_MAX = 0.20
+CROSS_VENUE_TAIL_ADJUSTMENT = 0.15
+POSITIONING_FUNDING_NORMALIZATION = 0.001
+POSITIONING_OI_DELTA_NORMALIZATION = 5.0
+POSITIONING_SKEW_MAX_PCT = 0.03
+WICK_TREND_FLAT_SLOPE = 0.05
 SPOT_STALENESS_MIN_PCT_OF_SPOT = 0.0003
 SPOT_STALENESS_BAND_WIDTH_PCT = 0.10
 KALSHI_SETTLEMENT_VENUE = "CF Benchmarks RTI"
@@ -60,9 +73,15 @@ KALSHI_15M_SERIES = "KXBTC15M"
 
 _HEADERS = {"User-Agent": "wecryp-truffle/1.0 (+https://agentverse.ai)"}
 COINBASE_CANDLES = "https://api.exchange.coinbase.com/products/BTC-USD/candles"
+BINANCE_SPOT_URL = "https://api.binance.com/api/v3/ticker/bookTicker"
+OKX_SPOT_URL = "https://www.okx.com/api/v5/market/ticker"
+BINANCE_FUTURES_URL = "https://fapi.binance.com/fapi/v1"
 MARKET_DATA_WORKER_URL = os.getenv(
     "MARKET_DATA_WORKER_URL", "https://scalper-market-data.gitgoin87.workers.dev"
 )
+
+_cross_venue_divergence_history = []
+_open_interest_history = []
 
 
 def _format_kalshi_strike(value) -> str:
@@ -151,6 +170,169 @@ def get_kalshi_ladder() -> dict:
         return payload
     except requests.RequestException as e:
         return {"status": "error", "candidate_bands": [], "error": str(e)}
+
+
+def _percentile(values: list, percentile: float) -> float | None:
+    """Return a deterministic percentile without external dependencies."""
+    ordered = sorted(value for value in values if isinstance(value, (int, float)) and math.isfinite(value))
+    if not ordered:
+        return None
+    position = (len(ordered) - 1) * percentile
+    lower = math.floor(position)
+    upper = math.ceil(position)
+    if lower == upper:
+        return ordered[lower]
+    fraction = position - lower
+    return ordered[lower] * (1.0 - fraction) + ordered[upper] * fraction
+
+
+def get_cross_venue_spot_prices() -> list[float]:
+    """Fetch concurrent BTC spot prices from Coinbase, Binance, and OKX."""
+    prices = []
+    coinbase = get_spot()
+    if coinbase.get("price") is not None:
+        prices.append(float(coinbase["price"]))
+
+    try:
+        response = requests.get(
+            BINANCE_SPOT_URL,
+            params={"symbol": "BTCUSDT"},
+            headers=_HEADERS,
+            timeout=10,
+        )
+        response.raise_for_status()
+        price = float(response.json()[0]["price"])
+        if math.isfinite(price) and price > 0:
+            prices.append(price)
+    except (requests.RequestException, KeyError, IndexError, TypeError, ValueError):
+        pass
+
+    try:
+        response = requests.get(
+            OKX_SPOT_URL,
+            params={"instId": "BTC-USDT"},
+            headers=_HEADERS,
+            timeout=10,
+        )
+        response.raise_for_status()
+        price = float(response.json()["data"][0]["last"])
+        if math.isfinite(price) and price > 0:
+            prices.append(price)
+    except (requests.RequestException, KeyError, IndexError, TypeError, ValueError):
+        pass
+    return prices
+
+
+def get_cross_venue_divergence() -> dict:
+    """Measure cross-venue spot dispersion against its rolling 90th percentile."""
+    prices = get_cross_venue_spot_prices()
+    if len(prices) < 2:
+        return {
+            "current_pct": None,
+            "rolling_90th_pct_pct": None,
+            "active": False,
+            "regime": "unavailable",
+            "sample_size": len(prices),
+            "history_size": len(_cross_venue_divergence_history),
+            "tail_adjustment": 0.0,
+            "reason": "fewer than two venue prices available",
+        }
+
+    median_price = _median(prices)
+    current = ((max(prices) - min(prices)) / median_price) * 100 if median_price > 0 else 0.0
+    threshold = (
+        _percentile(_cross_venue_divergence_history, 0.90)
+        if len(_cross_venue_divergence_history) >= CROSS_VENUE_DIVERGENCE_MIN_HISTORY
+        else None
+    )
+    active = threshold is not None and current > threshold
+    _cross_venue_divergence_history.append(current)
+    del _cross_venue_divergence_history[:-CROSS_VENUE_DIVERGENCE_HISTORY_SIZE]
+    return {
+        "current_pct": round(current, 5),
+        "rolling_90th_pct_pct": round(threshold, 5) if threshold is not None else None,
+        "active": active,
+        "regime": "elevated" if active else "normal",
+        "sample_size": len(prices),
+        "history_size": len(_cross_venue_divergence_history),
+        "tail_adjustment": CROSS_VENUE_TAIL_ADJUSTMENT if active else 0.0,
+        "reason": (
+            "cross-venue dispersion exceeds its rolling 90th percentile"
+            if active
+            else "cross-venue dispersion is within its rolling 90th percentile"
+        ),
+    }
+
+
+def _positioning_skew(funding_rate: float | None, open_interest_delta_pct: float | None) -> float:
+    """Mild contrarian skew from funding, amplified by OI expansion."""
+    if funding_rate is None or not math.isfinite(funding_rate):
+        return 0.0
+    funding_component = max(
+        -1.0,
+        min(1.0, -funding_rate / POSITIONING_FUNDING_NORMALIZATION),
+    )
+    if open_interest_delta_pct is None or not math.isfinite(open_interest_delta_pct):
+        return max(-POSITIONING_SKEW_MAX_PCT, min(POSITIONING_SKEW_MAX_PCT, funding_component * 0.02))
+
+    oi_component = max(
+        -1.0,
+        min(1.0, open_interest_delta_pct / POSITIONING_OI_DELTA_NORMALIZATION),
+    )
+    skew = funding_component * 0.02 + funding_component * oi_component * 0.01
+    return max(-POSITIONING_SKEW_MAX_PCT, min(POSITIONING_SKEW_MAX_PCT, skew))
+
+
+def get_positioning_skew() -> dict:
+    """Current funding/OI positioning used as a bounded drift skew."""
+    funding_rate = None
+    open_interest = None
+    try:
+        response = requests.get(
+            f"{BINANCE_FUTURES_URL}/premiumIndex",
+            params={"symbol": "BTCUSDT"},
+            headers=_HEADERS,
+            timeout=10,
+        )
+        response.raise_for_status()
+        funding_rate = float(response.json()["lastFundingRate"])
+    except (requests.RequestException, KeyError, TypeError, ValueError):
+        pass
+
+    try:
+        response = requests.get(
+            f"{BINANCE_FUTURES_URL}/openInterest",
+            params={"symbol": "BTCUSDT"},
+            headers=_HEADERS,
+            timeout=10,
+        )
+        response.raise_for_status()
+        open_interest = float(response.json()["openInterest"])
+    except (requests.RequestException, KeyError, TypeError, ValueError):
+        pass
+
+    open_interest_delta_pct = None
+    if open_interest is not None and math.isfinite(open_interest) and open_interest > 0:
+        previous = _open_interest_history[-1] if _open_interest_history else None
+        if previous is not None and previous > 0:
+            open_interest_delta_pct = ((open_interest - previous) / previous) * 100
+        _open_interest_history.append(open_interest)
+        del _open_interest_history[:-CROSS_VENUE_DIVERGENCE_HISTORY_SIZE]
+
+    skew = _positioning_skew(funding_rate, open_interest_delta_pct)
+    return {
+        "funding_rate": funding_rate,
+        "open_interest": open_interest,
+        "open_interest_delta_pct": (
+            round(open_interest_delta_pct, 5)
+            if open_interest_delta_pct is not None
+            else None
+        ),
+        "skew_pct": round(skew, 5),
+        "active": funding_rate is not None,
+        "max_skew_pct": POSITIONING_SKEW_MAX_PCT,
+        "rule": "contrarian funding with OI expansion as confidence",
+    }
 
 
 def _parse_kalshi_time(value) -> datetime | None:
@@ -533,6 +715,62 @@ def _alt_lead_lag_correlation(alt_returns: dict, btc_returns: list) -> dict:
     return result
 
 
+def _lead_lag_backtest_gate(lag_averages: dict) -> dict:
+    """Require sign-consistent, material lag evidence before signal output."""
+    values = [value for value in lag_averages.values() if isinstance(value, (int, float))]
+    if len(values) < LEAD_LAG_BACKTEST_MIN_LAGS:
+        return {
+            "passed": False,
+            "status": "excluded",
+            "reason": "insufficient lag windows",
+            "consistent_lags": 0,
+            "average_correlation": 0.0,
+        }
+
+    average_correlation = sum(values) / len(values)
+    if abs(average_correlation) < LEAD_LAG_BACKTEST_MIN_CORRELATION:
+        return {
+            "passed": False,
+            "status": "excluded",
+            "reason": "average lead-lag correlation below floor",
+            "consistent_lags": 0,
+            "average_correlation": round(average_correlation, 4),
+        }
+
+    direction = 1 if average_correlation > 0 else -1
+    consistent_lags = sum(
+        1 for value in values if value * direction >= LEAD_LAG_BACKTEST_MIN_CORRELATION
+    )
+    passed = consistent_lags >= LEAD_LAG_BACKTEST_MIN_CONSISTENT_LAGS
+    return {
+        "passed": passed,
+        "status": "stable" if passed else "excluded",
+        "reason": (
+            "lead-lag sign is stable and material"
+            if passed
+            else "lead-lag sign is unstable across lag windows"
+        ),
+        "consistent_lags": consistent_lags,
+        "average_correlation": round(average_correlation, 4),
+    }
+
+
+def _filter_alt_signal(signal: dict | None) -> tuple[dict | None, dict]:
+    """Suppress unstable lead-lag signals instead of emitting neutral noise."""
+    if not isinstance(signal, dict) or signal.get("lead_lag_status") != "stable":
+        return None, {
+            "gated": True,
+            "status": "excluded",
+            "reason": "lead-lag backtest gate rejected the signal",
+        }
+    gate = signal.get("lead_lag_backtest", {})
+    return signal, {
+        "gated": True,
+        "status": "stable",
+        "reason": gate.get("reason", "lead-lag backtest gate passed"),
+    }
+
+
 def get_alt_signal() -> dict:
     """Cross-asset SOL/ETH lead-lag and taker-flow alignment gate."""
     btc = _get_alt_candles("BTC-USD", 240)
@@ -578,14 +816,8 @@ def get_alt_signal() -> dict:
             best_correlation = average_correlation
             best_lag = lag
 
-    def lead_lag_is_stable() -> bool:
-        if len(lag_averages) < 3:
-            return False
-        positive = sum(1 for value in lag_averages.values() if value >= 0.05)
-        negative = sum(1 for value in lag_averages.values() if value <= -0.05)
-        return positive >= 3 or negative >= 3
-
-    lead_lag_status = "stable" if lead_lag_is_stable() else "unstable"
+    lead_lag_backtest = _lead_lag_backtest_gate(lag_averages)
+    lead_lag_status = "stable" if lead_lag_backtest["passed"] else "unstable"
     if lead_lag_status == "unstable":
         best_lag = None
         best_correlation = 0.0
@@ -654,6 +886,8 @@ def get_alt_signal() -> dict:
         "lead_lag_corr": round(best_correlation, 4),
         "best_lag_minutes": best_lag,
         "lead_lag_status": lead_lag_status,
+        "lead_lag_averages": {str(lag): round(value, 4) for lag, value in lag_averages.items()},
+        "lead_lag_backtest": lead_lag_backtest,
         "influence_active": False,
         "validation_status": "diagnostic_only_until_backtested",
         "eth": {
@@ -682,26 +916,37 @@ def get_tail_diagnostics(wick_stats: dict) -> dict:
     late_frequency = wick_stats.get("late_window_spike_frequency_per_hour", 0.0)
     spike_condition_met = late_frequency > TAIL_SPIKE_FREQUENCY_MIN
     wick_condition_met = slope >= TAIL_WICK_SLOPE_MIN
-    if spike_condition_met and wick_condition_met:
-        spike_component = min(0.30, late_frequency * 0.12)
-        wick_component = min(0.20, slope * 0.10)
-        adjustment = min(TAIL_ADJUSTMENT_MAX, spike_component + wick_component)
+    spike_component = (
+        min(TAIL_SPIKE_COMPONENT_MAX_CENTS, late_frequency * 0.20)
+        if spike_condition_met
+        else 0.0
+    )
+    wick_component = (
+        min(TAIL_WICK_COMPONENT_MAX_CENTS, slope * 0.04)
+        if wick_condition_met
+        else 0.0
+    )
+    adjustment = min(TAIL_ADJUSTMENT_MAX_CENTS, spike_component + wick_component)
+    if slope > WICK_TREND_FLAT_SLOPE:
+        trend_status = "rising"
+    elif slope < -WICK_TREND_FLAT_SLOPE:
+        trend_status = "falling"
     else:
-        spike_component = 0.0
-        wick_component = 0.0
-        adjustment = 0.0
-    status = "elevated" if adjustment >= 0.15 else "normal"
+        trend_status = "flat"
+    tail_status = "elevated" if adjustment > 0 else "normal"
     return {
         "late_window_spike_frequency_per_hour": late_frequency,
         "wick_ratio_current": round(wick_ratios[-1], 3) if wick_ratios else 0.0,
         "wick_ratio_slope": round(slope, 4),
         "wick_ratio_5h_trend": [round(value, 3) for value in wick_ratios[-5:]],
-        "wick_ratio_trend_status": status,
+        "wick_ratio_trend_status": trend_status,
+        "tail_pressure_status": tail_status,
         "tail_adjustment": round(adjustment, 4),
+        "tail_adjustment_cents": round(adjustment * 100, 2),
         "evidence": {
             "spike_condition_met": spike_condition_met,
             "wick_condition_met": wick_condition_met,
-            "requires_both_conditions": True,
+            "requires_both_conditions": False,
             "spike_component": round(spike_component, 4),
             "wick_component": round(wick_component, 4),
         },
@@ -715,8 +960,12 @@ def get_tail_diagnostics(wick_stats: dict) -> dict:
 
 
 def _apply_tail_adjustment(probability: float, adjustment: float) -> float:
-    """Raise the chance of a touch without allowing adjustment to exceed bounds."""
-    return min(1.0, max(0.0, probability * (1.0 + adjustment)))
+    """Apply a signed tail adjustment capped at the configured cent bound."""
+    bounded_adjustment = max(
+        -TAIL_ADJUSTMENT_MAX_CENTS,
+        min(TAIL_ADJUSTMENT_MAX_CENTS, adjustment),
+    )
+    return min(1.0, max(0.0, probability + bounded_adjustment))
 
 
 def _apply_probability_correction(probability: float, correction: dict) -> float:
@@ -724,6 +973,93 @@ def _apply_probability_correction(probability: float, correction: dict) -> float
     factor = float(correction.get("correction_factor", 1.0) or 1.0)
     floor = float(correction.get("floor", 0.0) or 0.0)
     return max(probability * factor, floor)
+
+
+def _historical_final_minute_windows(candles_1m: list) -> dict:
+    """Build final-minute print windows from available 1-minute candles."""
+    windows = []
+    for candle in candles_1m:
+        if candle.get("time", 0) % 3600 != 3540:
+            continue
+        prints = [candle.get("open"), candle.get("high"), candle.get("low"), candle.get("close")]
+        if any(
+            value is None
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            or value <= 0
+            for value in prints
+        ):
+            continue
+        windows.append({
+            "timestamp_utc": datetime.fromtimestamp(candle["time"], tz=timezone.utc).isoformat(),
+            "prints": prints,
+        })
+    return {
+        "windows": windows,
+        "source": "coinbase_1m_ohlc_proxy",
+        "window_count": len(windows),
+        "print_count": len(windows) * 4,
+    }
+
+
+def _conditional_settlement_hold(low: float, high: float, settlement_history: dict) -> dict:
+    """Estimate P(60s average stays in the band | a final-minute print touched it)."""
+    touched_count = 0
+    held_count = 0
+    for window in settlement_history.get("windows", []):
+        prints = window.get("prints", [])
+        if not prints:
+            continue
+        touched = any(low <= print_ <= high for print_ in prints)
+        settlement_average = sum(prints) / len(prints)
+        held = low <= settlement_average <= high
+        if touched:
+            touched_count += 1
+            held_count += int(held)
+
+    hold_given_touch = held_count / touched_count if touched_count else 1.0
+    return {
+        "hold_given_touch": round(hold_given_touch, 4),
+        "touched_samples": touched_count,
+        "held_samples": held_count,
+        "estimated": touched_count > 0,
+        "source": settlement_history.get("source", "unavailable"),
+    }
+
+
+def _ranked_entry_scores(decay_table: list, bands: list, horizon_minutes: int = 15) -> list:
+    """Rank projected T-15m fair values against current YES asks."""
+    bands_by_label = {}
+    for band in bands:
+        low, high = band.get("low"), band.get("high")
+        if low is None or high is None:
+            continue
+        bands_by_label[f"{_format_kalshi_strike(low)}-{_format_kalshi_strike(high)}"] = band
+
+    scores = []
+    for row in decay_table:
+        projected_probability = row.get(f"p_{horizon_minutes}m")
+        band = bands_by_label.get(row.get("band"), {})
+        ask = band.get("yes_ask")
+        if projected_probability is None or ask is None:
+            continue
+        projected_fair = projected_probability * 100
+        scores.append({
+            "band": row.get("band"),
+            "side": row.get("side"),
+            "low": band.get("low"),
+            "high": band.get("high"),
+            "current_yes_ask": ask,
+            "projected_fair_T15m": round(projected_fair, 1),
+            "edge_at_entry": round(projected_fair - ask, 1),
+            "settlement_venue": row.get("settlement_venue"),
+            "settlement_rule": row.get("settlement_rule"),
+        })
+
+    scores.sort(key=lambda score: score["edge_at_entry"], reverse=True)
+    for rank, score in enumerate(scores, start=1):
+        score["entry_rank"] = rank
+    return scores
 
 
 # ---------------------------------------------------------------------------
@@ -928,8 +1264,12 @@ def predict_hourly_range() -> dict:
             )
     df = _fit_student_t(log_returns)
 
+    cross_venue_divergence = get_cross_venue_divergence()
+    positioning_skew = get_positioning_skew()
+
     # Drift for remaining window
     drift_pct = bias * sigma_hourly_pct * DRIFT_FACTOR * math.sqrt(minutes_to_expiry / 60)
+    drift_pct += positioning_skew["skew_pct"]
 
     # --- Per-strike probabilities from live Kalshi ladder ---
     ladder = get_kalshi_ladder()
@@ -946,6 +1286,18 @@ def predict_hourly_range() -> dict:
     wick_stats = compute_wick_stats(candles_1m)
     tail_diagnostics = get_tail_diagnostics(wick_stats)
     tail_adjustment = tail_diagnostics["tail_adjustment"]
+    settlement_history = _historical_final_minute_windows(candles_1m)
+
+    def cross_venue_adjustment_for_probability(probability: float) -> float:
+        if (
+            cross_venue_divergence["active"]
+            and probability <= CROSS_VENUE_TAIL_PROBABILITY_MAX
+        ):
+            return cross_venue_divergence["tail_adjustment"]
+        return 0.0
+
+    def total_tail_adjustment(probability: float) -> float:
+        return round(tail_adjustment + cross_venue_adjustment_for_probability(probability), 4)
 
     strike_probs = []
     for band in bands:
@@ -996,8 +1348,14 @@ def predict_hourly_range() -> dict:
             "tail_premium_cents": None,
             "p_touch_raw": None,
             "tail_adjustment": tail_adjustment,
+            "cross_venue_tail_adjustment": 0.0,
+            "divergence_regime": cross_venue_divergence["regime"],
             "p_touch_adjusted": None,
             "p_touch": None,
+            "p_settle": None,
+            "settlement_hold_given_touch": None,
+            "settlement_hold_samples": None,
+            "settlement_hold_source": settlement_history["source"],
             "low": low,
             "high": high,
         }
@@ -1014,7 +1372,11 @@ def predict_hourly_range() -> dict:
             p_base = p_selected
             selected_correction = correction_for_probability(p_base)
             p_calibrated = _apply_probability_correction(p_base, selected_correction)
-            p_touch = _apply_tail_adjustment(p_calibrated, tail_adjustment)
+            cross_venue_adjustment = cross_venue_adjustment_for_probability(p_base)
+            band_tail_adjustment = total_tail_adjustment(p_base)
+            p_touch = _apply_tail_adjustment(p_calibrated, band_tail_adjustment)
+            settlement_hold = _conditional_settlement_hold(low, high, settlement_history)
+            p_settle = p_touch * settlement_hold["hold_given_touch"]
             fair_value = p_touch * 100
             residual = ask - fair_value if ask is not None else None
             tail_delta = p_student_t - p_normal
@@ -1034,8 +1396,13 @@ def predict_hourly_range() -> dict:
                 "tail_delta": round(tail_delta, 3),
                 "tail_premium_cents": round(tail_delta * 100, 1),
                 "p_touch_raw": round(p_base, 3),
+                "tail_adjustment": band_tail_adjustment,
+                "cross_venue_tail_adjustment": cross_venue_adjustment,
                 "p_touch_adjusted": round(p_touch, 3),
                 "p_touch": round(p_touch, 3),
+                "p_settle": round(p_settle, 3),
+                "settlement_hold_given_touch": settlement_hold["hold_given_touch"],
+                "settlement_hold_samples": settlement_hold["touched_samples"],
             })
         strike_probs.append(row)
 
@@ -1081,7 +1448,11 @@ def predict_hourly_range() -> dict:
         p_base = p_selected
         selected_correction = correction_for_probability(p_base)
         p_calibrated = _apply_probability_correction(p_base, selected_correction)
-        p_touch = _apply_tail_adjustment(p_calibrated, tail_adjustment)
+        cross_venue_adjustment = cross_venue_adjustment_for_probability(p_base)
+        band_tail_adjustment = total_tail_adjustment(p_base)
+        p_touch = _apply_tail_adjustment(p_calibrated, band_tail_adjustment)
+        settlement_hold = _conditional_settlement_hold(strike["low"], strike["high"], settlement_history)
+        p_settle = p_touch * settlement_hold["hold_given_touch"]
         fair_value = p_touch * 100
         ask = strike.get("yes_ask")
         residual = ask - fair_value if ask is not None else None
@@ -1111,8 +1482,13 @@ def predict_hourly_range() -> dict:
             "tail_delta": round(tail_delta, 3),
             "tail_premium_cents": round(tail_delta * 100, 1),
             "p_touch_raw": round(p_base, 3),
+            "tail_adjustment": band_tail_adjustment,
+            "cross_venue_tail_adjustment": cross_venue_adjustment,
             "p_touch_adjusted": round(p_touch, 3),
             "p_touch": round(p_touch, 3),
+            "p_settle": round(p_settle, 3),
+            "settlement_hold_given_touch": settlement_hold["hold_given_touch"],
+            "settlement_hold_samples": settlement_hold["touched_samples"],
         })
 
     ladder_feed_status["usable_band_count"] = sum(
@@ -1151,7 +1527,8 @@ def predict_hourly_range() -> dict:
                 p_base = p_selected
                 selected_correction = correction_for_probability(p_base)
                 p_calibrated = _apply_probability_correction(p_base, selected_correction)
-                adjusted = _apply_tail_adjustment(p_calibrated, tail_adjustment)
+                band_tail_adjustment = total_tail_adjustment(p_base)
+                adjusted = _apply_tail_adjustment(p_calibrated, band_tail_adjustment)
                 row[f"p_{m}m"] = round(adjusted, 3)
                 row[f"p_normal_{m}m"] = round(p_normal, 3)
                 row[f"p_student_t_{m}m"] = round(p_student_t, 3)
@@ -1160,10 +1537,13 @@ def predict_hourly_range() -> dict:
                 row[f"calibration_factor_{m}m"] = selected_correction["correction_factor"]
                 row[f"calibration_regime_{m}m"] = selected_correction["regime"]
                 row[f"selected_distribution_{m}m"] = active_distribution
-                row[f"tail_adjustment_{m}m"] = tail_adjustment
+                row[f"tail_adjustment_{m}m"] = band_tail_adjustment
         decay_table.append(row)
 
-    alt_signal = get_alt_signal()
+    entry_scores = _ranked_entry_scores(decay_table, bands)
+
+    raw_alt_signal = get_alt_signal()
+    alt_signal, lead_lag_filter = _filter_alt_signal(raw_alt_signal)
 
     from calibration_ledger import record_prediction
     for strike in strike_probs:
@@ -1179,11 +1559,12 @@ def predict_hourly_range() -> dict:
             p_normal=strike["p_normal"],
             p_student_t=strike["p_student_t"],
             tail_adjustment=strike["tail_adjustment"],
-            alt_aligned=alt_signal.get("aligned", False),
+            alt_aligned=alt_signal.get("aligned", False) if alt_signal else False,
             minutes_to_expiry=minutes_to_expiry,
             p_base=strike["p_base"],
             p_calibrated=strike["p_calibrated"],
             calibration_factor=strike["calibration_factor"],
+            regime=regime.get("regime", "UNKNOWN"),
         )
     calibration_report = get_calibration_report()
 
@@ -1196,7 +1577,7 @@ def predict_hourly_range() -> dict:
         minutes_to_expiry, active_distribution
     )
 
-    return {
+    result = {
         "timestamp_utc": now.isoformat(),
         "minutes_to_hourly_expiry": minutes_to_expiry,
         "spot": round(spot, 2),
@@ -1232,8 +1613,13 @@ def predict_hourly_range() -> dict:
             "active_distribution": active_distribution,
         },
         "tail_diagnostics": tail_diagnostics,
-        "alt_signal": alt_signal,
-        "alt_alignment_warning": alt_signal.get("aligned", False),
+        "cross_venue_divergence": cross_venue_divergence,
+        "divergence_regime": cross_venue_divergence["regime"],
+        "positioning_skew": positioning_skew,
+        "wick_ratio_5h_trend": tail_diagnostics["wick_ratio_5h_trend"],
+        "wick_ratio_trend_status": tail_diagnostics["wick_ratio_trend_status"],
+        "lead_lag_status": lead_lag_filter["status"],
+        "lead_lag_filter": lead_lag_filter,
         "calibration": calibration_report,
         "distribution_selection": distribution_selection,
         "probability_correction": probability_correction,
@@ -1244,12 +1630,23 @@ def predict_hourly_range() -> dict:
         "ladder_residuals": [sp for sp in strike_probs if sp.get("flagged")],
         "wick_stats": wick_stats,
         "decay_table": decay_table,
+        "entry_scores": entry_scores,
+        "settlement_history": {
+            "source": settlement_history["source"],
+            "window_count": settlement_history["window_count"],
+            "print_count": settlement_history["print_count"],
+            "rule": KALSHI_SETTLEMENT_RULE,
+        },
         "settlement_note": (
             "Kalshi settles against 60s BRTI average — a sustained push through "
             "most of that final minute moves the average hard. Polymarket "
             "Chainlink TWAP: window unconfirmed, read off live market rules."
         ),
     }
+    if alt_signal is not None:
+        result["alt_signal"] = alt_signal
+        result["alt_alignment_warning"] = alt_signal.get("aligned", False)
+    return result
 
 
 def predict_15m_range(contract: dict | None = None, series_ticker: str = KALSHI_15M_SERIES) -> dict:
