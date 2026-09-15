@@ -28,6 +28,7 @@ function jsonResponse(data, status = 200) {
     headers: {
       "Content-Type": "application/json",
       "Access-Control-Allow-Origin": "*",
+      "Cache-Control": "no-store, max-age=0",
     },
   });
 }
@@ -41,9 +42,18 @@ function parseTwapWindowSeconds(description) {
 // User-Agent header -- Workers' fetch() sends none by default.
 const COINBASE_HEADERS = { "User-Agent": "scalper-market-data/1.0 (+workers.dev)" };
 
+async function fetchMarketData(url, init = {}) {
+  return fetch(url, {
+    ...init,
+    cache: "no-store",
+  });
+}
+
 async function getCoinbaseSpot(symbol = "BTC") {
   const productId = `${symbol}-USD`;
-  const r = await fetch(`${COINBASE_BASE}/products/${productId}/ticker`, { headers: COINBASE_HEADERS });
+  const r = await fetchMarketData(`${COINBASE_BASE}/products/${productId}/ticker`, {
+    headers: COINBASE_HEADERS,
+  });
   if (!r.ok) throw new Error(`Coinbase ticker ${productId} -> HTTP ${r.status}`);
   const data = await r.json();
   return { symbol, product_id: productId, price: parseFloat(data.price), time: data.time };
@@ -154,7 +164,7 @@ async function getCoinbaseRecentRange(symbol = "BTC", minutes = 30) {
   const productId = `${symbol}-USD`;
   const end = Math.floor(Date.now() / 1000);
   const start = end - minutes * 60;
-  const r = await fetch(
+  const r = await fetchMarketData(
     `${COINBASE_BASE}/products/${productId}/candles?start=${start}&end=${end}&granularity=60`,
     { headers: COINBASE_HEADERS }
   );
@@ -179,7 +189,7 @@ async function getCoinbaseRecentRange(symbol = "BTC", minutes = 30) {
 }
 
 async function getKalshiBands(spot, seriesTicker = "KXBTC", maxBandsEachSide = 6) {
-  const r = await fetch(
+  const r = await fetchMarketData(
     `${KALSHI_BASE}/markets?series_ticker=${seriesTicker}&status=open&limit=1000`
   );
   if (!r.ok) throw new Error(`Kalshi markets ${seriesTicker} -> HTTP ${r.status}`);
@@ -237,7 +247,9 @@ async function getKalshiBands(spot, seriesTicker = "KXBTC", maxBandsEachSide = 6
 }
 
 async function getKalshiUpdown(seriesTicker = "KXBTC15M") {
-  const r = await fetch(`${KALSHI_BASE}/markets?series_ticker=${seriesTicker}&status=open&limit=5`);
+  const r = await fetchMarketData(
+    `${KALSHI_BASE}/markets?series_ticker=${seriesTicker}&status=open&limit=5`
+  );
   if (!r.ok) throw new Error(`Kalshi markets ${seriesTicker} -> HTTP ${r.status}`);
   const data = await r.json();
   const m = (data.markets || [])[0];
@@ -257,7 +269,7 @@ async function getKalshiUpdown(seriesTicker = "KXBTC15M") {
 }
 
 async function getKalshiOrderbook(ticker) {
-  const r = await fetch(`${KALSHI_BASE}/markets/${ticker}/orderbook`);
+  const r = await fetchMarketData(`${KALSHI_BASE}/markets/${ticker}/orderbook`);
   if (!r.ok) throw new Error(`Kalshi orderbook ${ticker} -> HTTP ${r.status}`);
   return r.json();
 }
@@ -284,14 +296,14 @@ async function getClobYesPrices(tokenId) {
   let yesBid = null;
   let yesAsk = null;
   try {
-    const r = await fetch(`${POLYMARKET_CLOB_BASE}/price?token_id=${tokenId}&side=buy`);
+    const r = await fetchMarketData(`${POLYMARKET_CLOB_BASE}/price?token_id=${tokenId}&side=buy`);
     if (r.ok) {
       const d = await r.json();
       yesBid = Math.round(parseFloat(d.price) * 10000) / 100;
     }
   } catch (_) {}
   try {
-    const r = await fetch(`${POLYMARKET_CLOB_BASE}/price?token_id=${tokenId}&side=sell`);
+    const r = await fetchMarketData(`${POLYMARKET_CLOB_BASE}/price?token_id=${tokenId}&side=sell`);
     if (r.ok) {
       const d = await r.json();
       yesAsk = Math.round(parseFloat(d.price) * 10000) / 100;
@@ -307,7 +319,7 @@ async function getPolymarketTwapUpdown(interval = "5m") {
   }
   const windowStartTs = Math.floor(Date.now() / 1000 / step) * step;
   const slug = `btc-updown-${interval}-${windowStartTs}`;
-  const r = await fetch(`${POLYMARKET_GAMMA_BASE}/events?slug=${slug}`);
+  const r = await fetchMarketData(`${POLYMARKET_GAMMA_BASE}/events?slug=${slug}`);
   if (!r.ok) throw new Error(`Polymarket events ${slug} -> HTTP ${r.status}`);
   const events = await r.json();
   if (!events.length) throw new Error(`No Polymarket ${interval} TWAP Up/Down event found for slug ${slug}`);
@@ -352,7 +364,7 @@ async function getPolymarketDailyBands(spot, maxBandsEachSide = 6) {
   const now = new Date();
   const { month, day, year } = etDateParts(now);
   const slug = `bitcoin-price-on-${month}-${day}-${year}`;
-  const r = await fetch(`${POLYMARKET_GAMMA_BASE}/events?slug=${slug}`);
+  const r = await fetchMarketData(`${POLYMARKET_GAMMA_BASE}/events?slug=${slug}`);
   if (!r.ok) throw new Error(`Polymarket events ${slug} -> HTTP ${r.status}`);
   const events = await r.json();
   if (!events.length) throw new Error(`No Polymarket event found for slug ${slug}`);
@@ -432,7 +444,7 @@ async function getPolymarketHourlyUpdown() {
   const { month, day, year, hour, dayPeriod } = etDateParts(now, true);
   const hourStr = `${hour}${dayPeriod}`;
   const slug = `bitcoin-up-or-down-${month}-${day}-${year}-${hourStr}-et`;
-  const r = await fetch(`${POLYMARKET_GAMMA_BASE}/events?slug=${slug}`);
+  const r = await fetchMarketData(`${POLYMARKET_GAMMA_BASE}/events?slug=${slug}`);
   if (!r.ok) throw new Error(`Polymarket events ${slug} -> HTTP ${r.status}`);
   const events = await r.json();
   if (!events.length) throw new Error(`No Polymarket hourly Up/Down event found for slug ${slug}`);
@@ -471,6 +483,7 @@ export default {
         headers: {
           "Access-Control-Allow-Origin": "*",
           "Access-Control-Allow-Methods": "GET, OPTIONS",
+          "Cache-Control": "no-store, max-age=0",
         },
       });
     }
