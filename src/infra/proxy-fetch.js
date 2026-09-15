@@ -190,6 +190,30 @@
     try { return new URL(url).hostname; } catch (_) { return null; }
   }
 
+  // When tauri-bridge builds a local proxy URL itself and calls the patched
+  // fetch, the hostname is 127.0.0.1. Attributing failures to the local proxy
+  // trips ONE global breaker and disables every proxied host together.
+  // Resolve the real upstream host (slug prefix or /proxy?url=) instead.
+  const LOCAL_PROXY_HOST = /^(127\.0\.0\.1|localhost|\[::1\])$/i;
+  const REVERSE_HOST_MAP = Object.fromEntries(
+    Object.entries(HOST_MAP).map(([host, slug]) => [slug, host])
+  );
+
+  function breakerHostname(url) {
+    try {
+      const u = new URL(url);
+      if (!LOCAL_PROXY_HOST.test(u.hostname)) return u.hostname;
+      if (u.pathname === '/proxy') {
+        const target = u.searchParams.get('url');
+        return target ? new URL(target).hostname : null;
+      }
+      const slug = u.pathname.replace(/^\//, '').split('/')[0];
+      return REVERSE_HOST_MAP[slug] || null;
+    } catch (_) {
+      return null;
+    }
+  }
+
   function getHostBreaker(hostname) {
     if (!hostname || !window.ApiCircuitBreaker) return null;
     return window.ApiCircuitBreaker.getBreaker(`proxy-fetch:${hostname}`, { threshold: 3, timeout: 30000 });
@@ -228,7 +252,7 @@
   }
 
   function dispatch(originalUrl, requestInput, init) {
-    const hostname = safeHostname(originalUrl);
+    const hostname = breakerHostname(originalUrl) || safeHostname(originalUrl);
     const breaker = getHostBreaker(hostname);
     if (breaker && !breaker.isAvailable()) {
       return Promise.resolve(hostCircuitResponse(hostname, breaker));
