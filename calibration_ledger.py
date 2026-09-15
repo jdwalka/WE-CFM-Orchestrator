@@ -504,7 +504,7 @@ def _bucketed_correction(connection: sqlite3.Connection) -> dict:
     return {
         **replay,
         "active": enabled,
-        "live_path": "report_only",
+        "live_path": "active" if enabled else "report_only",
         "reason": (
             "bucketed replay passed the pre-registered Brier gate"
             if enabled

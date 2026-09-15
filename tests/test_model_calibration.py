@@ -30,20 +30,36 @@ class TailAdjustmentTests(unittest.TestCase):
         self.assertGreater(wick_only["tail_adjustment"], 0.0)
 
         both = prediction_engine.get_tail_diagnostics({
-            "late_window_spike_frequency_per_hour": 1.0,
-            "per_hour": [{"avg_wick_ratio": value} for value in (0, 1, 2, 3, 4)],
+            "late_window_spike_frequency_per_hour": 1.2,
+            "per_hour": [{"avg_wick_ratio": value} for value in (0, 4, 8, 12, 16)],
         })
         self.assertEqual(
             both["tail_adjustment"],
             prediction_engine.TAIL_ADJUSTMENT_MAX_CENTS,
         )
-        self.assertEqual(both["tail_adjustment_cents"], 3.0)
+        self.assertEqual(both["tail_adjustment_cents"], 12.0)
         self.assertFalse(both["evidence"]["requires_both_conditions"])
 
     def test_adjustment_is_additive_and_capped(self):
         self.assertEqual(prediction_engine._apply_tail_adjustment(0.98, 0.03), 1.0)
         self.assertEqual(prediction_engine._apply_tail_adjustment(0.02, -0.03), 0.0)
         self.assertAlmostEqual(prediction_engine._apply_tail_adjustment(0.40, 0.03), 0.43)
+
+    def test_probability_correction_cannot_exceed_three_times_base(self):
+        corrected = prediction_engine._apply_probability_correction(
+            0.32177,
+            {"correction_factor": 4.7421, "floor": 0.0005},
+        )
+        self.assertAlmostEqual(corrected, 0.96531)
+        self.assertEqual(
+            prediction_engine._apply_probability_correction(0.90, {"correction_factor": 4.7421}),
+            1.0,
+        )
+
+    def test_artifact_residual_flags_are_symmetric(self):
+        self.assertTrue(prediction_engine._artifact_residual(30.6))
+        self.assertTrue(prediction_engine._artifact_residual(-30.6))
+        self.assertFalse(prediction_engine._artifact_residual(29.9))
 
 
 class CalibrationLedgerTests(unittest.TestCase):
@@ -135,8 +151,8 @@ class CalibrationLedgerTests(unittest.TestCase):
             ),
             prediction_engine.TAIL_ADJUSTMENT_MAX_CENTS,
         )
-        self.assertEqual(adjusted_probability, 0.19)
-        self.assertAlmostEqual(0.50 - adjusted_probability, 0.31)
+        self.assertEqual(adjusted_probability, 0.28)
+        self.assertAlmostEqual(0.50 - adjusted_probability, 0.22)
 
 
 if __name__ == "__main__":

@@ -5,7 +5,7 @@ from collections import defaultdict, deque
 from dataclasses import dataclass, field
 
 BUCKET_EDGES = ((5, "0-5m"), (15, "6-15m"), (30, "16-30m"), (60, "31-60m"))
-ACTIVATION_OVERALL_BRIER_IMPROVEMENT = 0.01
+ACTIVATION_OVERALL_BRIER_IMPROVEMENT = 0.004
 ACTIVATION_MAX_BUCKET_DEGRADATION = 0.02
 
 
