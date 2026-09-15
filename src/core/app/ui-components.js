@@ -1,5 +1,18 @@
 // UI Components
 (function() {
+  function _escapeHtml(value) {
+    if (typeof window !== 'undefined' && typeof window.escapeHtml === 'function') {
+      return window.escapeHtml(value);
+    }
+    return String(value ?? '').replace(/[&<>"']/g, char => ({
+      '&': '&amp;',
+      '<': '&lt;',
+      '>': '&gt;',
+      '"': '&quot;',
+      "'": '&#39;',
+    }[char]));
+  }
+
   function _safeNormalizeConfidence(v) {
     if (typeof _normalizeConfidence === 'function') return _normalizeConfidence(v);
     if (typeof window !== 'undefined' && typeof window._normalizeConfidence === 'function') {
@@ -20,11 +33,49 @@
     return score > 0.02 ? 1 : score < -0.02 ? -1 : fallback;
   }
 
-  function _fallbackPriceDecimals(sym) {
+function _fallbackPriceDecimals(sym) {
     const key = String(sym || '').toUpperCase();
     if (key === 'DOGE') return 7;
     if (key === 'SOL' || key === 'HYPE' || key === 'XRP') return 4;
     return 2;
+  }
+
+  function _liveContractOdds(sym) {
+    const coin = window.PredictionMarkets?.getCoin?.(sym) || null;
+    const contract = coin?.kalshi15m || null;
+    const probability = Number(contract?.probability);
+    if (!contract || !Number.isFinite(probability) || probability < 0 || probability > 1) {
+      return {
+        available: false,
+        side: null,
+        direction: 'wait',
+        yesPct: null,
+        noPct: null,
+        dominantPct: null,
+        edgePp: null,
+        contract,
+      };
+    }
+
+    const strikeDir = (contract.strikeDir || contract.strikeType || 'above') === 'below' ? 'below' : 'above';
+    const yesDirection = strikeDir === 'below' ? 'down' : 'up';
+    const noDirection = yesDirection === 'up' ? 'down' : 'up';
+    const yesPct = Math.round(probability * 100);
+    const noPct = 100 - yesPct;
+    const yesDominant = probability >= 0.5;
+
+    return {
+      available: true,
+      side: yesDominant ? 'YES' : 'NO',
+      direction: yesDominant ? yesDirection : noDirection,
+      yesDirection,
+      noDirection,
+      yesPct,
+      noPct,
+      dominantPct: yesDominant ? yesPct : noPct,
+      edgePp: Math.round(Math.abs(yesPct - 50)),
+      contract,
+    };
   }
 
 function predictionCard(p) {
@@ -58,7 +109,7 @@ function predictionCard(p) {
     if (_kAlignEarly && _k15mV && _kAlignEarly.ticker && _k15mV.ticker && _kAlignEarly.ticker !== _k15mV.ticker) {
       _kAlignEarly = null;
     }
-    const _strikeDirEarly = (_kAlignEarly?.strikeDir ?? _k15mV?.strikeDir) === 'below' ? 'below' : 'above';
+    const _strikeDirEarly = (_k15mV?.strikeDir ?? _kAlignEarly?.strikeDir) === 'below' ? 'below' : 'above';
     const _yesDirEarly = _strikeDirEarly === 'below' ? 'down' : 'up';
     const _noDirEarly = _yesDirEarly === 'up' ? 'down' : 'up';
 
@@ -91,40 +142,35 @@ function predictionCard(p) {
       ? (livePath.dir === 'UP' ? _yesDirEarly : _noDirEarly)
       : null;
 
-    let verdictDir, verdictSource;
-    // 15m paint follows the live settlement path (Pyth vs Kalshi strike,
-    // ticks, window return). Model/Grok stay visible as a lean, but they
-    // must not lock the green/red label until an extreme swing.
-
+    let modelVerdictDir, modelVerdictSource;
     if (_kAlignEarly?.modelYesPct != null) {
       // Use CDF P(close ≥ strike) — correct for binary contracts
       const myp = _kAlignEarly.modelYesPct;
-      if (myp >= 50.5) { verdictDir = _yesDirEarly; verdictSource = 'model-cdf'; }
-      else if (myp <= 49.5) { verdictDir = _noDirEarly; verdictSource = 'model-cdf'; }
-      else { verdictDir = _yesDirEarly; verdictSource = 'model-cdf-lean'; }
+      if (myp >= 50.5) { modelVerdictDir = _yesDirEarly; modelVerdictSource = 'model-cdf'; }
+      else if (myp <= 49.5) { modelVerdictDir = _noDirEarly; modelVerdictSource = 'model-cdf'; }
+      else { modelVerdictDir = _yesDirEarly; modelVerdictSource = 'model-cdf-lean'; }
     } else if (modelDir !== 'wait') {
-      verdictDir = modelDir;
-      verdictSource = 'model';
+      modelVerdictDir = modelDir;
+      modelVerdictSource = 'model';
     } else if (p.score !== 0) {
-      verdictDir = p.score > 0 ? _yesDirEarly : _noDirEarly;
-      verdictSource = 'model-score-lean';
+      modelVerdictDir = p.score > 0 ? _yesDirEarly : _noDirEarly;
+      modelVerdictSource = 'model-score-lean';
     } else if (grokBinaryCall) {
-      verdictDir = grokBinaryCall;
-      verdictSource = 'grok-inference-lean';
+      modelVerdictDir = grokBinaryCall;
+      modelVerdictSource = 'grok-inference-lean';
     } else if (kalshiDir !== null) {
-      verdictDir = kalshiDir;
-      verdictSource = 'kalshi-market-lean';
+      modelVerdictDir = kalshiDir;
+      modelVerdictSource = 'kalshi-market-lean';
     } else {
-      verdictDir = 'up';
-      verdictSource = 'default-lean';
+      modelVerdictDir = 'wait';
+      modelVerdictSource = 'model-uncertain';
     }
 
-    const modelVerdictDir = verdictDir;
-    const modelVerdictSource = verdictSource;
-    if (livePathDir) {
-      verdictDir = livePathDir;
-      verdictSource = 'live-path-15m';
-    }
+    // The verdict is the active contract's live market odds, never an inferred
+    // model/default direction. Model, Grok, and live path remain diagnostics.
+    const liveOdds = _liveContractOdds(p.sym);
+    const verdictDir = liveOdds.available ? liveOdds.direction : 'wait';
+    const verdictSource = liveOdds.available ? 'kalshi-live-odds' : 'kalshi-15m-unavailable';
 
     // Safety gate: note late/borderline entry risks without obliterating the binary belief
     const tickerAgeMs = Math.max(0, Date.now() - Number(window._lastTickerFetchTs || 0));
@@ -167,14 +213,18 @@ function predictionCard(p) {
     const _fadeActive = kalshiDir !== null && modelDir !== 'wait' && modelDir !== kalshiDir;
     const _fadeSolid = _fadeActive && Math.abs(p.score) >= 0.20;
     const _fadeSoft = _fadeActive && !_fadeSolid;
-    const _betAction = verdictDir === _yesDirEarly ? 'YES' : verdictDir === _noDirEarly ? 'NO' : null;
+    const _betAction = liveOdds.available ? liveOdds.side : null;
     const compositeEdge = 0.75 * Math.abs(p.score) + 0.25 * (kalshiEdge ?? 0);
 
     const isYesVerdict = verdictDir === _yesDirEarly;
-    const binaryOutcomeText = isYesVerdict ? 'BUY YES' : 'BUY NO';
-    const verdictMain = isYesVerdict ? `▲ ${binaryOutcomeText}` : `▼ ${binaryOutcomeText}`;
+    const verdictMain = liveOdds.available
+      ? `KALSHI 15M ${liveOdds.side} ${liveOdds.dominantPct}%`
+      : 'NO LIVE ODDS';
     const strength = safetyGuardActive ? 'GUARDED'
-      : compositeEdge >= 0.42 ? 'STRONG' : compositeEdge >= 0.22 ? 'MODERATE' : 'LEAN';
+      : !liveOdds.available ? 'WAIT'
+      : liveOdds.edgePp >= 25 ? 'CLEAR'
+      : liveOdds.edgePp >= 10 ? 'LEAN'
+      : 'EVEN';
     const scoreStr = Number.isFinite(p.score) ? (p.score > 0 ? '+' : '') + p.score.toFixed(2) : '—';
 
     // ── Pre-compute model probability (outer scope — used in verdict banner + comparison bar) ──
@@ -251,6 +301,9 @@ function predictionCard(p) {
       }
       if (verdictSource === 'model-uncertain') {
         return `Model thinking: low conviction score ${scoreStr} (needs >+0.12 for UP or <-0.12 for DOWN).`;
+      }
+      if (verdictSource === 'kalshi-15m-unavailable') {
+        return `Verdict waiting: no live Kalshi 15m YES/NO odds for ${p.sym}. Model score ${scoreStr} is diagnostic only and cannot paint an UP call.`;
       }
       if (verdictSource === 'safety-stale-data') {
         return `Model thinking: signal blocked by stale ticker data (${Math.round(tickerAgeMs / 1000)}s old) inside the 5-minute pre-close guard.`;
@@ -641,11 +694,12 @@ function predictionCard(p) {
         <!-- Verdict Banner: always visible — this is the primary signal -->
         <div class="pred-verdict ${verdictDir}">
           <div class="pred-verdict-call">
-            <span class="pred-verdict-main">${verdictMain}</span>
+            <span class="pred-verdict-main">${escapeHtml(verdictMain)}</span>
             <span class="pred-verdict-strength">${strength}</span>
           </div>
           <div class="pred-verdict-meta">
-            ${livePathDir ? `<span class="pred-source-badge" style="border-color:${verdictDir === 'up' ? 'var(--color-green)' : 'var(--color-red)'};color:${verdictDir === 'up' ? 'var(--color-green)' : 'var(--color-red)'}" title="${escapeHtml(livePath.reason || 'live path')}">LIVE ${livePath.dir}${Number.isFinite(livePath.bps) ? ` ${livePath.bps >= 0 ? '+' : ''}${livePath.bps.toFixed(1)}bps` : ''}</span>` : ''}
+            ${livePathDir ? `<span class="pred-source-badge" style="border-color:var(--color-border);color:var(--color-text-muted)" title="${escapeHtml(livePath.reason || 'live path')}">PATH ${livePath.dir}${Number.isFinite(livePath.bps) ? ` ${livePath.bps >= 0 ? '+' : ''}${livePath.bps.toFixed(1)}bps` : ''}</span>` : ''}
+            ${liveOdds.available ? `<span class="pred-source-badge kalshi">YES ${liveOdds.yesPct}% / NO ${liveOdds.noPct}%</span>` : ''}
             <span class="pred-source-badge model">MODEL</span>
             ${llmBadge}
             ${_liveKPctCard !== null
@@ -663,7 +717,7 @@ function predictionCard(p) {
           ${(p.llm?.ai_wording?.high_confidence_rationale) ? `<div class="pred-verdict-rationale" style="color:#8fa8ff"><span style="font-weight:700">✨ AI:</span> ${escapeHtml(p.llm.ai_wording.high_confidence_rationale)}</div>` : hcRationale ? `<div class="pred-verdict-rationale">${hcRationale}</div>` : ''}
           ${(p.llm?.ai_wording?.primary_rationale) ? `<div class="pred-verdict-rationale" style="color:#8fa8ff"><span style="font-weight:700">✨ AI:</span> ${escapeHtml(p.llm.ai_wording.primary_rationale)}</div>` : ratPrimary ? `<div class="pred-verdict-rationale">${ratPrimary}</div>` : ''}
           <div class="pred-verdict-bar-wrap">
-            <div class="pred-verdict-bar-fill ${verdictDir}" style="width:${p.confidence}%"></div>
+            <div class="pred-verdict-bar-fill ${verdictDir}" style="width:${liveOdds.available ? liveOdds.yesPct : 0}%"></div>
           </div>
           <!-- Projected Binary Decision & Countdown Box -->
           <div class="binary-decision-box" style="margin-top:8px;padding:8px 10px;background:rgba(0,229,255,0.04);border:1px solid rgba(0,229,255,0.25);border-radius:6px;">
@@ -671,8 +725,10 @@ function predictionCard(p) {
               <span style="font-size:10px;font-weight:800;color:#00e5ff;text-transform:uppercase;letter-spacing:0.06em;">🎯 BINARY OUTCOME DECISION</span>
               <span class="k15-expiry" data-close-ms="${_k15mV?.closeTime ? new Date(_k15mV.closeTime).getTime() : (Math.floor(Date.now() / 900000) + 1) * 900000}" style="font-family:var(--font-mono);font-size:11px;font-weight:800;padding:2px 8px;border-radius:4px;background:rgba(0,229,255,0.12);color:#00e5ff;">⏱ 00:00 to Decision Lock</span>
             </div>
-            <div style="font-size:12px;font-weight:700;color:${isYesVerdict ? 'var(--color-green)' : 'var(--color-red)'};">
-              ${isYesVerdict ? '▲ PROJECTED OUTCOME: YES (Price ≥ Strike)' : '▼ PROJECTED OUTCOME: NO (Price < Strike)'}
+            <div style="font-size:12px;font-weight:700;color:${liveOdds.direction === 'up' ? 'var(--color-green)' : liveOdds.direction === 'down' ? 'var(--color-red)' : 'var(--color-text-muted)'};">
+              ${liveOdds.available
+                ? `${liveOdds.side === 'YES' ? 'YES' : 'NO'} ${liveOdds.dominantPct}% · IMPLIED ${liveOdds.direction.toUpperCase()}`
+                : 'WAIT — NO LIVE CONTRACT ODDS'}
             </div>
             <div style="font-size:11px;color:var(--color-text-muted);margin-top:2px;">
               Model CDF P(YES): <strong style="color:var(--color-text);">${_modelYesPctCard}%</strong> ${grokBinaryCall ? `· Grok Inference: <strong style="color:#00e5ff;">${grok15mGuidance.call} (${grokConfPct}%)</strong>` : ''}
@@ -688,7 +744,7 @@ function predictionCard(p) {
               </div>
               <div style="display:flex;gap:8px;align-items:center">
                 <div style="flex:1;height:12px;background:rgba(0,0,0,0.1);border-radius:3px;position:relative;overflow:hidden">
-                  <div style="height:100%;width:${_modelUpPct}%;background:${verdictDir === 'up' ? 'var(--color-green)' : 'var(--color-red)'};border-radius:3px"></div>
+                  <div style="height:100%;width:${_modelYesPctCard}%;background:var(--color-primary);border-radius:3px"></div>
                 </div>
                 <span style="font-size:9px;font-weight:700;min-width:35px;text-align:right;color:var(--color-text)">${_edgePpCard ?? '—'}pp</span>
               </div>
@@ -1414,19 +1470,24 @@ function buildQuickDecisionPanel(predArr) {
       let upCount = 0, downCount = 0, neutralCount = 0;
 
       const cards = ordered.map(pred => {
-        const dir = _safePredictionDirection(pred);
-        const dirClass = dir > 0 ? 'up' : dir < 0 ? 'down' : 'neutral';
-        const arrow = dir > 0 ? '▲' : dir < 0 ? '▼' : '→';
-        const label = dir > 0 ? 'UP' : dir < 0 ? 'DOWN' : 'FLAT';
+        const liveOdds = _liveContractOdds(pred.sym);
+        const dir = liveOdds.available ? (liveOdds.direction === 'up' ? 1 : -1) : 0;
+        const dirClass = liveOdds.available ? (liveOdds.direction === 'up' ? 'up' : 'down') : 'neutral';
+        const arrow = liveOdds.available ? (liveOdds.direction === 'up' ? '▲' : '▼') : '→';
+        const label = liveOdds.available ? `${liveOdds.side} ${liveOdds.dominantPct}%` : 'NO ODDS';
         const score = Number.isFinite(pred.score) ? (pred.score > 0 ? '+' : '') + pred.score.toFixed(2) : '—';
         const horizon = pred.backtest?.summary?.preferredHorizon ? `${pred.backtest.summary.preferredHorizon}m` : '';
-        const mkt = pred.indicators?.mktSentiment;
-        const kPct = mkt?.kalshi != null ? Math.round(mkt.kalshi * 100) : null;
-        const pPct = mkt?.poly != null ? Math.round(mkt.poly * 100) : null;
-        const mktRow = (kPct != null || pPct != null) ? `
+        const coinData = window.PredictionMarkets?.getCoin(pred.sym) || {};
+        const otherOdds = [
+          ['P5M', coinData.poly5m],
+          ['P15M', coinData.poly15m],
+          ['P60M', coinData.poly60m],
+        ].filter(([, contract]) => Number.isFinite(Number(contract?.probability)))
+          .map(([name, contract]) => `${name} ${Math.round(Number(contract.probability) * 100)}%`);
+        const mktRow = liveOdds.available || otherOdds.length ? `
           <div class="dc-mkt-row">
-            ${kPct != null ? `<span class="dc-badge-k">K:${kPct}%</span>` : ''}
-            ${pPct != null ? `<span class="dc-badge-p">P:${pPct}%</span>` : ''}
+            ${liveOdds.available ? `<span class="dc-badge-k">K15 YES ${liveOdds.yesPct}% / NO ${liveOdds.noPct}%</span>` : ''}
+            ${otherOdds.map(item => `<span class="dc-badge-p">${_escapeHtml(item)}</span>`).join('')}
           </div>` : '';
 
         // Ground state synthesis for this coin
@@ -1526,7 +1587,7 @@ function getDecisionRationale(pred) {
       else if (_kProbR <= 0.32) primary = `${_venueR} ${100 - kp}% NO — crowd strongly pricing ${_noDirR}`;
       else if (_kProbR >= 0.55) primary = `${_venueR} ${kp}% YES — market leans ${_yesDirR}`;
       else if (_kProbR <= 0.45) primary = `${_venueR} ${100 - kp}% NO — market leans ${_noDirR}`;
-      else primary = `${_venueR} near 50/50 (${kp}%) — uncertain, model drives verdict`;
+      else primary = `${_venueR} near 50/50 (${kp}%) — no clear side; wait for odds to move`;
     }
 
     if (!primary) {
@@ -2772,7 +2833,7 @@ function marketRow(c, i) {
     `;
   }
 window.APP_UI_COMPONENTS = {
-  predictionCard, normalizePredictionCardData, getPredictionCoinMeta, 
+  predictionCard, normalizePredictionCardData, getPredictionCoinMeta, liveContractOdds: _liveContractOdds,
   buildMarketDebugPanel, buildQuickDecisionPanel, getDecisionRationale,
   computeQuickMACD, formatSuborbital, evaluateSignal, buildCoinPeriodicTable,
   computeEntryQuality, detectMarketRegime, computeGroundState, buildOpportunitiesPanel,
