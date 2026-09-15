@@ -101,5 +101,25 @@ test('tick momentum contributes when PTB is missing', () => {
   assert.ok(r.sources.includes('tick_momentum'));
 });
 
+test('Kalshi 15m strike takes priority over legacy Polymarket PTB', () => {
+  const r = LivePath15m.resolve('BTC', {
+    spot: 100_100,
+    kalshi15m: {
+      ticker: 'KXBTC-26SEP141630-45',
+      targetPriceNum: 100_000,
+      probability: 0.71,
+    },
+    poly15m: {
+      slug: 'btc-updown-15m-legacy',
+      priceToBeatNum: 99_000,
+      priceToBeatSource: 'polymarket',
+      yesProb: 0.29,
+    },
+  });
+  assert.strictEqual(r.ptb, 100_000);
+  assert.strictEqual(r.dir, 'UP');
+  assert.ok(r.sources.includes('spot_vs_ptb'));
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

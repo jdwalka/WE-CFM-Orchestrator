@@ -409,7 +409,7 @@ function updateMarkets5MLivePrices(prices) {
     for (const sym of ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'BNB', 'HYPE']) {
       const ticker = prices?.[`${sym}USD`];
       const current = Number(ticker?.last);
-      const mkt = is15m ? (markets[sym]?.kalshi15m || markets[sym]?.poly15m) : markets[sym]?.poly5m;
+      const mkt = is15m ? markets[sym]?.kalshi15m : markets[sym]?.poly5m;
       const target = Number(mkt?.targetPriceNum ?? mkt?.priceToBeatNum);
       if (!Number.isFinite(current) || current <= 0) continue;
 
@@ -547,7 +547,7 @@ function renderMarkets5M() {
     // dataset, which survives other views overwriting content.innerHTML).
     const fingerprint = COINS_5M.map(s => {
       const b = window.Asi1PreContract?.get?.(s, horizon);
-      const mkt = is15m ? (pm[s]?.kalshi15m || pm[s]?.poly15m) : pm[s]?.poly5m;
+      const mkt = is15m ? pm[s]?.kalshi15m : pm[s]?.poly5m;
       return `${s}:${horizon}:${mkt?.ticker || mkt?.slug || ''}:${mkt?.targetPriceNum ?? mkt?.priceToBeatNum ?? mkt?.floorPrice ?? ''}:${b?.ts || 0}:${b?.call || ''}`;
     }).join('|');
     const _now5m = Date.now();
@@ -562,9 +562,11 @@ function renderMarkets5M() {
     if (_markets5mCountdown) { clearInterval(_markets5mCountdown); _markets5mCountdown = null; }
     const pred = window.PredictionEngine?.getAll() || {};
     const snipes = window.PredictionMarkets?.getSnipes?.() || [];
-    const hasMarketData = Object.values(pm).some((coin) =>
-      coin?.kalshi15m || coin?.poly != null || coin?.poly5m || coin?.kalshi5m || coin?.poly15m
-    );
+    const hasMarketData = is15m
+      ? Object.values(pm).some((coin) => coin?.kalshi15m)
+      : Object.values(pm).some((coin) =>
+          coin?.poly != null || coin?.poly5m || coin?.kalshi5m
+        );
     console.log('[5mMarkets] hasMarketData=', hasMarketData, 'pm keys sample', Object.keys(pm).slice(0,3), 'poly5m sample', Object.values(pm).map(c=>!!c?.poly5m).slice(0,3));
     if (!hasMarketData && window.PredictionMarkets?.fetchAll && Date.now() - _markets5mFetchKickTs > 10_000) {
       _markets5mFetchKickTs = Date.now();
@@ -883,7 +885,7 @@ function renderMarkets5M() {
 
     function _modelOdds5m(sym) {
       const p = pred[sym];
-      const p5 = is15m ? (pm[sym]?.kalshi15m || pm[sym]?.poly15m) : pm[sym]?.poly5m;
+      const p5 = is15m ? pm[sym]?.kalshi15m : pm[sym]?.poly5m;
       const ptb = Number(p5?.targetPriceNum ?? p5?.priceToBeatNum ?? p5?.floorPrice);
       
       // Real-time live price: For 15m Kalshi, use live Coinbase/exchange spot price. For 5m Polymarket, use Chainlink TWAP.
@@ -963,7 +965,7 @@ function renderMarkets5M() {
     // Polymarket PTB, or is the PTB-independent directional-lean fallback (path 4).
     // Purely a labeling signal for the UI -- does not change the odds computation.
     function _modelOdds5mIsPtbAnchored(sym) {
-      const p5 = is15m ? (pm[sym]?.kalshi15m || pm[sym]?.poly15m) : pm[sym]?.poly5m;
+      const p5 = is15m ? pm[sym]?.kalshi15m : pm[sym]?.poly5m;
       const ptb = Number(p5?.targetPriceNum ?? p5?.priceToBeatNum ?? p5?.floorPrice);
       return Number.isFinite(ptb) && ptb > 0;
     }
@@ -1079,7 +1081,7 @@ function renderMarkets5M() {
              const currentOdds = _modelOdds5m(sym);
              
              const coin = pm[sym] || {};
-             const p5 = is15m ? (coin.kalshi15m || coin.poly15m) : coin.poly5m;
+             const p5 = is15m ? coin.kalshi15m : coin.poly5m;
              const poly5mMkts = is15m ? (coin.poly15mMkts || []) : (coin.poly5mMkts || []);
              const stepSec = is15m ? 900 : 300;
              const nextPolyMkt = p5?._windowTs
