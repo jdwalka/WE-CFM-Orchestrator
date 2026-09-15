@@ -1,11 +1,8 @@
 // ================================================================
-// WE|||CRYPTO — Hourly Ranges Panel v8 (Kalshi 15m)
+// WE|||CRYPTO — Hourly Ranges Panel v9 (hourly ranges only)
 //
-// Shows a spot-centered synthetic range ladder (no live multi-strike
-// ladder market exists for hourly crypto ranges today) plus the live
-// Kalshi 15m contract,
-// read straight from window.PredictionMarkets (already polled there,
-// no separate network fetch needed here).
+// Shows a spot-centered synthetic hourly range ladder. Kalshi 15m
+// contracts are intentionally not rendered here.
 // Polls every 10s, accelerates to every 2.5s in the final 15 mins.
 // ================================================================
 
@@ -206,7 +203,7 @@
     return readLivePrice(sym);
   }
 
-  // ── Live Kalshi 15m contract (already polled by prediction-markets.js) ──
+  // ── Kalshi 15m compatibility hook for range overlays; not rendered here ──
   function get15mContract(sym) {
     return window.PredictionMarkets?.getCoin?.(sym)?.kalshi15m || null;
   }
@@ -491,47 +488,8 @@
       }
     } catch (_) { grokHtml = ''; }
 
-    // Kalshi 15m Up/Down — pulled by prediction-markets.js fetchKalshi15M().
-    // Render the live Kalshi quote directly; do not substitute another venue here.
-    let kalshi15mHtml = '';
-    try {
-      const k15 = window.PredictionMarkets?.getCoin?.(sym)?.kalshi15m;
-      const ticker = k15?.ticker || '';
-      const upProb = Number(k15?.probability);
-      const hasProb = Number.isFinite(upProb);
-      const call = hasProb ? (upProb >= 0.5 ? 'UP' : 'DOWN') : null;
-      const col = call === 'UP' ? 'var(--color-green,#26a69a)' : call === 'DOWN' ? 'var(--color-red,#ef5350)' : 'var(--color-text-faint)';
-      const ptbNum = Number(k15?.targetPriceNum);
-      const ptbLabel = k15?.targetPrice || (Number.isFinite(ptbNum) && ptbNum > 0
-          ? (window.CoinPrecision?.formatCoinStrike
-              ? window.CoinPrecision.formatCoinStrike(sym, ptbNum)
-              : `$${ptbNum.toLocaleString('en-US', { minimumFractionDigits: getFallbackDecimals(sym), maximumFractionDigits: getFallbackDecimals(sym) })}`)
-          : 'pending');
-      const closeLabel15 = k15?.closeTime ? timeToClose(k15.closeTime) : null;
-      const currentPrice15 = _prices[sym] || readLivePrice(sym);
-      const prediction15 = window._predictions?.[sym] || window.PredictionEngine?.get?.(sym) || null;
-      const fair15 = window.GrokRangeOverlay?.get15mModelFair?.(k15, currentPrice15, prediction15);
-      const fair15Label = fair15?.model_fair_cents != null
-        ? `Model fair ${Number(fair15.model_fair_cents).toFixed(1)}¢${fair15.residual_cents != null ? ` · residual ${Number(fair15.residual_cents).toFixed(1)}¢` : ''}`
-        : 'Model fair pending';
-
-      if (ticker) {
-        kalshi15mHtml = `<div class="hr-kalshi15m" style="margin-bottom:8px;">
-          <div class="hr-grok-hdr" style="display:flex;justify-content:space-between;">
-            <span>Kalshi 15m Up/Down</span>
-            <span style="opacity:0.5;font-family:monospace;font-size:9px;" title="Kalshi ticker">${escapeHTML(ticker)}</span>
-          </div>
-          <div class="hr-grok-row" style="margin-top:4px;">
-            <span class="hr-grok-call" style="color:${col}">${hasProb ? `${call === 'UP' ? '▲' : '▼'} ${Math.round(upProb * 100)}% YES` : 'awaiting odds'}</span>
-            <span class="hr-grok-meta">Strike ${ptbLabel}${closeLabel15 ? ` · closes ${closeLabel15}` : ''}</span>
-            <div class="hr-grok-notes">${fair15Label}${fair15?.flagged ? ' · ask above model' : ''}</div>
-          </div>
-        </div>`;
-      }
-    } catch (_) { kalshi15mHtml = ''; }
-
-    // Kalshi shows the live 15m odds; body is the spot-centered
-    // hourly bucket ladder (top-3 ranked by likelihood); Grok adds the LLM's
+    // The body is the spot-centered hourly bucket ladder (top-3 ranked by
+    // likelihood); Grok adds the LLM's
     // own directional call + reasoning on top of both.
     return `
       <div class="hr-card">
@@ -539,7 +497,7 @@
           <span class="hr-sym" style="color:${color}">${escapeHTML(sym)}</span>
           <span class="hr-price">${escapeHTML(priceStr)}</span>
         </div>
-        <div class="hr-card-body">${kalshi15mHtml || '<div class="hr-empty">Kalshi 15m market pending…</div>'}${body}${grokHtml}</div>
+        <div class="hr-card-body">${body}${grokHtml}</div>
       </div>`;
   }
 
@@ -789,5 +747,5 @@
     get60mMarket: get60mContract,
   };
 
-  console.log('[HourlyRangesPanel v7] ✓ Ready');
+  console.log('[HourlyRangesPanel v9] ✓ Ready');
 })();
