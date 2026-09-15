@@ -4377,6 +4377,64 @@ function renderUniverse() {
     if (_universeActiveTab === 'cex') renderCexFlow();
   }
 
+function formatUniverseSupply(value) {
+    const number = Number(value);
+    if (!Number.isFinite(number) || number <= 0) return '—';
+    if (number >= 1e9) return (number / 1e9).toFixed(2) + 'B';
+    if (number >= 1e6) return (number / 1e6).toFixed(2) + 'M';
+    if (number >= 1e3) return (number / 1e3).toFixed(2) + 'K';
+    return number.toFixed(2);
+  }
+
+function buildUniverseDiagnostics(sym, cfm) {
+    const data = cfm || window.CFMEngine?.get?.(sym) || {};
+    const quote = window._cmcProFeed?.getCachedQuote?.(sym) || null;
+    const velocity = window.PredictionMarkets?.getVelocity?.(sym) || {};
+    const fairValue = Number(data.cfmRate);
+    const lastPrice = Number(data.lastPrice || quote?.price);
+    const referencePrice = Number(quote?.price || lastPrice || fairValue);
+    const marketCap = Number(quote?.marketCap);
+    const float = Number.isFinite(marketCap) && referencePrice > 0 ? marketCap / referencePrice : null;
+    const fairDelta = Number.isFinite(lastPrice) && Number.isFinite(fairValue) ? lastPrice - fairValue : null;
+
+    return [
+      { label: 'FV', value: fmtPrice(fairValue, sym), title: 'CFM benchmark fair/reference value' },
+      { label: 'LAST', value: fmtPrice(lastPrice, sym), title: 'Latest constituent spot price' },
+      {
+        label: 'Δ FV',
+        value: Number.isFinite(fairDelta) ? `${fairDelta >= 0 ? '+' : ''}${fmtPrice(fairDelta, sym)}` : '—',
+        title: 'Last price minus CFM fair value',
+      },
+      {
+        label: 'VEL',
+        value: velocity.samples >= 3 && Number.isFinite(Number(velocity.velCentsPerMin))
+          ? `${Number(velocity.velCentsPerMin) >= 0 ? '+' : ''}${Number(velocity.velCentsPerMin).toFixed(2)}¢/m`
+          : '—',
+        title: `Kalshi 15m probability velocity · ${velocity.trend || 'flat'}`,
+      },
+      { label: 'FLOAT', value: formatUniverseSupply(float), title: 'Circulating supply estimate (market cap ÷ price)' },
+      { label: 'VOL24', value: fmtCompactUsd(quote?.volume24h), title: '24h quote volume' },
+      { label: 'VWAP15', value: fmtPrice(data.vwap15, sym), title: '15-minute volume-weighted average price' },
+      { label: 'TWAP15', value: fmtPrice(data.twap15, sym), title: '15-minute time-weighted average price' },
+      {
+        label: 'BAS',
+        value: Number.isFinite(Number(data.bidAsk)) ? `${(Number(data.bidAsk) * 100).toFixed(1)} bps` : '—',
+        title: 'Bid-ask spread',
+      },
+      { label: 'MOM', value: fmtPct(data.momentum), title: 'CFM momentum over the last five poll cycles' },
+      {
+        label: 'SRC',
+        value: Number(data.sourceCount) > 0 ? `${data.sourceCount} live` : '—',
+        title: 'Active CFM constituent sources',
+      },
+      {
+        label: 'ANOM',
+        value: data.isAnomalous ? 'FLAG' : (data.sourceCount ? 'OK' : '—'),
+        title: data.isAnomalous ? (data.anomalyReasons || []).join(' · ') : 'No CFM anomaly detected',
+      },
+    ];
+  }
+
 function renderPeriodicTable() {
     const el = document.getElementById('universe-table');
     if (!el) return;
@@ -4397,8 +4455,9 @@ function renderPeriodicTable() {
         <div class="group-label" style="color:${grp.color}">${grp.emoji} ${grp.name}</div>`;
 
       coins.forEach(coin => {
-        const cfm = window._cfmAll?.[coin.sym] || {};
+        const cfm = window._cfmAll?.[coin.sym] || window.CFMEngine?.get?.(coin.sym) || {};
         const pred = window._predictions?.[coin.sym] || {};
+        const diagnostics = buildUniverseDiagnostics(coin.sym, cfm);
         const rawSig = pred.signal || 'neutral';
         // Map prediction engine signals → display direction
         const sigDir = ['strong_bull', 'bullish'].includes(rawSig) ? 'up'
@@ -4417,6 +4476,13 @@ function renderPeriodicTable() {
             <div class="element-cfm">${cfmLabel}</div>
             <div class="element-signal ${sigDir}">${arrow}</div>
             <div class="element-conf">${conf ? conf + '%' : '—'}</div>
+            <div class="element-diagnostics">
+              ${diagnostics.map(item => `
+                <div class="element-diagnostic" title="${escapeHtml(item.title)}">
+                  <span>${escapeHtml(item.label)}</span>
+                  <strong>${escapeHtml(item.value)}</strong>
+                </div>`).join('')}
+            </div>
           </div>`;
       });
       html += `</div>`;

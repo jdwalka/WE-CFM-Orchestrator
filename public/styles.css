@@ -2246,8 +2246,8 @@ input, select { font: inherit; color: inherit; }
 
 /* Individual element cell */
 .element {
-  width: 100px;
-  min-width: 88px;
+  width: 214px;
+  min-width: 214px;
   border: 1.5px solid var(--el-color, var(--color-border));
   border-radius: var(--radius-md);
   background: color-mix(in srgb, var(--el-color, #444) 8%, var(--color-surface));
@@ -2333,6 +2333,34 @@ input, select { font: inherit; color: inherit; }
   font-size: 10px;
   color: var(--color-text-faint);
   font-family: var(--font-mono);
+}
+
+.element-diagnostics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 3px 8px;
+  margin-top: 7px;
+  padding-top: 7px;
+  border-top: 1px solid color-mix(in srgb, var(--el-color, #444) 20%, var(--color-border));
+}
+
+.element-diagnostic {
+  display: flex;
+  justify-content: space-between;
+  gap: 4px;
+  min-width: 0;
+  font-size: 9px;
+  font-family: var(--font-mono);
+  color: var(--color-text-faint);
+}
+
+.element-diagnostic strong {
+  max-width: 68%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-muted);
+  font-weight: 600;
 }
 
 /* Orbital canvas container */
