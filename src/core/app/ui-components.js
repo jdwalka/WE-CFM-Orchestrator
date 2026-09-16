@@ -1,5 +1,18 @@
 // UI Components
 (function() {
+  function _escapeHtml(value) {
+    if (typeof window !== 'undefined' && typeof window.escapeHtml === 'function') {
+      return window.escapeHtml(value);
+    }
+    return String(value ?? '').replace(/[&<>"']/g, char => ({
+      '&': '&amp;',
+      '<': '&lt;',
+      '>': '&gt;',
+      '"': '&quot;',
+      "'": '&#39;',
+    }[char]));
+  }
+
   function _safeNormalizeConfidence(v) {
     if (typeof _normalizeConfidence === 'function') return _normalizeConfidence(v);
     if (typeof window !== 'undefined' && typeof window._normalizeConfidence === 'function') {
@@ -20,11 +33,58 @@
     return score > 0.02 ? 1 : score < -0.02 ? -1 : fallback;
   }
 
-  function _fallbackPriceDecimals(sym) {
+function _fallbackPriceDecimals(sym) {
     const key = String(sym || '').toUpperCase();
     if (key === 'DOGE') return 7;
     if (key === 'SOL' || key === 'HYPE' || key === 'XRP') return 4;
     return 2;
+  }
+
+  function _liveContractOdds(sym) {
+    const coin = window.PredictionMarkets?.getCoin?.(sym) || null;
+    const contract = coin?.kalshi15m || null;
+    const probability = Number(contract?.probability);
+    if (!contract || !Number.isFinite(probability) || probability < 0 || probability > 1) {
+      return {
+        available: false,
+        side: null,
+        direction: 'wait',
+        label: 'ODDS UNAVAILABLE',
+        yesPct: null,
+        noPct: null,
+        dominantPct: null,
+        edgePp: null,
+        contract,
+      };
+    }
+
+    const strikeDir = (contract.strikeDir || contract.strikeType || 'above') === 'below' ? 'below' : 'above';
+    const yesDirection = strikeDir === 'below' ? 'down' : 'up';
+    const noDirection = yesDirection === 'up' ? 'down' : 'up';
+    const yesPct = Math.round(probability * 100);
+    const noPct = 100 - yesPct;
+    const yesDominant = probability >= 0.5;
+    const side = yesDominant ? 'YES' : 'NO';
+    const direction = yesDominant ? yesDirection : noDirection;
+    const oppositeSide = yesDominant ? 'NO' : 'YES';
+    const oppositeDirection = yesDominant ? noDirection : yesDirection;
+
+    return {
+      available: true,
+      side,
+      direction,
+      label: `${direction === 'up' ? 'UP' : 'DOWN'} ${side}`,
+      oppositeLabel: `${oppositeDirection === 'up' ? 'UP' : 'DOWN'} ${oppositeSide}`,
+      yesLabel: `${yesDirection === 'up' ? 'UP YES' : 'DOWN YES'}`,
+      noLabel: `${noDirection === 'up' ? 'UP NO' : 'DOWN NO'}`,
+      yesDirection,
+      noDirection,
+      yesPct,
+      noPct,
+      dominantPct: yesDominant ? yesPct : noPct,
+      edgePp: Math.round(Math.abs(yesPct - 50)),
+      contract,
+    };
   }
 
 function predictionCard(p) {
@@ -49,17 +109,16 @@ function predictionCard(p) {
     // modelYesPct = P(projected target ≥ strike) via normal CDF — this is the RIGHT metric.
     const _k15mCV = window.PredictionMarkets?.getCoin(p.sym);
     const _k15mV = _k15mCV?.kalshi15m ?? null;
-    // Kalshi owns the 15-minute surface. Polymarket 15m remains a legacy
-    // fallback only when Kalshi has not published the active contract yet.
-    const _poly15mV = p.poly15m ?? _k15mCV?.poly15m ?? null;
-    const live15mProb = _k15mV?.probability ?? _poly15mV?.probability ?? _poly15mV?.upProbability ?? _poly15mV?.clobProbability ?? _poly15mV?.yesProb ?? _k15mCV?.combinedProb ?? null;
-    const polymarketPct = live15mProb !== null ? Math.round(live15mProb * 100) : null;
-    const polymarketEdge = live15mProb !== null ? Math.abs(live15mProb - 0.5) : null;
+    // Kalshi owns the 15-minute surface. Do not substitute Polymarket PTB
+    // while the active Kalshi contract is pending.
+    const live15mProb = _k15mV?.probability ?? null;
+    const kalshiPct = live15mProb !== null ? Math.round(live15mProb * 100) : null;
+    const kalshiEdge = live15mProb !== null ? Math.abs(live15mProb - 0.5) : null;
     let _kAlignEarly = p.projections?.p15?.polyAlign ?? null;
     if (_kAlignEarly && _k15mV && _kAlignEarly.ticker && _k15mV.ticker && _kAlignEarly.ticker !== _k15mV.ticker) {
       _kAlignEarly = null;
     }
-    const _strikeDirEarly = (_kAlignEarly?.strikeDir ?? _k15mV?.strikeDir) === 'below' ? 'below' : 'above';
+    const _strikeDirEarly = (_k15mV?.strikeDir ?? _kAlignEarly?.strikeDir) === 'below' ? 'below' : 'above';
     const _yesDirEarly = _strikeDirEarly === 'below' ? 'down' : 'up';
     const _noDirEarly = _yesDirEarly === 'up' ? 'down' : 'up';
 
@@ -80,52 +139,47 @@ function predictionCard(p) {
     }
 
     const modelDir = p.score > 0.02 ? 'up' : p.score < -0.02 ? 'down' : 'wait';
-    const polymarketDir = live15mProb !== null ? (live15mProb >= 0.5 ? _yesDirEarly : _noDirEarly) : null;
+    const kalshiDir = live15mProb !== null ? (live15mProb >= 0.5 ? _yesDirEarly : _noDirEarly) : null;
 
     const livePathApi = (typeof window !== 'undefined' && window.LivePath15m) || null;
     const livePath = livePathApi
       ? (typeof livePathApi.fromAny === 'function'
-          ? livePathApi.fromAny(p.sym, { spot: p.price, poly15m: _poly15mV, modelScore: p.score })
-          : livePathApi.resolve(p.sym, { spot: p.price, poly15m: _poly15mV, modelScore: p.score }))
+          ? livePathApi.fromAny(p.sym, { spot: p.price, kalshi15m: _k15mV, modelScore: p.score })
+          : livePathApi.resolve(p.sym, { spot: p.price, kalshi15m: _k15mV, modelScore: p.score }))
       : null;
     const livePathDir = livePath && livePath.dir
       ? (livePath.dir === 'UP' ? _yesDirEarly : _noDirEarly)
       : null;
 
-    let verdictDir, verdictSource;
-    // 15m paint follows the live settlement path (Pyth vs Polymarket PTB,
-    // ticks, window return). Model/Grok stay visible as a lean, but they
-    // must not lock the green/red label until an extreme swing.
-
+    let modelVerdictDir, modelVerdictSource;
     if (_kAlignEarly?.modelYesPct != null) {
       // Use CDF P(close ≥ strike) — correct for binary contracts
       const myp = _kAlignEarly.modelYesPct;
-      if (myp >= 50.5) { verdictDir = _yesDirEarly; verdictSource = 'model-cdf'; }
-      else if (myp <= 49.5) { verdictDir = _noDirEarly; verdictSource = 'model-cdf'; }
-      else { verdictDir = _yesDirEarly; verdictSource = 'model-cdf-lean'; }
+      if (myp >= 50.5) { modelVerdictDir = _yesDirEarly; modelVerdictSource = 'model-cdf'; }
+      else if (myp <= 49.5) { modelVerdictDir = _noDirEarly; modelVerdictSource = 'model-cdf'; }
+      else { modelVerdictDir = _yesDirEarly; modelVerdictSource = 'model-cdf-lean'; }
     } else if (modelDir !== 'wait') {
-      verdictDir = modelDir;
-      verdictSource = 'model';
+      modelVerdictDir = modelDir;
+      modelVerdictSource = 'model';
     } else if (p.score !== 0) {
-      verdictDir = p.score > 0 ? _yesDirEarly : _noDirEarly;
-      verdictSource = 'model-score-lean';
+      modelVerdictDir = p.score > 0 ? _yesDirEarly : _noDirEarly;
+      modelVerdictSource = 'model-score-lean';
     } else if (grokBinaryCall) {
-      verdictDir = grokBinaryCall;
-      verdictSource = 'grok-inference-lean';
-    } else if (polymarketDir !== null) {
-      verdictDir = polymarketDir;
-      verdictSource = 'polymarket-market-lean';
+      modelVerdictDir = grokBinaryCall;
+      modelVerdictSource = 'grok-inference-lean';
+    } else if (kalshiDir !== null) {
+      modelVerdictDir = kalshiDir;
+      modelVerdictSource = 'kalshi-market-lean';
     } else {
-      verdictDir = 'up';
-      verdictSource = 'default-lean';
+      modelVerdictDir = 'wait';
+      modelVerdictSource = 'model-uncertain';
     }
 
-    const modelVerdictDir = verdictDir;
-    const modelVerdictSource = verdictSource;
-    if (livePathDir) {
-      verdictDir = livePathDir;
-      verdictSource = 'live-path-15m';
-    }
+    // The verdict is the active contract's live market odds, never an inferred
+    // model/default direction. Model, Grok, and live path remain diagnostics.
+    const liveOdds = _liveContractOdds(p.sym);
+    const verdictDir = liveOdds.available ? liveOdds.direction : 'wait';
+    const verdictSource = liveOdds.available ? 'kalshi-live-odds' : 'kalshi-15m-unavailable';
 
     // Safety gate: note late/borderline entry risks without obliterating the binary belief
     const tickerAgeMs = Math.max(0, Date.now() - Number(window._lastTickerFetchTs || 0));
@@ -155,7 +209,7 @@ function predictionCard(p) {
     const confNorm = _safeNormalizeConfidence(p.confidence) ?? 0;
     const isSemiConfidence = confNorm >= 0.40 && confNorm < 0.70;
     const isCrowdConflict =
-      polymarketDir !== null && modelDir !== 'wait' && modelDir !== polymarketDir;
+      kalshiDir !== null && modelDir !== 'wait' && modelDir !== kalshiDir;
     const isUltraLateWindow =
       Number.isFinite(msToClose) && msToClose >= 0 && msToClose <= 45_000;
 
@@ -165,17 +219,21 @@ function predictionCard(p) {
     }
 
     // Fade flag: raw price direction conflicts with Polymarket crowd
-    const _fadeActive = polymarketDir !== null && modelDir !== 'wait' && modelDir !== polymarketDir;
+    const _fadeActive = kalshiDir !== null && modelDir !== 'wait' && modelDir !== kalshiDir;
     const _fadeSolid = _fadeActive && Math.abs(p.score) >= 0.20;
     const _fadeSoft = _fadeActive && !_fadeSolid;
-    const _betAction = verdictDir === _yesDirEarly ? 'YES' : verdictDir === _noDirEarly ? 'NO' : null;
-    const compositeEdge = 0.75 * Math.abs(p.score) + 0.25 * (polymarketEdge ?? 0);
+    const _betAction = liveOdds.available ? liveOdds.side : null;
+    const compositeEdge = 0.75 * Math.abs(p.score) + 0.25 * (kalshiEdge ?? 0);
 
     const isYesVerdict = verdictDir === _yesDirEarly;
-    const binaryOutcomeText = isYesVerdict ? 'BUY YES' : 'BUY NO';
-    const verdictMain = isYesVerdict ? `▲ ${binaryOutcomeText}` : `▼ ${binaryOutcomeText}`;
+    const verdictMain = liveOdds.available
+      ? `KALSHI 15M ${liveOdds.label} ${liveOdds.dominantPct}%`
+      : liveOdds.label;
     const strength = safetyGuardActive ? 'GUARDED'
-      : compositeEdge >= 0.42 ? 'STRONG' : compositeEdge >= 0.22 ? 'MODERATE' : 'LEAN';
+      : !liveOdds.available ? 'WAIT'
+      : liveOdds.edgePp >= 25 ? 'CLEAR'
+      : liveOdds.edgePp >= 10 ? 'LEAN'
+      : 'EVEN';
     const scoreStr = Number.isFinite(p.score) ? (p.score > 0 ? '+' : '') + p.score.toFixed(2) : '—';
 
     // ── Pre-compute model probability (outer scope — used in verdict banner + comparison bar) ──
@@ -189,8 +247,8 @@ function predictionCard(p) {
       : modelVerdictDir === 'down' ? `${_modelDownPct}% DOWN` : 'NEUTRAL';
     const _modelProbColor = modelVerdictDir === 'up' ? 'var(--color-green)'
       : modelVerdictDir === 'down' ? 'var(--color-red)' : 'var(--color-text-muted)';
-    const _liveKProbCard = window.PredictionMarkets?.getCoin?.(p.sym)?.kalshi15m?.probability ?? live15mProb;
-    const _liveVenueCard = window.PredictionMarkets?.getCoin?.(p.sym)?.kalshi15m?.ticker ? 'Kalshi' : 'Polymarket';
+    const _liveKProbCard = _k15mV?.probability ?? null;
+    const _liveVenueCard = 'Kalshi 15M';
     const _liveKPctCard = _liveKProbCard != null ? Math.round(_liveKProbCard * 100) : null;
     const _edgePpCard = _liveKPctCard != null ? Math.abs(_modelYesPctCard - _liveKPctCard) : null;
     const _liveKDirCard = _liveKProbCard == null ? null : (_liveKProbCard >= 0.5 ? _yesDirEarly : _noDirEarly);
@@ -252,6 +310,9 @@ function predictionCard(p) {
       }
       if (verdictSource === 'model-uncertain') {
         return `Model thinking: low conviction score ${scoreStr} (needs >+0.12 for UP or <-0.12 for DOWN).`;
+      }
+      if (verdictSource === 'kalshi-15m-unavailable') {
+        return `Verdict waiting: no live Kalshi 15m YES/NO odds for ${p.sym}. Model score ${scoreStr} is diagnostic only and cannot paint an UP call.`;
       }
       if (verdictSource === 'safety-stale-data') {
         return `Model thinking: signal blocked by stale ticker data (${Math.round(tickerAgeMs / 1000)}s old) inside the 5-minute pre-close guard.`;
@@ -383,11 +444,10 @@ function predictionCard(p) {
     const contrarianCount = mySetups.filter(s => s.type.startsWith('contrarian_')).length;
 
     // ---- Kalshi 15M Up/Down live market row ----
-    // Kalshi is primary; Polymarket 15m is a legacy fallback only.
+    // Kalshi is the only 15-minute market source. Never fall back to PTB.
     const _k15mCoin = window.PredictionMarkets?.getCoin(p.sym);
     const _k15m = _k15mCoin?.kalshi15m ?? null;
-    const _poly15m = p.poly15m ?? _k15mCoin?.poly15m ?? null;
-    const _kProb = _k15m?.probability ?? ind.mktSentiment?.kalshi ?? _poly15m?.probability ?? _poly15m?.upProbability ?? _poly15m?.clobProbability ?? _poly15m?.yesProb ?? _k15mCoin?.combinedProb ?? null;
+    const _kProb = _k15m?.probability ?? null;
     let _kAlign = p.projections?.p15?.polyAlign ?? null;
     if (_kAlign && _k15m && _kAlign.ticker && _k15m.ticker && _kAlign.ticker !== _k15m.ticker) {
       _kAlign = null;
@@ -400,7 +460,7 @@ function predictionCard(p) {
     }
 
     const kalshi15mRow = (() => {
-      const _rowLabel = _k15m?.ticker ? 'Kalshi 15M' : 'Polymarket 15M';
+      const _rowLabel = 'Kalshi 15M';
       const cfmRow = (() => {
         const cfmData = window.CFMEngine?.getAll ? window.CFMEngine.getAll()[p.sym] : null;
         if (!cfmData || !cfmData.bias) return '';
@@ -412,17 +472,17 @@ function predictionCard(p) {
       const coinPrefix = (window.PredictionMarkets?.POLY_5M_COIN_SLUGS?.[p.sym] || p.sym.toLowerCase());
       const nowSec = Math.floor(Date.now() / 1000);
       const windowTs = nowSec - (nowSec % 900);
-      const activeSlug = _k15m?.ticker || _poly15m?.slug || `${coinPrefix}-updown-15m-${windowTs}`;
+      const activeSlug = _k15m?.ticker || null;
       const defaultCloseMs = (windowTs + 900) * 1000;
 
-      const _rowStrikeDir = ((_k15m?.strikeDir ?? _kAlign?.strikeDir ?? (_poly15m ? 'above' : _strikeDirEarly)) === 'below' ? 'below' : 'above');
+      const _rowStrikeDir = ((_k15m?.strikeDir ?? _kAlign?.strikeDir ?? _strikeDirEarly) === 'below' ? 'below' : 'above');
       const _rowYesDir = _rowStrikeDir === 'below' ? 'down' : 'up';
       const _rowNoDir = _rowYesDir === 'up' ? 'down' : 'up';
 
       // Reference threshold — "Beat $85.32" for above, "Below $85.32" for below.
       // Prefer the raw API string (targetPrice) to avoid rounding.
-      const _refStrikeNum = _k15m?.targetPriceNum ?? _kAlign?.ref ?? _poly15m?.priceToBeatNum ?? _poly15m?.targetPriceNum ?? null;
-      const refTarget = _k15m?.targetPrice ?? _poly15m?.targetPrice ?? (_refStrikeNum != null ? (window.CoinPrecision?.formatCoinStrike ? window.CoinPrecision.formatCoinStrike(p.sym, _refStrikeNum) : fmtPrice(_refStrikeNum, p.sym)) : null);
+      const _refStrikeNum = _k15m?.targetPriceNum ?? _kAlign?.ref ?? null;
+      const refTarget = _k15m?.targetPrice ?? (_refStrikeNum != null ? (window.CoinPrecision?.formatCoinStrike ? window.CoinPrecision.formatCoinStrike(p.sym, _refStrikeNum) : fmtPrice(_refStrikeNum, p.sym)) : null);
       const refVerb = _rowStrikeDir === 'below' ? 'Below' : 'Beat';
       const refLine = refTarget
         ? ` <span class="k15-target">${refVerb} ${refTarget}</span>`
@@ -456,7 +516,7 @@ function predictionCard(p) {
 
       // Countdown to settlement
       let countdown = '';
-      const _closeTimeRow = _k15m?.closeTime ?? _poly15m?.closeTime;
+      const _closeTimeRow = _k15m?.closeTime;
       const closeMs = _closeTimeRow ? new Date(_closeTimeRow).getTime() : defaultCloseMs;
       const msl = closeMs - Date.now();
       const _fmtUtc4 = typeof formatUtc4Time === 'function' ? formatUtc4Time : (window.formatUtc4Time || ((input) => {
@@ -472,7 +532,7 @@ function predictionCard(p) {
       }
 
       if (_kProb === null) {
-        const pendingLabel = _k15m ? 'Awaiting Kalshi strike' : 'Awaiting PTB lock';
+        const pendingLabel = activeSlug ? 'Awaiting Kalshi strike' : 'Awaiting Kalshi 15M contract';
         return `<div class="ind-item k15m-row"><span class="ind-name">${_rowLabel}</span><span class="ind-val flat"><span class="k15-side-label" style="opacity:0.6">15M</span>${refLine ? refLine : `<span class="k15-target">${pendingLabel}</span>`}<span class="k15-gap" style="opacity:0.6">⏱ odds loading</span>${countdown}</span></div>${cfmRow}`;
       }
 
@@ -643,11 +703,12 @@ function predictionCard(p) {
         <!-- Verdict Banner: always visible — this is the primary signal -->
         <div class="pred-verdict ${verdictDir}">
           <div class="pred-verdict-call">
-            <span class="pred-verdict-main">${verdictMain}</span>
+            <span class="pred-verdict-main">${escapeHtml(verdictMain)}</span>
             <span class="pred-verdict-strength">${strength}</span>
           </div>
           <div class="pred-verdict-meta">
-            ${livePathDir ? `<span class="pred-source-badge" style="border-color:${verdictDir === 'up' ? 'var(--color-green)' : 'var(--color-red)'};color:${verdictDir === 'up' ? 'var(--color-green)' : 'var(--color-red)'}" title="${escapeHtml(livePath.reason || 'live path')}">LIVE ${livePath.dir}${Number.isFinite(livePath.bps) ? ` ${livePath.bps >= 0 ? '+' : ''}${livePath.bps.toFixed(1)}bps` : ''}</span>` : ''}
+            ${livePathDir ? `<span class="pred-source-badge" style="border-color:var(--color-border);color:var(--color-text-muted)" title="${escapeHtml(livePath.reason || 'live path')}">PATH ${livePath.dir}${Number.isFinite(livePath.bps) ? ` ${livePath.bps >= 0 ? '+' : ''}${livePath.bps.toFixed(1)}bps` : ''}</span>` : ''}
+            ${liveOdds.available ? `<span class="pred-source-badge kalshi">${liveOdds.yesLabel} ${liveOdds.yesPct}% / ${liveOdds.noLabel} ${liveOdds.noPct}%</span>` : ''}
             <span class="pred-source-badge model">MODEL</span>
             ${llmBadge}
             ${_liveKPctCard !== null
@@ -665,7 +726,7 @@ function predictionCard(p) {
           ${(p.llm?.ai_wording?.high_confidence_rationale) ? `<div class="pred-verdict-rationale" style="color:#8fa8ff"><span style="font-weight:700">✨ AI:</span> ${escapeHtml(p.llm.ai_wording.high_confidence_rationale)}</div>` : hcRationale ? `<div class="pred-verdict-rationale">${hcRationale}</div>` : ''}
           ${(p.llm?.ai_wording?.primary_rationale) ? `<div class="pred-verdict-rationale" style="color:#8fa8ff"><span style="font-weight:700">✨ AI:</span> ${escapeHtml(p.llm.ai_wording.primary_rationale)}</div>` : ratPrimary ? `<div class="pred-verdict-rationale">${ratPrimary}</div>` : ''}
           <div class="pred-verdict-bar-wrap">
-            <div class="pred-verdict-bar-fill ${verdictDir}" style="width:${p.confidence}%"></div>
+            <div class="pred-verdict-bar-fill ${verdictDir}" style="width:${liveOdds.available ? liveOdds.yesPct : 0}%"></div>
           </div>
           <!-- Projected Binary Decision & Countdown Box -->
           <div class="binary-decision-box" style="margin-top:8px;padding:8px 10px;background:rgba(0,229,255,0.04);border:1px solid rgba(0,229,255,0.25);border-radius:6px;">
@@ -673,15 +734,17 @@ function predictionCard(p) {
               <span style="font-size:10px;font-weight:800;color:#00e5ff;text-transform:uppercase;letter-spacing:0.06em;">🎯 BINARY OUTCOME DECISION</span>
               <span class="k15-expiry" data-close-ms="${_k15mV?.closeTime ? new Date(_k15mV.closeTime).getTime() : (Math.floor(Date.now() / 900000) + 1) * 900000}" style="font-family:var(--font-mono);font-size:11px;font-weight:800;padding:2px 8px;border-radius:4px;background:rgba(0,229,255,0.12);color:#00e5ff;">⏱ 00:00 to Decision Lock</span>
             </div>
-            <div style="font-size:12px;font-weight:700;color:${isYesVerdict ? 'var(--color-green)' : 'var(--color-red)'};">
-              ${isYesVerdict ? '▲ PROJECTED OUTCOME: YES (Price ≥ Strike)' : '▼ PROJECTED OUTCOME: NO (Price < Strike)'}
+            <div style="font-size:12px;font-weight:700;color:${liveOdds.direction === 'up' ? 'var(--color-green)' : liveOdds.direction === 'down' ? 'var(--color-red)' : 'var(--color-text-muted)'};">
+              ${liveOdds.available
+                ? `${liveOdds.label} ${liveOdds.dominantPct}%`
+                : liveOdds.label}
             </div>
             <div style="font-size:11px;color:var(--color-text-muted);margin-top:2px;">
               Model CDF P(YES): <strong style="color:var(--color-text);">${_modelYesPctCard}%</strong> ${grokBinaryCall ? `· Grok Inference: <strong style="color:#00e5ff;">${grok15mGuidance.call} (${grokConfPct}%)</strong>` : ''}
             </div>
             ${grokNotesText ? `<div style="font-size:11px;color:var(--color-text);margin-top:3px;line-height:1.35;"><span style="color:#00e5ff;font-weight:700;">🤖 Grok Rationale:</span> ${escapeHtml(grokNotesText)}</div>` : ''}
           </div>
-          <!-- Model vs Polymarket Comparison Bar -->
+          <!-- Model vs Kalshi Comparison Bar -->
           ${_liveKPctCard !== null ? `
             <div class="pred-comparison-bar-wrap" title="Model vs Market: shows where model (top) differs from the live ${_liveVenueCard} market (bottom)">
               <div style="font-size:9px;color:var(--color-text-muted);margin-bottom:4px;display:flex;justify-content:space-between">
@@ -690,7 +753,7 @@ function predictionCard(p) {
               </div>
               <div style="display:flex;gap:8px;align-items:center">
                 <div style="flex:1;height:12px;background:rgba(0,0,0,0.1);border-radius:3px;position:relative;overflow:hidden">
-                  <div style="height:100%;width:${_modelUpPct}%;background:${verdictDir === 'up' ? 'var(--color-green)' : 'var(--color-red)'};border-radius:3px"></div>
+                  <div style="height:100%;width:${_modelYesPctCard}%;background:var(--color-primary);border-radius:3px"></div>
                 </div>
                 <span style="font-size:9px;font-weight:700;min-width:35px;text-align:right;color:var(--color-text)">${_edgePpCard ?? '—'}pp</span>
               </div>
@@ -1416,19 +1479,26 @@ function buildQuickDecisionPanel(predArr) {
       let upCount = 0, downCount = 0, neutralCount = 0;
 
       const cards = ordered.map(pred => {
-        const dir = _safePredictionDirection(pred);
-        const dirClass = dir > 0 ? 'up' : dir < 0 ? 'down' : 'neutral';
-        const arrow = dir > 0 ? '▲' : dir < 0 ? '▼' : '→';
-        const label = dir > 0 ? 'UP' : dir < 0 ? 'DOWN' : 'FLAT';
+        const liveOdds = _liveContractOdds(pred.sym);
+        const dir = liveOdds.available ? (liveOdds.direction === 'up' ? 1 : -1) : 0;
+        const dirClass = liveOdds.available ? (liveOdds.direction === 'up' ? 'up' : 'down') : 'neutral';
+        const arrow = liveOdds.available ? (liveOdds.direction === 'up' ? '▲' : '▼') : '→';
+        const label = liveOdds.available
+          ? `${liveOdds.label} ${liveOdds.dominantPct}%`
+          : liveOdds.label;
         const score = Number.isFinite(pred.score) ? (pred.score > 0 ? '+' : '') + pred.score.toFixed(2) : '—';
         const horizon = pred.backtest?.summary?.preferredHorizon ? `${pred.backtest.summary.preferredHorizon}m` : '';
-        const mkt = pred.indicators?.mktSentiment;
-        const kPct = mkt?.kalshi != null ? Math.round(mkt.kalshi * 100) : null;
-        const pPct = mkt?.poly != null ? Math.round(mkt.poly * 100) : null;
-        const mktRow = (kPct != null || pPct != null) ? `
+        const coinData = window.PredictionMarkets?.getCoin(pred.sym) || {};
+        const otherOdds = [
+          ['P5M', coinData.poly5m],
+          ['P15M', coinData.poly15m],
+          ['P60M', coinData.poly60m],
+        ].filter(([, contract]) => Number.isFinite(Number(contract?.probability)))
+          .map(([name, contract]) => `${name} ${Math.round(Number(contract.probability) * 100)}%`);
+        const mktRow = liveOdds.available || otherOdds.length ? `
           <div class="dc-mkt-row">
-            ${kPct != null ? `<span class="dc-badge-k">K:${kPct}%</span>` : ''}
-            ${pPct != null ? `<span class="dc-badge-p">P:${pPct}%</span>` : ''}
+            ${liveOdds.available ? `<span class="dc-badge-k">K15 YES ${liveOdds.yesPct}% / NO ${liveOdds.noPct}%</span>` : ''}
+            ${otherOdds.map(item => `<span class="dc-badge-p">${_escapeHtml(item)}</span>`).join('')}
           </div>` : '';
 
         // Ground state synthesis for this coin
@@ -1514,11 +1584,11 @@ function getDecisionRationale(pred) {
     let primary = '';
     let secondary = '';
 
-    // ---- 0. Live 15m odds — Kalshi is primary, Polymarket is fallback ----
+    // ---- 0. Live 15m odds — Kalshi only ----
     const _kCoinR = window.PredictionMarkets?.getCoin(pred?.sym);
     const _k15mR = _kCoinR?.kalshi15m ?? null;
-    const _kProbR = _k15mR?.probability ?? _kCoinR?.poly15m?.probability ?? _kCoinR?.combinedProb ?? null;
-    const _venueR = _k15mR?.ticker ? 'Kalshi' : (_kCoinR?.poly15m ? 'Polymarket' : 'Market');
+    const _kProbR = _k15mR?.probability ?? null;
+    const _venueR = 'Kalshi';
     const _strikeR = (_k15mR?.strikeDir ?? 'above') === 'below' ? 'below' : 'above';
     const _yesDirR = _strikeR === 'below' ? 'DOWN' : 'UP';
     const _noDirR = _yesDirR === 'UP' ? 'DOWN' : 'UP';
@@ -1528,7 +1598,7 @@ function getDecisionRationale(pred) {
       else if (_kProbR <= 0.32) primary = `${_venueR} ${100 - kp}% NO — crowd strongly pricing ${_noDirR}`;
       else if (_kProbR >= 0.55) primary = `${_venueR} ${kp}% YES — market leans ${_yesDirR}`;
       else if (_kProbR <= 0.45) primary = `${_venueR} ${100 - kp}% NO — market leans ${_noDirR}`;
-      else primary = `${_venueR} near 50/50 (${kp}%) — uncertain, model drives verdict`;
+      else primary = `${_venueR} near 50/50 (${kp}%) — no clear side; wait for odds to move`;
     }
 
     if (!primary) {
@@ -2774,7 +2844,7 @@ function marketRow(c, i) {
     `;
   }
 window.APP_UI_COMPONENTS = {
-  predictionCard, normalizePredictionCardData, getPredictionCoinMeta, 
+  predictionCard, normalizePredictionCardData, getPredictionCoinMeta, liveContractOdds: _liveContractOdds,
   buildMarketDebugPanel, buildQuickDecisionPanel, getDecisionRationale,
   computeQuickMACD, formatSuborbital, evaluateSignal, buildCoinPeriodicTable,
   computeEntryQuality, detectMarketRegime, computeGroundState, buildOpportunitiesPanel,

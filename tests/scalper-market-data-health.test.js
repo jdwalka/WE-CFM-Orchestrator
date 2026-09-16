@@ -17,7 +17,8 @@ function createD1({ storageError, timestamp }) {
 }
 
 function mockUpstreams({ spotTime = new Date().toISOString(), kalshiOk = true, polymarketOk = true } = {}) {
-  globalThis.fetch = async (url) => {
+  globalThis.fetch = async (url, init = {}) => {
+    globalThis.lastFetchInit = init;
     const value = String(url);
     if (value.includes("/ticker")) {
       return new Response(JSON.stringify({ price: "50000", time: spotTime }));
@@ -82,6 +83,23 @@ test("health reports healthy storage, ladder feeds, and fresh spot data", async 
     assert.equal(health.spot.fresh, true);
   } finally {
     globalThis.fetch = originalFetch;
+  }
+});
+
+test("worker responses and upstream fetches bypass cache", async () => {
+  const timestamp = "2026-09-14T11:00:00.000Z";
+  mockUpstreams();
+  try {
+    const response = await worker.fetch(
+      new Request("https://worker.test/health"),
+      { CALIBRATION_DB: createD1({ timestamp }) }
+    );
+    assert.equal(response.headers.get("cache-control"), "no-store, max-age=0");
+    assert.equal(globalThis.lastFetchInit.cache, "no-store");
+    assert.equal(globalThis.lastFetchInit.cf, undefined);
+  } finally {
+    globalThis.fetch = originalFetch;
+    delete globalThis.lastFetchInit;
   }
 });
 

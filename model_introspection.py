@@ -29,6 +29,7 @@ def get_model_weights() -> dict[str, Any]:
         "prediction": prediction,
         "parameters": {
             "lookback_hours": engine.LOOKBACK_HOURS,
+            "live_volatility_hours": engine.LIVE_VOLATILITY_HOURS,
             "body_percentile": engine.BODY_PERCENTILE,
             "momentum_lookback_hours": engine.MOMENTUM_LOOKBACK_HOURS,
             "bias_threshold": engine.BIAS_THRESHOLD,
@@ -37,6 +38,10 @@ def get_model_weights() -> dict[str, Any]:
             "center_shift_factor": engine.CENTER_SHIFT_FACTOR,
             "drift_factor": engine.DRIFT_FACTOR,
             "min_range_pct": engine.MIN_RANGE_PCT,
+            "high_regime_min_range_pct": engine.HIGH_REGIME_MIN_RANGE_PCT,
+            "volatility_spike_percentile": engine.VOLATILITY_SPIKE_PERCENTILE,
+            "probability_correction_max_factor": engine.PROBABILITY_CORRECTION_MAX_FACTOR,
+            "artifact_residual_threshold_cents": engine.ARTIFACT_RESIDUAL_THRESHOLD_CENTS,
             "probability_model": (
                 "Student-t fat-tail distribution with time-decayed sigma and "
                 "momentum drift; normal model retained for comparison"
