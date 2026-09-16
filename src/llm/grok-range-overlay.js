@@ -248,10 +248,6 @@
       settlementRule: 'Kalshi 15m settles against the 60-second CF Benchmarks RTI average before expiry.',
     };
   }
-  function buildHourlyLadder(coin, spot) {
-    // Kalshi owns the hourly/15m product surface. HourlyRangesPanel supplies
-    // the synthetic range distribution used for the hourly pre-contract view;
-    // live 15m venue quotes come from PredictionMarkets.kalshi15m.
   /**
    * Bind 15m Grok/ASI1 to the active Kalshi 15m Up/Down contract.
    * Kalshi supplies the strike, strike direction, book, and venue settlement
@@ -387,23 +383,11 @@
     const market = resolveMarket(coin) || {};
     const current = resolvePrice(coin);
     const is15 = Number(horizonMinutes) === 15;
-    const kalshi15m = is15 ? buildKalshi15m(coin, market) : null;
-    if (kalshi15m) {
-      kalshi15m.model_fair = estimateKalshi15mFair(kalshi15m, current, rawPred);
-    }
     // Backward-compatible alias for legacy 15m consumers only.
     const kalshi15m = buildKalshi15m(coin, market);
     kalshi15m.model_fair = estimateKalshi15mFair(kalshi15m, current, rawPred);
     // Backward-compatible alias for legacy consumers. 15m is a Kalshi venue;
     // new code must read `kalshi15m`.
-    const poly15m = kalshi15m;
-    const current = resolvePrice(coin);
-    const is15 = Number(horizonMinutes) === 15;
-    const kalshi15m = is15 ? buildKalshi15m(coin, market) : null;
-    if (kalshi15m) {
-      kalshi15m.model_fair = estimateKalshi15mFair(kalshi15m, current, rawPred);
-    }
-    // Backward-compatible alias for legacy 15m consumers only.
     const poly15m = kalshi15m;
     // ptb must be computed before memoryPackForPrompt() so ptbDefenseStats can
     // actually query for this level — it silently returns null without it,
@@ -433,7 +417,6 @@
     } catch (_) {}
 
     const modelDir = pack.direction
-    const modelDir = pack.direction
       || rawPred.direction
       || rawPred.signal
       || (Number.isFinite(Number(rawPred.score)) ? (rawPred.score > 0.05 ? 'UP' : rawPred.score < -0.05 ? 'DOWN' : null) : null);
@@ -443,7 +426,6 @@
       : (rawPred.confidence != null ? Number(rawPred.confidence) : null);
     const conf01 = confidence != null && confidence > 1 ? confidence / 100 : confidence;
 
-    const ptb = is15 ? poly15m.priceToBeatNum : null;
     const ptb = is15 ? poly15m.priceToBeatNum : null;
     const deltaVsPtb = (current != null && ptb != null) ? current - ptb : null;
     return {
@@ -495,22 +477,6 @@
       rangeLadder: ladder,
       spotBucket,
       kalshiOracle: is15 ? {
-      kalshiOracle: {
-        ticker: kalshi15m.ticker,
-        targetPriceNum: ptb,
-        strikeDir: kalshi15m.strikeDir,
-        pythSpot: current,
-        pythSource: 'pyth',
-        pathDir: deltaVsPtb == null ? null : (Math.abs(deltaVsPtb / (ptb || 1)) < 0.00005 ? 'FLAT' : (deltaVsPtb > 0 ? 'UP' : 'DOWN')),
-        deltaVsPtb,
-        yesProb: kalshi15m.yesProb,
-        secondsToClose: kalshi15m.secondsToClose,
-        settlementVenue: kalshi15m.settlementVenue,
-        model_fair: kalshi15m.model_fair,
-        rule: 'Kalshi strike/RTI is authoritative. Spot is Pyth only. Do not invent the strike.',
-      } : null,
-      },
-      kalshiOracle: is15 ? {
         ticker: kalshi15m.ticker,
         targetPriceNum: ptb,
         strikeDir: kalshi15m.strikeDir,
@@ -536,22 +502,6 @@
                 || null;
             } catch (_) { return null; }
           })(),
-        },
-        '15m': is15 ? {
-        '15m': {
-          prob: kalshi15m.yesProb ?? null,
-          ticker: kalshi15m.ticker,
-          slug: kalshi15m.ticker,
-          live: kalshi15m.live,
-          targetPriceNum: kalshi15m.targetPriceNum,
-          priceToBeatNum: kalshi15m.targetPriceNum,
-          strikeDir: kalshi15m.strikeDir,
-          secondsToClose: kalshi15m.secondsToClose,
-          open: sessionMemory.open15m || null,
-          closed: sessionMemory.windows15m || null,
-        } : null,
-          open: sessionMemory.open15m || null,
-          closed: sessionMemory.windows15m || null,
         },
         '15m': is15 ? {
           prob: kalshi15m.yesProb ?? null,
@@ -875,7 +825,6 @@
     const mech = decideHourlyMechanically(snapshot);
     let call = grokCall === 'UP' || grokCall === 'DOWN' ? grokCall : mech.call;
     if (mech.preferredBucket && Number(mech.preferredBucket.yesProb) >= 0.22) {
-    if (mech.preferredBucket && Number(mech.preferredBucket.yesProb) >= 0.22) {
       // stick with scored bucket direction when market is clear on a bucket
       call = mech.call;
     }
@@ -917,9 +866,6 @@
   function resolvePreferredRange(output, snapshot, call, mech) {
     if (mech && mech.preferredBucket) return mech.preferredBucket;
     const pr = (output && (output.preferredBucket || output.preferredRange)) || null;
-  function resolvePreferredRange(output, snapshot, call, mech) {
-    if (mech && mech.preferredBucket) return mech.preferredBucket;
-    const pr = (output && (output.preferredBucket || output.preferredRange)) || null;
     const ladder = (snapshot && snapshot.rangeLadder) || [];
     if (pr && Number.isFinite(Number(pr.low)) && Number.isFinite(Number(pr.high))) {
       // Only accept if it matches a ladder row (within $1)
@@ -935,8 +881,6 @@
         };
       }
     }
-    return decideHourlyMechanically(snapshot).preferredBucket;
-  }
     return decideHourlyMechanically(snapshot).preferredBucket;
   }
 
@@ -1252,13 +1196,6 @@
               g.call = mech.call;
               g.contractTicker = mech.preferredBucket.ticker || null;
               g.notes = `${mech.call} · fixed 60m bucket $${mech.preferredBucket.low}–$${mech.preferredBucket.high}`;
-            if (mech && mech.preferredBucket) {
-              g.range = mech.preferredBucket;
-              g.preferredBucket = mech.preferredBucket;
-              g.preferredRange = mech.preferredBucket;
-              g.call = mech.call;
-              g.contractTicker = mech.preferredBucket.ticker || null;
-              g.notes = `${mech.call} · fixed 60m bucket $${mech.preferredBucket.low}–$${mech.preferredBucket.high}`;
             }
           } catch (_) {}
         }
@@ -1378,13 +1315,6 @@
       if (g60) {
         const snapshot60 = buildRangeSnapshot(coin, 60);
         const mech = decideHourlyMechanically(snapshot60);
-        if (mech && mech.preferredBucket) {
-          g60.range = mech.preferredBucket;
-          g60.preferredBucket = mech.preferredBucket;
-          g60.preferredRange = mech.preferredBucket;
-          if (!g60.call) g60.call = mech.call;
-          g60.contractTicker = mech.preferredBucket.ticker || null;
-          g60.notes = `${g60.call} · Spot $${spot.toFixed(2)} → fixed 60m bucket $${mech.preferredBucket.low}–$${mech.preferredBucket.high}`;
         if (mech && mech.preferredBucket) {
           g60.range = mech.preferredBucket;
           g60.preferredBucket = mech.preferredBucket;
