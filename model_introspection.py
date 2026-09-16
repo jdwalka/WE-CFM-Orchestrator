@@ -41,6 +41,7 @@ def get_model_weights() -> dict[str, Any]:
             "high_regime_min_range_pct": engine.HIGH_REGIME_MIN_RANGE_PCT,
             "volatility_spike_percentile": engine.VOLATILITY_SPIKE_PERCENTILE,
             "probability_correction_max_factor": engine.PROBABILITY_CORRECTION_MAX_FACTOR,
+            "divergence_adjustment_max_cents": engine.DIVERGENCE_ADJUSTMENT_MAX_CENTS,
             "artifact_residual_threshold_cents": engine.ARTIFACT_RESIDUAL_THRESHOLD_CENTS,
             "probability_model": (
                 "Student-t fat-tail distribution with time-decayed sigma and "
@@ -61,6 +62,7 @@ def get_model_weights() -> dict[str, Any]:
             "alt_alignment_ratio_up": engine.ALT_ALIGNMENT_RATIO_UP,
             "alt_alignment_ratio_down": engine.ALT_ALIGNMENT_RATIO_DOWN,
             "alt_alignment_minutes": engine.ALT_ALIGNMENT_MINUTES,
+            "alt_alignment_enabled": engine.ALT_ALIGNMENT_ENABLED,
         },
         "source": "prediction_engine.py module constants",
     }

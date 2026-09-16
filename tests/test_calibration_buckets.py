@@ -143,6 +143,12 @@ class BucketedCorrectionReportTests(unittest.TestCase):
         self.assertIn("current_factors", report)
         self.assertIn("overall_improvement", report)
         self.assertIn("max_bucket_degradation", report)
+        self.assertEqual(report["activation"]["required_overall_improvement"], 0.002)
+        self.assertTrue(report["activation"]["per_bucket_whitelist"])
+        self.assertTrue(all(
+            factor["whitelisted"]
+            for factor in report["current_factors"].values()
+        ))
 
 
 class ReplayCLITests(unittest.TestCase):

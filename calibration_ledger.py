@@ -20,6 +20,13 @@ DISTRIBUTION_FALLBACK_BRIER_IMPROVEMENT = 0.05
 PROBABILITY_CORRECTION_PRIOR_STRENGTH = 200.0
 PROBABILITY_CORRECTION_MIN_SAMPLES = 12
 PROBABILITY_CORRECTION_MAX_SHRINK = 0.85
+PROBABILITY_CORRECTION_MAX_FACTOR = 4.0
+PROBABILITY_CORRECTION_MIN_FACTOR = 1.0
+PROBABILITY_CORRECTION_RECENT_WEIGHT = 0.60
+PROBABILITY_CORRECTION_RECENT_WINDOW = 50
+PROBABILITY_CORRECTION_TRAILING_WINDOW = 200
+PROBABILITY_CORRECTION_REGIME_BREAK_WINDOW = 100
+PROBABILITY_CORRECTION_REGIME_BREAK_GAP = 0.15
 PROBABILITY_CORRECTION_FLOOR = 0.0005
 TAIL_PROBABILITY_THRESHOLD = 0.30
 TAIL_CORRECTION_MIN_SAMPLES = 10
@@ -338,62 +345,136 @@ def _window_stats(connection: sqlite3.Connection, where: str, args: tuple = ()) 
 
 
 def _probability_correction(connection: sqlite3.Connection) -> dict:
-    """Empirical-Bayes shrinkage of raw model probabilities toward outcomes."""
-    row = connection.execute(
+    """Dual-window empirical-Bayes correction with stale-regime fallback."""
+    rows = connection.execute(
         """
-        SELECT COUNT(*), SUM(p_base), SUM(touched)
-        FROM (
-            SELECT p_base, touched
+        SELECT p_base, touched
             FROM predictions
             WHERE resolved_at_utc IS NOT NULL AND p_base IS NOT NULL
             ORDER BY resolved_at_utc DESC, id DESC
-            LIMIT 200
-        )
+            LIMIT ?
         """
-    ).fetchone()
-    sample_count, predicted_sum, realized_sum = row
-    sample_count = int(sample_count or 0)
-    predicted_sum = float(predicted_sum or 0.0)
-    realized_sum = float(realized_sum or 0.0)
+        , (PROBABILITY_CORRECTION_RECENT_WINDOW + PROBABILITY_CORRECTION_TRAILING_WINDOW,)
+    ).fetchall()
 
-    if sample_count < PROBABILITY_CORRECTION_MIN_SAMPLES or predicted_sum <= 0:
+    def window_stats(window):
+        predicted = sum(
+            max(float(row[0] or 0.0), PROBABILITY_CORRECTION_FLOOR)
+            for row in window
+        )
+        realized = sum(1.0 for row in window if row[1])
+        count = len(window)
+        ratio = realized / predicted if predicted > 0 else 1.0
+        realized_frequency = realized / count if count else None
+        return {
+            "count": count,
+            "predicted": predicted,
+            "realized": realized,
+            "ratio": ratio,
+            "realized_frequency": realized_frequency,
+        }
+
+    recent = window_stats(
+        rows[:PROBABILITY_CORRECTION_RECENT_WINDOW]
+    )
+    older = window_stats(
+        rows[
+            PROBABILITY_CORRECTION_RECENT_WINDOW:
+            PROBABILITY_CORRECTION_RECENT_WINDOW + PROBABILITY_CORRECTION_TRAILING_WINDOW
+        ]
+    )
+    total_count = len(rows)
+    total_predicted = sum(
+        max(float(row[0] or 0.0), PROBABILITY_CORRECTION_FLOOR) for row in rows
+    )
+    total_realized = sum(1.0 for row in rows if row[1])
+
+    if total_count < PROBABILITY_CORRECTION_MIN_SAMPLES or total_predicted <= 0:
         return {
             "correction_factor": 1.0,
             "active": False,
-            "samples": sample_count,
-            "sum_predicted": round(predicted_sum, 4),
-            "sum_realized": round(realized_sum, 4),
+            "samples": total_count,
+            "sum_predicted": round(total_predicted, 4),
+            "sum_realized": round(total_realized, 4),
             "raw_ratio": None,
             "posterior_ratio": 1.0,
             "prior_strength": PROBABILITY_CORRECTION_PRIOR_STRENGTH,
             "min_samples": PROBABILITY_CORRECTION_MIN_SAMPLES,
-            "max_shrink": PROBABILITY_CORRECTION_MAX_SHRINK,
+            "min_factor": PROBABILITY_CORRECTION_MIN_FACTOR,
+            "max_factor": PROBABILITY_CORRECTION_MAX_FACTOR,
             "floor": PROBABILITY_CORRECTION_FLOOR,
             "reason": "insufficient resolved outcomes; correction disabled",
         }
 
-    raw_ratio = realized_sum / predicted_sum
-    evidence_weight = sample_count / (sample_count + PROBABILITY_CORRECTION_PRIOR_STRENGTH)
-    posterior_ratio = evidence_weight * raw_ratio + (1.0 - evidence_weight)
-    correction_factor = max(posterior_ratio, PROBABILITY_CORRECTION_MAX_SHRINK)
+    window_gap = 0.0
+    if recent["realized_frequency"] is not None and older["realized_frequency"] is not None:
+        window_gap = abs(
+            recent["realized_frequency"] - older["realized_frequency"]
+        )
+    regime_break = window_gap > PROBABILITY_CORRECTION_REGIME_BREAK_GAP
+
+    if regime_break:
+        selected = window_stats(rows[:PROBABILITY_CORRECTION_REGIME_BREAK_WINDOW])
+        raw_ratio = selected["ratio"]
+        source = "recent_100_regime_break"
+    elif older["count"]:
+        raw_ratio = (
+            PROBABILITY_CORRECTION_RECENT_WEIGHT * recent["ratio"]
+            + (1.0 - PROBABILITY_CORRECTION_RECENT_WEIGHT) * older["ratio"]
+        )
+        selected = {
+            "count": recent["count"] + older["count"],
+            "predicted": recent["predicted"] + older["predicted"],
+            "realized": recent["realized"] + older["realized"],
+        }
+        source = "dual_window_blend"
+    else:
+        raw_ratio = recent["ratio"]
+        selected = recent
+        source = "recent_window_only"
+
+    evidence_count = selected["count"]
+    posterior_ratio = (
+        raw_ratio * evidence_count + PROBABILITY_CORRECTION_MIN_FACTOR * PROBABILITY_CORRECTION_PRIOR_STRENGTH
+    ) / (evidence_count + PROBABILITY_CORRECTION_PRIOR_STRENGTH)
+    correction_factor = min(
+        max(posterior_ratio, PROBABILITY_CORRECTION_MIN_FACTOR),
+        PROBABILITY_CORRECTION_MAX_FACTOR,
+    )
+
     return {
         "correction_factor": round(correction_factor, 4),
         "active": True,
-        "samples": sample_count,
-        "sum_predicted": round(predicted_sum, 4),
-        "sum_realized": round(realized_sum, 4),
+        "samples": evidence_count,
+        "sum_predicted": round(selected["predicted"], 4),
+        "sum_realized": round(selected["realized"], 4),
         "raw_ratio": round(raw_ratio, 4),
+        "source": source,
+        "window_blend": {
+            "recent_weight": PROBABILITY_CORRECTION_RECENT_WEIGHT,
+            "recent_window": PROBABILITY_CORRECTION_RECENT_WINDOW,
+            "trailing_window": PROBABILITY_CORRECTION_TRAILING_WINDOW,
+            "recent_count": recent["count"],
+            "recent_raw_ratio": round(recent["ratio"], 4),
+            "older_count": older["count"],
+            "older_raw_ratio": round(older["ratio"], 4),
+            "window_gap": round(window_gap, 4),
+            "regime_break_gap": PROBABILITY_CORRECTION_REGIME_BREAK_GAP,
+            "regime_break": regime_break,
+            "source": source,
+        },
         "posterior_ratio": round(posterior_ratio, 4),
         "prior_strength": PROBABILITY_CORRECTION_PRIOR_STRENGTH,
         "min_samples": PROBABILITY_CORRECTION_MIN_SAMPLES,
-        "max_shrink": PROBABILITY_CORRECTION_MAX_SHRINK,
+        "min_factor": PROBABILITY_CORRECTION_MIN_FACTOR,
+        "max_factor": PROBABILITY_CORRECTION_MAX_FACTOR,
         "floor": PROBABILITY_CORRECTION_FLOOR,
         "reason": (
-            "raw realized/predicted ratio blended with a no-bias prior; "
-            "factor clamped to prevent small-sample overcorrection"
+            "recent-100 correction after a regime break"
+            if regime_break
+            else "60/40 recent-to-trailing window blend with a no-bias prior"
         ),
     }
-
 
 def _tail_probability_correction(connection: sqlite3.Connection) -> dict:
     """Empirical correction for the low-probability tail regime.

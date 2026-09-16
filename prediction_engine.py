@@ -34,8 +34,8 @@ CENTER_SHIFT_FACTOR = 0.30
 DRIFT_FACTOR = 0.40
 MIN_RANGE_PCT = 0.25
 HIGH_REGIME_MIN_RANGE_PCT = 0.50
-VOLATILITY_SPIKE_PERCENTILE = 0.90
-PROBABILITY_CORRECTION_MAX_FACTOR = 3.0
+VOLATILITY_SPIKE_PERCENTILE = 0.85
+PROBABILITY_CORRECTION_MAX_FACTOR = 4.0
 
 # Fat-tail / wick / regime parameters
 HOUR_SAMPLE_SIZE = 200               # hours of candles for distribution fitting
@@ -46,9 +46,9 @@ DECAY_TABLE_MINUTES = [20, 15, 10, 5]
 RESIDUAL_FLAG_THRESHOLD_CENTS = 5.0  # flag ladder bands >5¢ above model
 ARTIFACT_RESIDUAL_THRESHOLD_CENTS = 30.0
 STUDENT_T_DF_DEFAULT = 4.0           # fallback if empirical fit is unstable
-TAIL_ADJUSTMENT_MAX_CENTS = 0.12
-TAIL_SPIKE_COMPONENT_MAX_CENTS = 0.06
-TAIL_WICK_COMPONENT_MAX_CENTS = 0.06
+TAIL_ADJUSTMENT_MAX_CENTS = 0.15
+TAIL_SPIKE_COMPONENT_MAX_CENTS = 0.075
+TAIL_WICK_COMPONENT_MAX_CENTS = 0.075
 WICK_RATIO_MIN_BODY_PCT = 0.01       # ignore near-zero-body ratio artifacts
 WICK_RATIO_MAX = 10.0                 # clamp one-candle ratio spikes
 TAIL_SPIKE_FREQUENCY_MIN = 0.0005
@@ -56,6 +56,7 @@ TAIL_WICK_SLOPE_MIN = 0.10
 ALT_ALIGNMENT_RATIO_UP = 0.55
 ALT_ALIGNMENT_RATIO_DOWN = 0.45
 ALT_ALIGNMENT_MINUTES = 10
+ALT_ALIGNMENT_ENABLED = False
 ALT_LEAD_LAG_MINUTES = [1, 2, 3, 4, 5]
 ALT_LEAD_LAG_SAMPLE_SIZE = 120
 ALT_SIGNAL_MIN_STRENGTH = 0.002
@@ -66,6 +67,12 @@ CROSS_VENUE_DIVERGENCE_HISTORY_SIZE = 100
 CROSS_VENUE_DIVERGENCE_MIN_HISTORY = 20
 CROSS_VENUE_TAIL_PROBABILITY_MAX = 0.20
 CROSS_VENUE_TAIL_ADJUSTMENT = 0.15
+CROSS_VENUE_REGIME_ACTIVATE_READINGS = 2
+CROSS_VENUE_REGIME_DEACTIVATE_READINGS = 3
+DIVERGENCE_ADJUSTMENT_MAX_CENTS = 0.15
+SETTLEMENT_HOLD_PRIOR = 1.0
+SETTLEMENT_HOLD_PRIOR_STRENGTH = 30.0
+SETTLEMENT_HOLD_MIN_SAMPLES = 20
 POSITIONING_FUNDING_NORMALIZATION = 0.001
 POSITIONING_OI_DELTA_NORMALIZATION = 5.0
 POSITIONING_SKEW_MAX_PCT = 0.03
@@ -88,6 +95,65 @@ MARKET_DATA_WORKER_URL = os.getenv(
 
 _cross_venue_divergence_history = []
 _open_interest_history = []
+
+
+class DivergenceRegime:
+    """Hysteresis for the cross-venue dispersion regime.
+
+    Two consecutive elevated readings activate the regime; three consecutive
+    normal readings deactivate it. This prevents a dispersion print sitting on
+    the rolling 90th percentile from flipping the adjustment on every snapshot.
+    """
+
+    def __init__(
+        self,
+        activate_after: int = CROSS_VENUE_REGIME_ACTIVATE_READINGS,
+        deactivate_after: int = CROSS_VENUE_REGIME_DEACTIVATE_READINGS,
+        max_adjustment_cents: float = DIVERGENCE_ADJUSTMENT_MAX_CENTS,
+    ):
+        self.activate_after = activate_after
+        self.deactivate_after = deactivate_after
+        self.max_adjustment_cents = max_adjustment_cents
+        self.state = "normal"
+        self.elevated_streak = 0
+        self.normal_streak = 0
+
+    def reset(self) -> None:
+        self.state = "normal"
+        self.elevated_streak = 0
+        self.normal_streak = 0
+
+    def update(self, current_pct: float, rolling_90th_pct: float | None) -> dict:
+        elevated = (
+            rolling_90th_pct is not None
+            and math.isfinite(float(rolling_90th_pct))
+            and current_pct > float(rolling_90th_pct)
+        )
+        if elevated:
+            self.elevated_streak += 1
+            self.normal_streak = 0
+        else:
+            self.normal_streak += 1
+            self.elevated_streak = 0
+
+        if self.state == "normal" and self.elevated_streak >= self.activate_after:
+            self.state = "elevated"
+        elif self.state == "elevated" and self.normal_streak >= self.deactivate_after:
+            self.state = "normal"
+
+        adjustment = self.max_adjustment_cents if self.state == "elevated" else 0.0
+        return {
+            "regime": self.state,
+            "active": self.state == "elevated",
+            "raw_active": elevated,
+            "tail_adjustment": adjustment,
+            "tail_adjustment_cents": adjustment * 100,
+            "elevated_streak": self.elevated_streak,
+            "normal_streak": self.normal_streak,
+        }
+
+
+_cross_venue_divergence_regime = DivergenceRegime()
 
 
 def _format_kalshi_strike(value) -> str:
@@ -251,9 +317,10 @@ def get_cross_venue_divergence() -> dict:
         if len(_cross_venue_divergence_history) >= CROSS_VENUE_DIVERGENCE_MIN_HISTORY
         else None
     )
-    active = threshold is not None and current > threshold
     _cross_venue_divergence_history.append(current)
     del _cross_venue_divergence_history[:-CROSS_VENUE_DIVERGENCE_HISTORY_SIZE]
+    regime_state = _cross_venue_divergence_regime.update(current, threshold)
+    active = regime_state["active"]
     return {
         "current_pct": round(current, 5),
         "rolling_90th_pct_pct": round(threshold, 5) if threshold is not None else None,
@@ -261,7 +328,17 @@ def get_cross_venue_divergence() -> dict:
         "regime": "elevated" if active else "normal",
         "sample_size": len(prices),
         "history_size": len(_cross_venue_divergence_history),
-        "tail_adjustment": CROSS_VENUE_TAIL_ADJUSTMENT if active else 0.0,
+        "raw_tail_adjustment": CROSS_VENUE_TAIL_ADJUSTMENT if regime_state["raw_active"] else 0.0,
+        "tail_adjustment": regime_state["tail_adjustment"],
+        "tail_adjustment_cents": regime_state["tail_adjustment_cents"],
+        "divergence_adjustment_max_cents": DIVERGENCE_ADJUSTMENT_MAX_CENTS,
+        "hysteresis": {
+            "activate_readings": CROSS_VENUE_REGIME_ACTIVATE_READINGS,
+            "deactivate_readings": CROSS_VENUE_REGIME_DEACTIVATE_READINGS,
+            "raw_active": regime_state["raw_active"],
+            "elevated_streak": regime_state["elevated_streak"],
+            "normal_streak": regime_state["normal_streak"],
+        },
         "reason": (
             "cross-venue dispersion exceeds its rolling 90th percentile"
             if active
@@ -779,6 +856,8 @@ def _filter_alt_signal(signal: dict | None) -> tuple[dict | None, dict]:
 
 def get_alt_signal() -> dict:
     """Cross-asset SOL/ETH lead-lag and taker-flow alignment gate."""
+    if not ALT_ALIGNMENT_ENABLED:
+        return None
     btc = _get_alt_candles("BTC-USD", 240)
     eth = _get_alt_candles("ETH-USD", 240)
     sol = _get_alt_candles("SOL-USD", 240)
@@ -1034,12 +1113,26 @@ def _conditional_settlement_hold(low: float, high: float, settlement_history: di
             touched_count += 1
             held_count += int(held)
 
-    hold_given_touch = held_count / touched_count if touched_count else 1.0
+    empirical_hold = held_count / touched_count if touched_count else SETTLEMENT_HOLD_PRIOR
+    if touched_count < SETTLEMENT_HOLD_MIN_SAMPLES:
+        hold_given_touch = (
+            SETTLEMENT_HOLD_PRIOR * SETTLEMENT_HOLD_PRIOR_STRENGTH
+            + empirical_hold * touched_count
+        ) / (SETTLEMENT_HOLD_PRIOR_STRENGTH + touched_count)
+    else:
+        hold_given_touch = empirical_hold
     return {
         "hold_given_touch": round(hold_given_touch, 4),
         "touched_samples": touched_count,
         "held_samples": held_count,
         "estimated": touched_count > 0,
+        "estimator": (
+            "empirical"
+            if touched_count >= SETTLEMENT_HOLD_MIN_SAMPLES
+            else "empirical_bayes_shrinkage"
+        ),
+        "prior": SETTLEMENT_HOLD_PRIOR,
+        "prior_strength": SETTLEMENT_HOLD_PRIOR_STRENGTH,
         "source": settlement_history.get("source", "unavailable"),
     }
 
@@ -1254,10 +1347,19 @@ def predict_hourly_range() -> dict:
 
     def correction_for_probability(probability: float) -> dict:
         if bucketed_correction.get("active"):
+            per_bucket_whitelist = (
+                bucketed_correction.get("activation", {}).get("per_bucket_whitelist", False)
+            )
             expiry_bucket = bucketed_correction.get("current_factors", {}).get(
                 bucket_key(minutes_to_expiry)
             )
-            if expiry_bucket and expiry_bucket.get("factor"):
+            bucket_allowed = (
+                not per_bucket_whitelist
+                or expiry_bucket.get("whitelisted", False)
+                if expiry_bucket
+                else False
+            )
+            if expiry_bucket and expiry_bucket.get("factor") and bucket_allowed:
                 return {
                     "correction_factor": expiry_bucket["factor"],
                     "floor": probability_correction.get("floor", 0.0),

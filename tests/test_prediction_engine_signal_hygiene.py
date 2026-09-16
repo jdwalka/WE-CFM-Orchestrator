@@ -6,6 +6,7 @@ import prediction_engine
 class SignalHygieneTests(unittest.TestCase):
     def setUp(self):
         prediction_engine._cross_venue_divergence_history.clear()
+        prediction_engine._cross_venue_divergence_regime.reset()
         prediction_engine._open_interest_history.clear()
 
     def test_wick_ratio_trend_reports_direction_without_confusing_tail_pressure(self):
@@ -66,25 +67,37 @@ class SignalHygieneTests(unittest.TestCase):
         self.assertIsNone(filtered)
         self.assertEqual(filter_status["status"], "excluded")
 
-    def test_cross_venue_divergence_activates_only_above_rolling_percentile(self):
+    def test_cross_venue_divergence_uses_hysteresis_and_tail_cap(self):
         prediction_engine._cross_venue_divergence_history.extend([0.01] * 20)
         original = prediction_engine.get_cross_venue_spot_prices
         prediction_engine.get_cross_venue_spot_prices = lambda: [100.0, 100.2, 100.3]
         try:
-            elevated = prediction_engine.get_cross_venue_divergence()
+            first_elevated = prediction_engine.get_cross_venue_divergence()
+            second_elevated = prediction_engine.get_cross_venue_divergence()
             prediction_engine._cross_venue_divergence_history.clear()
             prediction_engine._cross_venue_divergence_history.extend([0.01] * 20)
             prediction_engine.get_cross_venue_spot_prices = lambda: [100.0, 100.01]
-            normal = prediction_engine.get_cross_venue_divergence()
+            first_normal = prediction_engine.get_cross_venue_divergence()
+            second_normal = prediction_engine.get_cross_venue_divergence()
+            third_normal = prediction_engine.get_cross_venue_divergence()
         finally:
             prediction_engine.get_cross_venue_spot_prices = original
 
-        self.assertTrue(elevated["active"])
-        self.assertEqual(elevated["regime"], "elevated")
-        self.assertEqual(elevated["tail_adjustment"], 0.15)
-        self.assertFalse(normal["active"])
-        self.assertEqual(normal["regime"], "normal")
-        self.assertEqual(normal["tail_adjustment"], 0.0)
+        self.assertFalse(first_elevated["active"])
+        self.assertTrue(second_elevated["active"])
+        self.assertEqual(second_elevated["regime"], "elevated")
+        self.assertEqual(second_elevated["tail_adjustment"], 0.15)
+        self.assertEqual(second_elevated["tail_adjustment_cents"], 15.0)
+        self.assertEqual(
+            second_elevated["divergence_adjustment_max_cents"],
+            prediction_engine.DIVERGENCE_ADJUSTMENT_MAX_CENTS,
+        )
+        self.assertEqual(second_elevated["raw_tail_adjustment"], 0.15)
+        self.assertTrue(first_normal["active"])
+        self.assertTrue(second_normal["active"])
+        self.assertFalse(third_normal["active"])
+        self.assertEqual(third_normal["regime"], "normal")
+        self.assertEqual(third_normal["tail_adjustment"], 0.0)
 
     def test_positioning_skew_is_mild_and_contrarian(self):
         crowded_long = prediction_engine._positioning_skew(0.001, 5.0)
