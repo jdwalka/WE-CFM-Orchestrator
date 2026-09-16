@@ -43,6 +43,7 @@ MCP_SERVER_URL = os.getenv("MCP_SERVER_URL", "https://leaksnipe-suite.gitgoin87.
 MCP_SERVER_TOKEN = os.getenv("MCP_SERVER_TOKEN", "")
 
 asyncio.set_event_loop(asyncio.new_event_loop())
+uagents_asgi.HOST = "0.0.0.0"
 uagents_asgi.HOST = "127.0.0.1"
 
 agent = Agent(

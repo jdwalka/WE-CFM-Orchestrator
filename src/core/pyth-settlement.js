@@ -12,6 +12,10 @@ class PythSettlementValidator {
       'https://hermes.pyth.network',
     ].filter(Boolean)));
     this.requestTimeoutMs = 5000;
+    // Hermes is geo-blocked on some networks (HTTP 403). Once blocked, stop
+    // hammering it and go straight to the public Lazer proxy endpoints.
+    this.hermesBlockedUntil = 0;
+    this.hermesCooldownMs = 10 * 60_000;
 
     // Pyth feed IDs for our 7 main coins (with 0x prefix for Hermes v2 API)
     this.feedIds = {
@@ -127,20 +131,28 @@ class PythSettlementValidator {
       }
     }
 
-    // 3. Query Hermes with Pro key
+    // 3. Query Hermes with Pro key (skipped while the endpoint is in a 403 cooldown)
     try {
       try {
         let json = null;
         let lastError = null;
-        for (const base of this.pythBases) {
-          try {
-            const url = `${base.replace(/\/+$/, '')}/v2/updates/price/latest?ids[]=${encodeURIComponent(feedId)}`;
-            json = await this.fetchJsonWithTimeout(url, this.requestTimeoutMs);
-            this.pythBase = base;
-            break;
-          } catch (err) {
-            lastError = err;
+        if (Date.now() >= this.hermesBlockedUntil) {
+          for (const base of this.pythBases) {
+            try {
+              const url = `${base.replace(/\/+$/, '')}/v2/updates/price/latest?ids[]=${encodeURIComponent(feedId)}`;
+              json = await this.fetchJsonWithTimeout(url, this.requestTimeoutMs);
+              this.pythBase = base;
+              break;
+            } catch (err) {
+              lastError = err;
+              if (/\b403\b/.test(String(err?.message || ''))) {
+                this.hermesBlockedUntil = Date.now() + this.hermesCooldownMs;
+                console.warn('[PythSettlementValidator] Hermes returned 403; cooling down for 10 minutes');
+                break;
+              }
+            }
           }
+          if (lastError) throw lastError;
         }
 
       const feed = json?.parsed?.[0];
@@ -162,7 +174,7 @@ class PythSettlementValidator {
     } catch (_) {}
 
     // 4. Fallback to Douro Labs Lazer proxy (public, fast)
-    const lazerIdMap = { BTC: 1, ETH: 2, SOL: 6, DOGE: 13, XRP: 14, BNB: 15 };
+    const lazerIdMap = { BTC: 1, ETH: 2, SOL: 6, DOGE: 13, XRP: 14, BNB: 15, HYPE: 7 };
     const lazerId = lazerIdMap[sym];
     if (lazerId) {
       for (const host of ['pyth-lazer-proxy-1.dourolabs.app', 'pyth-lazer-proxy-2.dourolabs.app']) {
@@ -174,7 +186,14 @@ class PythSettlementValidator {
           if (found && found.price) {
             const exp = found.exponent ?? -8;
             const price = Number(found.price) * Math.pow(10, exp);
-            const data = { price, confidence: 0, publishTime: Date.now(), age_ms: 0 };
+            const tsUs = Number(found.feedUpdateTimestamp);
+            const publishTime = tsUs > 1e12 ? tsUs / 1000 : Date.now();
+            const data = {
+              price,
+              confidence: Number(found.confidence || 0) * Math.pow(10, exp),
+              publishTime,
+              age_ms: Date.now() - publishTime,
+            };
             this.priceCache[sym] = { data, fetchTime: Date.now() };
             return data;
           }

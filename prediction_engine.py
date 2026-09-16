@@ -17,11 +17,14 @@ from datetime import datetime, timedelta, timezone
 
 import requests
 
+from calibration_buckets import bucket_key
 from market_data import compute_stats, get_hourly_candles, get_spot
 
 # ---------------------------------------------------------------------------
 # Model parameters (single source of truth; exposed via /weights)
 # ---------------------------------------------------------------------------
+LOOKBACK_HOURS = 168
+LIVE_VOLATILITY_HOURS = 24
 LOOKBACK_HOURS = 24
 BODY_PERCENTILE = 0.60
 MOMENTUM_LOOKBACK_HOURS = 6
@@ -31,6 +34,9 @@ LOWER_RANGE_FACTOR = 0.55
 CENTER_SHIFT_FACTOR = 0.30
 DRIFT_FACTOR = 0.40
 MIN_RANGE_PCT = 0.25
+HIGH_REGIME_MIN_RANGE_PCT = 0.50
+VOLATILITY_SPIKE_PERCENTILE = 0.85
+PROBABILITY_CORRECTION_MAX_FACTOR = 4.0
 
 # Fat-tail / wick / regime parameters
 HOUR_SAMPLE_SIZE = 200               # hours of candles for distribution fitting
@@ -39,6 +45,19 @@ FINAL_MINUTES_WINDOW = 15            # final minutes of hour for wick stats
 REGIME_LOOKBACK_HOURS = 24 * 30      # 30 days of hourly candles
 DECAY_TABLE_MINUTES = [20, 15, 10, 5]
 RESIDUAL_FLAG_THRESHOLD_CENTS = 5.0  # flag ladder bands >5¢ above model
+ARTIFACT_RESIDUAL_THRESHOLD_CENTS = 30.0
+STUDENT_T_DF_DEFAULT = 4.0           # fallback if empirical fit is unstable
+TAIL_ADJUSTMENT_MAX_CENTS = 0.15
+TAIL_SPIKE_COMPONENT_MAX_CENTS = 0.075
+TAIL_WICK_COMPONENT_MAX_CENTS = 0.075
+WICK_RATIO_MIN_BODY_PCT = 0.01       # ignore near-zero-body ratio artifacts
+WICK_RATIO_MAX = 10.0                 # clamp one-candle ratio spikes
+TAIL_SPIKE_FREQUENCY_MIN = 0.0005
+TAIL_WICK_SLOPE_MIN = 0.10
+ALT_ALIGNMENT_RATIO_UP = 0.55
+ALT_ALIGNMENT_RATIO_DOWN = 0.45
+ALT_ALIGNMENT_MINUTES = 10
+ALT_ALIGNMENT_ENABLED = False
 STUDENT_T_DF_DEFAULT = 4.0           # fallback if empirical fit is unstable
 TAIL_ADJUSTMENT_MAX_CENTS = 0.03
 TAIL_SPIKE_COMPONENT_MAX_CENTS = 0.02
@@ -60,6 +79,12 @@ CROSS_VENUE_DIVERGENCE_HISTORY_SIZE = 100
 CROSS_VENUE_DIVERGENCE_MIN_HISTORY = 20
 CROSS_VENUE_TAIL_PROBABILITY_MAX = 0.20
 CROSS_VENUE_TAIL_ADJUSTMENT = 0.15
+CROSS_VENUE_REGIME_ACTIVATE_READINGS = 2
+CROSS_VENUE_REGIME_DEACTIVATE_READINGS = 3
+DIVERGENCE_ADJUSTMENT_MAX_CENTS = 0.15
+SETTLEMENT_HOLD_PRIOR = 1.0
+SETTLEMENT_HOLD_PRIOR_STRENGTH = 30.0
+SETTLEMENT_HOLD_MIN_SAMPLES = 20
 POSITIONING_FUNDING_NORMALIZATION = 0.001
 POSITIONING_OI_DELTA_NORMALIZATION = 5.0
 POSITIONING_SKEW_MAX_PCT = 0.03
@@ -82,6 +107,65 @@ MARKET_DATA_WORKER_URL = os.getenv(
 
 _cross_venue_divergence_history = []
 _open_interest_history = []
+
+
+class DivergenceRegime:
+    """Hysteresis for the cross-venue dispersion regime.
+
+    Two consecutive elevated readings activate the regime; three consecutive
+    normal readings deactivate it. This prevents a dispersion print sitting on
+    the rolling 90th percentile from flipping the adjustment on every snapshot.
+    """
+
+    def __init__(
+        self,
+        activate_after: int = CROSS_VENUE_REGIME_ACTIVATE_READINGS,
+        deactivate_after: int = CROSS_VENUE_REGIME_DEACTIVATE_READINGS,
+        max_adjustment_cents: float = DIVERGENCE_ADJUSTMENT_MAX_CENTS,
+    ):
+        self.activate_after = activate_after
+        self.deactivate_after = deactivate_after
+        self.max_adjustment_cents = max_adjustment_cents
+        self.state = "normal"
+        self.elevated_streak = 0
+        self.normal_streak = 0
+
+    def reset(self) -> None:
+        self.state = "normal"
+        self.elevated_streak = 0
+        self.normal_streak = 0
+
+    def update(self, current_pct: float, rolling_90th_pct: float | None) -> dict:
+        elevated = (
+            rolling_90th_pct is not None
+            and math.isfinite(float(rolling_90th_pct))
+            and current_pct > float(rolling_90th_pct)
+        )
+        if elevated:
+            self.elevated_streak += 1
+            self.normal_streak = 0
+        else:
+            self.normal_streak += 1
+            self.elevated_streak = 0
+
+        if self.state == "normal" and self.elevated_streak >= self.activate_after:
+            self.state = "elevated"
+        elif self.state == "elevated" and self.normal_streak >= self.deactivate_after:
+            self.state = "normal"
+
+        adjustment = self.max_adjustment_cents if self.state == "elevated" else 0.0
+        return {
+            "regime": self.state,
+            "active": self.state == "elevated",
+            "raw_active": elevated,
+            "tail_adjustment": adjustment,
+            "tail_adjustment_cents": adjustment * 100,
+            "elevated_streak": self.elevated_streak,
+            "normal_streak": self.normal_streak,
+        }
+
+
+_cross_venue_divergence_regime = DivergenceRegime()
 
 
 def _format_kalshi_strike(value) -> str:
@@ -245,6 +329,10 @@ def get_cross_venue_divergence() -> dict:
         if len(_cross_venue_divergence_history) >= CROSS_VENUE_DIVERGENCE_MIN_HISTORY
         else None
     )
+    _cross_venue_divergence_history.append(current)
+    del _cross_venue_divergence_history[:-CROSS_VENUE_DIVERGENCE_HISTORY_SIZE]
+    regime_state = _cross_venue_divergence_regime.update(current, threshold)
+    active = regime_state["active"]
     active = threshold is not None and current > threshold
     _cross_venue_divergence_history.append(current)
     del _cross_venue_divergence_history[:-CROSS_VENUE_DIVERGENCE_HISTORY_SIZE]
@@ -255,6 +343,17 @@ def get_cross_venue_divergence() -> dict:
         "regime": "elevated" if active else "normal",
         "sample_size": len(prices),
         "history_size": len(_cross_venue_divergence_history),
+        "raw_tail_adjustment": CROSS_VENUE_TAIL_ADJUSTMENT if regime_state["raw_active"] else 0.0,
+        "tail_adjustment": regime_state["tail_adjustment"],
+        "tail_adjustment_cents": regime_state["tail_adjustment_cents"],
+        "divergence_adjustment_max_cents": DIVERGENCE_ADJUSTMENT_MAX_CENTS,
+        "hysteresis": {
+            "activate_readings": CROSS_VENUE_REGIME_ACTIVATE_READINGS,
+            "deactivate_readings": CROSS_VENUE_REGIME_DEACTIVATE_READINGS,
+            "raw_active": regime_state["raw_active"],
+            "elevated_streak": regime_state["elevated_streak"],
+            "normal_streak": regime_state["normal_streak"],
+        },
         "tail_adjustment": CROSS_VENUE_TAIL_ADJUSTMENT if active else 0.0,
         "reason": (
             "cross-venue dispersion exceeds its rolling 90th percentile"
@@ -773,6 +872,8 @@ def _filter_alt_signal(signal: dict | None) -> tuple[dict | None, dict]:
 
 def get_alt_signal() -> dict:
     """Cross-asset SOL/ETH lead-lag and taker-flow alignment gate."""
+    if not ALT_ALIGNMENT_ENABLED:
+        return None
     btc = _get_alt_candles("BTC-USD", 240)
     eth = _get_alt_candles("ETH-USD", 240)
     sol = _get_alt_candles("SOL-USD", 240)
@@ -969,6 +1070,21 @@ def _apply_tail_adjustment(probability: float, adjustment: float) -> float:
 
 
 def _apply_probability_correction(probability: float, correction: dict) -> float:
+    """Apply bounded empirical-Bayes calibration to a raw model probability."""
+    factor = float(correction.get("correction_factor", 1.0) or 1.0)
+    floor = float(correction.get("floor", 0.0) or 0.0)
+    max_factor = float(
+        correction.get("max_factor", PROBABILITY_CORRECTION_MAX_FACTOR)
+        or PROBABILITY_CORRECTION_MAX_FACTOR
+    )
+    bounded_probability = probability * min(max(factor, 0.0), max_factor)
+    return min(1.0, max(bounded_probability, floor, 0.0))
+
+
+def _artifact_residual(residual_cents) -> bool:
+    if residual_cents is None:
+        return False
+    return abs(float(residual_cents)) > ARTIFACT_RESIDUAL_THRESHOLD_CENTS
     """Shrink a raw model probability using empirical-Bayes calibration."""
     factor = float(correction.get("correction_factor", 1.0) or 1.0)
     floor = float(correction.get("floor", 0.0) or 0.0)
@@ -1017,12 +1133,27 @@ def _conditional_settlement_hold(low: float, high: float, settlement_history: di
             touched_count += 1
             held_count += int(held)
 
+    empirical_hold = held_count / touched_count if touched_count else SETTLEMENT_HOLD_PRIOR
+    if touched_count < SETTLEMENT_HOLD_MIN_SAMPLES:
+        hold_given_touch = (
+            SETTLEMENT_HOLD_PRIOR * SETTLEMENT_HOLD_PRIOR_STRENGTH
+            + empirical_hold * touched_count
+        ) / (SETTLEMENT_HOLD_PRIOR_STRENGTH + touched_count)
+    else:
+        hold_given_touch = empirical_hold
     hold_given_touch = held_count / touched_count if touched_count else 1.0
     return {
         "hold_given_touch": round(hold_given_touch, 4),
         "touched_samples": touched_count,
         "held_samples": held_count,
         "estimated": touched_count > 0,
+        "estimator": (
+            "empirical"
+            if touched_count >= SETTLEMENT_HOLD_MIN_SAMPLES
+            else "empirical_bayes_shrinkage"
+        ),
+        "prior": SETTLEMENT_HOLD_PRIOR,
+        "prior_strength": SETTLEMENT_HOLD_PRIOR_STRENGTH,
         "source": settlement_history.get("source", "unavailable"),
     }
 
@@ -1044,6 +1175,9 @@ def _ranked_entry_scores(decay_table: list, bands: list, horizon_minutes: int = 
         if projected_probability is None or ask is None:
             continue
         projected_fair = projected_probability * 100
+        edge = projected_fair - ask
+        if abs(edge) > ARTIFACT_RESIDUAL_THRESHOLD_CENTS:
+            continue
         scores.append({
             "band": row.get("band"),
             "side": row.get("side"),
@@ -1051,6 +1185,7 @@ def _ranked_entry_scores(decay_table: list, bands: list, horizon_minutes: int = 
             "high": band.get("high"),
             "current_yes_ask": ask,
             "projected_fair_T15m": round(projected_fair, 1),
+            "edge_at_entry": round(edge, 1),
             "edge_at_entry": round(projected_fair - ask, 1),
             "settlement_venue": row.get("settlement_venue"),
             "settlement_rule": row.get("settlement_rule"),
@@ -1194,6 +1329,7 @@ def predict_hourly_range() -> dict:
 
     spot_data = get_spot()
     spot = spot_data["price"]
+    candles = get_hourly_candles(LIVE_VOLATILITY_HOURS)
     candles = get_hourly_candles(24)
     stats = compute_stats(candles)
 
@@ -1204,6 +1340,9 @@ def predict_hourly_range() -> dict:
             "timestamp": now.isoformat(),
         }
 
+    rv = realized_vol_pct(candles, LIVE_VOLATILITY_HOURS)
+    sigma_hourly_pct = rv / math.sqrt(24 * 365)
+    expected_move = expected_move_pct(candles, LIVE_VOLATILITY_HOURS)
     rv = realized_vol_pct(candles)
     sigma_hourly_pct = rv / math.sqrt(24 * 365)
     expected_move = expected_move_pct(candles)
@@ -1227,6 +1366,32 @@ def predict_hourly_range() -> dict:
         "threshold": 0.20,
         "reason": "calibration report unavailable; tail correction disabled",
     })
+    bucketed_correction = calibration_report.get("bucketed_correction", {
+        "active": False,
+        "current_factors": {},
+    })
+
+    def correction_for_probability(probability: float) -> dict:
+        if bucketed_correction.get("active"):
+            per_bucket_whitelist = (
+                bucketed_correction.get("activation", {}).get("per_bucket_whitelist", False)
+            )
+            expiry_bucket = bucketed_correction.get("current_factors", {}).get(
+                bucket_key(minutes_to_expiry)
+            )
+            bucket_allowed = (
+                not per_bucket_whitelist
+                or expiry_bucket.get("whitelisted", False)
+                if expiry_bucket
+                else False
+            )
+            if expiry_bucket and expiry_bucket.get("factor") and bucket_allowed:
+                return {
+                    "correction_factor": expiry_bucket["factor"],
+                    "floor": probability_correction.get("floor", 0.0),
+                    "max_factor": PROBABILITY_CORRECTION_MAX_FACTOR,
+                    "regime": f"expiry:{bucket_key(minutes_to_expiry)}",
+                }
 
     def correction_for_probability(probability: float) -> dict:
         if (
@@ -1236,11 +1401,48 @@ def predict_hourly_range() -> dict:
             return {
                 "correction_factor": tail_probability_correction.get("factor", 1.0),
                 "floor": probability_correction.get("floor", 0.0),
+                "max_factor": PROBABILITY_CORRECTION_MAX_FACTOR,
                 "regime": "tail",
             }
         return {
             "correction_factor": probability_correction.get("correction_factor", 1.0),
             "floor": probability_correction.get("floor", 0.0),
+            "max_factor": PROBABILITY_CORRECTION_MAX_FACTOR,
+            "regime": "global",
+        }
+
+    baseline_candles = get_hourly_candles(LOOKBACK_HOURS)
+    baseline_rv = realized_vol_pct(baseline_candles, LOOKBACK_HOURS)
+    baseline_sigma_hourly_pct = baseline_rv / math.sqrt(24 * 365)
+    hourly_ranges = [
+        candle["high"] - candle["low"]
+        for candle in baseline_candles
+        if candle.get("high") and candle.get("low")
+    ]
+    current_hourly_range = hourly_ranges[-1] if hourly_ranges else 0.0
+    spike_threshold = 0.0
+    if hourly_ranges:
+        sorted_ranges = sorted(hourly_ranges[:-1] or hourly_ranges)
+        spike_threshold = sorted_ranges[
+            min(len(sorted_ranges) - 1, int(len(sorted_ranges) * VOLATILITY_SPIKE_PERCENTILE))
+        ]
+    volatility_spike_multiplier = (
+        current_hourly_range / spike_threshold
+        if spike_threshold > 0 and current_hourly_range > spike_threshold
+        else 1.0
+    )
+    sigma_hourly_pct = max(
+        sigma_hourly_pct,
+        baseline_sigma_hourly_pct * volatility_spike_multiplier,
+    )
+
+    regime = _classify_regime(hourly_ranges)
+    regime_range_floor = (
+        HIGH_REGIME_MIN_RANGE_PCT
+        if regime.get("regime") == "HIGH"
+        else MIN_RANGE_PCT
+    )
+    range_pct = max(expected_move, regime_range_floor)
             "regime": "global",
         }
 
@@ -1384,6 +1586,10 @@ def predict_hourly_range() -> dict:
             row.update({
                 "model_fair_cents": round(fair_value, 1),
                 "residual_cents": round(residual, 1) if residual is not None else None,
+                "flagged": (
+                    residual is not None
+                    and (residual > RESIDUAL_FLAG_THRESHOLD_CENTS or _artifact_residual(residual))
+                ),
                 "flagged": residual is not None and residual > RESIDUAL_FLAG_THRESHOLD_CENTS,
                 "fair_status": "ok" if ask is not None else "fair_only",
                 "p_normal": round(p_normal, 3),
@@ -1462,6 +1668,10 @@ def predict_hourly_range() -> dict:
         strike.update({
             "model_fair_cents": round(fair_value, 1),
             "residual_cents": round(residual, 1) if residual is not None else None,
+            "flagged": (
+                residual is not None
+                and (residual > RESIDUAL_FLAG_THRESHOLD_CENTS or _artifact_residual(residual))
+            ),
             "flagged": residual is not None and residual > RESIDUAL_FLAG_THRESHOLD_CENTS,
             "fair_status": "recomputed_after_spot_move",
             "fair_stale": True,
@@ -1495,6 +1705,8 @@ def predict_hourly_range() -> dict:
         1 for strike in strike_probs if strike["fair_status"] != "invalid_band"
     )
 
+    # Regime classification was computed before range construction so HIGH
+    # volatility can widen the model range before ladder probabilities.
     # --- Regime classification ---
     hourly_history = get_hourly_candle_history(REGIME_LOOKBACK_HOURS)
     hourly_ranges = [c["high"] - c["low"] for c in hourly_history if c["high"] and c["low"]]
@@ -1604,6 +1816,12 @@ def predict_hourly_range() -> dict:
         "market_stats": stats,
         "volatility": {
             "realized_vol_annualized_pct": round(rv, 2),
+            "baseline_realized_vol_annualized_pct": round(baseline_rv, 2),
+            "sigma_hourly_pct": round(sigma_hourly_pct, 3),
+            "baseline_sigma_hourly_pct": round(baseline_sigma_hourly_pct, 3),
+            "volatility_spike_multiplier": round(volatility_spike_multiplier, 3),
+            "volatility_spike_threshold": round(spike_threshold, 2),
+            "current_hourly_range": round(current_hourly_range, 2),
             "sigma_hourly_pct": round(sigma_hourly_pct, 3),
             "expected_move_pct": round(expected_move, 3),
             "student_t_df": round(df, 2),
@@ -1778,6 +1996,13 @@ def predict_15m_range(contract: dict | None = None, series_ticker: str = KALSHI_
         "seconds_to_expiry": round(seconds_to_expiry),
         "model_fair_cents": round(fair_cents, 1),
         "residual_cents": round(residual_cents, 1) if residual_cents is not None else None,
+        "flagged": (
+            residual_cents is not None
+            and (
+                residual_cents > RESIDUAL_FLAG_THRESHOLD_CENTS
+                or _artifact_residual(residual_cents)
+            )
+        ),
         "flagged": residual_cents is not None and residual_cents > RESIDUAL_FLAG_THRESHOLD_CENTS,
         "fair_status": "ok" if ask_cents is not None else "fair_only",
         "fair_stale": fair_stale,

@@ -114,6 +114,11 @@
       url => url,
       () => 'https://api.blockchain.info/mempool/fees',
     ],
+    // Mempool backlog → fallback to the Blockstream mirror (same response schema)
+    'mempool.space/api/mempool': [
+      url => url,
+      () => 'https://blockstream.info/api/mempool',
+    ],
     // Ankr RPC → fallback to Helius
     'rpc.ankr.com': [
       url => url,

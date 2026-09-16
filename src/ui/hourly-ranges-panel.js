@@ -1,4 +1,8 @@
 // ================================================================
+// WE|||CRYPTO — Hourly Ranges Panel v9 (hourly ranges only)
+//
+// Shows a spot-centered synthetic hourly range ladder. Kalshi 15m
+// contracts are intentionally not rendered here.
 // WE|||CRYPTO — Hourly Ranges Panel v8 (Kalshi 15m)
 //
 // Shows a spot-centered synthetic range ladder (no live multi-strike
@@ -399,7 +403,7 @@
       body = `
         <div class="hr-ranges-scroll">
           <div class="hr-ranges-header">
-            <span class="hr-ranges-label">Range</span>
+            <span class="hr-ranges-label">Hourly bucket</span>
             <span class="hr-ranges-label">Prob (YES)</span>
           </div>
           ${rows.join('')}
@@ -407,11 +411,11 @@
         ${closeLabel}`;
     }
 
+    // ASI1 hourly bucket guidance, pegged to a fixed 60-minute interval.
     // Grok 15m + hourly call pegged to live market data (no 5m, never WAIT)
     let grokHtml = '';
     try {
       const api = window.GrokRangeOverlay || window.GrokRangeGrok;
-      const g15 = api && api.getGuidance ? api.getGuidance(sym, 15) : null;
       const g60 = api && api.getGuidance ? api.getGuidance(sym, 60) : null;
       const renderOne = (label, g) => {
         if (!g) return '';
@@ -428,6 +432,12 @@
         let metaLine = `${pct}%`;
         let notes = escapeHTML(String(g.notes || '').slice(0, 180));
 
+        const bucket = g.preferredBucket || g.preferredRange || g.range;
+        if (topBuckets.length) {
+          const top3Str = topBuckets.slice(0, 3).map((b, i) => `#${i+1} $${b.low}–$${b.high} (${b.pctLikely}%)`).join(' · ');
+          metaLine += ` · Top buckets: ${top3Str}`;
+        } else if (bucket && Number.isFinite(Number(bucket.low))) {
+          metaLine += ` · fixed 60m interval $${Number(bucket.low).toLocaleString()}–$${Number(bucket.high).toLocaleString()}`;
         if (label === '15m contract') {
           const peg15 = g.polyPeg || g.poly15m;
           const slug = g.contractSlug || (peg15 && peg15.slug) || '';
@@ -445,21 +455,11 @@
           if (peg15 && peg15.yesProb != null) metaLine += ` · mkt Up ${(Number(peg15.yesProb) * 100).toFixed(0)}%`;
           if (peg15 && peg15.secondsToClose != null) metaLine += ` · ttc ${peg15.secondsToClose}s`;
         } else {
-          // 1h range — Top 2-5 Multi-Bucket Likelihood
-          if (topBuckets.length) {
-            const top3Str = topBuckets.slice(0, 3).map((b, i) => `#${i+1} $${b.low}–$${b.high} (${b.pctLikely}%)`).join(' · ');
-            metaLine += ` · Top Ranges: ${top3Str}`;
-          } else {
-            const spot = _prices[sym] || readLivePrice(sym);
-            let rangeObj = g.preferredRange || g.range;
-            if (rangeObj && Number.isFinite(Number(rangeObj.low))) {
-              metaLine += ` · bucket $${Number(rangeObj.low).toLocaleString()}–$${Number(rangeObj.high).toLocaleString()}`;
-            }
-          }
+          metaLine += ' · fixed 60m interval';
+        }
 
-          if (/bucket\s+\$?\d+/i.test(notes)) {
-            notes = ''; // Wipe stale text containing bucket refs that no longer resolve
-          }
+        if (/bucket\s+\$?\d+/i.test(notes)) {
+          notes = '';
         }
 
         return `<div class="hr-grok-row">
@@ -469,28 +469,30 @@
           ${notes ? `<div class="hr-grok-notes">${notes}</div>` : ''}
         </div>`;
       };
-      const b15 = renderOne('15m contract', g15);
-      const b60 = renderOne('1h range', g60);
+      const b60 = renderOne('1h bucket', g60);
       let asi1Strip = '';
       try {
-        asi1Strip = window.Asi1PreContract?.renderStripHtml?.(sym, { horizon: '15m', maxNotes: 360 }) || '';
+        asi1Strip = window.Asi1PreContract?.renderStripHtml?.(sym, { horizon: '60m', maxNotes: 360 }) || '';
       } catch (_) { asi1Strip = ''; }
 
-      if (b15 || b60 || asi1Strip) {
+      if (b60 || asi1Strip) {
         grokHtml = `<div class="hr-grok">
+          <div class="hr-grok-hdr">✨ ASI1 pre-contract · fixed 60m interval</div>
           <div class="hr-grok-hdr">✨ ASI1 pre-contract · 🤖 range overlay</div>
           ${asi1Strip}
-          ${b15}${b60}
+          ${b60}
         </div>`;
       } else {
         const stats = window.GrokAnalyticsMemory && window.GrokAnalyticsMemory.getStats
           ? window.GrokAnalyticsMemory.getStats() : null;
         const n = stats && stats.byCoin && stats.byCoin[sym] ? stats.byCoin[sym].samples : 0;
-        grokHtml = `<div class="hr-grok"><div class="hr-grok-hdr">✨ ASI1 · range memory</div>
-          <div class="hr-grok-notes">Building pre-contract briefs… ${n} samples · 15m/1h soon</div></div>`;
+        grokHtml = `<div class="hr-grok"><div class="hr-grok-hdr">✨ ASI1 · hourly bucket memory</div>
+          <div class="hr-grok-notes">Building hourly bucket briefs… ${n} samples · fixed 60m interval</div></div>`;
       }
     } catch (_) { grokHtml = ''; }
 
+    // The body is the spot-centered hourly bucket ladder (top-3 ranked by
+    // likelihood); Grok adds the LLM's
     // Kalshi 15m Up/Down — pulled by prediction-markets.js fetchKalshi15M().
     // Render the live Kalshi quote directly; do not substitute another venue here.
     let kalshi15mHtml = '';
@@ -539,6 +541,7 @@
           <span class="hr-sym" style="color:${color}">${escapeHTML(sym)}</span>
           <span class="hr-price">${escapeHTML(priceStr)}</span>
         </div>
+        <div class="hr-card-body">${body}${grokHtml}</div>
         <div class="hr-card-body">${kalshi15mHtml || '<div class="hr-empty">Kalshi 15m market pending…</div>'}${body}${grokHtml}</div>
       </div>`;
   }
@@ -785,9 +788,8 @@
       return r;
     },
     getPrice:  (sym) => _prices[sym] || null,
-    get15mMarket: get15mContract,
     get60mMarket: get60mContract,
   };
 
-  console.log('[HourlyRangesPanel v7] ✓ Ready');
+  console.log('[HourlyRangesPanel v9] ✓ Ready');
 })();
