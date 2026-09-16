@@ -19,6 +19,7 @@ function createD1({ storageError, timestamp }) {
 function mockUpstreams({ spotTime = new Date().toISOString(), kalshiOk = true, polymarketOk = true } = {}) {
   globalThis.fetch = async (url, init = {}) => {
     globalThis.lastFetchInit = init;
+  globalThis.fetch = async (url) => {
     const value = String(url);
     if (value.includes("/ticker")) {
       return new Response(JSON.stringify({ price: "50000", time: spotTime }));

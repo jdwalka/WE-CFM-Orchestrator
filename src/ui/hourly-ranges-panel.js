@@ -3,6 +3,10 @@
 //
 // Shows a spot-centered synthetic hourly range ladder. Kalshi 15m
 // contracts are intentionally not rendered here.
+// WE|||CRYPTO — Hourly Ranges Panel v8 (Kalshi 15m)
+//
+// Shows a spot-centered synthetic hourly range ladder. Kalshi 15m
+// contracts are intentionally not rendered here.
 // Polls every 10s, accelerates to every 2.5s in the final 15 mins.
 // ================================================================
 
@@ -400,6 +404,7 @@
     }
 
     // ASI1 hourly bucket guidance, pegged to a fixed 60-minute interval.
+    // Grok 15m + hourly call pegged to live market data (no 5m, never WAIT)
     let grokHtml = '';
     try {
       const api = window.GrokRangeOverlay || window.GrokRangeGrok;
@@ -425,6 +430,22 @@
           metaLine += ` · Top buckets: ${top3Str}`;
         } else if (bucket && Number.isFinite(Number(bucket.low))) {
           metaLine += ` · fixed 60m interval $${Number(bucket.low).toLocaleString()}–$${Number(bucket.high).toLocaleString()}`;
+        if (label === '15m contract') {
+          const peg15 = g.polyPeg || g.poly15m;
+          const slug = g.contractSlug || (peg15 && peg15.slug) || '';
+          const side = peg15 && peg15.side ? peg15.side : (call === 'UP' ? 'Up' : 'Down');
+          const ptb = peg15 && peg15.priceToBeatNum;
+          const ptbLabel = ptb
+            ? (window.CoinPrecision?.formatCoinStrike
+                ? window.CoinPrecision.formatCoinStrike(sym, ptb)
+                : `$${Number(ptb).toLocaleString('en-US', { minimumFractionDigits: getFallbackDecimals(sym), maximumFractionDigits: getFallbackDecimals(sym) })}`)
+            : (priceStr !== '—' ? priceStr : '');
+
+          if (slug) metaLine += ` · id: ${escapeHTML(slug.length > 20 ? slug.substring(0, 12) + '...' : slug)}`;
+          if (slug) metaLine += ` · buy ${side}`;
+          if (ptbLabel) metaLine += ` · PTB ${ptbLabel}`;
+          if (peg15 && peg15.yesProb != null) metaLine += ` · mkt Up ${(Number(peg15.yesProb) * 100).toFixed(0)}%`;
+          if (peg15 && peg15.secondsToClose != null) metaLine += ` · ttc ${peg15.secondsToClose}s`;
         } else {
           metaLine += ' · fixed 60m interval';
         }
@@ -449,6 +470,7 @@
       if (b60 || asi1Strip) {
         grokHtml = `<div class="hr-grok">
           <div class="hr-grok-hdr">✨ ASI1 pre-contract · fixed 60m interval</div>
+          <div class="hr-grok-hdr">✨ ASI1 pre-contract · 🤖 range overlay</div>
           ${asi1Strip}
           ${b60}
         </div>`;
@@ -463,6 +485,47 @@
 
     // The body is the spot-centered hourly bucket ladder (top-3 ranked by
     // likelihood); Grok adds the LLM's
+    // Kalshi 15m Up/Down — pulled by prediction-markets.js fetchKalshi15M().
+    // Render the live Kalshi quote directly; do not substitute another venue here.
+    let kalshi15mHtml = '';
+    try {
+      const k15 = window.PredictionMarkets?.getCoin?.(sym)?.kalshi15m;
+      const ticker = k15?.ticker || '';
+      const upProb = Number(k15?.probability);
+      const hasProb = Number.isFinite(upProb);
+      const call = hasProb ? (upProb >= 0.5 ? 'UP' : 'DOWN') : null;
+      const col = call === 'UP' ? 'var(--color-green,#26a69a)' : call === 'DOWN' ? 'var(--color-red,#ef5350)' : 'var(--color-text-faint)';
+      const ptbNum = Number(k15?.targetPriceNum);
+      const ptbLabel = k15?.targetPrice || (Number.isFinite(ptbNum) && ptbNum > 0
+          ? (window.CoinPrecision?.formatCoinStrike
+              ? window.CoinPrecision.formatCoinStrike(sym, ptbNum)
+              : `$${ptbNum.toLocaleString('en-US', { minimumFractionDigits: getFallbackDecimals(sym), maximumFractionDigits: getFallbackDecimals(sym) })}`)
+          : 'pending');
+      const closeLabel15 = k15?.closeTime ? timeToClose(k15.closeTime) : null;
+      const currentPrice15 = _prices[sym] || readLivePrice(sym);
+      const prediction15 = window._predictions?.[sym] || window.PredictionEngine?.get?.(sym) || null;
+      const fair15 = window.GrokRangeOverlay?.get15mModelFair?.(k15, currentPrice15, prediction15);
+      const fair15Label = fair15?.model_fair_cents != null
+        ? `Model fair ${Number(fair15.model_fair_cents).toFixed(1)}¢${fair15.residual_cents != null ? ` · residual ${Number(fair15.residual_cents).toFixed(1)}¢` : ''}`
+        : 'Model fair pending';
+
+      if (ticker) {
+        kalshi15mHtml = `<div class="hr-kalshi15m" style="margin-bottom:8px;">
+          <div class="hr-grok-hdr" style="display:flex;justify-content:space-between;">
+            <span>Kalshi 15m Up/Down</span>
+            <span style="opacity:0.5;font-family:monospace;font-size:9px;" title="Kalshi ticker">${escapeHTML(ticker)}</span>
+          </div>
+          <div class="hr-grok-row" style="margin-top:4px;">
+            <span class="hr-grok-call" style="color:${col}">${hasProb ? `${call === 'UP' ? '▲' : '▼'} ${Math.round(upProb * 100)}% YES` : 'awaiting odds'}</span>
+            <span class="hr-grok-meta">Strike ${ptbLabel}${closeLabel15 ? ` · closes ${closeLabel15}` : ''}</span>
+            <div class="hr-grok-notes">${fair15Label}${fair15?.flagged ? ' · ask above model' : ''}</div>
+          </div>
+        </div>`;
+      }
+    } catch (_) { kalshi15mHtml = ''; }
+
+    // Kalshi shows the live 15m odds; body is the spot-centered
+    // hourly bucket ladder (top-3 ranked by likelihood); Grok adds the LLM's
     // own directional call + reasoning on top of both.
     return `
       <div class="hr-card">
@@ -471,6 +534,7 @@
           <span class="hr-price">${escapeHTML(priceStr)}</span>
         </div>
         <div class="hr-card-body">${body}${grokHtml}</div>
+        <div class="hr-card-body">${kalshi15mHtml || '<div class="hr-empty">Kalshi 15m market pending…</div>'}${body}${grokHtml}</div>
       </div>`;
   }
 

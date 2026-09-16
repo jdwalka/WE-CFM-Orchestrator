@@ -23,6 +23,9 @@ const TWAP_INTERVAL_SECONDS = { "5m": 300, "15m": 900, "4h": 14400 };
 const SPOT_FRESHNESS_MAX_AGE_SECONDS = 60;
 
 function jsonResponse(data, status = 200) {
+  if (data && typeof data === 'object' && !data.collector_timestamp) {
+    data.collector_timestamp = new Date().toISOString();
+  }
   return new Response(JSON.stringify(data, null, 2), {
     status,
     headers: {
@@ -42,11 +45,35 @@ function parseTwapWindowSeconds(description) {
 // User-Agent header -- Workers' fetch() sends none by default.
 const COINBASE_HEADERS = { "User-Agent": "scalper-market-data/1.0 (+workers.dev)" };
 
-async function fetchMarketData(url, init = {}) {
-  return fetch(url, {
-    ...init,
-    cache: "no-store",
-  });
+async function fetchMarketData(url, init = {}, { retries = 2, retryDelayMs = 300, timeoutMs = 8000 } = {}) {
+  let lastErr;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await fetch(url, {
+        ...init,
+        cache: "no-store",
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+      // Retry transient upstream 5xx errors; a 4xx means retrying won't help.
+      if (res.status >= 500 && attempt < retries) {
+        lastErr = new Error(`upstream ${url} -> HTTP ${res.status}`);
+        await new Promise((resolve) => setTimeout(resolve, retryDelayMs * (attempt + 1)));
+        continue;
+      }
+      return res;
+    } catch (err) {
+      clearTimeout(timer);
+      lastErr = err;
+      if (attempt < retries) {
+        await new Promise((resolve) => setTimeout(resolve, retryDelayMs * (attempt + 1)));
+        continue;
+      }
+    }
+  }
+  throw lastErr;
 }
 
 async function getCoinbaseSpot(symbol = "BTC") {

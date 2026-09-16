@@ -1,7 +1,22 @@
 """Live market data for BTC hourly range predictions."""
 from datetime import datetime, timezone
 
-import requests
+import httpx
+
+def enforce_freshness(payload: dict, source: str) -> None:
+    if not payload: return
+    import time
+    from datetime import datetime, timezone
+    ts_str = payload.get("collector_timestamp") or payload.get("timestamp_utc") or payload.get("time") or payload.get("ts")
+    if ts_str:
+        try:
+            dt = datetime.fromisoformat(str(ts_str).replace("Z", "+00:00"))
+            age = (datetime.now(timezone.utc) - dt).total_seconds()
+        except Exception:
+            age = 0
+        if age > 60:
+            raise ValueError(f"STALE: {source} data is {age:.1f}s old")
+
 
 COINBASE_SPOT = "https://api.coinbase.com/v2/prices/BTC-USD/spot"
 COINBASE_CANDLES = "https://api.exchange.coinbase.com/products/BTC-USD/candles"
@@ -21,7 +36,7 @@ def get_spot() -> dict:
     fallback rather than an implicit source.
     """
     try:
-        r = requests.get(COINBASE_SPOT, headers=_HEADERS, timeout=10)
+        r = httpx.get(COINBASE_SPOT, headers=_HEADERS, timeout=10)
         r.raise_for_status()
         price = float(r.json()["data"]["amount"])
         return {
@@ -30,7 +45,7 @@ def get_spot() -> dict:
             "canonical_source": "BRTI",
             "error": None,
         }
-    except (requests.RequestException, KeyError, ValueError, TypeError) as e:
+    except (httpx.HTTPError, KeyError, ValueError, TypeError) as e:
         return {
             "price": None,
             "source": "unavailable",
@@ -45,7 +60,7 @@ def get_hourly_candles(count: int = 24) -> list:
     Sorted oldest -> newest.
     """
     try:
-        r = requests.get(
+        r = httpx.get(
             COINBASE_CANDLES,
             params={"granularity": 3600},
             headers=_HEADERS,
@@ -56,7 +71,7 @@ def get_hourly_candles(count: int = 24) -> list:
         candles = [dict(zip(cols, c)) for c in r.json()]
         candles.sort(key=lambda c: c["time"])
         return candles[-count:]
-    except (requests.RequestException, KeyError, ValueError, TypeError):
+    except (httpx.HTTPError, KeyError, ValueError, TypeError):
         return []
 
 def compute_stats(candles: list) -> dict:

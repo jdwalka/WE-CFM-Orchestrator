@@ -859,6 +859,7 @@ const PYTH_WS_MAX_RETRY_DELAY_MS = Number(process.env.PYTH_WS_MAX_RETRY_DELAY_MS
 const PYTH_LAZER_CHANNEL = process.env.PYTH_LAZER_CHANNEL || 'fixed_rate@50ms';
 const PYTH_LIVE_FEED_BACKOFF_MS = Math.max(0, Number(process.env.PYTH_LIVE_FEED_BACKOFF_MS || 5));
 const PYTH_WS_PUSH_FLOOR_MS = Math.max(0, Number(process.env.PYTH_WS_PUSH_FLOOR_MS || 25));
+const PYTH_TRACE_WS_MESSAGES = process.env.PYTH_TRACE_WS_MESSAGES === '1';
 
 function getPythChannelCadenceMs(channel) {
   const match = /^fixed_rate@(\d+)ms$/.exec(String(channel || ''));
@@ -924,6 +925,10 @@ function writePythRestTickers(pmap, nowP, targetWin) {
 }
 
 function configureCachePaths() {
+  const remoteDebugPort = Number(process.env.WECRYPTO_REMOTE_DEBUG_PORT || 0);
+  if (Number.isInteger(remoteDebugPort) && remoteDebugPort > 0 && remoteDebugPort < 65536) {
+    app.commandLine.appendSwitch('remote-debugging-port', String(remoteDebugPort));
+  }
   try {
     const localAppData = process.env.LOCALAPPDATA || app.getPath('appData');
     const profileRoot = path.join(localAppData, 'WE-CRYPTO');
@@ -1417,8 +1422,7 @@ async function startPythLazerService(win) {
           return;
         }
 
-        // Log like the example snippet for debugging
-        if (payload?.type === 'streamUpdated' || payload?.parsed) {
+        if (PYTH_TRACE_WS_MESSAGES && (payload?.type === 'streamUpdated' || payload?.parsed)) {
           console.log('[PythLazer] Received update:', JSON.stringify(payload, null, 2).slice(0, 500));
         }
 
@@ -2385,6 +2389,50 @@ ipcMain.handle('open-polycool', async () => {
 
 // ── IPC: proxy port discovery ─────────────────────────────────────────────
 ipcMain.handle('proxy:port', () => proxyPort);
+
+// ── IPC: Kalshi public market data ────────────────────────────────────────
+const KALSHI_MARKETS_URL = 'https://api.elections.kalshi.com/trade-api/v2/markets';
+const KALSHI_MARKETS_CACHE_TTL_MS = 10_000;
+const kalshiMarketsCache = new Map();
+
+ipcMain.handle('kalshi:markets', async (_event, options = {}) => {
+  const params = {
+    limit: Math.max(1, Math.min(Number(options.limit) || 50, 1000)),
+    series_ticker: options.series_ticker || '',
+    status: options.status || 'open',
+  };
+  const cacheKey = JSON.stringify(params);
+  const cached = kalshiMarketsCache.get(cacheKey);
+  if (cached && Date.now() - cached.timestamp < KALSHI_MARKETS_CACHE_TTL_MS) {
+    return cached.payload;
+  }
+
+  const query = new URLSearchParams({
+    limit: String(params.limit),
+    status: params.status,
+  });
+  if (params.series_ticker) query.set('series_ticker', params.series_ticker);
+
+  try {
+    const response = await fetch(`${KALSHI_MARKETS_URL}?${query}`, {
+      headers: { Accept: 'application/json' },
+      cache: 'no-store',
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (response.status === 429) {
+      return { success: false, status: 429, error: 'HTTP 429' };
+    }
+    if (!response.ok) {
+      return { success: false, status: response.status, error: `HTTP ${response.status}` };
+    }
+    const data = await response.json();
+    const payload = { success: true, status: 200, data };
+    kalshiMarketsCache.set(cacheKey, { timestamp: Date.now(), payload });
+    return payload;
+  } catch (error) {
+    return { success: false, status: 0, error: error?.message || String(error) };
+  }
+});
 
 // ── IPC: Pyth Lazer handlers ──────────────────────────────────────────────
 ipcMain.handle('pyth:getStatus', () => {

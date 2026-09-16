@@ -110,6 +110,7 @@
 
     const coin = window.PredictionMarkets?.getCoin?.(sym) || {};
     const p15 = coin.kalshi15m || null;
+    const p15 = coin.kalshi15m || coin.poly15m || null;
     const p5 = coin.poly5m || null;
     let m = null;
     let horizon = '15m';
@@ -117,6 +118,7 @@
       if (p5?.slug) { m = p5; horizon = '5m'; }
     } else if (preferHorizon === '15m') {
       if (p15?.ticker) { m = p15; horizon = '15m'; }
+      if (p15?.ticker || p15?.slug) { m = p15; horizon = '15m'; }
     } else if (p15?.ticker || p15?.slug) {
       m = p15;
       horizon = '15m';
@@ -151,6 +153,7 @@
     const ttc = Number(m.secondsToClose);
     const yes = Number(m.probability ?? m.upProbability ?? m.yesProb);
     const isKalshi15m = horizon === '15m';
+    const isKalshi15m = horizon === '15m' && !!m.ticker;
 
     return {
       sym,
@@ -160,6 +163,7 @@
       yesProb: Number.isFinite(yes) ? yes : null,
       priceToBeatNum: ptb,
       priceToBeatSource: ptbOk ? (ptbSource || 'kalshi') : null,
+      priceToBeatSource: ptbOk ? (ptbSource || (isKalshi15m ? 'kalshi' : 'polymarket')) : null,
       secondsToClose: Number.isFinite(ttc) ? ttc : null,
       bestBid: m.bestBid ?? null,
       bestAsk: m.bestAsk ?? null,
@@ -173,6 +177,8 @@
       deltaVsPtb: Number.isFinite(spot) && ptb != null ? spot - ptb : null,
       oraclePolicy: 'pyth_spot_plus_kalshi_rti_strike_only',
       oracleWarnings: ptb == null ? ['no_kalshi_strike'] : [],
+      oraclePolicy: isKalshi15m ? 'pyth_spot_plus_kalshi_rti_strike_only' : 'pyth_spot_plus_polymarket_ptb_only',
+      oracleWarnings: ptb == null ? (isKalshi15m ? ['no_kalshi_strike'] : ['no_polymarket_ptb']) : [],
     };
   }
 

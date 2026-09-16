@@ -410,6 +410,7 @@ function updateMarkets5MLivePrices(prices) {
       const ticker = prices?.[`${sym}USD`];
       const current = Number(ticker?.last);
       const mkt = is15m ? markets[sym]?.kalshi15m : markets[sym]?.poly5m;
+      const mkt = is15m ? (markets[sym]?.kalshi15m || markets[sym]?.poly15m) : markets[sym]?.poly5m;
       const target = Number(mkt?.targetPriceNum ?? mkt?.priceToBeatNum);
       if (!Number.isFinite(current) || current <= 0) continue;
 
@@ -548,6 +549,7 @@ function renderMarkets5M() {
     const fingerprint = COINS_5M.map(s => {
       const b = window.Asi1PreContract?.get?.(s, horizon);
       const mkt = is15m ? pm[s]?.kalshi15m : pm[s]?.poly5m;
+      const mkt = is15m ? (pm[s]?.kalshi15m || pm[s]?.poly15m) : pm[s]?.poly5m;
       return `${s}:${horizon}:${mkt?.ticker || mkt?.slug || ''}:${mkt?.targetPriceNum ?? mkt?.priceToBeatNum ?? mkt?.floorPrice ?? ''}:${b?.ts || 0}:${b?.call || ''}`;
     }).join('|');
     const _now5m = Date.now();
@@ -886,6 +888,7 @@ function renderMarkets5M() {
     function _modelOdds5m(sym) {
       const p = pred[sym];
       const p5 = is15m ? pm[sym]?.kalshi15m : pm[sym]?.poly5m;
+      const p5 = is15m ? (pm[sym]?.kalshi15m || pm[sym]?.poly15m) : pm[sym]?.poly5m;
       const ptb = Number(p5?.targetPriceNum ?? p5?.priceToBeatNum ?? p5?.floorPrice);
       
       // Real-time live price: For 15m Kalshi, use live Coinbase/exchange spot price. For 5m Polymarket, use Chainlink TWAP.
@@ -966,6 +969,7 @@ function renderMarkets5M() {
     // Purely a labeling signal for the UI -- does not change the odds computation.
     function _modelOdds5mIsPtbAnchored(sym) {
       const p5 = is15m ? pm[sym]?.kalshi15m : pm[sym]?.poly5m;
+      const p5 = is15m ? (pm[sym]?.kalshi15m || pm[sym]?.poly15m) : pm[sym]?.poly5m;
       const ptb = Number(p5?.targetPriceNum ?? p5?.priceToBeatNum ?? p5?.floorPrice);
       return Number.isFinite(ptb) && ptb > 0;
     }
@@ -1082,6 +1086,7 @@ function renderMarkets5M() {
              
              const coin = pm[sym] || {};
              const p5 = is15m ? coin.kalshi15m : coin.poly5m;
+             const p5 = is15m ? (coin.kalshi15m || coin.poly15m) : coin.poly5m;
              const poly5mMkts = is15m ? (coin.poly15mMkts || []) : (coin.poly5mMkts || []);
              const stepSec = is15m ? 900 : 300;
              const nextPolyMkt = p5?._windowTs
@@ -3539,9 +3544,16 @@ async function renderCFM() {
     // Start engine in background if not started — DON'T await it blocking the render
     if (!cfmStarted && !_cfmStarting) {
       _cfmStarting = true;
+      // start() is now non-blocking (fire-and-forget first cycle).
+      // Mark cfmStarted immediately so the loading banner clears on the next render.
       CFMEngine.start()
-        .then(() => { cfmStarted = true; _cfmStarting = false; if (currentView === 'cfm') requestCFMRender(true); })
-        .catch(e => { _cfmStarting = false; console.error('[CFM] engine start failed:', e); if (currentView === 'cfm') requestCFMRender(true); });
+        .then(() => { cfmStarted = true; _cfmStarting = false; })
+        .catch(e => { _cfmStarting = false; console.error('[CFM] engine start failed:', e); });
+      // Clear the banner after a short delay to allow first cycle data to land
+      setTimeout(() => {
+        if (!cfmStarted) { cfmStarted = true; }
+        if (currentView === 'cfm') requestCFMRender(true);
+      }, 1500);
       // Also kick off predictions in background
       if (!predsLoaded) {
         startPredictionRun()

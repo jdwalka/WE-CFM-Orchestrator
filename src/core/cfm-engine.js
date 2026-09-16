@@ -881,7 +881,15 @@
   async function runCycle() {
     const t0 = Date.now();
     cycle++;
-    await sampleAll();
+    try {
+      // Cap each cycle at 8s — any hanging fetch aborts and we proceed with whatever landed
+      await Promise.race([
+        sampleAll(),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('CFM cycle timeout')), 8000)),
+      ]);
+    } catch (e) {
+      if (e && e.message !== 'CFM cycle timeout') console.warn('[CFM] runCycle error:', e);
+    }
     PREDICTION_COINS.forEach(c => { window._cfm[c.sym] = computeCFM(c.sym); });
     // Annotate each coin's CFM result with a funding-rate bias signal.
     // Must run AFTER computeCFM because that call replaces window._cfm[sym].
@@ -895,7 +903,9 @@
       if (window.ExchangeWS?.start) {
         try { window.ExchangeWS.start(); } catch (_) { }
       }
-      await runCycle();
+      // Fire the first cycle without blocking — the loading banner clears on the
+      // next requestCFMRender() call once cfmStarted is set in render-layer.js.
+      runCycle().catch(() => {});
       timer = setInterval(runCycle, POLL_MS);
     },
     stop() { if (timer) { clearInterval(timer); timer = null; } },

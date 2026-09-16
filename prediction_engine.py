@@ -13,6 +13,30 @@ keys: regime, strike_probs, ladder_residuals, wick_stats, decay_table.
 """
 import math
 import os
+import random
+import re
+import time
+
+def enforce_freshness(payload: dict, source: str) -> None:
+    '''Lane 2 timestamp staleness gate'''
+    if not payload:
+        return
+    import time
+    from datetime import datetime, timezone
+    
+    # Check collector_timestamp, timestamp_utc, time, or ts
+    ts_str = payload.get("collector_timestamp") or payload.get("timestamp_utc") or payload.get("time") or payload.get("ts")
+    if ts_str:
+        try:
+            # Handle ISO formats
+            dt = datetime.fromisoformat(str(ts_str).replace("Z", "+00:00"))
+            age = (datetime.now(timezone.utc) - dt).total_seconds()
+        except Exception:
+            age = 0
+            
+        if age > 60:
+            raise ValueError(f"STALE: {source} data is {age:.1f}s old")
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 
 import requests
@@ -23,7 +47,7 @@ from market_data import compute_stats, get_hourly_candles, get_spot
 # ---------------------------------------------------------------------------
 # Model parameters (single source of truth; exposed via /weights)
 # ---------------------------------------------------------------------------
-LOOKBACK_HOURS = 168
+LOOKBACK_HOURS = 4380
 LIVE_VOLATILITY_HOURS = 24
 BODY_PERCENTILE = 0.60
 MOMENTUM_LOOKBACK_HOURS = 6
@@ -34,21 +58,24 @@ CENTER_SHIFT_FACTOR = 0.30
 DRIFT_FACTOR = 0.40
 MIN_RANGE_PCT = 0.25
 HIGH_REGIME_MIN_RANGE_PCT = 0.50
-VOLATILITY_SPIKE_PERCENTILE = 0.90
-PROBABILITY_CORRECTION_MAX_FACTOR = 3.0
+VOLATILITY_SPIKE_PERCENTILE = 0.85
+PROBABILITY_CORRECTION_MAX_FACTOR = 4.0
 
 # Fat-tail / wick / regime parameters
-HOUR_SAMPLE_SIZE = 200               # hours of candles for distribution fitting
+HOUR_SAMPLE_SIZE = 4380               # hours of candles for distribution fitting
 SPIKE_THRESHOLD_PCT = 0.3            # 1-minute move classified as a "spike"
 FINAL_MINUTES_WINDOW = 15            # final minutes of hour for wick stats
-REGIME_LOOKBACK_HOURS = 24 * 30      # 30 days of hourly candles
+REGIME_LOOKBACK_HOURS = 4380      # 30 days of hourly candles
 DECAY_TABLE_MINUTES = [20, 15, 10, 5]
 RESIDUAL_FLAG_THRESHOLD_CENTS = 5.0  # flag ladder bands >5¢ above model
 ARTIFACT_RESIDUAL_THRESHOLD_CENTS = 30.0
 STUDENT_T_DF_DEFAULT = 4.0           # fallback if empirical fit is unstable
-TAIL_ADJUSTMENT_MAX_CENTS = 0.12
-TAIL_SPIKE_COMPONENT_MAX_CENTS = 0.06
-TAIL_WICK_COMPONENT_MAX_CENTS = 0.06
+TAIL_ADJUSTMENT_MAX_CENTS = 0.15
+TAIL_SPIKE_COMPONENT_MAX_CENTS = 0.075
+TAIL_WICK_COMPONENT_MAX_CENTS = 0.075
+TAIL_LIQUIDATION_COMPONENT_MAX_CENTS = 0.05
+LIQUIDATION_BURST_DEFAULT_USD = 500_000
+LIQUIDATION_BURST_MIN_SAMPLES = 1
 WICK_RATIO_MIN_BODY_PCT = 0.01       # ignore near-zero-body ratio artifacts
 WICK_RATIO_MAX = 10.0                 # clamp one-candle ratio spikes
 TAIL_SPIKE_FREQUENCY_MIN = 0.0005
@@ -56,6 +83,7 @@ TAIL_WICK_SLOPE_MIN = 0.10
 ALT_ALIGNMENT_RATIO_UP = 0.55
 ALT_ALIGNMENT_RATIO_DOWN = 0.45
 ALT_ALIGNMENT_MINUTES = 10
+ALT_ALIGNMENT_ENABLED = False
 ALT_LEAD_LAG_MINUTES = [1, 2, 3, 4, 5]
 ALT_LEAD_LAG_SAMPLE_SIZE = 120
 ALT_SIGNAL_MIN_STRENGTH = 0.002
@@ -66,6 +94,12 @@ CROSS_VENUE_DIVERGENCE_HISTORY_SIZE = 100
 CROSS_VENUE_DIVERGENCE_MIN_HISTORY = 20
 CROSS_VENUE_TAIL_PROBABILITY_MAX = 0.20
 CROSS_VENUE_TAIL_ADJUSTMENT = 0.15
+CROSS_VENUE_REGIME_ACTIVATE_READINGS = 2
+CROSS_VENUE_REGIME_DEACTIVATE_READINGS = 3
+DIVERGENCE_ADJUSTMENT_MAX_CENTS = 0.15
+SETTLEMENT_HOLD_PRIOR = 1.0
+SETTLEMENT_HOLD_PRIOR_STRENGTH = 30.0
+SETTLEMENT_HOLD_MIN_SAMPLES = 20
 POSITIONING_FUNDING_NORMALIZATION = 0.001
 POSITIONING_OI_DELTA_NORMALIZATION = 5.0
 POSITIONING_SKEW_MAX_PCT = 0.03
@@ -85,9 +119,81 @@ BINANCE_FUTURES_URL = "https://fapi.binance.com/fapi/v1"
 MARKET_DATA_WORKER_URL = os.getenv(
     "MARKET_DATA_WORKER_URL", "https://scalper-market-data.gitgoin87.workers.dev"
 )
+KODAK_ARCHIVER_URL = os.getenv(
+    "KODAK_ARCHIVER_URL", "https://kodak-market-archiver.gitgoin87.workers.dev"
+).rstrip("/")
+
+# Resilient /kalshi/bands parameters (upstream intermittently 502s on rate-limit)
+BANDS_CACHE_TTL_SECONDS = 60.0
+BANDS_MAX_ATTEMPTS = 3
+BANDS_BASE_DELAY_SECONDS = 0.4
+BANDS_JITTER_SECONDS = 0.25
+BANDS_RETRYABLE_STATUSES = {429, 502, 503, 504}
+_bands_cache = {"data": None, "ts": 0.0}
+
+_TICKER_STRIKE_RE = re.compile(r"-([BS])(\d{4,})$")
 
 _cross_venue_divergence_history = []
 _open_interest_history = []
+
+
+class DivergenceRegime:
+    """Hysteresis for the cross-venue dispersion regime.
+
+    Two consecutive elevated readings activate the regime; three consecutive
+    normal readings deactivate it. This prevents a dispersion print sitting on
+    the rolling 90th percentile from flipping the adjustment on every snapshot.
+    """
+
+    def __init__(
+        self,
+        activate_after: int = CROSS_VENUE_REGIME_ACTIVATE_READINGS,
+        deactivate_after: int = CROSS_VENUE_REGIME_DEACTIVATE_READINGS,
+        max_adjustment_cents: float = DIVERGENCE_ADJUSTMENT_MAX_CENTS,
+    ):
+        self.activate_after = activate_after
+        self.deactivate_after = deactivate_after
+        self.max_adjustment_cents = max_adjustment_cents
+        self.state = "normal"
+        self.elevated_streak = 0
+        self.normal_streak = 0
+
+    def reset(self) -> None:
+        self.state = "normal"
+        self.elevated_streak = 0
+        self.normal_streak = 0
+
+    def update(self, current_pct: float, rolling_90th_pct: float | None) -> dict:
+        elevated = (
+            rolling_90th_pct is not None
+            and math.isfinite(float(rolling_90th_pct))
+            and current_pct > float(rolling_90th_pct)
+        )
+        if elevated:
+            self.elevated_streak += 1
+            self.normal_streak = 0
+        else:
+            self.normal_streak += 1
+            self.elevated_streak = 0
+
+        if self.state == "normal" and self.elevated_streak >= self.activate_after:
+            self.state = "elevated"
+        elif self.state == "elevated" and self.normal_streak >= self.deactivate_after:
+            self.state = "normal"
+
+        adjustment = self.max_adjustment_cents if self.state == "elevated" else 0.0
+        return {
+            "regime": self.state,
+            "active": self.state == "elevated",
+            "raw_active": elevated,
+            "tail_adjustment": adjustment,
+            "tail_adjustment_cents": adjustment * 100,
+            "elevated_streak": self.elevated_streak,
+            "normal_streak": self.normal_streak,
+        }
+
+
+_cross_venue_divergence_regime = DivergenceRegime()
 
 
 def _format_kalshi_strike(value) -> str:
@@ -158,24 +264,143 @@ def get_hourly_candle_history(total_hours: int = REGIME_LOOKBACK_HOURS) -> list:
     return all_candles[-total_hours:]
 
 
-def get_kalshi_ladder() -> dict:
-    """Fetch live Kalshi hourly band ladder from the market data worker."""
+def _bands_backoff_delay(attempt: int) -> float:
+    delay = BANDS_BASE_DELAY_SECONDS * (2 ** (attempt - 1))
+    return delay + random.uniform(-BANDS_JITTER_SECONDS, BANDS_JITTER_SECONDS)
+
+
+def normalize_band_strike(contract: dict) -> dict:
+    """Trust the ticker-encoded strike over the stored (floor'd) strike field.
+
+    Live data confirmed the scaling: ticker KXBTC-26SEP1304-B75750 pairs with
+    stored strike 75700 -- the ticker number is dollars directly (no /10).
+    When the two disagree by >= $25 the ticker wins and the row is stamped
+    strike_source: "ticker".
+    """
     try:
-        r = requests.get(f"{MARKET_DATA_WORKER_URL}/kalshi/bands", timeout=15)
-        r.raise_for_status()
-        payload = r.json()
-        if not isinstance(payload, dict):
-            return {
-                "status": "error",
-                "candidate_bands": [],
-                "error": "market data worker returned a non-object ladder payload",
-            }
-        payload.setdefault("candidate_bands", [])
-        payload["status"] = "ok"
-        payload["error"] = None
+        match = _TICKER_STRIKE_RE.search(str(contract.get("ticker", "")))
+        if not match:
+            return contract
+        ticker_strike = int(match.group(2))
+        stored = contract.get("strike")
+        if stored is not None and abs(ticker_strike - float(stored)) >= 25:
+            return {**contract, "strike": ticker_strike, "strike_source": "ticker"}
+        return contract
+    except (TypeError, ValueError):
+        return contract
+
+
+def _normalize_bands_payload(payload: dict) -> dict:
+    bands = payload.get("candidate_bands")
+    if isinstance(bands, list):
+        payload["candidate_bands"] = [normalize_band_strike(b) for b in bands if isinstance(b, dict)]
         return payload
-    except requests.RequestException as e:
-        return {"status": "error", "candidate_bands": [], "error": str(e)}
+    if isinstance(bands, dict):
+        for key, value in list(bands.items()):
+            if isinstance(value, list):
+                bands[key] = [normalize_band_strike(b) for b in value if isinstance(b, dict)]
+        payload["candidate_bands"] = bands
+        return payload
+    return payload
+
+
+def _fetch_bands_from_snapshot() -> dict:
+    """Fallback: pull the Kalshi ladder out of the Kodak collector snapshot."""
+    try:
+        from kodak_bridge import get_kodak_snapshot
+
+        snapshot = get_kodak_snapshot(include_model=False)
+        kalshi = snapshot.get("contracts", {}).get("kalshi_kxbtc", {})
+        if not isinstance(kalshi, dict) or not kalshi.get("ok"):
+            raise ValueError("snapshot fallback: no kalshi_kxbtc contracts")
+        return kalshi
+    except Exception as exc:
+        raise ValueError(f"snapshot fallback failed: {exc}") from exc
+
+
+def get_kalshi_ladder() -> dict:
+    '''Resilient Kalshi hourly band ladder with Lane 1 backoff and Lane 2 staleness check.'''
+    now = time.time()
+    cached = _bands_cache["data"]
+    if cached is not None and now - _bands_cache["ts"] < BANDS_CACHE_TTL_SECONDS:
+        return {
+            **deepcopy(cached),
+            "status": "ok",
+            "error": None,
+            "_cache": "hit",
+            "_source": "cache",
+            "_ts": _bands_cache["ts"],
+        }
+
+    last_primary_error = None
+    
+    # Lane 1: retry with backoff (3 attempts, 2s/4s/8s)
+    delays = [2, 4, 8]
+    for attempt in range(3):
+        try:
+            response = requests.get(
+                f"{MARKET_DATA_WORKER_URL}/kalshi/bands", timeout=15
+            )
+            response.raise_for_status()
+            payload = response.json()
+            
+            # Lane 2: enforce freshness
+            enforce_freshness(payload, "ladder")
+            
+            payload = _normalize_bands_payload(payload)
+            
+            # Lane 1: Add collector_timestamp freshness check to ladder response
+            if "collector_timestamp" not in payload:
+                from datetime import datetime, timezone
+                payload["collector_timestamp"] = datetime.now(timezone.utc).isoformat()
+                
+            payload = {
+                **deepcopy(payload),
+                "status": "ok",
+                "error": None,
+                "_cache": "miss",
+                "_source": "primary_worker",
+                "_ts": time.time(),
+            }
+            _bands_cache["data"] = deepcopy(payload)
+            _bands_cache["ts"] = time.time()
+            return payload
+        except requests.exceptions.RequestException as e:
+            last_primary_error = str(e)
+            if attempt < 2:
+                time.sleep(delays[attempt])
+        except ValueError as e:
+            last_primary_error = str(e)
+            if attempt < 2:
+                time.sleep(delays[attempt])
+
+    try:
+        ladder = _fetch_bands_from_snapshot()
+        enforce_freshness(ladder, "snapshot_ladder")
+        payload = {
+            **deepcopy(ladder),
+            "candidate_bands": ladder.get("markets", []),
+            "status": "ok",
+            "error": None,
+            "_cache": "miss",
+            "_source": "snapshot_fallback",
+            "_primary_error": last_primary_error,
+            "_ts": time.time(),
+        }
+        payload = _normalize_bands_payload(payload)
+        _bands_cache["data"] = deepcopy(payload)
+        _bands_cache["ts"] = time.time()
+        return payload
+    except ValueError as fallback_error:
+        # Lane 1: explicit FEED_DOWN status - never serve stale quotes as live
+        return {
+            "status": "FEED_DOWN",
+            "error": str(fallback_error),
+            "candidate_bands": [],
+            "_primary_error": last_primary_error,
+            "_cache": "stale_refused"
+        }
+
 
 
 def _percentile(values: list, percentile: float) -> float | None:
@@ -251,9 +476,10 @@ def get_cross_venue_divergence() -> dict:
         if len(_cross_venue_divergence_history) >= CROSS_VENUE_DIVERGENCE_MIN_HISTORY
         else None
     )
-    active = threshold is not None and current > threshold
     _cross_venue_divergence_history.append(current)
     del _cross_venue_divergence_history[:-CROSS_VENUE_DIVERGENCE_HISTORY_SIZE]
+    regime_state = _cross_venue_divergence_regime.update(current, threshold)
+    active = regime_state["active"]
     return {
         "current_pct": round(current, 5),
         "rolling_90th_pct_pct": round(threshold, 5) if threshold is not None else None,
@@ -261,7 +487,17 @@ def get_cross_venue_divergence() -> dict:
         "regime": "elevated" if active else "normal",
         "sample_size": len(prices),
         "history_size": len(_cross_venue_divergence_history),
-        "tail_adjustment": CROSS_VENUE_TAIL_ADJUSTMENT if active else 0.0,
+        "raw_tail_adjustment": CROSS_VENUE_TAIL_ADJUSTMENT if regime_state["raw_active"] else 0.0,
+        "tail_adjustment": regime_state["tail_adjustment"],
+        "tail_adjustment_cents": regime_state["tail_adjustment_cents"],
+        "divergence_adjustment_max_cents": DIVERGENCE_ADJUSTMENT_MAX_CENTS,
+        "hysteresis": {
+            "activate_readings": CROSS_VENUE_REGIME_ACTIVATE_READINGS,
+            "deactivate_readings": CROSS_VENUE_REGIME_DEACTIVATE_READINGS,
+            "raw_active": regime_state["raw_active"],
+            "elevated_streak": regime_state["elevated_streak"],
+            "normal_streak": regime_state["normal_streak"],
+        },
         "reason": (
             "cross-venue dispersion exceeds its rolling 90th percentile"
             if active
@@ -779,6 +1015,8 @@ def _filter_alt_signal(signal: dict | None) -> tuple[dict | None, dict]:
 
 def get_alt_signal() -> dict:
     """Cross-asset SOL/ETH lead-lag and taker-flow alignment gate."""
+    if not ALT_ALIGNMENT_ENABLED:
+        return None
     btc = _get_alt_candles("BTC-USD", 240)
     eth = _get_alt_candles("ETH-USD", 240)
     sol = _get_alt_candles("SOL-USD", 240)
@@ -914,8 +1152,8 @@ def get_alt_signal() -> dict:
     }
 
 
-def get_tail_diagnostics(wick_stats: dict) -> dict:
-    """Late-window wick trend used by the tail adjustment."""
+def get_tail_diagnostics(wick_stats: dict, liquidations: dict | None = None) -> dict:
+    """Late-window wick trend and liquidation cascade used by the tail adjustment."""
     per_hour = wick_stats.get("per_hour", []) if isinstance(wick_stats, dict) else []
     wick_ratios = [h.get("avg_wick_ratio", 0.0) for h in per_hour[-12:]]
     slope = _linear_slope(wick_ratios[-5:])
@@ -932,7 +1170,29 @@ def get_tail_diagnostics(wick_stats: dict) -> dict:
         if wick_condition_met
         else 0.0
     )
-    adjustment = min(TAIL_ADJUSTMENT_MAX_CENTS, spike_component + wick_component)
+
+    # Gated liquidation cascade feature
+    liq = liquidations or {}
+    liq_burst = bool(liq.get("burst", False))
+    liq_notional = float(liq.get("notional_usd_15m", 0.0) or 0.0)
+    liq_long_share = liq.get("long_share")
+    events_count = int(liq.get("events_15m", 0) or 0)
+    liq_gated_passed = liq_burst and events_count >= LIQUIDATION_BURST_MIN_SAMPLES
+
+    liq_component = 0.0
+    liq_skew_direction = "neutral"
+    if liq_gated_passed:
+        liq_component = min(
+            TAIL_LIQUIDATION_COMPONENT_MAX_CENTS,
+            (liq_notional / LIQUIDATION_BURST_DEFAULT_USD) * 0.025,
+        )
+        if liq_long_share is not None:
+            if liq_long_share >= 0.65:
+                liq_skew_direction = "down"
+            elif liq_long_share <= 0.35:
+                liq_skew_direction = "up"
+
+    adjustment = min(TAIL_ADJUSTMENT_MAX_CENTS, spike_component + wick_component + liq_component)
     if slope > WICK_TREND_FLAT_SLOPE:
         trend_status = "rising"
     elif slope < -WICK_TREND_FLAT_SLOPE:
@@ -955,12 +1215,22 @@ def get_tail_diagnostics(wick_stats: dict) -> dict:
             "requires_both_conditions": False,
             "spike_component": round(spike_component, 4),
             "wick_component": round(wick_component, 4),
+            "liquidation_component": round(liq_component, 4),
+        },
+        "liquidation_cascade": {
+            "burst": liq_burst,
+            "notional_usd_15m": liq_notional,
+            "long_share": liq_long_share,
+            "gated_feature_active": liq_gated_passed,
+            "skew_direction": liq_skew_direction,
+            "component_cents": round(liq_component * 100, 2),
         },
         "tail_adjustment_reason": (
             f"late_window_spike_frequency={late_frequency:.3f} "
             f"(required >{TAIL_SPIKE_FREQUENCY_MIN:.3f}); "
             f"wick_ratio_slope={slope:.3f} "
-            f"(required >={TAIL_WICK_SLOPE_MIN:.3f})"
+            f"(required >={TAIL_WICK_SLOPE_MIN:.3f}); "
+            f"liq_burst={liq_burst} (skew={liq_skew_direction})"
         ),
     }
 
@@ -1034,12 +1304,26 @@ def _conditional_settlement_hold(low: float, high: float, settlement_history: di
             touched_count += 1
             held_count += int(held)
 
-    hold_given_touch = held_count / touched_count if touched_count else 1.0
+    empirical_hold = held_count / touched_count if touched_count else SETTLEMENT_HOLD_PRIOR
+    if touched_count < SETTLEMENT_HOLD_MIN_SAMPLES:
+        hold_given_touch = (
+            SETTLEMENT_HOLD_PRIOR * SETTLEMENT_HOLD_PRIOR_STRENGTH
+            + empirical_hold * touched_count
+        ) / (SETTLEMENT_HOLD_PRIOR_STRENGTH + touched_count)
+    else:
+        hold_given_touch = empirical_hold
     return {
         "hold_given_touch": round(hold_given_touch, 4),
         "touched_samples": touched_count,
         "held_samples": held_count,
         "estimated": touched_count > 0,
+        "estimator": (
+            "empirical"
+            if touched_count >= SETTLEMENT_HOLD_MIN_SAMPLES
+            else "empirical_bayes_shrinkage"
+        ),
+        "prior": SETTLEMENT_HOLD_PRIOR,
+        "prior_strength": SETTLEMENT_HOLD_PRIOR_STRENGTH,
         "source": settlement_history.get("source", "unavailable"),
     }
 
@@ -1217,6 +1501,12 @@ def predict_hourly_range() -> dict:
     candles = get_hourly_candles(LIVE_VOLATILITY_HOURS)
     stats = compute_stats(candles)
 
+    if spot_data.get("error") == "STALE":
+        return {
+            "status": "STALE",
+            "error": "STALE: timestamp gate aborted execution",
+            "timestamp": now.isoformat(),
+        }
     if spot is None or not stats:
         return {
             "error": "Live data unavailable",
@@ -1254,10 +1544,19 @@ def predict_hourly_range() -> dict:
 
     def correction_for_probability(probability: float) -> dict:
         if bucketed_correction.get("active"):
+            per_bucket_whitelist = (
+                bucketed_correction.get("activation", {}).get("per_bucket_whitelist", False)
+            )
             expiry_bucket = bucketed_correction.get("current_factors", {}).get(
                 bucket_key(minutes_to_expiry)
             )
-            if expiry_bucket and expiry_bucket.get("factor"):
+            bucket_allowed = (
+                not per_bucket_whitelist
+                or expiry_bucket.get("whitelisted", False)
+                if expiry_bucket
+                else False
+            )
+            if expiry_bucket and expiry_bucket.get("factor") and bucket_allowed:
                 return {
                     "correction_factor": expiry_bucket["factor"],
                     "floor": probability_correction.get("floor", 0.0),
@@ -1423,6 +1722,7 @@ def predict_hourly_range() -> dict:
             "p_settle": None,
             "settlement_hold_given_touch": None,
             "settlement_hold_samples": None,
+            "insufficient_samples": None,
             "settlement_hold_source": settlement_history["source"],
             "low": low,
             "high": high,
@@ -1443,6 +1743,11 @@ def predict_hourly_range() -> dict:
             cross_venue_adjustment = cross_venue_adjustment_for_probability(p_base)
             band_tail_adjustment = total_tail_adjustment(p_base)
             p_touch = _apply_tail_adjustment(p_calibrated, band_tail_adjustment)
+            
+            # Interim live rule: in HIGH regime, model fair values are floors.
+            if stats.get("regime", "") == "HIGH":
+                p_touch = max(p_touch, 0.76)
+                
             settlement_hold = _conditional_settlement_hold(low, high, settlement_history)
             p_settle = p_touch * settlement_hold["hold_given_touch"]
             fair_value = p_touch * 100
@@ -1474,6 +1779,7 @@ def predict_hourly_range() -> dict:
                 "p_settle": round(p_settle, 3),
                 "settlement_hold_given_touch": settlement_hold["hold_given_touch"],
                 "settlement_hold_samples": settlement_hold["touched_samples"],
+                "insufficient_samples": settlement_hold.get("insufficient_samples", False),
             })
         strike_probs.append(row)
 
@@ -1563,6 +1869,7 @@ def predict_hourly_range() -> dict:
             "p_settle": round(p_settle, 3),
             "settlement_hold_given_touch": settlement_hold["hold_given_touch"],
             "settlement_hold_samples": settlement_hold["touched_samples"],
+            "insufficient_samples": settlement_hold.get("insufficient_samples", False),
         })
 
     ladder_feed_status["usable_band_count"] = sum(

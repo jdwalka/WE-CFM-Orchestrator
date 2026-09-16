@@ -94,7 +94,7 @@ class BucketedCorrectionReportTests(unittest.TestCase):
     def tearDown(self):
         calibration_ledger.DB_PATH = self.original_db_path
 
-    def test_report_block_activates_after_passing_gate(self):
+    def test_report_block_is_report_only(self):
         now = datetime.now(timezone.utc)
         with calibration_ledger._connect() as connection:
             calibration_ledger._initialize(connection)
@@ -139,10 +139,17 @@ class BucketedCorrectionReportTests(unittest.TestCase):
 
         self.assertTrue(report["active"])
         self.assertEqual(report["live_path"], "active")
+        self.assertEqual(report["live_path"], "report_only")
         self.assertEqual(report["samples"], 40)
         self.assertIn("current_factors", report)
         self.assertIn("overall_improvement", report)
         self.assertIn("max_bucket_degradation", report)
+        self.assertEqual(report["activation"]["required_overall_improvement"], 0.002)
+        self.assertTrue(report["activation"]["per_bucket_whitelist"])
+        self.assertTrue(all(
+            factor["whitelisted"]
+            for factor in report["current_factors"].values()
+        ))
 
 
 class ReplayCLITests(unittest.TestCase):

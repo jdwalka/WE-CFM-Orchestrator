@@ -76,6 +76,8 @@
 
   async function getJson(url, opts = {}) {
     if (isHostBlocked(url)) throw new Error('host blocked (geo/policy cooldown)');
+  async function getJson(url, opts = {}) {
+    if (isHostBlocked(url)) throw new Error('host blocked (geo/policy cooldown)');
     let lastError = null;
     for (let attempt = 1; attempt <= FETCH_ATTEMPTS; attempt++) {
       try {

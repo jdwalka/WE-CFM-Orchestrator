@@ -557,6 +557,10 @@
       isHourly ? (pmCoin.poly60m || {})
       : is5m ? (pmCoin.poly5m || {})
       : (pmCoin.kalshi15m || {})
+      (isHourly ? pmCoin.poly60m : (is5m ? pmCoin.poly5m : pmCoin.kalshi15m))
+      || (isHourly ? pmCoin.poly60m : (is5m ? pmCoin.poly5m : pmCoin.poly15m))
+      || pmCoin.poly5m
+      || {}
     );
     const pred = (typeof window !== 'undefined' && (window.PredictionEngine?.get?.(coin) || window._predictions?.[coin])) || {};
     const cache = (typeof window !== 'undefined' && window.candleCache?.[coin]) || {};
@@ -637,6 +641,12 @@
       const prob15m = Number(market15m.probability || 0.5);
       const ttc15m = Number(market15m.secondsToClose || 900);
       const venue15m = 'kalshi';
+      // Calculate for 15m — Kalshi is primary, Polymarket is legacy fallback.
+      const market15m = pmCoin.kalshi15m || pmCoin.poly15m || {};
+      const ptb15m = Number(market15m.targetPriceNum || market15m.priceToBeatNum);
+      const prob15m = Number(market15m.probability || 0.5);
+      const ttc15m = Number(market15m.secondsToClose || 900);
+      const venue15m = 'kalshi';
       if (spot != null && !isNaN(ptb15m) && !isNaN(prob15m) && !isNaN(ttc15m) && ttc15m > 0) {
         binaryIV_15m = window.QuantStatUtils.calculateBinaryIV(prob15m, spot, ptb15m, ttc15m / 86400, venue15m);
       }
@@ -646,6 +656,7 @@
       || poly.ticker
       || poly.slug
       || (isHourly ? `${coin.toLowerCase()}-hourly-ranges-${targetCloseTime}` : (is5m ? `${coin.toLowerCase()}-updown-5m` : null));
+    const activeSlug = pkt.slug || poly.ticker || poly.slug || (isHourly ? `${coin.toLowerCase()}-hourly-ranges-${targetCloseTime}` : (is5m ? `${coin.toLowerCase()}-updown-5m` : `${coin.toLowerCase()}-updown-15m`));
 
     return {
       sym: coin,
