@@ -9,8 +9,17 @@
       "id": "11089b487b4048729f3a49e6a302c3fb"
     }
   ],
+  "d1_databases": [
+    {
+      "binding": "WECRYPTO",
+      "database_id": "48536b22-03b3-42dd-92fa-44feab144d84"
+    }
+  ],
   "triggers": {
     "crons": ["* * * * *"]
+  },
+  "vars": {
+    "MARKET_SNAPSHOT_URL": "https://kodak-collector.gitgoin87.workers.dev/snapshot?symbol=BTCUSDT"
   },
   "routes": [
     {

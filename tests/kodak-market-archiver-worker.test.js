@@ -99,6 +99,26 @@ test("collect records a settlement row only during the final five minutes", asyn
   }
 });
 
+test("collect accepts the kodak collector derived venue shape", async () => {
+  const kv = createKv();
+  const env = { KODAK_KV: kv };
+  const result = await call("/collect", {
+    method: "POST",
+    env,
+    body: {
+      derived: {
+        venue_mids: {
+          coinbase_book: 76000,
+          binance_spot_book: 76080,
+        },
+      },
+    },
+  });
+  assert.equal(result.response.status, 200);
+  const minute = Math.floor(Date.now() / 60000);
+  assert.ok(unwrapGet(kv, `conv:${minute}`).includes('"gap":80'));
+});
+
 test("convergence returns insufficient data and then a converging signal", async () => {
   const kv = createKv();
   const env = { KODAK_KV: kv };

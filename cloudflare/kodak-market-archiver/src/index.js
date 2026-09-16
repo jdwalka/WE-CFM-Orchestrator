@@ -70,7 +70,7 @@ async function writeJsonArray(kv, key, value, expirationTtl) {
 }
 
 function normalizeVenueMid(snapshot) {
-  const venueMids = snapshot?.venue_mids;
+  const venueMids = snapshot?.venue_mids ?? snapshot?.derived?.venue_mids;
   if (!venueMids || typeof venueMids !== "object") {
     return { coinbase: null, binance: null };
   }
