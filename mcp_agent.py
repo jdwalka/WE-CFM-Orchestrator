@@ -44,10 +44,9 @@ MCP_SERVER_TOKEN = os.getenv("MCP_SERVER_TOKEN", "")
 
 asyncio.set_event_loop(asyncio.new_event_loop())
 uagents_asgi.HOST = "0.0.0.0"
-uagents_asgi.HOST = "127.0.0.1"
 
 agent = Agent(
-    name="wecryp",
+    name="trufflez",
     seed=AGENT_SEED,
     port=8002,
     mailbox=True,
@@ -289,7 +288,7 @@ def _remember(sender: str, role: str, content: str):
         del hist[: len(hist) - MAX_MEMORY * 2]
 
 # --- LLM + tool loop -------------------------------------------------------
-async def process_query(query: str, sender: str = "local") -> str:
+def process_query(query: str, sender: str = "local") -> str:
     headers = {
         "Authorization": f"Bearer {ASI1_API_KEY}",
         "Content-Type": "application/json",
@@ -412,7 +411,8 @@ async def handle_chat(ctx: Context, sender: str, msg: ChatMessage):
         return
     ctx.logger.info(f"Query from {sender}: {text[:120]}")
     try:
-        answer = await process_query(text, sender=sender)
+        loop = asyncio.get_event_loop()
+        answer = await loop.run_in_executor(None, lambda: process_query(text, sender=sender))
     except (requests.RequestException, KeyError, ValueError, TypeError) as e:
         answer = f"Error processing request: {e}"
     await ctx.send(sender, ChatMessage(
@@ -465,7 +465,8 @@ async def handle_health_get(_ctx: Context) -> HUDResponse:
 @agent.on_rest_post("/query", HUDQuery, HUDResponse)
 async def handle_query(ctx: Context, msg: HUDQuery) -> HUDResponse:
     try:
-        answer = await process_query(msg.query)
+        loop = asyncio.get_event_loop()
+        answer = await loop.run_in_executor(None, process_query, msg.query)
         return HUDResponse(ok=True, content=answer)
     except (requests.RequestException, KeyError, ValueError, TypeError) as e:
         return HUDResponse(ok=False, content=str(e))
@@ -474,7 +475,7 @@ async def handle_query(ctx: Context, msg: HUDQuery) -> HUDResponse:
 @agent.on_rest_post("/weights", HUDQuery, HUDResponse)
 async def handle_weights(ctx: Context, msg: HUDQuery) -> HUDResponse:
     try:
-        weights = get_model_weights()
+        weights = await asyncio.get_event_loop().run_in_executor(None, get_model_weights)
         return HUDResponse(ok=True, content=format_for_llm(weights))
     except (requests.RequestException, KeyError, ValueError, TypeError) as e:
         return HUDResponse(ok=False, content=str(e))
@@ -483,7 +484,7 @@ async def handle_weights(ctx: Context, msg: HUDQuery) -> HUDResponse:
 @agent.on_rest_post("/trees", HUDQuery, HUDResponse)
 async def handle_trees(ctx: Context, msg: HUDQuery) -> HUDResponse:
     try:
-        trees = get_decision_trees()
+        trees = await asyncio.get_event_loop().run_in_executor(None, get_decision_trees)
         return HUDResponse(ok=True, content=format_for_llm(trees))
     except (requests.RequestException, KeyError, ValueError, TypeError) as e:
         return HUDResponse(ok=False, content=str(e))
@@ -492,7 +493,8 @@ async def handle_trees(ctx: Context, msg: HUDQuery) -> HUDResponse:
 @agent.on_rest_post("/kodak", HUDQuery, HUDResponse)
 async def handle_kodak(ctx: Context, msg: HUDQuery) -> HUDResponse:
     try:
-        snapshot = get_kodak_snapshot(msg.query or "BTCUSDT")
+        loop = asyncio.get_event_loop()
+        snapshot = await loop.run_in_executor(None, get_kodak_snapshot, msg.query or "BTCUSDT")
         return HUDResponse(ok=True, content=format_for_llm(snapshot))
     except (
         KeyError,
@@ -507,24 +509,26 @@ async def handle_kodak(ctx: Context, msg: HUDQuery) -> HUDResponse:
 
 @agent.on_rest_post("/alt-signal", HUDQuery, HUDResponse)
 async def handle_alt_signal(_ctx: Context, _msg: HUDQuery) -> HUDResponse:
-    return HUDResponse(ok=True, content=format_for_llm(get_alt_signal()))
+    signal = await asyncio.get_event_loop().run_in_executor(None, get_alt_signal)
+    return HUDResponse(ok=True, content=format_for_llm(signal))
 
 
 @agent.on_rest_post("/calibration", HUDQuery, HUDResponse)
 async def handle_calibration(_ctx: Context, _msg: HUDQuery) -> HUDResponse:
-    return HUDResponse(ok=True, content=format_for_llm(get_calibration_report()))
+    report = await asyncio.get_event_loop().run_in_executor(None, get_calibration_report)
+    return HUDResponse(ok=True, content=format_for_llm(report))
 
 
 @agent.on_rest_post("/tail-diagnostics", HUDQuery, HUDResponse)
 async def handle_tail_diagnostics(_ctx: Context, _msg: HUDQuery) -> HUDResponse:
-    return HUDResponse(ok=True, content=format_for_llm(
-        predict_hourly_range().get("tail_diagnostics", {})
-    ))
+    prediction = await asyncio.get_event_loop().run_in_executor(None, predict_hourly_range)
+    return HUDResponse(ok=True, content=format_for_llm(prediction.get("tail_diagnostics", {})))
 
 
 @agent.on_rest_post("/kalshi-15m-model", HUDQuery, HUDResponse)
 async def handle_kalshi_15m_model(_ctx: Context, _msg: HUDQuery) -> HUDResponse:
-    return HUDResponse(ok=True, content=format_for_llm(predict_15m_range()))
+    model = await asyncio.get_event_loop().run_in_executor(None, predict_15m_range)
+    return HUDResponse(ok=True, content=format_for_llm(model))
 
 # --- Lifecycle -------------------------------------------------------------
 @agent.on_event("startup")
