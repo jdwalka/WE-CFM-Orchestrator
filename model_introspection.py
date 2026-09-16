@@ -42,6 +42,9 @@ def get_model_weights() -> dict[str, Any]:
             "volatility_spike_percentile": engine.VOLATILITY_SPIKE_PERCENTILE,
             "probability_correction_max_factor": engine.PROBABILITY_CORRECTION_MAX_FACTOR,
             "divergence_adjustment_max_cents": engine.DIVERGENCE_ADJUSTMENT_MAX_CENTS,
+            "settlement_hold_prior": engine.SETTLEMENT_HOLD_PRIOR,
+            "settlement_hold_prior_strength": engine.SETTLEMENT_HOLD_PRIOR_STRENGTH,
+            "settlement_hold_min_band_samples": engine.SETTLEMENT_HOLD_MIN_SAMPLES,
             "artifact_residual_threshold_cents": engine.ARTIFACT_RESIDUAL_THRESHOLD_CENTS,
             "probability_model": (
                 "Student-t fat-tail distribution with time-decayed sigma and "
