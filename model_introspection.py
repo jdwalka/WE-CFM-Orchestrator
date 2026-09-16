@@ -29,6 +29,7 @@ def get_model_weights() -> dict[str, Any]:
         "prediction": prediction,
         "parameters": {
             "lookback_hours": engine.LOOKBACK_HOURS,
+            "live_volatility_hours": engine.LIVE_VOLATILITY_HOURS,
             "body_percentile": engine.BODY_PERCENTILE,
             "momentum_lookback_hours": engine.MOMENTUM_LOOKBACK_HOURS,
             "bias_threshold": engine.BIAS_THRESHOLD,
@@ -37,6 +38,14 @@ def get_model_weights() -> dict[str, Any]:
             "center_shift_factor": engine.CENTER_SHIFT_FACTOR,
             "drift_factor": engine.DRIFT_FACTOR,
             "min_range_pct": engine.MIN_RANGE_PCT,
+            "high_regime_min_range_pct": engine.HIGH_REGIME_MIN_RANGE_PCT,
+            "volatility_spike_percentile": engine.VOLATILITY_SPIKE_PERCENTILE,
+            "probability_correction_max_factor": engine.PROBABILITY_CORRECTION_MAX_FACTOR,
+            "divergence_adjustment_max_cents": engine.DIVERGENCE_ADJUSTMENT_MAX_CENTS,
+            "settlement_hold_prior": engine.SETTLEMENT_HOLD_PRIOR,
+            "settlement_hold_prior_strength": engine.SETTLEMENT_HOLD_PRIOR_STRENGTH,
+            "settlement_hold_min_band_samples": engine.SETTLEMENT_HOLD_MIN_SAMPLES,
+            "artifact_residual_threshold_cents": engine.ARTIFACT_RESIDUAL_THRESHOLD_CENTS,
             "probability_model": (
                 "Student-t fat-tail distribution with time-decayed sigma and "
                 "momentum drift; normal model retained for comparison"
@@ -56,6 +65,7 @@ def get_model_weights() -> dict[str, Any]:
             "alt_alignment_ratio_up": engine.ALT_ALIGNMENT_RATIO_UP,
             "alt_alignment_ratio_down": engine.ALT_ALIGNMENT_RATIO_DOWN,
             "alt_alignment_minutes": engine.ALT_ALIGNMENT_MINUTES,
+            "alt_alignment_enabled": engine.ALT_ALIGNMENT_ENABLED,
         },
         "source": "prediction_engine.py module constants",
     }

@@ -5,8 +5,12 @@ from collections import defaultdict, deque
 from dataclasses import dataclass, field
 
 BUCKET_EDGES = ((5, "0-5m"), (15, "6-15m"), (30, "16-30m"), (60, "31-60m"))
-ACTIVATION_OVERALL_BRIER_IMPROVEMENT = 0.01
+ACTIVATION_OVERALL_BRIER_IMPROVEMENT = 0.002
+ACTIVATION_OVERALL_BRIER_IMPROVEMENT = 0.004
 ACTIVATION_MAX_BUCKET_DEGRADATION = 0.02
+ACTIVATION_PER_BUCKET_WHITELIST = True
+ACTIVATION_PER_BUCKET_IMPROVEMENT = 0.002
+ACTIVATION_PER_BUCKET_DEGRADATION = 0.002
 
 
 @dataclass(frozen=True)
@@ -251,11 +255,16 @@ def replay_resolved_outcomes(
         bucket_bucketed_brier = _mean(bucketed_scores[bucket])
         improvement = bucket_global_brier - bucket_bucketed_brier
         max_degradation = max(max_degradation, -improvement)
+        whitelisted = (
+            improvement > ACTIVATION_PER_BUCKET_IMPROVEMENT
+            and -improvement < ACTIVATION_PER_BUCKET_DEGRADATION
+        )
         bucket_report[bucket] = {
             "count": len(global_scores[bucket]),
             "global_brier": round(bucket_global_brier, 6),
             "bucketed_brier": round(bucket_bucketed_brier, 6),
             "improvement": round(improvement, 6),
+            "whitelisted": whitelisted,
             "diagnostics": {
                 "global": _reliability_resolution(
                     global_probabilities[bucket],
@@ -274,6 +283,13 @@ def replay_resolved_outcomes(
         overall_improvement >= ACTIVATION_OVERALL_BRIER_IMPROVEMENT
         and max_degradation <= ACTIVATION_MAX_BUCKET_DEGRADATION
     )
+    current_factors = {
+        bucket: {
+            **factor,
+            "whitelisted": bucket_report.get(bucket, {}).get("whitelisted", False),
+        }
+        for bucket, factor in calibration.snapshot()["buckets"].items()
+    }
     return {
         "status": "ok",
         "samples": len(all_global),
@@ -286,8 +302,11 @@ def replay_resolved_outcomes(
             "enabled": enabled,
             "required_overall_improvement": ACTIVATION_OVERALL_BRIER_IMPROVEMENT,
             "max_bucket_degradation": ACTIVATION_MAX_BUCKET_DEGRADATION,
+            "per_bucket_whitelist": ACTIVATION_PER_BUCKET_WHITELIST,
+            "per_bucket_improvement": ACTIVATION_PER_BUCKET_IMPROVEMENT,
+            "per_bucket_degradation": ACTIVATION_PER_BUCKET_DEGRADATION,
         },
         "buckets": bucket_report,
-        "current_factors": calibration.snapshot()["buckets"],
+        "current_factors": current_factors,
         "config": calibration.snapshot()["config"],
     }

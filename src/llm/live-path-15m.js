@@ -73,16 +73,16 @@
         if (Number(p) > 0) return Number(p);
       }
     } catch (_) { /* */ }
-    const poly = c.poly15m || c.market || {};
-    const fromMkt = num(poly.currentPriceNum ?? poly.currentPrice);
+    const market = c.kalshi15m || c.poly15m || c.market || {};
+    const fromMkt = num(market.currentPriceNum ?? market.currentPrice);
     return fromMkt > 0 ? fromMkt : null;
   }
 
   function resolvePtb(ctx) {
-    const poly = (ctx && (ctx.poly15m || ctx.market)) || {};
-    const raw = num(poly.priceToBeatNum ?? poly.targetPriceNum ?? ctx?.ptb);
+    const market = (ctx && (ctx.kalshi15m || ctx.poly15m || ctx.market)) || {};
+    const raw = num(market.priceToBeatNum ?? market.targetPriceNum ?? ctx?.ptb);
     if (!(raw > 0)) return null;
-    const src = String(poly.priceToBeatSource || poly.ptbSource || ctx?.ptbSource || '').toLowerCase();
+    const src = String(market.priceToBeatSource || market.ptbSource || ctx?.ptbSource || '').toLowerCase();
     if (/rtds|twap|title|provisional|coinbase|binance|gecko|rti|crypto-price|boundary|rejected:|chainlink-candles/.test(src)) {
       return null;
     }
@@ -96,10 +96,11 @@
    */
   function normalizeCtx(src) {
     const s = src || {};
-    const poly = s.poly15m || s.market || s.poly || {};
+    const poly = s.kalshi15m || s.poly15m || s.market || s.poly || {};
     const session = s.sessionMemory || {};
     return {
       spot: s.spot ?? s.price ?? s.currentPrice,
+      kalshi15m: s.kalshi15m || null,
       poly15m: poly,
       market: poly,
       open15: s.open15 || s.sessionOpen || session.open15m,

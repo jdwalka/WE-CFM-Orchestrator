@@ -409,6 +409,7 @@ function updateMarkets5MLivePrices(prices) {
     for (const sym of ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'BNB', 'HYPE']) {
       const ticker = prices?.[`${sym}USD`];
       const current = Number(ticker?.last);
+      const mkt = is15m ? markets[sym]?.kalshi15m : markets[sym]?.poly5m;
       const mkt = is15m ? (markets[sym]?.kalshi15m || markets[sym]?.poly15m) : markets[sym]?.poly5m;
       const target = Number(mkt?.targetPriceNum ?? mkt?.priceToBeatNum);
       if (!Number.isFinite(current) || current <= 0) continue;
@@ -547,6 +548,7 @@ function renderMarkets5M() {
     // dataset, which survives other views overwriting content.innerHTML).
     const fingerprint = COINS_5M.map(s => {
       const b = window.Asi1PreContract?.get?.(s, horizon);
+      const mkt = is15m ? pm[s]?.kalshi15m : pm[s]?.poly5m;
       const mkt = is15m ? (pm[s]?.kalshi15m || pm[s]?.poly15m) : pm[s]?.poly5m;
       return `${s}:${horizon}:${mkt?.ticker || mkt?.slug || ''}:${mkt?.targetPriceNum ?? mkt?.priceToBeatNum ?? mkt?.floorPrice ?? ''}:${b?.ts || 0}:${b?.call || ''}`;
     }).join('|');
@@ -562,9 +564,11 @@ function renderMarkets5M() {
     if (_markets5mCountdown) { clearInterval(_markets5mCountdown); _markets5mCountdown = null; }
     const pred = window.PredictionEngine?.getAll() || {};
     const snipes = window.PredictionMarkets?.getSnipes?.() || [];
-    const hasMarketData = Object.values(pm).some((coin) =>
-      coin?.kalshi15m || coin?.poly != null || coin?.poly5m || coin?.kalshi5m || coin?.poly15m
-    );
+    const hasMarketData = is15m
+      ? Object.values(pm).some((coin) => coin?.kalshi15m)
+      : Object.values(pm).some((coin) =>
+          coin?.poly != null || coin?.poly5m || coin?.kalshi5m
+        );
     console.log('[5mMarkets] hasMarketData=', hasMarketData, 'pm keys sample', Object.keys(pm).slice(0,3), 'poly5m sample', Object.values(pm).map(c=>!!c?.poly5m).slice(0,3));
     if (!hasMarketData && window.PredictionMarkets?.fetchAll && Date.now() - _markets5mFetchKickTs > 10_000) {
       _markets5mFetchKickTs = Date.now();
@@ -883,6 +887,7 @@ function renderMarkets5M() {
 
     function _modelOdds5m(sym) {
       const p = pred[sym];
+      const p5 = is15m ? pm[sym]?.kalshi15m : pm[sym]?.poly5m;
       const p5 = is15m ? (pm[sym]?.kalshi15m || pm[sym]?.poly15m) : pm[sym]?.poly5m;
       const ptb = Number(p5?.targetPriceNum ?? p5?.priceToBeatNum ?? p5?.floorPrice);
       
@@ -963,6 +968,7 @@ function renderMarkets5M() {
     // Polymarket PTB, or is the PTB-independent directional-lean fallback (path 4).
     // Purely a labeling signal for the UI -- does not change the odds computation.
     function _modelOdds5mIsPtbAnchored(sym) {
+      const p5 = is15m ? pm[sym]?.kalshi15m : pm[sym]?.poly5m;
       const p5 = is15m ? (pm[sym]?.kalshi15m || pm[sym]?.poly15m) : pm[sym]?.poly5m;
       const ptb = Number(p5?.targetPriceNum ?? p5?.priceToBeatNum ?? p5?.floorPrice);
       return Number.isFinite(ptb) && ptb > 0;
@@ -1079,6 +1085,7 @@ function renderMarkets5M() {
              const currentOdds = _modelOdds5m(sym);
              
              const coin = pm[sym] || {};
+             const p5 = is15m ? coin.kalshi15m : coin.poly5m;
              const p5 = is15m ? (coin.kalshi15m || coin.poly15m) : coin.poly5m;
              const poly5mMkts = is15m ? (coin.poly15mMkts || []) : (coin.poly5mMkts || []);
              const stepSec = is15m ? 900 : 300;
@@ -4375,6 +4382,64 @@ function renderUniverse() {
     if (_universeActiveTab === 'cex') renderCexFlow();
   }
 
+function formatUniverseSupply(value) {
+    const number = Number(value);
+    if (!Number.isFinite(number) || number <= 0) return '—';
+    if (number >= 1e9) return (number / 1e9).toFixed(2) + 'B';
+    if (number >= 1e6) return (number / 1e6).toFixed(2) + 'M';
+    if (number >= 1e3) return (number / 1e3).toFixed(2) + 'K';
+    return number.toFixed(2);
+  }
+
+function buildUniverseDiagnostics(sym, cfm) {
+    const data = cfm || window.CFMEngine?.get?.(sym) || {};
+    const quote = window._cmcProFeed?.getCachedQuote?.(sym) || null;
+    const velocity = window.PredictionMarkets?.getVelocity?.(sym) || {};
+    const fairValue = Number(data.cfmRate);
+    const lastPrice = Number(data.lastPrice || quote?.price);
+    const referencePrice = Number(quote?.price || lastPrice || fairValue);
+    const marketCap = Number(quote?.marketCap);
+    const float = Number.isFinite(marketCap) && referencePrice > 0 ? marketCap / referencePrice : null;
+    const fairDelta = Number.isFinite(lastPrice) && Number.isFinite(fairValue) ? lastPrice - fairValue : null;
+
+    return [
+      { label: 'FV', value: fmtPrice(fairValue, sym), title: 'CFM benchmark fair/reference value' },
+      { label: 'LAST', value: fmtPrice(lastPrice, sym), title: 'Latest constituent spot price' },
+      {
+        label: 'Δ FV',
+        value: Number.isFinite(fairDelta) ? `${fairDelta >= 0 ? '+' : ''}${fmtPrice(fairDelta, sym)}` : '—',
+        title: 'Last price minus CFM fair value',
+      },
+      {
+        label: 'VEL',
+        value: velocity.samples >= 3 && Number.isFinite(Number(velocity.velCentsPerMin))
+          ? `${Number(velocity.velCentsPerMin) >= 0 ? '+' : ''}${Number(velocity.velCentsPerMin).toFixed(2)}¢/m`
+          : '—',
+        title: `Kalshi 15m probability velocity · ${velocity.trend || 'flat'}`,
+      },
+      { label: 'FLOAT', value: formatUniverseSupply(float), title: 'Circulating supply estimate (market cap ÷ price)' },
+      { label: 'VOL24', value: fmtCompactUsd(quote?.volume24h), title: '24h quote volume' },
+      { label: 'VWAP15', value: fmtPrice(data.vwap15, sym), title: '15-minute volume-weighted average price' },
+      { label: 'TWAP15', value: fmtPrice(data.twap15, sym), title: '15-minute time-weighted average price' },
+      {
+        label: 'BAS',
+        value: Number.isFinite(Number(data.bidAsk)) ? `${(Number(data.bidAsk) * 100).toFixed(1)} bps` : '—',
+        title: 'Bid-ask spread',
+      },
+      { label: 'MOM', value: fmtPct(data.momentum), title: 'CFM momentum over the last five poll cycles' },
+      {
+        label: 'SRC',
+        value: Number(data.sourceCount) > 0 ? `${data.sourceCount} live` : '—',
+        title: 'Active CFM constituent sources',
+      },
+      {
+        label: 'ANOM',
+        value: data.isAnomalous ? 'FLAG' : (data.sourceCount ? 'OK' : '—'),
+        title: data.isAnomalous ? (data.anomalyReasons || []).join(' · ') : 'No CFM anomaly detected',
+      },
+    ];
+  }
+
 function renderPeriodicTable() {
     const el = document.getElementById('universe-table');
     if (!el) return;
@@ -4395,8 +4460,9 @@ function renderPeriodicTable() {
         <div class="group-label" style="color:${grp.color}">${grp.emoji} ${grp.name}</div>`;
 
       coins.forEach(coin => {
-        const cfm = window._cfmAll?.[coin.sym] || {};
+        const cfm = window._cfmAll?.[coin.sym] || window.CFMEngine?.get?.(coin.sym) || {};
         const pred = window._predictions?.[coin.sym] || {};
+        const diagnostics = buildUniverseDiagnostics(coin.sym, cfm);
         const rawSig = pred.signal || 'neutral';
         // Map prediction engine signals → display direction
         const sigDir = ['strong_bull', 'bullish'].includes(rawSig) ? 'up'
@@ -4415,6 +4481,13 @@ function renderPeriodicTable() {
             <div class="element-cfm">${cfmLabel}</div>
             <div class="element-signal ${sigDir}">${arrow}</div>
             <div class="element-conf">${conf ? conf + '%' : '—'}</div>
+            <div class="element-diagnostics">
+              ${diagnostics.map(item => `
+                <div class="element-diagnostic" title="${escapeHtml(item.title)}">
+                  <span>${escapeHtml(item.label)}</span>
+                  <strong>${escapeHtml(item.value)}</strong>
+                </div>`).join('')}
+            </div>
           </div>`;
       });
       html += `</div>`;

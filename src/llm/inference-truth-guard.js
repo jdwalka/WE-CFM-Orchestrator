@@ -65,15 +65,15 @@
   function resolveMarket(sym, preferHorizon) {
     const coin = _accessors.getCoin(sym) || {};
     const p5 = coin.poly5m || null;
-    const p15 = coin.poly15m || null;
+    const p15 = coin.kalshi15m || null;
     const p60 = coin.poly60m || null;
     let m = null;
     let horizon = '15m';
     if (preferHorizon === '5m' && p5?.slug) { m = p5; horizon = '5m'; }
-    else if (preferHorizon === '15m' && p15?.slug) { m = p15; horizon = '15m'; }
+    else if (preferHorizon === '15m' && p15?.ticker) { m = p15; horizon = '15m'; }
     else if ((preferHorizon === '60m' || preferHorizon === '1h' || preferHorizon === 'hourly') && p60?.slug) { m = p60; horizon = '60m'; }
     else if (p5?.slug) { m = p5; horizon = '5m'; }
-    else if (p15?.slug) { m = p15; horizon = '15m'; }
+    else if (p15?.ticker) { m = p15; horizon = '15m'; }
     else if (p60?.slug) { m = p60; horizon = '60m'; }
 
     if (!m) return null;
@@ -94,7 +94,7 @@
     return {
       sym: String(sym || '').toUpperCase(),
       horizon,
-      slug: m.slug || null,
+      slug: m.ticker || m.slug || null,
       spot: Number.isFinite(spot) && spot > 0 ? spot : null,
       ptb: Number.isFinite(ptb) && ptb > 0 ? ptb : null,
       yesProb: Number.isFinite(yes) ? clamp(yes, 0, 1) : null,

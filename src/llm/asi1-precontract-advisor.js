@@ -64,18 +64,18 @@
       .replace(/"/g, '&quot;');
   }
 
-  /** Reject non-Polymarket PTB proxies (RTDS TWAP, title, CEX, etc.). */
+  /** Reject non-canonical PTB/strike proxies (RTDS TWAP, title, CEX, etc.). */
   function isCanonicalPtbSource(src) {
     const s = String(src || '').toLowerCase();
     if (!s) return true; // poly market field without tag still ok if number present
     if (/rtds|twap30|title|provisional|coinbase|binance|gecko|rti|crypto-price|boundary|rejected:/.test(s)) {
       return false;
     }
-    return /poly|gamma|chainlink|clob|candle|lock|event|openprice|pricetobeat/.test(s);
+    return /poly|gamma|chainlink|clob|candle|lock|event|openprice|pricetobeat|kalshi/.test(s);
   }
 
   function buildMarketContext(sym, preferHorizon) {
-    // Prefer OracleSnapshot (Pyth spot + Polymarket PTB only)
+    // Prefer OracleSnapshot (Pyth spot + canonical venue strike/PTB only)
     try {
       if (window.OracleSnapshot?.buildOraclePacket) {
         const o = window.OracleSnapshot.buildOraclePacket(sym, preferHorizon === '5m' ? '5m' : '15m');
@@ -109,6 +109,7 @@
     } catch (_) { /* fall through */ }
 
     const coin = window.PredictionMarkets?.getCoin?.(sym) || {};
+    const p15 = coin.kalshi15m || null;
     const p15 = coin.kalshi15m || coin.poly15m || null;
     const p5 = coin.poly5m || null;
     let m = null;
@@ -116,6 +117,7 @@
     if (preferHorizon === '5m') {
       if (p5?.slug) { m = p5; horizon = '5m'; }
     } else if (preferHorizon === '15m') {
+      if (p15?.ticker) { m = p15; horizon = '15m'; }
       if (p15?.ticker || p15?.slug) { m = p15; horizon = '15m'; }
     } else if (p15?.ticker || p15?.slug) {
       m = p15;
@@ -124,7 +126,7 @@
       m = p5;
       horizon = '5m';
     }
-    if (!m || !m.slug) return null;
+    if (!m || !(m.ticker || m.slug)) return null;
 
     const symUpper = String(sym).toUpperCase();
     const pythObj = window._pythPrices && typeof window._pythPrices === 'object' ? window._pythPrices : null;
@@ -150,6 +152,7 @@
     const ptb = ptbOk ? roundPtb(rawPtb) : null;
     const ttc = Number(m.secondsToClose);
     const yes = Number(m.probability ?? m.upProbability ?? m.yesProb);
+    const isKalshi15m = horizon === '15m';
     const isKalshi15m = horizon === '15m' && !!m.ticker;
 
     return {
@@ -159,6 +162,7 @@
       live: m.live !== false,
       yesProb: Number.isFinite(yes) ? yes : null,
       priceToBeatNum: ptb,
+      priceToBeatSource: ptbOk ? (ptbSource || 'kalshi') : null,
       priceToBeatSource: ptbOk ? (ptbSource || (isKalshi15m ? 'kalshi' : 'polymarket')) : null,
       secondsToClose: Number.isFinite(ttc) ? ttc : null,
       bestBid: m.bestBid ?? null,
@@ -171,6 +175,8 @@
       spot: Number.isFinite(spot) && spot > 0 ? spot : null,
       spotSource: 'pyth',
       deltaVsPtb: Number.isFinite(spot) && ptb != null ? spot - ptb : null,
+      oraclePolicy: 'pyth_spot_plus_kalshi_rti_strike_only',
+      oracleWarnings: ptb == null ? ['no_kalshi_strike'] : [],
       oraclePolicy: isKalshi15m ? 'pyth_spot_plus_kalshi_rti_strike_only' : 'pyth_spot_plus_polymarket_ptb_only',
       oracleWarnings: ptb == null ? (isKalshi15m ? ['no_kalshi_strike'] : ['no_polymarket_ptb']) : [],
     };

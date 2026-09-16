@@ -37,6 +37,8 @@ class PredictionPipelineTest(unittest.TestCase):
         self.assertTrue(hold["estimated"])
         self.assertEqual(hold["touched_samples"], 3)
         self.assertEqual(hold["held_samples"], 2)
+        self.assertEqual(hold["estimator"], "empirical_bayes_shrinkage")
+        self.assertAlmostEqual(hold["hold_given_touch"], 32 / 33, places=4)
         self.assertAlmostEqual(hold["hold_given_touch"], 2 / 3, places=4)
 
     def test_conditional_settlement_hold_falls_back_without_touches(self):

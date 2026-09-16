@@ -28,6 +28,11 @@
   const TIMEOUT_MS = 9000;
   const FETCH_ATTEMPTS = 3;
   const RETRYABLE_HTTP_STATUS = new Set([408, 425, 429, 500, 502, 503, 504]);
+  // 401/403/451 are hard policy/geo blocks — retrying them every poll only
+  // floods the console and the local proxy. Cool the host down instead.
+  const BLOCKED_STATUS = new Set([401, 403, 451]);
+  const HOST_BLOCK_MS = 10 * 60_000;
+  const BLOCKED_HOSTS = new Map();
   const RETRY_DELAY_MS = 250;
   const OI_HISTORY_MAX = 30;      // ~10 min of 20s samples
   const FUND_HISTORY_MAX = 12;
@@ -56,12 +61,32 @@
   }
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+  function urlHost(url) {
+    try { return new URL(url).hostname; } catch (_) { return null; }
+  }
+  function isHostBlocked(url) {
+    const host = urlHost(url);
+    const until = host ? BLOCKED_HOSTS.get(host) : 0;
+    return Boolean(host && until > Date.now());
+  }
+  function markHostBlocked(url) {
+    const host = urlHost(url);
+    if (host) BLOCKED_HOSTS.set(host, Date.now() + HOST_BLOCK_MS);
+  }
+
   async function getJson(url, opts = {}) {
+    if (isHostBlocked(url)) throw new Error('host blocked (geo/policy cooldown)');
+  async function getJson(url, opts = {}) {
+    if (isHostBlocked(url)) throw new Error('host blocked (geo/policy cooldown)');
     let lastError = null;
     for (let attempt = 1; attempt <= FETCH_ATTEMPTS; attempt++) {
       try {
         const res = await timedFetch(url, opts);
         if (!res.ok) {
+          if (BLOCKED_STATUS.has(res.status)) {
+            markHostBlocked(url);
+            throw new Error(`HTTP ${res.status} (blocked host cooldown)`);
+          }
           const error = new Error(`HTTP ${res.status}`);
           if (!RETRYABLE_HTTP_STATUS.has(res.status) || attempt === FETCH_ATTEMPTS) throw error;
           lastError = error;
