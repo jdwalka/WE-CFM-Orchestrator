@@ -708,7 +708,7 @@ function predictionCard(p) {
           </div>
           <div class="pred-verdict-meta">
             ${livePathDir ? `<span class="pred-source-badge" style="border-color:var(--color-border);color:var(--color-text-muted)" title="${escapeHtml(livePath.reason || 'live path')}">PATH ${livePath.dir}${Number.isFinite(livePath.bps) ? ` ${livePath.bps >= 0 ? '+' : ''}${livePath.bps.toFixed(1)}bps` : ''}</span>` : ''}
-            ${liveOdds.available ? `<span class="pred-source-badge kalshi">YES ${liveOdds.yesPct}% / NO ${liveOdds.noPct}%</span>` : ''}
+            ${liveOdds.available ? `<span class="pred-source-badge kalshi">${liveOdds.yesLabel} ${liveOdds.yesPct}% / ${liveOdds.noLabel} ${liveOdds.noPct}%</span>` : ''}
             <span class="pred-source-badge model">MODEL</span>
             ${llmBadge}
             ${_liveKPctCard !== null

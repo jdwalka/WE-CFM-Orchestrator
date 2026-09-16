@@ -26,6 +26,8 @@ test("below-live contract odds paint NO instead of a stale model UP call", async
   assert.equal(odds.direction, "down");
   assert.equal(odds.label, "DOWN NO");
   assert.equal(odds.oppositeLabel, "UP YES");
+  assert.equal(odds.yesLabel, "UP YES");
+  assert.equal(odds.noLabel, "DOWN NO");
   assert.equal(odds.yesPct, 22);
   assert.equal(odds.noPct, 78);
   assert.equal(odds.dominantPct, 78);
@@ -54,6 +56,8 @@ test("YES on a below-strike contract implies DOWN and uses red logic", async () 
   assert.equal(odds.direction, "down");
   assert.equal(odds.label, "DOWN YES");
   assert.equal(odds.oppositeLabel, "UP NO");
+  assert.equal(odds.yesLabel, "DOWN YES");
+  assert.equal(odds.noLabel, "UP NO");
   assert.equal(odds.yesPct, 81);
   assert.equal(odds.noPct, 19);
   assert.equal(odds.dominantPct, 81);
