@@ -279,5 +279,131 @@ class ReplayCLITests(unittest.TestCase):
         self.assertIn("checkpoint", payload)
 
 
+class ReplayCLITests(unittest.TestCase):
+    SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "backtest_calibration_buckets.py"
+
+    def setUp(self):
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary_directory.cleanup)
+        self.ledger_path = Path(self.temporary_directory.name) / "ledger.sqlite3"
+
+    def insert_resolved_prediction(self, connection, suffix, minutes, probability, touched):
+        now = datetime.now(timezone.utc)
+        connection.execute(
+            """
+            INSERT OR IGNORE INTO predictions (
+                prediction_key, timestamp_utc, band, low, high, expiry_utc,
+                p_touch, p_normal, p_student_t, p_base, p_calibrated,
+                calibration_factor, tail_adjustment, alt_aligned,
+                regime, minutes_to_expiry, time_to_expiry_bucket,
+                model_version, touched, resolved_at_utc, brier, normal_brier
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                f"cli-{suffix}",
+                now.isoformat(),
+                suffix,
+                100.0,
+                101.0,
+                (now + timedelta(hours=1)).isoformat(),
+                probability,
+                probability,
+                probability,
+                probability,
+                probability,
+                1.0,
+                0.0,
+                0,
+                "UNKNOWN",
+                minutes,
+                bucket_key(minutes),
+                calibration_ledger.MODEL_VERSION,
+                touched,
+                now.isoformat(),
+                (probability - touched) ** 2,
+                (probability - touched) ** 2,
+            ),
+        )
+
+    def create_ledger(self, count):
+        with sqlite3.connect(self.ledger_path) as connection:
+            connection.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS predictions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    prediction_key TEXT NOT NULL UNIQUE,
+                    timestamp_utc TEXT NOT NULL,
+                    band TEXT NOT NULL,
+                    low REAL NOT NULL,
+                    high REAL NOT NULL,
+                    expiry_utc TEXT NOT NULL,
+                    p_touch REAL NOT NULL,
+                    p_normal REAL NOT NULL,
+                    p_student_t REAL NOT NULL,
+                    p_base REAL,
+                    p_calibrated REAL,
+                    calibration_factor REAL,
+                    tail_adjustment REAL NOT NULL,
+                    alt_aligned INTEGER NOT NULL,
+                    regime TEXT NOT NULL DEFAULT 'UNKNOWN',
+                    minutes_to_expiry INTEGER NOT NULL,
+                    time_to_expiry_bucket TEXT NOT NULL DEFAULT '31-60m',
+                    model_version TEXT NOT NULL,
+                    touched INTEGER,
+                    resolved_at_utc TEXT,
+                    brier REAL,
+                    normal_brier REAL
+                );
+                """
+            )
+            for index in range(count):
+                self.insert_resolved_prediction(
+                    connection,
+                    f"row-{index}",
+                    31,
+                    0.10,
+                    1 if index % 4 == 0 else 0,
+                )
+            connection.commit()
+
+    def test_checkpoint_mode_skips_before_3000_resolved(self):
+        self.create_ledger(40)
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(self.SCRIPT_PATH),
+                "--ledger",
+                str(self.ledger_path),
+                "--global-factor",
+                "2.3783",
+                "--checkpoint",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["status"], "checkpoint_not_reached")
+        self.assertEqual(payload["checkpoints"], [3000, 3500])
+
+    def test_default_replay_reads_live_global_factor(self):
+        self.create_ledger(40)
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(self.SCRIPT_PATH),
+                "--ledger",
+                str(self.ledger_path),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["status"], "ok")
+        self.assertEqual(payload["resolved_count"], 40)
+        self.assertIn("checkpoint", payload)
+
+
 if __name__ == "__main__":
     unittest.main()

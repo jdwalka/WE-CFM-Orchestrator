@@ -56,7 +56,9 @@ async function getCoinbaseSpot(symbol = "BTC") {
   });
 async function getCoinbaseSpot(symbol = "BTC") {
   const productId = `${symbol}-USD`;
-  const r = await fetch(`${COINBASE_BASE}/products/${productId}/ticker`, { headers: COINBASE_HEADERS });
+  const r = await fetchMarketData(`${COINBASE_BASE}/products/${productId}/ticker`, {
+    headers: COINBASE_HEADERS,
+  });
   if (!r.ok) throw new Error(`Coinbase ticker ${productId} -> HTTP ${r.status}`);
   const data = await r.json();
   return { symbol, product_id: productId, price: parseFloat(data.price), time: data.time };

@@ -5,11 +5,8 @@
 // contracts are intentionally not rendered here.
 // WE|||CRYPTO — Hourly Ranges Panel v8 (Kalshi 15m)
 //
-// Shows a spot-centered synthetic range ladder (no live multi-strike
-// ladder market exists for hourly crypto ranges today) plus the live
-// Kalshi 15m contract,
-// read straight from window.PredictionMarkets (already polled there,
-// no separate network fetch needed here).
+// Shows a spot-centered synthetic hourly range ladder. Kalshi 15m
+// contracts are intentionally not rendered here.
 // Polls every 10s, accelerates to every 2.5s in the final 15 mins.
 // ================================================================
 
@@ -208,11 +205,6 @@
     }
 
     return readLivePrice(sym);
-  }
-
-  // ── Live Kalshi 15m contract (already polled by prediction-markets.js) ──
-  function get15mContract(sym) {
-    return window.PredictionMarkets?.getCoin?.(sym)?.kalshi15m || null;
   }
 
   // ── Build range list for a coin ────────────────────────────────

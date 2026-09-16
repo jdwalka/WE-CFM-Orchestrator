@@ -9,7 +9,6 @@ test('buildRangeSnapshot handles a missing Kalshi 15m market', () => {
     getCoin: () => ({}),
   };
   global.window.HourlyRangesPanel = {
-    get15mMarket: () => null,
     getRanges: () => [],
   };
 

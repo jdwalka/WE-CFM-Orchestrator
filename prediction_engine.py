@@ -37,6 +37,8 @@ MIN_RANGE_PCT = 0.25
 HIGH_REGIME_MIN_RANGE_PCT = 0.50
 VOLATILITY_SPIKE_PERCENTILE = 0.85
 PROBABILITY_CORRECTION_MAX_FACTOR = 4.0
+VOLATILITY_SPIKE_PERCENTILE = 0.90
+PROBABILITY_CORRECTION_MAX_FACTOR = 3.0
 
 # Fat-tail / wick / regime parameters
 HOUR_SAMPLE_SIZE = 200               # hours of candles for distribution fitting
@@ -59,13 +61,13 @@ ALT_ALIGNMENT_RATIO_DOWN = 0.45
 ALT_ALIGNMENT_MINUTES = 10
 ALT_ALIGNMENT_ENABLED = False
 STUDENT_T_DF_DEFAULT = 4.0           # fallback if empirical fit is unstable
-TAIL_ADJUSTMENT_MAX_CENTS = 0.03
-TAIL_SPIKE_COMPONENT_MAX_CENTS = 0.02
-TAIL_WICK_COMPONENT_MAX_CENTS = 0.02
+TAIL_ADJUSTMENT_MAX_CENTS = 0.12
+TAIL_SPIKE_COMPONENT_MAX_CENTS = 0.06
+TAIL_WICK_COMPONENT_MAX_CENTS = 0.06
 WICK_RATIO_MIN_BODY_PCT = 0.01       # ignore near-zero-body ratio artifacts
 WICK_RATIO_MAX = 10.0                 # clamp one-candle ratio spikes
 TAIL_SPIKE_FREQUENCY_MIN = 0.0005
-TAIL_WICK_SLOPE_MIN = 0.25
+TAIL_WICK_SLOPE_MIN = 0.10
 ALT_ALIGNMENT_RATIO_UP = 0.55
 ALT_ALIGNMENT_RATIO_DOWN = 0.45
 ALT_ALIGNMENT_MINUTES = 10
@@ -1088,7 +1090,18 @@ def _artifact_residual(residual_cents) -> bool:
     """Shrink a raw model probability using empirical-Bayes calibration."""
     factor = float(correction.get("correction_factor", 1.0) or 1.0)
     floor = float(correction.get("floor", 0.0) or 0.0)
-    return max(probability * factor, floor)
+    max_factor = float(
+        correction.get("max_factor", PROBABILITY_CORRECTION_MAX_FACTOR)
+        or PROBABILITY_CORRECTION_MAX_FACTOR
+    )
+    bounded_probability = probability * min(max(factor, 0.0), max_factor)
+    return min(1.0, max(bounded_probability, floor, 0.0))
+
+
+def _artifact_residual(residual_cents) -> bool:
+    if residual_cents is None:
+        return False
+    return abs(float(residual_cents)) > ARTIFACT_RESIDUAL_THRESHOLD_CENTS
 
 
 def _historical_final_minute_windows(candles_1m: list) -> dict:
@@ -1345,7 +1358,7 @@ def predict_hourly_range() -> dict:
     expected_move = expected_move_pct(candles, LIVE_VOLATILITY_HOURS)
     rv = realized_vol_pct(candles)
     sigma_hourly_pct = rv / math.sqrt(24 * 365)
-    expected_move = expected_move_pct(candles)
+    expected_move = expected_move_pct(candles, LIVE_VOLATILITY_HOURS)
     bias = momentum_bias(candles)
     from calibration_ledger import get_calibration_report
     calibration_report = get_calibration_report()
@@ -1394,6 +1407,17 @@ def predict_hourly_range() -> dict:
                 }
 
     def correction_for_probability(probability: float) -> dict:
+        if bucketed_correction.get("active"):
+            expiry_bucket = bucketed_correction.get("current_factors", {}).get(
+                bucket_key(minutes_to_expiry)
+            )
+            if expiry_bucket and expiry_bucket.get("factor"):
+                return {
+                    "correction_factor": expiry_bucket["factor"],
+                    "floor": probability_correction.get("floor", 0.0),
+                    "max_factor": PROBABILITY_CORRECTION_MAX_FACTOR,
+                    "regime": f"expiry:{bucket_key(minutes_to_expiry)}",
+                }
         if (
             tail_probability_correction.get("active")
             and probability < tail_probability_correction.get("threshold", 0.20)
@@ -1446,7 +1470,38 @@ def predict_hourly_range() -> dict:
             "regime": "global",
         }
 
-    range_pct = max(expected_move, MIN_RANGE_PCT)
+    baseline_candles = get_hourly_candles(LOOKBACK_HOURS)
+    baseline_rv = realized_vol_pct(baseline_candles, LOOKBACK_HOURS)
+    baseline_sigma_hourly_pct = baseline_rv / math.sqrt(24 * 365)
+    hourly_ranges = [
+        candle["high"] - candle["low"]
+        for candle in baseline_candles
+        if candle.get("high") and candle.get("low")
+    ]
+    current_hourly_range = hourly_ranges[-1] if hourly_ranges else 0.0
+    spike_threshold = 0.0
+    if hourly_ranges:
+        sorted_ranges = sorted(hourly_ranges[:-1] or hourly_ranges)
+        spike_threshold = sorted_ranges[
+            min(len(sorted_ranges) - 1, int(len(sorted_ranges) * VOLATILITY_SPIKE_PERCENTILE))
+        ]
+    volatility_spike_multiplier = (
+        current_hourly_range / spike_threshold
+        if spike_threshold > 0 and current_hourly_range > spike_threshold
+        else 1.0
+    )
+    sigma_hourly_pct = max(
+        sigma_hourly_pct,
+        baseline_sigma_hourly_pct * volatility_spike_multiplier,
+    )
+
+    regime = _classify_regime(hourly_ranges)
+    regime_range_floor = (
+        HIGH_REGIME_MIN_RANGE_PCT
+        if regime.get("regime") == "HIGH"
+        else MIN_RANGE_PCT
+    )
+    range_pct = max(expected_move, regime_range_floor)
     center_shift = bias * range_pct * CENTER_SHIFT_FACTOR
     upper_pct = range_pct * UPPER_RANGE_FACTOR + center_shift
     lower_pct = range_pct * LOWER_RANGE_FACTOR - center_shift
@@ -1823,6 +1878,10 @@ def predict_hourly_range() -> dict:
             "volatility_spike_threshold": round(spike_threshold, 2),
             "current_hourly_range": round(current_hourly_range, 2),
             "sigma_hourly_pct": round(sigma_hourly_pct, 3),
+            "baseline_sigma_hourly_pct": round(baseline_sigma_hourly_pct, 3),
+            "volatility_spike_multiplier": round(volatility_spike_multiplier, 3),
+            "volatility_spike_threshold": round(spike_threshold, 2),
+            "current_hourly_range": round(current_hourly_range, 2),
             "expected_move_pct": round(expected_move, 3),
             "student_t_df": round(df, 2),
             "log_returns_sample_size": len(log_returns),

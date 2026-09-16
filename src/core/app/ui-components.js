@@ -461,8 +461,7 @@ function predictionCard(p) {
     // Kalshi is primary; Polymarket 15m is a legacy fallback only.
     const _k15mCoin = window.PredictionMarkets?.getCoin(p.sym);
     const _k15m = _k15mCoin?.kalshi15m ?? null;
-    const _poly15m = p.poly15m ?? _k15mCoin?.poly15m ?? null;
-    const _kProb = _k15m?.probability ?? ind.mktSentiment?.kalshi ?? _poly15m?.probability ?? _poly15m?.upProbability ?? _poly15m?.clobProbability ?? _poly15m?.yesProb ?? _k15mCoin?.combinedProb ?? null;
+    const _kProb = _k15m?.probability ?? null;
     let _kAlign = p.projections?.p15?.polyAlign ?? null;
     if (_kAlign && _k15m && _kAlign.ticker && _k15m.ticker && _kAlign.ticker !== _k15m.ticker) {
       _kAlign = null;
@@ -495,7 +494,7 @@ function predictionCard(p) {
       const activeSlug = _k15m?.ticker || _poly15m?.slug || `${coinPrefix}-updown-15m-${windowTs}`;
       const defaultCloseMs = (windowTs + 900) * 1000;
 
-      const _rowStrikeDir = ((_k15m?.strikeDir ?? _kAlign?.strikeDir ?? (_poly15m ? 'above' : _strikeDirEarly)) === 'below' ? 'below' : 'above');
+      const _rowStrikeDir = ((_k15m?.strikeDir ?? _kAlign?.strikeDir ?? _strikeDirEarly) === 'below' ? 'below' : 'above');
       const _rowYesDir = _rowStrikeDir === 'below' ? 'down' : 'up';
       const _rowNoDir = _rowYesDir === 'up' ? 'down' : 'up';
 
@@ -1529,13 +1528,17 @@ function buildQuickDecisionPanel(predArr) {
         const label = dir > 0 ? 'UP' : dir < 0 ? 'DOWN' : 'FLAT';
         const score = Number.isFinite(pred.score) ? (pred.score > 0 ? '+' : '') + pred.score.toFixed(2) : '—';
         const horizon = pred.backtest?.summary?.preferredHorizon ? `${pred.backtest.summary.preferredHorizon}m` : '';
-        const mkt = pred.indicators?.mktSentiment;
-        const kPct = mkt?.kalshi != null ? Math.round(mkt.kalshi * 100) : null;
-        const pPct = mkt?.poly != null ? Math.round(mkt.poly * 100) : null;
-        const mktRow = (kPct != null || pPct != null) ? `
+        const coinData = window.PredictionMarkets?.getCoin(pred.sym) || {};
+        const otherOdds = [
+          ['P5M', coinData.poly5m],
+          ['P15M', coinData.poly15m],
+          ['P60M', coinData.poly60m],
+        ].filter(([, contract]) => Number.isFinite(Number(contract?.probability)))
+          .map(([name, contract]) => `${name} ${Math.round(Number(contract.probability) * 100)}%`);
+        const mktRow = liveOdds.available || otherOdds.length ? `
           <div class="dc-mkt-row">
-            ${kPct != null ? `<span class="dc-badge-k">K:${kPct}%</span>` : ''}
-            ${pPct != null ? `<span class="dc-badge-p">P:${pPct}%</span>` : ''}
+            ${liveOdds.available ? `<span class="dc-badge-k">K15 YES ${liveOdds.yesPct}% / NO ${liveOdds.noPct}%</span>` : ''}
+            ${otherOdds.map(item => `<span class="dc-badge-p">${_escapeHtml(item)}</span>`).join('')}
           </div>` : '';
 
         // Ground state synthesis for this coin
@@ -1629,8 +1632,8 @@ function getDecisionRationale(pred) {
     // ---- 0. Live 15m odds — Kalshi is primary, Polymarket is fallback ----
     const _kCoinR = window.PredictionMarkets?.getCoin(pred?.sym);
     const _k15mR = _kCoinR?.kalshi15m ?? null;
-    const _kProbR = _k15mR?.probability ?? _kCoinR?.poly15m?.probability ?? _kCoinR?.combinedProb ?? null;
-    const _venueR = _k15mR?.ticker ? 'Kalshi' : (_kCoinR?.poly15m ? 'Polymarket' : 'Market');
+    const _kProbR = _k15mR?.probability ?? null;
+    const _venueR = 'Kalshi';
     const _strikeR = (_k15mR?.strikeDir ?? 'above') === 'below' ? 'below' : 'above';
     const _yesDirR = _strikeR === 'below' ? 'DOWN' : 'UP';
     const _noDirR = _yesDirR === 'UP' ? 'DOWN' : 'UP';

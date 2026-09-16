@@ -646,7 +646,7 @@
       const ptb15m = Number(market15m.targetPriceNum || market15m.priceToBeatNum);
       const prob15m = Number(market15m.probability || 0.5);
       const ttc15m = Number(market15m.secondsToClose || 900);
-      const venue15m = pmCoin.kalshi15m?.ticker ? 'kalshi' : 'polymarket';
+      const venue15m = 'kalshi';
       if (spot != null && !isNaN(ptb15m) && !isNaN(prob15m) && !isNaN(ttc15m) && ttc15m > 0) {
         binaryIV_15m = window.QuantStatUtils.calculateBinaryIV(prob15m, spot, ptb15m, ttc15m / 86400, venue15m);
       }
