@@ -71,6 +71,7 @@ TAIL_WICK_SLOPE_MIN = 0.10
 ALT_ALIGNMENT_RATIO_UP = 0.55
 ALT_ALIGNMENT_RATIO_DOWN = 0.45
 ALT_ALIGNMENT_MINUTES = 10
+ALT_ALIGNMENT_ENABLED = False
 ALT_LEAD_LAG_MINUTES = [1, 2, 3, 4, 5]
 ALT_LEAD_LAG_SAMPLE_SIZE = 120
 ALT_SIGNAL_MIN_STRENGTH = 0.002
@@ -338,6 +339,8 @@ def get_cross_venue_divergence() -> dict:
     active = threshold is not None and current > threshold
     _cross_venue_divergence_history.append(current)
     del _cross_venue_divergence_history[:-CROSS_VENUE_DIVERGENCE_HISTORY_SIZE]
+    regime_state = _cross_venue_divergence_regime.update(current, threshold)
+    active = regime_state["active"]
     return {
         "current_pct": round(current, 5),
         "rolling_90th_pct_pct": round(threshold, 5) if threshold is not None else None,
@@ -1411,7 +1414,13 @@ def predict_hourly_range() -> dict:
             expiry_bucket = bucketed_correction.get("current_factors", {}).get(
                 bucket_key(minutes_to_expiry)
             )
-            if expiry_bucket and expiry_bucket.get("factor"):
+            bucket_allowed = (
+                not per_bucket_whitelist
+                or expiry_bucket.get("whitelisted", False)
+                if expiry_bucket
+                else False
+            )
+            if expiry_bucket and expiry_bucket.get("factor") and bucket_allowed:
                 return {
                     "correction_factor": expiry_bucket["factor"],
                     "floor": probability_correction.get("floor", 0.0),

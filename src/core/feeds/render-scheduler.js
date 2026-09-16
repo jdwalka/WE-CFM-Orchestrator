@@ -12,10 +12,6 @@
 })(function (GarvonixHarmonizer) {
   'use strict';
 
-  const GarvonixHarmonizer = typeof module === 'object' && module.exports && typeof require === 'function'
-    ? require('./garvonix-harmonizer.js')
-    : (root.GarvonixHarmonizer || null);
-
   let rafPending = false;
   const dirtySyms = new Set();
   const latestPrices = {};
