@@ -635,12 +635,6 @@
         binaryIV = window.QuantStatUtils.calculateBinaryIV(prob5m, spot, ptb5m, ttc5m / 86400, 'polymarket');
       }
       
-      // Calculate for 15m — Kalshi only; never substitute Polymarket PTB.
-      const market15m = pmCoin.kalshi15m || {};
-      const ptb15m = Number(market15m.targetPriceNum || market15m.priceToBeatNum);
-      const prob15m = Number(market15m.probability || 0.5);
-      const ttc15m = Number(market15m.secondsToClose || 900);
-      const venue15m = 'kalshi';
       // Calculate for 15m — Kalshi is primary, Polymarket is legacy fallback.
       const market15m = pmCoin.kalshi15m || pmCoin.poly15m || {};
       const ptb15m = Number(market15m.targetPriceNum || market15m.priceToBeatNum);
@@ -652,10 +646,6 @@
       }
     }
 
-    const activeSlug = pkt.slug
-      || poly.ticker
-      || poly.slug
-      || (isHourly ? `${coin.toLowerCase()}-hourly-ranges-${targetCloseTime}` : (is5m ? `${coin.toLowerCase()}-updown-5m` : null));
     const activeSlug = pkt.slug || poly.ticker || poly.slug || (isHourly ? `${coin.toLowerCase()}-hourly-ranges-${targetCloseTime}` : (is5m ? `${coin.toLowerCase()}-updown-5m` : `${coin.toLowerCase()}-updown-15m`));
 
     return {
