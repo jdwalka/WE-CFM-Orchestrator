@@ -68,38 +68,12 @@ class SignalHygieneTests(unittest.TestCase):
         self.assertEqual(filter_status["status"], "excluded")
 
     def test_cross_venue_divergence_uses_hysteresis_and_tail_cap(self):
-    def test_cross_venue_divergence_activates_only_above_rolling_percentile(self):
         prediction_engine._cross_venue_divergence_history.extend([0.01] * 20)
         original = prediction_engine.get_cross_venue_spot_prices
         prediction_engine.get_cross_venue_spot_prices = lambda: [100.0, 100.2, 100.3]
         try:
             first_elevated = prediction_engine.get_cross_venue_divergence()
             second_elevated = prediction_engine.get_cross_venue_divergence()
-            prediction_engine._cross_venue_divergence_history.clear()
-            prediction_engine._cross_venue_divergence_history.extend([0.01] * 20)
-            prediction_engine.get_cross_venue_spot_prices = lambda: [100.0, 100.01]
-            first_normal = prediction_engine.get_cross_venue_divergence()
-            second_normal = prediction_engine.get_cross_venue_divergence()
-            third_normal = prediction_engine.get_cross_venue_divergence()
-        finally:
-            prediction_engine.get_cross_venue_spot_prices = original
-
-        self.assertFalse(first_elevated["active"])
-        self.assertTrue(second_elevated["active"])
-        self.assertEqual(second_elevated["regime"], "elevated")
-        self.assertEqual(second_elevated["tail_adjustment"], 0.15)
-        self.assertEqual(second_elevated["tail_adjustment_cents"], 15.0)
-        self.assertEqual(
-            second_elevated["divergence_adjustment_max_cents"],
-            prediction_engine.DIVERGENCE_ADJUSTMENT_MAX_CENTS,
-        )
-        self.assertEqual(second_elevated["raw_tail_adjustment"], 0.15)
-        self.assertTrue(first_normal["active"])
-        self.assertTrue(second_normal["active"])
-        self.assertFalse(third_normal["active"])
-        self.assertEqual(third_normal["regime"], "normal")
-        self.assertEqual(third_normal["tail_adjustment"], 0.0)
-            elevated = prediction_engine.get_cross_venue_divergence()
             prediction_engine._cross_venue_divergence_history.clear()
             prediction_engine._cross_venue_divergence_history.extend([0.01] * 20)
             prediction_engine.get_cross_venue_spot_prices = lambda: [100.0, 100.01]

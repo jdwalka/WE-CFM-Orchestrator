@@ -23,6 +23,9 @@ const TWAP_INTERVAL_SECONDS = { "5m": 300, "15m": 900, "4h": 14400 };
 const SPOT_FRESHNESS_MAX_AGE_SECONDS = 60;
 
 function jsonResponse(data, status = 200) {
+  if (data && typeof data === 'object' && !data.collector_timestamp) {
+    data.collector_timestamp = new Date().toISOString();
+  }
   return new Response(JSON.stringify(data, null, 2), {
     status,
     headers: {

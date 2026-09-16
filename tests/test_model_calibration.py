@@ -40,8 +40,6 @@ class TailAdjustmentTests(unittest.TestCase):
             prediction_engine.TAIL_ADJUSTMENT_MAX_CENTS,
         )
         self.assertEqual(both["tail_adjustment_cents"], 15.0)
-        self.assertEqual(both["tail_adjustment_cents"], 3.0)
-        self.assertEqual(both["tail_adjustment_cents"], 12.0)
         self.assertFalse(both["evidence"]["requires_both_conditions"])
 
     def test_adjustment_is_additive_and_capped(self):
@@ -50,13 +48,11 @@ class TailAdjustmentTests(unittest.TestCase):
         self.assertAlmostEqual(prediction_engine._apply_tail_adjustment(0.40, 0.03), 0.43)
 
     def test_probability_correction_cannot_exceed_four_times_base(self):
-    def test_probability_correction_cannot_exceed_three_times_base(self):
         corrected = prediction_engine._apply_probability_correction(
             0.32177,
             {"correction_factor": 4.7421, "floor": 0.0005},
         )
         self.assertEqual(corrected, 1.0)
-        self.assertAlmostEqual(corrected, 0.96531)
         self.assertEqual(
             prediction_engine._apply_probability_correction(0.90, {"correction_factor": 4.7421}),
             1.0,
@@ -232,10 +228,6 @@ class CalibrationLedgerTests(unittest.TestCase):
         )
         self.assertEqual(adjusted_probability, 0.31)
         self.assertAlmostEqual(0.50 - adjusted_probability, 0.19)
-        self.assertEqual(adjusted_probability, 0.19)
-        self.assertAlmostEqual(0.50 - adjusted_probability, 0.31)
-        self.assertEqual(adjusted_probability, 0.28)
-        self.assertAlmostEqual(0.50 - adjusted_probability, 0.22)
 
 
 if __name__ == "__main__":

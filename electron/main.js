@@ -1423,8 +1423,6 @@ async function startPythLazerService(win) {
         }
 
         if (PYTH_TRACE_WS_MESSAGES && (payload?.type === 'streamUpdated' || payload?.parsed)) {
-        // Log like the example snippet for debugging
-        if (payload?.type === 'streamUpdated' || payload?.parsed) {
           console.log('[PythLazer] Received update:', JSON.stringify(payload, null, 2).slice(0, 500));
         }
 
