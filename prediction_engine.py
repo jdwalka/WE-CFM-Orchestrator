@@ -1722,6 +1722,7 @@ def predict_hourly_range() -> dict:
             "p_settle": None,
             "settlement_hold_given_touch": None,
             "settlement_hold_samples": None,
+            "insufficient_samples": None,
             "settlement_hold_source": settlement_history["source"],
             "low": low,
             "high": high,
@@ -1778,6 +1779,7 @@ def predict_hourly_range() -> dict:
                 "p_settle": round(p_settle, 3),
                 "settlement_hold_given_touch": settlement_hold["hold_given_touch"],
                 "settlement_hold_samples": settlement_hold["touched_samples"],
+                "insufficient_samples": settlement_hold.get("insufficient_samples", False),
             })
         strike_probs.append(row)
 
@@ -1867,6 +1869,7 @@ def predict_hourly_range() -> dict:
             "p_settle": round(p_settle, 3),
             "settlement_hold_given_touch": settlement_hold["hold_given_touch"],
             "settlement_hold_samples": settlement_hold["touched_samples"],
+            "insufficient_samples": settlement_hold.get("insufficient_samples", False),
         })
 
     ladder_feed_status["usable_band_count"] = sum(

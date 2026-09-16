@@ -3544,9 +3544,16 @@ async function renderCFM() {
     // Start engine in background if not started — DON'T await it blocking the render
     if (!cfmStarted && !_cfmStarting) {
       _cfmStarting = true;
+      // start() is now non-blocking (fire-and-forget first cycle).
+      // Mark cfmStarted immediately so the loading banner clears on the next render.
       CFMEngine.start()
-        .then(() => { cfmStarted = true; _cfmStarting = false; if (currentView === 'cfm') requestCFMRender(true); })
-        .catch(e => { _cfmStarting = false; console.error('[CFM] engine start failed:', e); if (currentView === 'cfm') requestCFMRender(true); });
+        .then(() => { cfmStarted = true; _cfmStarting = false; })
+        .catch(e => { _cfmStarting = false; console.error('[CFM] engine start failed:', e); });
+      // Clear the banner after a short delay to allow first cycle data to land
+      setTimeout(() => {
+        if (!cfmStarted) { cfmStarted = true; }
+        if (currentView === 'cfm') requestCFMRender(true);
+      }, 1500);
       // Also kick off predictions in background
       if (!predsLoaded) {
         startPredictionRun()
