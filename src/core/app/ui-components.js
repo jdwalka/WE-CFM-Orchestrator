@@ -49,6 +49,7 @@ function _fallbackPriceDecimals(sym) {
         available: false,
         side: null,
         direction: 'wait',
+        label: 'ODDS UNAVAILABLE',
         yesPct: null,
         noPct: null,
         dominantPct: null,
@@ -63,11 +64,19 @@ function _fallbackPriceDecimals(sym) {
     const yesPct = Math.round(probability * 100);
     const noPct = 100 - yesPct;
     const yesDominant = probability >= 0.5;
+    const side = yesDominant ? 'YES' : 'NO';
+    const direction = yesDominant ? yesDirection : noDirection;
+    const oppositeSide = yesDominant ? 'NO' : 'YES';
+    const oppositeDirection = yesDominant ? noDirection : yesDirection;
 
     return {
       available: true,
-      side: yesDominant ? 'YES' : 'NO',
-      direction: yesDominant ? yesDirection : noDirection,
+      side,
+      direction,
+      label: `${direction === 'up' ? 'UP' : 'DOWN'} ${side}`,
+      oppositeLabel: `${oppositeDirection === 'up' ? 'UP' : 'DOWN'} ${oppositeSide}`,
+      yesLabel: `${yesDirection === 'up' ? 'UP YES' : 'DOWN YES'}`,
+      noLabel: `${noDirection === 'up' ? 'UP NO' : 'DOWN NO'}`,
       yesDirection,
       noDirection,
       yesPct,
@@ -218,8 +227,8 @@ function predictionCard(p) {
 
     const isYesVerdict = verdictDir === _yesDirEarly;
     const verdictMain = liveOdds.available
-      ? `KALSHI 15M ${liveOdds.side} ${liveOdds.dominantPct}%`
-      : 'NO LIVE ODDS';
+      ? `KALSHI 15M ${liveOdds.label} ${liveOdds.dominantPct}%`
+      : liveOdds.label;
     const strength = safetyGuardActive ? 'GUARDED'
       : !liveOdds.available ? 'WAIT'
       : liveOdds.edgePp >= 25 ? 'CLEAR'
@@ -727,8 +736,8 @@ function predictionCard(p) {
             </div>
             <div style="font-size:12px;font-weight:700;color:${liveOdds.direction === 'up' ? 'var(--color-green)' : liveOdds.direction === 'down' ? 'var(--color-red)' : 'var(--color-text-muted)'};">
               ${liveOdds.available
-                ? `${liveOdds.side === 'YES' ? 'YES' : 'NO'} ${liveOdds.dominantPct}% · IMPLIED ${liveOdds.direction.toUpperCase()}`
-                : 'WAIT — NO LIVE CONTRACT ODDS'}
+                ? `${liveOdds.label} ${liveOdds.dominantPct}%`
+                : liveOdds.label}
             </div>
             <div style="font-size:11px;color:var(--color-text-muted);margin-top:2px;">
               Model CDF P(YES): <strong style="color:var(--color-text);">${_modelYesPctCard}%</strong> ${grokBinaryCall ? `· Grok Inference: <strong style="color:#00e5ff;">${grok15mGuidance.call} (${grokConfPct}%)</strong>` : ''}
@@ -1474,7 +1483,9 @@ function buildQuickDecisionPanel(predArr) {
         const dir = liveOdds.available ? (liveOdds.direction === 'up' ? 1 : -1) : 0;
         const dirClass = liveOdds.available ? (liveOdds.direction === 'up' ? 'up' : 'down') : 'neutral';
         const arrow = liveOdds.available ? (liveOdds.direction === 'up' ? '▲' : '▼') : '→';
-        const label = liveOdds.available ? `${liveOdds.side} ${liveOdds.dominantPct}%` : 'NO ODDS';
+        const label = liveOdds.available
+          ? `${liveOdds.label} ${liveOdds.dominantPct}%`
+          : liveOdds.label;
         const score = Number.isFinite(pred.score) ? (pred.score > 0 ? '+' : '') + pred.score.toFixed(2) : '—';
         const horizon = pred.backtest?.summary?.preferredHorizon ? `${pred.backtest.summary.preferredHorizon}m` : '';
         const coinData = window.PredictionMarkets?.getCoin(pred.sym) || {};

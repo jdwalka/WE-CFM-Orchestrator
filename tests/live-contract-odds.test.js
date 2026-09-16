@@ -24,6 +24,8 @@ test("below-live contract odds paint NO instead of a stale model UP call", async
   assert.equal(odds.available, true);
   assert.equal(odds.side, "NO");
   assert.equal(odds.direction, "down");
+  assert.equal(odds.label, "DOWN NO");
+  assert.equal(odds.oppositeLabel, "UP YES");
   assert.equal(odds.yesPct, 22);
   assert.equal(odds.noPct, 78);
   assert.equal(odds.dominantPct, 78);
@@ -38,6 +40,7 @@ test("missing live odds force WAIT rather than a default UP lean", async () => {
   assert.equal(odds.available, false);
   assert.equal(odds.side, null);
   assert.equal(odds.direction, "wait");
+  assert.equal(odds.label, "ODDS UNAVAILABLE");
   assert.equal(odds.dominantPct, null);
 });
 
@@ -49,6 +52,8 @@ test("YES on a below-strike contract implies DOWN and uses red logic", async () 
   const odds = liveContractOdds("BTC");
   assert.equal(odds.side, "YES");
   assert.equal(odds.direction, "down");
+  assert.equal(odds.label, "DOWN YES");
+  assert.equal(odds.oppositeLabel, "UP NO");
   assert.equal(odds.yesPct, 81);
   assert.equal(odds.noPct, 19);
   assert.equal(odds.dominantPct, 81);
