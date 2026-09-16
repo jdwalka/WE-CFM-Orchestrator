@@ -3,21 +3,14 @@
  * Decouples 50ms (20Hz) Pyth Lazer feed ingest from the browser paint cycle.
  * Ingest stays at 50ms; DOM and HUD paints are batched and capped at 60fps via rAF.
  */
-(function (root, factory) {
+(function (factory) {
   if (typeof module === 'object' && module.exports) {
-    module.exports = factory();
+    module.exports = factory(require('./garvonix-harmonizer.js'));
   } else {
-    const exports = factory();
-    if (typeof window !== 'undefined') {
-      window.RenderScheduler = exports;
-    }
+    window.RenderScheduler = factory(window.GarvonixHarmonizer || null);
   }
-})(typeof globalThis !== 'undefined' ? globalThis : this, function () {
+})(function (GarvonixHarmonizer) {
   'use strict';
-
-  const GarvonixHarmonizer = typeof module === 'object' && module.exports && typeof require === 'function'
-    ? require('./garvonix-harmonizer.js')
-    : (root.GarvonixHarmonizer || null);
 
   let rafPending = false;
   const dirtySyms = new Set();

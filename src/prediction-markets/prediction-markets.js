@@ -94,6 +94,7 @@
   // â”€â”€ Kalshi probability velocity tracking â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   // Tracks the last 12 probability readings per coin to detect smart-money
   // drift BEFORE the model catches up. velocity > 0 = Kalshi odds rising (bullish).
+  const PROB_HIST_MAX = 12;
   const _probHistory = Object.create(null);
   // Signed CLOB auth lives in Electron main (secrets/POLYMARKET_API.txt).
   // Public Gamma/CLOB market GETs do not need L2 headers in the renderer.
