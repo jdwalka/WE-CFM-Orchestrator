@@ -6,7 +6,7 @@ from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 
-import requests
+import httpx
 from calibration_buckets import replay_resolved_outcomes
 
 LEDGER_PATH_ENV_VAR = "CALIBRATION_LEDGER_PATH"
@@ -89,7 +89,10 @@ def _initialize(connection: sqlite3.Connection) -> None:
             resolution_source TEXT,
             outcome_window_start_utc TEXT,
             outcome_window_end_utc TEXT,
-            outcome_candles_used INTEGER
+            outcome_candles_used INTEGER,
+            cascade_active INTEGER,
+            burst_pressure REAL,
+            cascade_skew REAL
         );
         CREATE INDEX IF NOT EXISTS idx_predictions_expiry
             ON predictions(expiry_utc, resolved_at_utc);
@@ -118,6 +121,9 @@ def _migrate(connection: sqlite3.Connection) -> None:
         "outcome_window_start_utc": "ALTER TABLE predictions ADD COLUMN outcome_window_start_utc TEXT",
         "outcome_window_end_utc": "ALTER TABLE predictions ADD COLUMN outcome_window_end_utc TEXT",
         "outcome_candles_used": "ALTER TABLE predictions ADD COLUMN outcome_candles_used INTEGER",
+        "cascade_active": "ALTER TABLE predictions ADD COLUMN cascade_active INTEGER",
+        "burst_pressure": "ALTER TABLE predictions ADD COLUMN burst_pressure REAL",
+        "cascade_skew": "ALTER TABLE predictions ADD COLUMN cascade_skew REAL",
     }
     for column, statement in migrations.items():
         if column not in columns:
@@ -152,7 +158,7 @@ def _prediction_key(timestamp: datetime, band: str, expiry: datetime) -> str:
 def _fetch_minute_candles(start: datetime, end: datetime) -> list[dict]:
     """Fetch the 1-minute candles that cover [start, end)."""
     try:
-        response = requests.get(
+        response = httpx.get(
             "https://api.exchange.coinbase.com/products/BTC-USD/candles",
             params={"granularity": 60, "start": start.isoformat(), "end": end.isoformat()},
             headers=_HEADERS,
@@ -167,7 +173,7 @@ def _fetch_minute_candles(start: datetime, end: datetime) -> list[dict]:
             candle for candle in candles
             if start_epoch < candle["time"] <= end_epoch
         ]
-    except (requests.RequestException, KeyError, ValueError, TypeError):
+    except (httpx.HTTPError, KeyError, ValueError, TypeError):
         return []
 
 
@@ -187,6 +193,9 @@ def record_prediction(
     p_calibrated: float | None = None,
     calibration_factor: float = 1.0,
     regime: str = "UNKNOWN",
+    cascade_active: bool = False,
+    burst_pressure: float = 0.0,
+    cascade_skew: float = 1.0,
 ) -> bool:
     """Append one prediction; duplicate timestamp/band/expiry rows are ignored."""
     connection = _connect()
@@ -220,6 +229,9 @@ def record_prediction(
                 int(minutes_to_expiry),
                 _time_to_expiry_bucket(minutes_to_expiry),
                 MODEL_VERSION,
+                int(cascade_active),
+                float(burst_pressure),
+                float(cascade_skew),
             ),
         )
         connection.commit()
