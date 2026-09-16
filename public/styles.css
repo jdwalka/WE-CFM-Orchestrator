@@ -2229,16 +2229,16 @@ input, select { font: inherit; color: inherit; }
 .period-row {
   display: flex;
   align-items: stretch;
-  gap: 10px;
+  gap: 12px;
   flex-wrap: wrap;
 }
 
 .group-label {
-  width: 110px;
-  min-width: 110px;
+  width: 128px;
+  min-width: 128px;
   display: flex;
   align-items: center;
-  font-size: 11px;
+  font-size: 13px;
   font-weight: 700;
   letter-spacing: 0.04em;
   opacity: 0.9;
@@ -2246,12 +2246,12 @@ input, select { font: inherit; color: inherit; }
 
 /* Individual element cell */
 .element {
-  width: 214px;
-  min-width: 214px;
+  width: 280px;
+  min-width: 280px;
   border: 1.5px solid var(--el-color, var(--color-border));
   border-radius: var(--radius-md);
   background: color-mix(in srgb, var(--el-color, #444) 8%, var(--color-surface));
-  padding: 9px 10px 8px;
+  padding: 14px 14px 12px;
   cursor: default;
   transition: box-shadow var(--transition), transform var(--transition);
   position: relative;
@@ -2284,43 +2284,43 @@ input, select { font: inherit; color: inherit; }
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 5px;
+  margin-bottom: 7px;
 }
 .element-icon {
-  font-size: 15px;
+  font-size: 20px;
   line-height: 1;
   display: flex;
   align-items: center;
 }
 .element-icon img {
-  width: 18px;
-  height: 18px;
+  width: 24px;
+  height: 24px;
   border-radius: 50%;
   object-fit: cover;
 }
 .element-sym {
-  font-size: 11px;
+  font-size: 15px;
   font-weight: 800;
   color: var(--color-text);
   letter-spacing: 0.04em;
 }
 .element-name {
-  font-size: 9px;
+  font-size: 12px;
   color: var(--color-text-faint);
-  margin-bottom: 6px;
+  margin-bottom: 9px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .element-cfm {
-  font-size: 11px;
+  font-size: 15px;
   font-weight: 600;
   color: var(--color-text-muted);
   font-family: var(--font-mono);
   margin-bottom: 4px;
 }
 .element-signal {
-  font-size: 18px;
+  font-size: 25px;
   font-weight: 700;
   line-height: 1;
   margin-bottom: 3px;
@@ -2330,7 +2330,7 @@ input, select { font: inherit; color: inherit; }
 .element-signal.neutral { color: var(--color-text-faint); }
 
 .element-conf {
-  font-size: 10px;
+  font-size: 13px;
   color: var(--color-text-faint);
   font-family: var(--font-mono);
 }
@@ -2338,29 +2338,36 @@ input, select { font: inherit; color: inherit; }
 .element-diagnostics {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 3px 8px;
-  margin-top: 7px;
-  padding-top: 7px;
+  gap: 6px 10px;
+  margin-top: 10px;
+  padding-top: 10px;
   border-top: 1px solid color-mix(in srgb, var(--el-color, #444) 20%, var(--color-border));
 }
 
 .element-diagnostic {
   display: flex;
   justify-content: space-between;
-  gap: 4px;
+  gap: 6px;
   min-width: 0;
-  font-size: 9px;
+  font-size: 11px;
   font-family: var(--font-mono);
   color: var(--color-text-faint);
 }
 
 .element-diagnostic strong {
-  max-width: 68%;
+  max-width: 72%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--color-text-muted);
   font-weight: 600;
+}
+
+@media (max-width: 900px) {
+  .element {
+    width: 100%;
+    min-width: 100%;
+  }
 }
 
 /* Orbital canvas container */
