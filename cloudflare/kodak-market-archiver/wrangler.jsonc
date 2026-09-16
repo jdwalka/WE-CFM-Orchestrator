@@ -1,0 +1,36 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "kodak-market-archiver",
+  "main": "src/index.js",
+  "compatibility_date": "2026-08-28",
+  "kv_namespaces": [
+    {
+      "binding": "KODAK_KV",
+      "id": "11089b487b4048729f3a49e6a302c3fb"
+    }
+  ],
+  "triggers": {
+    "crons": ["* * * * *"]
+  },
+  "routes": [
+    {
+      "pattern": "kodak.leaksnipe.win",
+      "custom_domain": true
+    }
+  ],
+  "workers_dev": true,
+  "preview_urls": true,
+  "observability": {
+    "logs": {
+      "enabled": true,
+      "head_sampling_rate": 1,
+      "invocation_logs": true,
+      "persist": true
+    },
+    "traces": {
+      "enabled": true,
+      "head_sampling_rate": 1,
+      "persist": true
+    }
+  }
+}
