@@ -11,11 +11,12 @@
 - [x] Add regression tests for bucket edges, fallback hierarchy, rolling windows, caps, and report behavior.
 
 ## Current Gate Result
-- Resolved samples: 2,497
-- Global Brier: 0.081876
-- Bucketed Brier: 0.075539
-- Overall improvement: 0.006337
-- Max degradation: 0.000048
+- Global correction factor: 2.3783
+- Resolved samples: 2,593
+- Global Brier: 0.082082
+- Bucketed Brier: 0.076481
+- Overall improvement: 0.0056
+- Max degradation: 0.000058
 - Decision: **disabled**, below the 0.01 pre-registered improvement gate
 
 ## Next
@@ -24,4 +25,5 @@
 - [ ] Enable only after the pre-registered gate passes; do not lower thresholds retroactively.
 - [ ] If 0–5m degradation persists, evaluate a pre-registered low-probability scaling floor.
 - [ ] After two passing runs, wire `BucketedCalibration` into `prediction_engine.py` behind a feature flag.
-- [ ] Rebuild the Electron app so the packaged UI includes the latest source fixes.
+- [x] Rebuild the Electron app so the packaged UI includes the latest source fixes.
+  - Build label: `build-20260914-132223`
