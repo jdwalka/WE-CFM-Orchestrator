@@ -49,7 +49,6 @@ from market_data import compute_stats, get_hourly_candles, get_spot
 # ---------------------------------------------------------------------------
 LOOKBACK_HOURS = 4380
 LIVE_VOLATILITY_HOURS = 24
-LOOKBACK_HOURS = 24
 BODY_PERCENTILE = 0.60
 MOMENTUM_LOOKBACK_HOURS = 6
 BIAS_THRESHOLD = 0.10
@@ -1261,21 +1260,6 @@ def _artifact_residual(residual_cents) -> bool:
     if residual_cents is None:
         return False
     return abs(float(residual_cents)) > ARTIFACT_RESIDUAL_THRESHOLD_CENTS
-    """Shrink a raw model probability using empirical-Bayes calibration."""
-    factor = float(correction.get("correction_factor", 1.0) or 1.0)
-    floor = float(correction.get("floor", 0.0) or 0.0)
-    max_factor = float(
-        correction.get("max_factor", PROBABILITY_CORRECTION_MAX_FACTOR)
-        or PROBABILITY_CORRECTION_MAX_FACTOR
-    )
-    bounded_probability = probability * min(max(factor, 0.0), max_factor)
-    return min(1.0, max(bounded_probability, floor, 0.0))
-
-
-def _artifact_residual(residual_cents) -> bool:
-    if residual_cents is None:
-        return False
-    return abs(float(residual_cents)) > ARTIFACT_RESIDUAL_THRESHOLD_CENTS
 
 
 def _historical_final_minute_windows(candles_1m: list) -> dict:
@@ -1372,7 +1356,6 @@ def _ranked_entry_scores(decay_table: list, bands: list, horizon_minutes: int = 
             "current_yes_ask": ask,
             "projected_fair_T15m": round(projected_fair, 1),
             "edge_at_entry": round(edge, 1),
-            "edge_at_entry": round(projected_fair - ask, 1),
             "settlement_venue": row.get("settlement_venue"),
             "settlement_rule": row.get("settlement_rule"),
         })
@@ -1516,7 +1499,6 @@ def predict_hourly_range() -> dict:
     spot_data = get_spot()
     spot = spot_data["price"]
     candles = get_hourly_candles(LIVE_VOLATILITY_HOURS)
-    candles = get_hourly_candles(24)
     stats = compute_stats(candles)
 
     if spot_data.get("error") == "STALE":
@@ -1533,9 +1515,6 @@ def predict_hourly_range() -> dict:
         }
 
     rv = realized_vol_pct(candles, LIVE_VOLATILITY_HOURS)
-    sigma_hourly_pct = rv / math.sqrt(24 * 365)
-    expected_move = expected_move_pct(candles, LIVE_VOLATILITY_HOURS)
-    rv = realized_vol_pct(candles)
     sigma_hourly_pct = rv / math.sqrt(24 * 365)
     expected_move = expected_move_pct(candles, LIVE_VOLATILITY_HOURS)
     bias = momentum_bias(candles)
@@ -1598,41 +1577,6 @@ def predict_hourly_range() -> dict:
             "correction_factor": probability_correction.get("correction_factor", 1.0),
             "floor": probability_correction.get("floor", 0.0),
             "max_factor": PROBABILITY_CORRECTION_MAX_FACTOR,
-            "regime": "global",
-        }
-
-    baseline_candles = get_hourly_candles(LOOKBACK_HOURS)
-    baseline_rv = realized_vol_pct(baseline_candles, LOOKBACK_HOURS)
-    baseline_sigma_hourly_pct = baseline_rv / math.sqrt(24 * 365)
-    hourly_ranges = [
-        candle["high"] - candle["low"]
-        for candle in baseline_candles
-        if candle.get("high") and candle.get("low")
-    ]
-    current_hourly_range = hourly_ranges[-1] if hourly_ranges else 0.0
-    spike_threshold = 0.0
-    if hourly_ranges:
-        sorted_ranges = sorted(hourly_ranges[:-1] or hourly_ranges)
-        spike_threshold = sorted_ranges[
-            min(len(sorted_ranges) - 1, int(len(sorted_ranges) * VOLATILITY_SPIKE_PERCENTILE))
-        ]
-    volatility_spike_multiplier = (
-        current_hourly_range / spike_threshold
-        if spike_threshold > 0 and current_hourly_range > spike_threshold
-        else 1.0
-    )
-    sigma_hourly_pct = max(
-        sigma_hourly_pct,
-        baseline_sigma_hourly_pct * volatility_spike_multiplier,
-    )
-
-    regime = _classify_regime(hourly_ranges)
-    regime_range_floor = (
-        HIGH_REGIME_MIN_RANGE_PCT
-        if regime.get("regime") == "HIGH"
-        else MIN_RANGE_PCT
-    )
-    range_pct = max(expected_move, regime_range_floor)
             "regime": "global",
         }
 
@@ -1816,7 +1760,6 @@ def predict_hourly_range() -> dict:
                     residual is not None
                     and (residual > RESIDUAL_FLAG_THRESHOLD_CENTS or _artifact_residual(residual))
                 ),
-                "flagged": residual is not None and residual > RESIDUAL_FLAG_THRESHOLD_CENTS,
                 "fair_status": "ok" if ask is not None else "fair_only",
                 "p_normal": round(p_normal, 3),
                 "p_student_t": round(p_student_t, 3),
@@ -1898,7 +1841,6 @@ def predict_hourly_range() -> dict:
                 residual is not None
                 and (residual > RESIDUAL_FLAG_THRESHOLD_CENTS or _artifact_residual(residual))
             ),
-            "flagged": residual is not None and residual > RESIDUAL_FLAG_THRESHOLD_CENTS,
             "fair_status": "recomputed_after_spot_move",
             "fair_stale": True,
             "fair_recomputed": True,
@@ -1933,10 +1875,6 @@ def predict_hourly_range() -> dict:
 
     # Regime classification was computed before range construction so HIGH
     # volatility can widen the model range before ladder probabilities.
-    # --- Regime classification ---
-    hourly_history = get_hourly_candle_history(REGIME_LOOKBACK_HOURS)
-    hourly_ranges = [c["high"] - c["low"] for c in hourly_history if c["high"] and c["low"]]
-    regime = _classify_regime(hourly_ranges)
 
     # --- Time-decay table ---
     decay_table = []
@@ -2043,11 +1981,6 @@ def predict_hourly_range() -> dict:
         "volatility": {
             "realized_vol_annualized_pct": round(rv, 2),
             "baseline_realized_vol_annualized_pct": round(baseline_rv, 2),
-            "sigma_hourly_pct": round(sigma_hourly_pct, 3),
-            "baseline_sigma_hourly_pct": round(baseline_sigma_hourly_pct, 3),
-            "volatility_spike_multiplier": round(volatility_spike_multiplier, 3),
-            "volatility_spike_threshold": round(spike_threshold, 2),
-            "current_hourly_range": round(current_hourly_range, 2),
             "sigma_hourly_pct": round(sigma_hourly_pct, 3),
             "baseline_sigma_hourly_pct": round(baseline_sigma_hourly_pct, 3),
             "volatility_spike_multiplier": round(volatility_spike_multiplier, 3),
@@ -2233,7 +2166,6 @@ def predict_15m_range(contract: dict | None = None, series_ticker: str = KALSHI_
                 or _artifact_residual(residual_cents)
             )
         ),
-        "flagged": residual_cents is not None and residual_cents > RESIDUAL_FLAG_THRESHOLD_CENTS,
         "fair_status": "ok" if ask_cents is not None else "fair_only",
         "fair_stale": fair_stale,
         "fair_recomputed": fair_stale,

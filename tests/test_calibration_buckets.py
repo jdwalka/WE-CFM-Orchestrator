@@ -94,7 +94,6 @@ class BucketedCorrectionReportTests(unittest.TestCase):
     def tearDown(self):
         calibration_ledger.DB_PATH = self.original_db_path
 
-    def test_report_block_activates_after_passing_gate(self):
     def test_report_block_is_report_only(self):
         now = datetime.now(timezone.utc)
         with calibration_ledger._connect() as connection:
