@@ -68,6 +68,8 @@ backtest-results/
 
 # Data files with personal trade history
 data/
+*.db
+*.db-*
 
 # Temp / scratch
 *.old
