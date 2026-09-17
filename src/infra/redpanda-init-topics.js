@@ -85,9 +85,53 @@ const GROK_TOPICS = [
     }
 ];
 
+// Truffle pricing & signal streams (WECRYPTO ticks -> 1m -> hourly -> signals)
+const TRUFFLE_TOPICS = [
+    {
+        topic:             'wecrypto.prices.ticks',
+        numPartitions:     3,
+        replicationFactor: 1,
+        configEntries: [
+            { name: 'retention.ms',         value: String(24 * 60 * 60 * 1000) }, // 24 hours
+            { name: 'cleanup.policy',        value: 'delete' },
+            { name: 'compression.type',      value: 'snappy' }
+        ]
+    },
+    {
+        topic:             'wecrypto.prices.1m',
+        numPartitions:     3,
+        replicationFactor: 1,
+        configEntries: [
+            { name: 'retention.ms',         value: String(7 * 24 * 60 * 60 * 1000) }, // 7 days
+            { name: 'cleanup.policy',        value: 'delete' },
+            { name: 'compression.type',      value: 'snappy' }
+        ]
+    },
+    {
+        topic:             'wecrypto.prices.hourly',
+        numPartitions:     3,
+        replicationFactor: 1,
+        configEntries: [
+            { name: 'retention.ms',         value: String(90 * 24 * 60 * 60 * 1000) }, // 90 days
+            { name: 'cleanup.policy',        value: 'delete' },
+            { name: 'compression.type',      value: 'snappy' }
+        ]
+    },
+    {
+        topic:             'truffle.signals',
+        numPartitions:     3,
+        replicationFactor: 1,
+        configEntries: [
+            { name: 'retention.ms',         value: String(7 * 24 * 60 * 60 * 1000) }, // 7 days
+            { name: 'cleanup.policy',        value: 'delete' },
+            { name: 'compression.type',      value: 'snappy' }
+        ]
+    }
+];
+
 /**
  * Create (or verify) a list of Kafka topics. Skips topics that already exist
- * without throwing. Shared by createOrbitalTopics()/createGrokTopics().
+ * without throwing. Shared by createOrbitalTopics()/createGrokTopics()/createTruffleTopics().
  */
 async function _createTopics(topicList, label) {
     const kafka = new Kafka({
@@ -153,14 +197,22 @@ async function createGrokTopics() {
 }
 
 /**
+ * Create (or verify) the Truffle pricing and signal topics.
+ */
+async function createTruffleTopics() {
+    return _createTopics(TRUFFLE_TOPICS, 'truffle');
+}
+
+/**
  * Create (or verify) every topic this app produces to.
  */
 async function createAllTopics() {
     await createOrbitalTopics();
     await createGrokTopics();
+    await createTruffleTopics();
 }
 
-module.exports = { createOrbitalTopics, createGrokTopics, createAllTopics };
+module.exports = { createOrbitalTopics, createGrokTopics, createTruffleTopics, createAllTopics };
 
 // Allow standalone execution
 if (require.main === module) {

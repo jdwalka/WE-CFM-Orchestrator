@@ -760,6 +760,16 @@ try {
   console.warn('[OrbitalRedpandaBridge] Module unavailable:', e.message);
 }
 
+// ── Truffle Candle Publisher (Redpanda wecrypto.prices.ticks) ────────────────
+let TruffleCandlePublisher = null;
+try {
+  TruffleCandlePublisher = require('../src/infra/truffle-candle-publisher');
+  TruffleCandlePublisher.init().catch(e => console.warn('[TruffleCandlePublisher] init warning:', e.message));
+  console.log('[TruffleCandlePublisher] Loaded — aggregates and publishes 1m candles to wecrypto.prices.ticks');
+} catch (e) {
+  console.warn('[TruffleCandlePublisher] Module unavailable:', e.message);
+}
+
 // ── Orbital Redis Subscriber (real-time ticks, sub-second vs. the Kafka -> ──
 // 15m-barrier -> Firestore -> 60s-poll round trip). Redis pub/sub was
 // publish-only across the whole app until this — orbital-ingestor-daemon.js
@@ -892,6 +902,15 @@ let _pendingPythPush = null;
 let _pythPushScheduled = false;
 function pushPythTickersCoalesced(targetWin, payload) {
   _pendingPythPush = payload;
+  if (TruffleCandlePublisher && payload) {
+    try {
+      for (const [key, val] of Object.entries(payload)) {
+        if (val && val.last != null) {
+          TruffleCandlePublisher.onTick(key, val.last, 0, val.timestamp || Date.now());
+        }
+      }
+    } catch (_) {}
+  }
   if (!_pythPushScheduled) {
     _pythPushScheduled = true;
     setTimeout(() => {
@@ -2481,6 +2500,13 @@ ipcMain.handle('pyth:getCandles', async (_, { symbol, resolution, from, to }) =>
     console.warn('[PythLazer] getCandles failed:', e.message);
     return { success: false, error: e.message };
   }
+});
+
+ipcMain.handle('truffle:publishCandle', async (_, { symbol, candle }) => {
+  if (TruffleCandlePublisher) {
+    return await TruffleCandlePublisher.publishCandle(symbol, candle);
+  }
+  return false;
 });
 
 function updatePythStatusFromProxyPrices(prices) {

@@ -1,0 +1,17 @@
+name = "wecrypto-px-edge"
+main = "src/index.js"
+compatibility_date = "2026-09-10"
+compatibility_flags = ["nodejs_compat_v2"]
+
+routes = [
+  { pattern = "wecrypto.leaksnipe.win/px*", zone_name = "leaksnipe.win" }
+]
+
+workers_dev = true
+
+[[kv_namespaces]]
+binding = "PX_KV"
+id = "00fc1b61d6f94a29b6fb43335e24093a"
+
+[vars]
+TRUFFLE_ORIGIN = "https://truffle.leaksnipe.win"
