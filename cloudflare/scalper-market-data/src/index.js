@@ -90,7 +90,7 @@ async function getCoinbaseSpot(symbol = "BTC") {
 }
 
 async function getCalibrationHealth(env) {
-  const database = env && env.CALIBRATION_DB;
+  const database = env && (env.CALIBRATION_DB || env.truffle);
   if (!database) {
     return {
       storage_reachable: false,
