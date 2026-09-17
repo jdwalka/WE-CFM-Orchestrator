@@ -31,7 +31,10 @@ function jsonResponse(data, status = 200) {
     headers: {
       "Content-Type": "application/json",
       "Access-Control-Allow-Origin": "*",
-      "Cache-Control": "no-store, max-age=0",
+      "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0, proxy-revalidate",
+      "Pragma": "no-cache",
+      "Expires": "0",
+      "Surrogate-Control": "no-store",
     },
   });
 }
@@ -215,6 +218,8 @@ async function getCoinbaseRecentRange(symbol = "BTC", minutes = 30) {
   return { high: windowHigh, low: windowLow, momentum_signal: momentumSignal };
 }
 
+const MAX_HOURLY_MINUTES_TO_EXPIRY = 65;
+
 async function getKalshiBands(spot, seriesTicker = "KXBTC", maxBandsEachSide = 6) {
   const r = await fetchMarketData(
     `${KALSHI_BASE}/markets?series_ticker=${seriesTicker}&status=open&limit=1000`
@@ -229,20 +234,37 @@ async function getKalshiBands(spot, seriesTicker = "KXBTC", maxBandsEachSide = 6
     (events[m.event_ticker] ||= []).push(m);
   }
 
+  const now = new Date();
   let bestTicker = null;
   let bestMarkets = null;
   let bestClose = null;
+  let minMinutes = Infinity;
+
   for (const [ticker, ms] of Object.entries(events)) {
     const close = new Date(ms[0].close_time);
-    if (!bestClose || close < bestClose) {
-      bestClose = close;
+    const mins = (close - now) / 60000;
+    if (mins > 0 && mins < minMinutes) {
+      minMinutes = mins;
       bestTicker = ticker;
       bestMarkets = ms;
+      bestClose = close;
     }
   }
 
-  const now = new Date();
-  const minutesToExpiry = (bestClose - now) / 60000;
+  // Hourly market gate: if nearest contract is > 65m away, Kalshi's hourly range
+  // market is currently closed (e.g. overnight 1am-6am EDT where only 5pm daily contracts exist).
+  // Never serve 14-hour daily contracts as hourly candidate bands.
+  if (!bestTicker || minMinutes > MAX_HOURLY_MINUTES_TO_EXPIRY) {
+    return {
+      status: "MARKET_CLOSED",
+      error: `Kalshi hourly market closed (next event ${bestTicker || "none"} closes in ${Number.isFinite(minMinutes) ? Math.round(minMinutes) : "unknown"}m)`,
+      candidate_bands: [],
+      minutes_to_expiry: Number.isFinite(minMinutes) ? minMinutes : null,
+      event_ticker: bestTicker,
+      market_active: false,
+      collector_timestamp: new Date().toISOString(),
+    };
+  }
 
   const above = [];
   const below = [];
@@ -270,7 +292,14 @@ async function getKalshiBands(spot, seriesTicker = "KXBTC", maxBandsEachSide = 6
     ...above.slice(0, maxBandsEachSide).map((b) => toBand(b, "ABOVE_SPOT")),
     ...below.slice(0, maxBandsEachSide).map((b) => toBand(b, "BELOW_SPOT")),
   ];
-  return { candidate_bands: candidateBands, minutes_to_expiry: minutesToExpiry, event_ticker: bestTicker };
+  return {
+    status: "ok",
+    market_active: true,
+    candidate_bands: candidateBands,
+    minutes_to_expiry: minMinutes,
+    event_ticker: bestTicker,
+    collector_timestamp: new Date().toISOString(),
+  };
 }
 
 async function getKalshiUpdown(seriesTicker = "KXBTC15M") {

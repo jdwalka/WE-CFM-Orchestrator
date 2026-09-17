@@ -320,11 +320,17 @@ def _fetch_bands_from_snapshot() -> dict:
         raise ValueError(f"snapshot fallback failed: {exc}") from exc
 
 
-def get_kalshi_ladder() -> dict:
-    '''Resilient Kalshi hourly band ladder with Lane 1 backoff and Lane 2 staleness check.'''
+def get_kalshi_ladder(force_refresh: bool = False) -> dict:
+    '''Resilient Kalshi hourly band ladder with Lane 1 backoff, freshness enforcement, and market hours gating.'''
     now = time.time()
     cached = _bands_cache["data"]
-    if cached is not None and now - _bands_cache["ts"] < BANDS_CACHE_TTL_SECONDS:
+    if (
+        not force_refresh
+        and cached is not None
+        and now - _bands_cache["ts"] < BANDS_CACHE_TTL_SECONDS
+        and cached.get("status") == "ok"
+        and cached.get("minutes_to_expiry", 0) <= 65
+    ):
         return {
             **deepcopy(cached),
             "status": "ok",
@@ -341,13 +347,44 @@ def get_kalshi_ladder() -> dict:
     for attempt in range(3):
         try:
             response = requests.get(
-                f"{MARKET_DATA_WORKER_URL}/kalshi/bands", timeout=15
+                f"{MARKET_DATA_WORKER_URL}/kalshi/bands",
+                headers={"Cache-Control": "no-cache", "Pragma": "no-cache"},
+                timeout=15,
             )
             response.raise_for_status()
             payload = response.json()
             
             # Lane 2: enforce freshness
             enforce_freshness(payload, "ladder")
+
+            # Check market status: if Kalshi hourly market is closed or contract > 65m away
+            status = payload.get("status", "ok")
+            minutes_to_expiry = payload.get("minutes_to_expiry")
+            is_closed = (
+                status == "MARKET_CLOSED"
+                or (isinstance(minutes_to_expiry, (int, float)) and minutes_to_expiry > 65)
+            )
+
+            if is_closed:
+                error_msg = payload.get("error") or (
+                    f"Kalshi hourly market closed (event {payload.get('event_ticker')} expires in {minutes_to_expiry:.0f}m)"
+                    if minutes_to_expiry else "Kalshi hourly market closed"
+                )
+                res = {
+                    "status": "MARKET_CLOSED",
+                    "error": error_msg,
+                    "candidate_bands": [],
+                    "minutes_to_expiry": minutes_to_expiry,
+                    "event_ticker": payload.get("event_ticker"),
+                    "market_active": False,
+                    "collector_timestamp": payload.get("collector_timestamp"),
+                    "_cache": "miss",
+                    "_source": "primary_worker",
+                    "_ts": time.time(),
+                }
+                _bands_cache["data"] = None  # Do not cache closed market as valid ladder
+                _bands_cache["ts"] = 0.0
+                return res
             
             payload = _normalize_bands_payload(payload)
             
@@ -1586,7 +1623,7 @@ def _probs_from_sigma(
     }
 
 
-def predict_hourly_range() -> dict:
+def predict_hourly_range(force_refresh: bool = False) -> dict:
     """Main entry: compute current hourly range prediction with probabilities."""
     now = datetime.now(timezone.utc)
     minutes_to_expiry = 60 - now.minute
@@ -1734,13 +1771,19 @@ def predict_hourly_range() -> dict:
     drift_pct += positioning_skew["skew_pct"]
 
     # --- Per-strike probabilities from live Kalshi ladder ---
-    ladder = get_kalshi_ladder()
+    ladder = get_kalshi_ladder(force_refresh=force_refresh)
     bands = ladder.get("candidate_bands", []) if isinstance(ladder, dict) else []
     ladder_feed_status = {
         "status": ladder.get("status", "error") if isinstance(ladder, dict) else "error",
         "error": ladder.get("error") if isinstance(ladder, dict) else "invalid ladder payload",
         "candidate_band_count": len(bands),
         "usable_band_count": 0,
+        "event_ticker": ladder.get("event_ticker"),
+        "minutes_to_expiry": ladder.get("minutes_to_expiry"),
+        "market_active": ladder.get("market_active", True if bands else False),
+        "_cache": ladder.get("_cache"),
+        "_source": ladder.get("_source"),
+        "collector_timestamp": ladder.get("collector_timestamp"),
     }
 
     # --- Wick statistics must precede pricing so tail pressure is consumed ---
