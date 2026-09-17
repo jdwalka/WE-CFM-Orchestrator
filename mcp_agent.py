@@ -542,8 +542,11 @@ async def startup(ctx: Context):
     agentverse_key = os.getenv("AGENTVERSE_KEY")
     if agentverse_key:
         try:
-            from uagents.mailbox import AgentverseConnectRequest, register_in_agentverse
-            from uagents_core.types import RegistrationRequest
+            from uagents.mailbox import (
+                AgentverseConnectRequest,
+                RegistrationRequest,
+                register_in_agentverse,
+            )
             req = AgentverseConnectRequest(user_token=agentverse_key, agent_type="uagent")
             profile = agent._build_registration_profile()
             reg_data = RegistrationRequest(
