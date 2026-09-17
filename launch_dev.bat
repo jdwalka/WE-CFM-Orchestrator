@@ -119,8 +119,8 @@ if %errorlevel% equ 0 (
 )
 
 REM ── 8. Environment Defaults & Launch Electron ──────────────────────────────────
-set "WECRYPTO_OPEN_DEVTOOLS=1"
-set "ELECTRON_ENABLE_LOGGING=1"
+if not defined WECRYPTO_OPEN_DEVTOOLS set "WECRYPTO_OPEN_DEVTOOLS=1"
+if not defined ELECTRON_ENABLE_LOGGING set "ELECTRON_ENABLE_LOGGING=1"
 set "PYTH_LAZER_CHANNEL=fixed_rate@1000ms"
 if not defined PYTH_FALLBACK_TIMEOUT_MS  set "PYTH_FALLBACK_TIMEOUT_MS=9000"
 if not defined PYTH_FALLBACK_GRACE_MS    set "PYTH_FALLBACK_GRACE_MS=3000"
@@ -130,7 +130,11 @@ if not defined WECRYPTO_WEB_HOST         set "WECRYPTO_WEB_HOST=127.0.0.1"
 echo.
 echo ==============================================================================
 echo                 WE-CRYPTO DEV ENVIRONMENT IS READY
+if "!WECRYPTO_OPEN_DEVTOOLS!"=="1" (
 echo   - Electron App:   Launching with DevTools enabled
+) else (
+echo   - Electron App:   Launching with DevTools disabled
+)
 echo   - Web Interface:  http://127.0.0.1:!WECRYPTO_WEB_PORT!
 echo   - Proxy Bouncer:  http://127.0.0.1:!WECRYPTO_PROXY_PORT!
 echo   - Upstream SOCKS: %WECRYPTO_SWEDEN_SOCKS%
@@ -138,7 +142,7 @@ echo ===========================================================================
 echo.
 
 echo [8/8] Starting Electron app...
-call npx electron .
+call npx electron . %*
 
 if %errorlevel% neq 0 (
     echo.
