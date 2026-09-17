@@ -413,8 +413,9 @@ async def handle_chat(ctx: Context, sender: str, msg: ChatMessage):
     try:
         loop = asyncio.get_event_loop()
         answer = await loop.run_in_executor(None, lambda: process_query(text, sender=sender))
-    except (requests.RequestException, KeyError, ValueError, TypeError) as e:
-        answer = f"Error processing request: {e}"
+    except Exception as e:
+        ctx.logger.error(f"Error in process_query for {sender}: {e}", exc_info=True)
+        answer = f"Error processing query: {e}"
     await ctx.send(sender, ChatMessage(
         timestamp=datetime.now(timezone.utc),
         msg_id=uuid4(),

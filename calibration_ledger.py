@@ -45,8 +45,14 @@ def _connect() -> sqlite3.Connection:
     database_path = ledger_path()
     database_path.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(database_path, timeout=10)
-    connection.execute("PRAGMA journal_mode=WAL")
-    connection.execute("PRAGMA busy_timeout=5000")
+    try:
+        connection.execute("PRAGMA journal_mode=WAL")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        connection.execute("PRAGMA busy_timeout=5000")
+    except sqlite3.OperationalError:
+        pass
     return connection
 
 
@@ -212,8 +218,9 @@ def record_prediction(
     p_settle: float | None = None,
 ) -> bool:
     """Append one prediction; duplicate timestamp/band/expiry rows are ignored."""
-    connection = _connect()
+    connection = None
     try:
+        connection = _connect()
         _initialize(connection)
         connection.execute(
             """
@@ -254,10 +261,11 @@ def record_prediction(
         )
         connection.commit()
         return True
-    except sqlite3.Error:
+    except (sqlite3.Error, Exception):
         return False
     finally:
-        connection.close()
+        if connection is not None:
+            connection.close()
 
 
 def _bucket(p_touch: float, p_normal: float, touched: bool) -> str:
