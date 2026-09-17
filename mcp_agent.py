@@ -531,7 +531,6 @@ async def handle_kalshi_15m_model(_ctx: Context, _msg: HUDQuery) -> HUDResponse:
     model = await asyncio.get_event_loop().run_in_executor(None, predict_15m_range)
     return HUDResponse(ok=True, content=format_for_llm(model))
 
-# --- Lifecycle -------------------------------------------------------------
 @agent.on_event("startup")
 async def startup(ctx: Context):
     connected = client.connect()
@@ -539,6 +538,37 @@ async def startup(ctx: Context):
         ctx.logger.info(f"WeCryp ready — {len(client.tools)} MCP tools loaded")
     else:
         ctx.logger.warning("MCP connect failed — agent running without tools")
+
+    agentverse_key = os.getenv("AGENTVERSE_KEY")
+    if agentverse_key:
+        try:
+            from uagents.mailbox import AgentverseConnectRequest, register_in_agentverse
+            from uagents_core.types import RegistrationRequest
+            req = AgentverseConnectRequest(user_token=agentverse_key, agent_type="uagent")
+            profile = agent._build_registration_profile()
+            reg_data = RegistrationRequest(
+                address=agent.address,
+                name=agent.name,
+                handle=agent._handle,
+                url=None,
+                profile=profile,
+                endpoints=agent._endpoints,
+                protocols=list(agent.protocols.keys()),
+                metadata=agent.metadata,
+            )
+            res = await register_in_agentverse(
+                request=req,
+                identity=agent._identity,
+                prefix=agent._prefix,
+                agentverse=agent._agentverse,
+                agent_details=reg_data,
+            )
+            if res.success:
+                ctx.logger.info("Auto-registered in Agentverse successfully via AGENTVERSE_KEY")
+            else:
+                ctx.logger.warning(f"Agentverse auto-registration detail: {res.detail}")
+        except Exception as ex:
+            ctx.logger.warning(f"Agentverse auto-registration error: {ex}")
 
 @agent.on_event("shutdown")
 async def shutdown(ctx: Context):
