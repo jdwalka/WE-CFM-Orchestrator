@@ -43,6 +43,7 @@ import requests
 
 from calibration_buckets import bucket_key
 from market_data import compute_stats, get_hourly_candles, get_spot
+from staleness_guard import MarketData, StalenessGuard, Verdict
 
 # ---------------------------------------------------------------------------
 # Model parameters (single source of truth; exposed via /weights)
@@ -323,6 +324,9 @@ def _fetch_bands_from_snapshot() -> dict:
 def get_kalshi_ladder(force_refresh: bool = False) -> dict:
     '''Resilient Kalshi hourly band ladder with Lane 1 backoff, freshness enforcement, and market hours gating.'''
     now = time.time()
+    if force_refresh:
+        _bands_cache["data"] = None
+        _bands_cache["ts"] = 0.0
     cached = _bands_cache["data"]
     if (
         not force_refresh
@@ -331,14 +335,18 @@ def get_kalshi_ladder(force_refresh: bool = False) -> dict:
         and cached.get("status") == "ok"
         and cached.get("minutes_to_expiry", 0) <= 65
     ):
-        return {
-            **deepcopy(cached),
-            "status": "ok",
-            "error": None,
-            "_cache": "hit",
-            "_source": "cache",
-            "_ts": _bands_cache["ts"],
-        }
+        served_age = cached.get("age_seconds", 0) + (now - _bands_cache["ts"])
+        if served_age <= BANDS_CACHE_TTL_SECONDS:
+            return {
+                **deepcopy(cached),
+                "status": "ok",
+                "error": None,
+                "_cache": "hit",
+                "cache": "hit",
+                "age_seconds": round(served_age, 1),
+                "_source": "cache",
+                "_ts": _bands_cache["ts"],
+            }
 
     last_primary_error = None
     
@@ -346,8 +354,10 @@ def get_kalshi_ladder(force_refresh: bool = False) -> dict:
     delays = [2, 4, 8]
     for attempt in range(3):
         try:
+            params = {"fresh": "1"} if force_refresh else {}
             response = requests.get(
                 f"{MARKET_DATA_WORKER_URL}/kalshi/bands",
+                params=params,
                 headers={"Cache-Control": "no-cache", "Pragma": "no-cache"},
                 timeout=15,
             )
@@ -1623,7 +1633,7 @@ def _probs_from_sigma(
     }
 
 
-def predict_hourly_range(force_refresh: bool = False) -> dict:
+def predict_hourly_range(force_refresh: bool = False, screen_spot: float | None = None) -> dict:
     """Main entry: compute current hourly range prediction with probabilities."""
     now = datetime.now(timezone.utc)
     minutes_to_expiry = 60 - now.minute
@@ -1773,6 +1783,7 @@ def predict_hourly_range(force_refresh: bool = False) -> dict:
     # --- Per-strike probabilities from live Kalshi ladder ---
     ladder = get_kalshi_ladder(force_refresh=force_refresh)
     bands = ladder.get("candidate_bands", []) if isinstance(ladder, dict) else []
+    ladder_cache_flag = ladder.get("_cache") or ladder.get("cache") or "miss"
     ladder_feed_status = {
         "status": ladder.get("status", "error") if isinstance(ladder, dict) else "error",
         "error": ladder.get("error") if isinstance(ladder, dict) else "invalid ladder payload",
@@ -1781,10 +1792,48 @@ def predict_hourly_range(force_refresh: bool = False) -> dict:
         "event_ticker": ladder.get("event_ticker"),
         "minutes_to_expiry": ladder.get("minutes_to_expiry"),
         "market_active": ladder.get("market_active", True if bands else False),
-        "_cache": ladder.get("_cache"),
+        "_cache": ladder_cache_flag,
+        "cache": ladder_cache_flag,
+        "age_seconds": ladder.get("age_seconds"),
+        "computed_at": ladder.get("computed_at"),
         "_source": ladder.get("_source"),
         "collector_timestamp": ladder.get("collector_timestamp"),
     }
+
+    # Staleness Guard pre-call gate (R1, R1b, R2, R3, R4)
+    fresh_spot_data = get_spot()
+    if fresh_spot_data.get("price") is not None:
+        spot_data = fresh_spot_data
+        spot = spot_data["price"]
+
+    ladder_ts_raw = ladder.get("computed_at") or ladder.get("collector_timestamp")
+    ladder_ts = time.time()
+    if ladder_ts_raw:
+        try:
+            ladder_ts = datetime.fromisoformat(str(ladder_ts_raw).replace("Z", "+00:00")).timestamp()
+        except Exception:
+            ladder_ts = time.time()
+    elif "_ts" in ladder:
+        ladder_ts = float(ladder["_ts"])
+
+    guard = StalenessGuard()
+    market_data = MarketData(
+        spot=spot,
+        spot_pulled_at=spot_data.get("pulled_at", time.time()),
+        ladder_cache=ladder_cache_flag,
+        ladder_collector_ts=ladder_ts,
+        spot_at_fair=spot,
+        screen_spot=screen_spot,
+        age_seconds=ladder.get("age_seconds"),
+    )
+    staleness_verdict = guard.decide(market_data)
+    if staleness_verdict.effective_spot is not None:
+        spot = staleness_verdict.effective_spot
+
+    # Rule R4: No drift/momentum narrative permitted from a cache-hit ladder. Ever.
+    if ladder_cache_flag == "hit":
+        drift_pct = 0.0
+        positioning_skew = {**positioning_skew, "skew_pct": 0.0, "drift_suppressed": True}
 
     # --- Wick statistics must precede pricing so tail pressure is consumed ---
     candles_1m = get_minute_candles(360)
@@ -2059,6 +2108,15 @@ def predict_hourly_range(force_refresh: bool = False) -> dict:
 
     entry_scores = _ranked_entry_scores(decay_table, bands)
 
+    # Hard gate: block directional entry recommendations and residuals if stale
+    if not staleness_verdict.allowed:
+        entry_scores = []
+        for strike in strike_probs:
+            strike["fair_status"] = "stale_blocked"
+            strike["flagged"] = False
+            strike["residual_cents"] = None
+            strike["staleness_block_reasons"] = staleness_verdict.reasons
+
     raw_alt_signal = get_alt_signal()
     alt_signal, lead_lag_filter = _filter_alt_signal(raw_alt_signal)
 
@@ -2097,6 +2155,13 @@ def predict_hourly_range(force_refresh: bool = False) -> dict:
     )
 
     result = {
+        "status": "STALE_DATA_BLOCKED" if not staleness_verdict.allowed else "ok",
+        "blocked": not staleness_verdict.allowed,
+        "staleness_verdict": str(staleness_verdict),
+        "staleness_reasons": staleness_verdict.reasons,
+        "effective_spot": staleness_verdict.effective_spot,
+        "ladder_cache": ladder_cache_flag,
+        "ladder_age_seconds": ladder.get("age_seconds"),
         "timestamp_utc": now.isoformat(),
         "minutes_to_hourly_expiry": minutes_to_expiry,
         "spot": round(spot, 2),
@@ -2151,7 +2216,7 @@ def predict_hourly_range(force_refresh: bool = False) -> dict:
         "ladder_feed_status": ladder_feed_status,
         "regime": regime,
         "strike_probs": strike_probs,
-        "ladder_residuals": [sp for sp in strike_probs if sp.get("flagged")],
+        "ladder_residuals": [] if not staleness_verdict.allowed else [sp for sp in strike_probs if sp.get("flagged")],
         "wick_stats": wick_stats,
         "decay_table": decay_table,
         "entry_scores": entry_scores,

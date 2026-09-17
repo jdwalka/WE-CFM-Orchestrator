@@ -182,13 +182,44 @@ function fixStrike(contract) {
   };
 }
 
-async function fetchKalshiContracts(spot) {
+const CACHE_KEY = "ladder:latest";
+const KV_TTL_S = 90;
+
+async function fetchKalshiContracts(spot, env = null, forceRefresh = false) {
   const url = "https://api.elections.kalshi.com/trade-api/v2/markets?series_ticker=KXBTC&status=open&limit=1000";
   const now = Date.now();
-  if (kalshiCache && now - kalshiCache.fetchedAt < KALSHI_CACHE_TTL_MS) {
+
+  if (!forceRefresh && env && env.MARKET_CACHE) {
+    try {
+      const raw = await env.MARKET_CACHE.get(CACHE_KEY);
+      if (raw) {
+        const cached = JSON.parse(raw);
+        const computedTs = Date.parse(cached.computed_at);
+        const ageSeconds = Number.isFinite(computedTs)
+          ? Math.max(0, Math.round(((Date.now() - computedTs) / 1000) * 10) / 10)
+          : 0;
+        return {
+          ok: true,
+          cache: "hit",
+          _cache: "hit",
+          age_seconds: ageSeconds,
+          computed_at: cached.computed_at,
+          cached_at: cached.computed_at,
+          close_ts: cached.close_ts || null,
+          ladder_ticker: cached.event_ticker || cached.ladder_ticker || null,
+          markets: cached.markets || cached.candidate_bands || cached.bands || [],
+        };
+      }
+    } catch (_) {}
+  }
+
+  if (!forceRefresh && kalshiCache && now - kalshiCache.fetchedAt < KALSHI_CACHE_TTL_MS) {
+    const ageSeconds = Math.round((now - kalshiCache.fetchedAt) / 1000);
     return {
       ...kalshiCache.payload,
       cache: "hit",
+      _cache: "hit",
+      age_seconds: ageSeconds,
       cached_at: new Date(kalshiCache.fetchedAt).toISOString(),
     };
   }
@@ -223,26 +254,38 @@ async function fetchKalshiContracts(spot) {
         yes_ask: market?.yes_ask_dollars ?? null,
         close_ts: market?.close_time || null,
       }));
+      const nowIso = new Date().toISOString();
       const payload = {
         ok: true,
         close_ts: expiry,
         ladder_ticker: nearSpot[0]?.event_ticker || null,
+        event_ticker: nearSpot[0]?.event_ticker || null,
         markets: contracts,
+        candidate_bands: contracts,
+        bands: contracts,
+        computed_at: nowIso,
+        spot,
       };
       kalshiCache = { fetchedAt: now, payload };
-      return { ...payload, cache: "miss" };
+      if (env && env.MARKET_CACHE) {
+        env.MARKET_CACHE.put(CACHE_KEY, JSON.stringify(payload), { expirationTtl: KV_TTL_S }).catch(() => {});
+      }
+      return { ...payload, cache: "miss", _cache: "miss", age_seconds: 0 };
     }
 
     const payload = { ok: false, error: "no expiry brackets spot ±1500" };
     kalshiCache = { fetchedAt: now, payload };
-    return { ...payload, cache: "miss" };
+    return { ...payload, cache: "miss", _cache: "miss", age_seconds: 0 };
   } catch (error) {
     const message = String(error?.message || error);
     if (kalshiCache) {
+      const ageSeconds = Math.round((Date.now() - kalshiCache.fetchedAt) / 1000);
       return {
         ...kalshiCache.payload,
         ok: true,
         cache: "stale",
+        _cache: "stale",
+        age_seconds: ageSeconds,
         cached_at: new Date(kalshiCache.fetchedAt).toISOString(),
         error: message,
       };
@@ -285,7 +328,7 @@ function computeDerived(books, funding, openInterest) {
   };
 }
 
-async function buildSnapshot(symbol = "BTCUSDT") {
+async function buildSnapshot(symbol = "BTCUSDT", env = null, forceRefresh = false) {
   const normalized = String(symbol || "BTCUSDT").toUpperCase();
   const product = COIN_PRODUCT[normalized] || {
     spot: `${normalized.replace(/USDT$/, "")}-USD`,
@@ -298,7 +341,7 @@ async function buildSnapshot(symbol = "BTCUSDT") {
     fetchOpenInterest(normalized),
   ]);
   const derived = computeDerived(books, funding, openInterest);
-  const contractsResult = await fetchKalshiContracts(derived.coinbase_mid).catch(error => ({
+  const contractsResult = await fetchKalshiContracts(derived.coinbase_mid, env, forceRefresh).catch(error => ({
     ok: false,
     error: String(error?.message || error),
   }));
@@ -316,22 +359,104 @@ async function buildSnapshot(symbol = "BTCUSDT") {
 }
 
 export default {
-  async fetch(request) {
+  async scheduled(_event, env, ctx) {
+    ctx.waitUntil(
+      (async () => {
+        try {
+          await buildSnapshot("BTCUSDT", env, true);
+        } catch (e) {
+          console.error("kodak-collector cron refresh failed:", e?.message || e);
+        }
+      })()
+    );
+  },
+
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
     const symbol = url.searchParams.get("symbol") || "BTCUSDT";
+    const isFresh = url.searchParams.get("fresh") === "1" || url.searchParams.get("force") === "1";
+
     switch (url.pathname) {
       case "/":
       case "/health":
         return jsonResponse({
           status: "ok",
           worker: "kodak-collector",
-          version: "1.0.0",
-          endpoints: ["/health", "/snapshot"],
+          version: "2.0.0",
+          endpoints: ["/health", "/snapshot", "/ladder"],
           ts: new Date().toISOString(),
         });
+      case "/ladder": {
+        if (isFresh || !env?.MARKET_CACHE) {
+          try {
+            const snap = await buildSnapshot(symbol, env, true);
+            const kalshi = snap.contracts?.kalshi_kxbtc || {};
+            const nowIso = new Date().toISOString();
+            const payload = {
+              status: kalshi.ok ? "ok" : "error",
+              computed_at: nowIso,
+              age_seconds: 0,
+              cache: "miss",
+              _cache: "miss",
+              event_ticker: kalshi.ladder_ticker || kalshi.event_ticker || null,
+              spot: snap.derived?.coinbase_mid || 0,
+              candidate_bands: kalshi.markets || kalshi.bands || [],
+              bands: kalshi.markets || kalshi.bands || [],
+              error: kalshi.error || null,
+            };
+            if (env?.MARKET_CACHE && ctx?.waitUntil) {
+              ctx.waitUntil(
+                env.MARKET_CACHE.put(CACHE_KEY, JSON.stringify(payload), { expirationTtl: KV_TTL_S })
+              );
+            }
+            return jsonResponse(payload);
+          } catch (e) {
+            return jsonResponse({ error: "fresh ladder fetch failed", detail: String(e?.message || e) }, 503);
+          }
+        }
+
+        const raw = await env.MARKET_CACHE.get(CACHE_KEY);
+        if (!raw) {
+          try {
+            const snap = await buildSnapshot(symbol, env, true);
+            const kalshi = snap.contracts?.kalshi_kxbtc || {};
+            const nowIso = new Date().toISOString();
+            const payload = {
+              status: kalshi.ok ? "ok" : "error",
+              computed_at: nowIso,
+              age_seconds: 0,
+              cache: "miss",
+              _cache: "miss",
+              event_ticker: kalshi.ladder_ticker || kalshi.event_ticker || null,
+              spot: snap.derived?.coinbase_mid || 0,
+              candidate_bands: kalshi.markets || kalshi.bands || [],
+              bands: kalshi.markets || kalshi.bands || [],
+              error: kalshi.error || null,
+            };
+            if (ctx?.waitUntil) {
+              ctx.waitUntil(
+                env.MARKET_CACHE.put(CACHE_KEY, JSON.stringify(payload), { expirationTtl: KV_TTL_S })
+              );
+            }
+            return jsonResponse(payload);
+          } catch (e) {
+            return jsonResponse({ error: "cold cache fetch failed", detail: String(e?.message || e) }, 503);
+          }
+        }
+
+        const payload = JSON.parse(raw);
+        const computedTs = Date.parse(payload.computed_at);
+        const ageSeconds = Number.isFinite(computedTs)
+          ? Math.max(0, Math.round(((Date.now() - computedTs) / 1000) * 10) / 10)
+          : 0;
+        payload.age_seconds = ageSeconds;
+        payload.cache = "hit";
+        payload._cache = "hit";
+        return jsonResponse(payload);
+      }
       case "/snapshot":
         try {
-          return jsonResponse(await buildSnapshot(symbol));
+          return jsonResponse(await buildSnapshot(symbol, env, isFresh));
         } catch (error) {
           return jsonResponse({ status: "error", error: String(error?.message || error) }, 502);
         }
