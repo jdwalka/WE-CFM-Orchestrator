@@ -8,9 +8,19 @@ html_handling = "auto-trailing-slash"
 not_found_handling = "single-page-application"
 
 [[d1_databases]]
+binding = "CALIBRATION_DB"
+database_name = "scalper-calibration"
+database_id = "48536b22-03b3-42dd-92fa-44feab144d84"
+
+[[d1_databases]]
 binding = "truffle"
 database_name = "scalper-calibration"
 database_id = "48536b22-03b3-42dd-92fa-44feab144d84"
+
+routes = [
+  { pattern = "scalper.leaksnipe.win", custom_domain = true },
+  { pattern = "scalper.leaksnipe.win/*", zone_name = "leaksnipe.win" }
+]
 
 [observability]
 enabled = true
