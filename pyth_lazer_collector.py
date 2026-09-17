@@ -85,6 +85,8 @@ def read_lazer_token() -> str:
 
 def init_db() -> sqlite3.Connection:
     con = sqlite3.connect(DB_PATH)
+    con.execute("PRAGMA journal_mode=WAL")
+    con.execute("PRAGMA synchronous=NORMAL")
     con.executescript(
         """
         CREATE TABLE IF NOT EXISTS lazer_ticks (
@@ -138,6 +140,8 @@ class Collector:
         self.token = token
         self.con = init_db()
         self.latest: dict[str, dict] = {}
+        self._buffer: list[tuple] = []
+        self._last_commit = time.time()
 
     async def stream(self):
         backoff = RECONNECT_BACKOFF_S
@@ -186,10 +190,19 @@ class Collector:
                 decoded["funding_rate_interval"], decoded["publisher_count"],
             ))
         if rows:
-            self.con.executemany(
-                "INSERT INTO lazer_ticks VALUES (?,?,?,?,?,?,?,?,?)", rows
-            )
-            self.con.commit()
+            self._buffer.extend(rows)
+            now = time.time()
+            if now - self._last_commit >= 2.0 or len(self._buffer) >= 200:
+                try:
+                    self.con.executemany(
+                        "INSERT INTO lazer_ticks VALUES (?,?,?,?,?,?,?,?,?)", self._buffer
+                    )
+                    self.con.commit()
+                except Exception as e:
+                    print(f"[pyth-lazer] DB commit error: {e}")
+                finally:
+                    self._buffer.clear()
+                    self._last_commit = now
 
     async def retention_loop(self):
         while True:

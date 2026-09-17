@@ -8,9 +8,7 @@
 //   GET /quote?symbol=bitcoin|ethereum|solana|xrp
 //                    → proxied hypedog up/down quote
 //   GET /everything   → status + fresh BTC quote in one call
-//
-// No bindings required — pure edge fan-out. CORS enabled so
-// the WECRYPTO app (Tailscale service) can call it directly.
+//   GET /robots.txt  → disallow crawler bots on API endpoints
 // ============================================================
 
 const SERVICES = {
@@ -46,15 +44,34 @@ const json = (data, status = 200) =>
     },
   });
 
-async function probe(name, cfg, timeoutMs = 5000) {
+async function probe(name, cfg, env, timeoutMs = 5000) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   const started = Date.now();
   try {
-    const res = await fetch(cfg.url, {
-      signal: ctrl.signal,
-      headers: { accept: "application/json" },
-    });
+    let res;
+    if (name === "hypedog" && env?.HYPEDOG) {
+      res = await env.HYPEDOG.fetch("https://hypedog/quote?symbol=bitcoin", {
+        headers: { accept: "application/json" },
+      });
+    } else if (name === "scalper" && env?.SCALPER) {
+      res = await env.SCALPER.fetch("https://scalper/health", {
+        headers: { accept: "application/json" },
+      });
+    } else if (name === "price" && env?.PRICE_PROXY) {
+      res = await env.PRICE_PROXY.fetch("https://price/", {
+        headers: { accept: "*/*" },
+      });
+    } else if (name === "archiver" && env?.ARCHIVER) {
+      res = await env.ARCHIVER.fetch("https://archiver/", {
+        headers: { accept: "*/*" },
+      });
+    } else {
+      res = await fetch(cfg.url, {
+        signal: ctrl.signal,
+        headers: { accept: "*/*" },
+      });
+    }
     let body = null;
     try { body = await res.json(); } catch { /* non-JSON ok */ }
     return {
@@ -79,8 +96,28 @@ async function probe(name, cfg, timeoutMs = 5000) {
   }
 }
 
+async function fetchQuote(symbol, env) {
+  if (env?.HYPEDOG) {
+    const res = await env.HYPEDOG.fetch(`https://hypedog/quote?symbol=${symbol}`, {
+      headers: { accept: "application/json" },
+    });
+    return { status: res.status, body: await res.json() };
+  }
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 8000);
+  try {
+    const res = await fetch(`${QUOTE_BASE}/quote?symbol=${symbol}`, {
+      signal: ctrl.signal,
+      headers: { accept: "application/json" },
+    });
+    return { status: res.status, body: await res.json() };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export default {
-  async fetch(request) {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
     if (request.method === "OPTIONS") {
@@ -93,11 +130,21 @@ export default {
       });
     }
 
+    if (url.pathname === "/robots.txt") {
+      return new Response("User-agent: *\nDisallow: /\n", {
+        status: 200,
+        headers: {
+          "content-type": "text/plain; charset=utf-8",
+          "cache-control": "public, max-age=86400",
+        },
+      });
+    }
+
     if (url.pathname === "/" || url.pathname === "") {
       return json({
         service: "wecryp-hub",
-        version: "1.0.0",
-        routes: ["/status", "/quote?symbol=", "/everything"],
+        version: "1.2.0",
+        routes: ["/status", "/quote?symbol=", "/everything", "/robots.txt"],
         services: Object.fromEntries(
           Object.entries(SERVICES).map(([k, v]) => [k, v.desc])
         ),
@@ -106,7 +153,7 @@ export default {
 
     if (url.pathname === "/status") {
       const results = await Promise.all(
-        Object.entries(SERVICES).map(([name, cfg]) => probe(name, cfg))
+        Object.entries(SERVICES).map(([name, cfg]) => probe(name, cfg, env))
       );
       return json({
         fetched_at: new Date().toISOString(),
@@ -120,27 +167,19 @@ export default {
       if (!SYMBOLS.includes(symbol)) {
         return json({ error: `unsupported symbol: ${symbol}`, supported: SYMBOLS }, 400);
       }
-      const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), 8000);
       try {
-        const res = await fetch(`${QUOTE_BASE}/quote?symbol=${symbol}`, {
-          signal: ctrl.signal,
-          headers: { accept: "application/json" },
-        });
-        const body = await res.json();
-        return json({ ...body, via: "wecryp-hub" }, res.status);
+        const { status, body } = await fetchQuote(symbol, env);
+        return json({ ...body, via: "wecryp-hub" }, status);
       } catch (e) {
         return json({ error: `hypedog unreachable: ${String(e && e.message ? e.message : e)}` }, 502);
-      } finally {
-        clearTimeout(timer);
       }
     }
 
     if (url.pathname === "/everything") {
       const [status, btcQuote] = await Promise.all([
-        Promise.all(Object.entries(SERVICES).map(([name, cfg]) => probe(name, cfg))),
-        fetch(`${QUOTE_BASE}/quote?symbol=bitcoin`, { headers: { accept: "application/json" } })
-          .then((r) => r.json())
+        Promise.all(Object.entries(SERVICES).map(([name, cfg]) => probe(name, cfg, env))),
+        fetchQuote("bitcoin", env)
+          .then((r) => r.body)
           .catch((e) => ({ error: String(e && e.message ? e.message : e) })),
       ]);
       return json({
@@ -151,6 +190,6 @@ export default {
       });
     }
 
-    return json({ error: "unknown route", routes: ["/status", "/quote?symbol=", "/everything"] }, 404);
+    return json({ error: "unknown route", routes: ["/status", "/quote?symbol=", "/everything", "/robots.txt"] }, 404);
   },
 };

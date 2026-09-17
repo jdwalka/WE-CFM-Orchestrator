@@ -60,10 +60,10 @@ async function fetchMarketData(url, init = {}, { retries = 2, retryDelayMs = 300
         signal: controller.signal,
       });
       clearTimeout(timer);
-      // Retry transient upstream 5xx errors; a 4xx means retrying won't help.
-      if (res.status >= 500 && attempt < retries) {
+      // Retry transient upstream 5xx errors or 429 rate limits
+      if ((res.status >= 500 || res.status === 429) && attempt < retries) {
         lastErr = new Error(`upstream ${url} -> HTTP ${res.status}`);
-        await new Promise((resolve) => setTimeout(resolve, retryDelayMs * (attempt + 1)));
+        await new Promise((resolve) => setTimeout(resolve, retryDelayMs * (attempt + 1) * 2));
         continue;
       }
       return res;
@@ -553,6 +553,14 @@ export default {
             description:
               "Live Coinbase/Kalshi/Polymarket data proxy for the Hourly Range Scalper uAgent.",
             routes: ROUTES,
+          });
+        case "/robots.txt":
+          return new Response("User-agent: *\nDisallow: /\n", {
+            status: 200,
+            headers: {
+              "Content-Type": "text/plain; charset=utf-8",
+              "Cache-Control": "public, max-age=86400",
+            },
           });
         case "/health":
           return jsonResponse(await buildHealthResponse(env, symbol));
