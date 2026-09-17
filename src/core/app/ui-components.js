@@ -454,6 +454,7 @@ function predictionCard(p) {
     // Kalshi is primary; Polymarket 15m is a legacy fallback only.
     const _k15mCoin = window.PredictionMarkets?.getCoin(p.sym);
     const _k15m = _k15mCoin?.kalshi15m ?? null;
+    const _poly15m = p.poly15m ?? _k15mCoin?.poly15m ?? _poly15mV ?? null;
     const _kProb = _k15m?.probability ?? null;
     let _kAlign = p.projections?.p15?.polyAlign ?? null;
     if (_kAlign && _k15m && _kAlign.ticker && _k15m.ticker && _kAlign.ticker !== _k15m.ticker) {
@@ -1493,6 +1494,7 @@ function buildQuickDecisionPanel(predArr) {
         const score = Number.isFinite(pred.score) ? (pred.score > 0 ? '+' : '') + pred.score.toFixed(2) : '—';
         const horizon = pred.backtest?.summary?.preferredHorizon ? `${pred.backtest.summary.preferredHorizon}m` : '';
         const coinData = window.PredictionMarkets?.getCoin(pred.sym) || {};
+        const liveOdds = typeof _liveContractOdds === 'function' ? _liveContractOdds(pred.sym) : { available: false };
         const otherOdds = [
           ['P5M', coinData.poly5m],
           ['P15M', coinData.poly15m],
