@@ -92,7 +92,13 @@ def _initialize(connection: sqlite3.Connection) -> None:
             outcome_candles_used INTEGER,
             cascade_active INTEGER,
             burst_pressure REAL,
-            cascade_skew REAL
+            cascade_skew REAL,
+            settlement_hold_given_touch REAL,
+            p_settle REAL,
+            final_print_brti REAL,
+            settled INTEGER,
+            settlement_held INTEGER,
+            settle_brier REAL
         );
         CREATE INDEX IF NOT EXISTS idx_predictions_expiry
             ON predictions(expiry_utc, resolved_at_utc);
@@ -124,6 +130,12 @@ def _migrate(connection: sqlite3.Connection) -> None:
         "cascade_active": "ALTER TABLE predictions ADD COLUMN cascade_active INTEGER",
         "burst_pressure": "ALTER TABLE predictions ADD COLUMN burst_pressure REAL",
         "cascade_skew": "ALTER TABLE predictions ADD COLUMN cascade_skew REAL",
+        "settlement_hold_given_touch": "ALTER TABLE predictions ADD COLUMN settlement_hold_given_touch REAL",
+        "p_settle": "ALTER TABLE predictions ADD COLUMN p_settle REAL",
+        "final_print_brti": "ALTER TABLE predictions ADD COLUMN final_print_brti REAL",
+        "settled": "ALTER TABLE predictions ADD COLUMN settled INTEGER",
+        "settlement_held": "ALTER TABLE predictions ADD COLUMN settlement_held INTEGER",
+        "settle_brier": "ALTER TABLE predictions ADD COLUMN settle_brier REAL",
     }
     for column, statement in migrations.items():
         if column not in columns:
@@ -196,6 +208,8 @@ def record_prediction(
     cascade_active: bool = False,
     burst_pressure: float = 0.0,
     cascade_skew: float = 1.0,
+    settlement_hold_given_touch: float | None = None,
+    p_settle: float | None = None,
 ) -> bool:
     """Append one prediction; duplicate timestamp/band/expiry rows are ignored."""
     connection = _connect()
@@ -207,8 +221,10 @@ def record_prediction(
                 prediction_key, timestamp_utc, band, low, high, expiry_utc,
                 p_touch, p_normal, p_student_t, p_base, p_calibrated,
                 calibration_factor, tail_adjustment, alt_aligned,
-                regime, minutes_to_expiry, time_to_expiry_bucket, model_version
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                regime, minutes_to_expiry, time_to_expiry_bucket, model_version,
+                cascade_active, burst_pressure, cascade_skew,
+                settlement_hold_given_touch, p_settle
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 _prediction_key(timestamp, band, expiry),
@@ -232,6 +248,8 @@ def record_prediction(
                 int(cascade_active),
                 float(burst_pressure),
                 float(cascade_skew),
+                float(settlement_hold_given_touch) if settlement_hold_given_touch is not None else None,
+                float(p_settle) if p_settle is not None else None,
             ),
         )
         connection.commit()
@@ -267,7 +285,7 @@ def resolve_pending_predictions() -> int:
             _initialize(connection)
             rows = connection.execute(
                 """
-                SELECT id, low, high, timestamp_utc, expiry_utc, p_touch, p_normal
+                SELECT id, low, high, timestamp_utc, expiry_utc, p_touch, p_normal, p_settle
                 FROM predictions
                 WHERE (resolved_at_utc IS NULL OR resolution_source IS NULL
                        OR tail_arrived IS NULL)
@@ -285,7 +303,9 @@ def resolve_pending_predictions() -> int:
 
     candle_cache = {}
     resolved = 0
-    for prediction_id, low, high, timestamp_text, expiry_text, p_touch, p_normal in rows:
+    for row in rows:
+        prediction_id, low, high, timestamp_text, expiry_text, p_touch, p_normal = row[:7]
+        p_settle = row[7] if len(row) > 7 else None
         expiry = datetime.fromisoformat(expiry_text)
         timestamp = datetime.fromisoformat(timestamp_text)
         if expiry <= timestamp:
@@ -300,6 +320,17 @@ def resolve_pending_predictions() -> int:
         bucket = _bucket(float(p_touch), float(p_normal), touched)
         brier = (float(p_touch) - (1 if touched else 0)) ** 2
         normal_brier = (float(p_normal) - (1 if touched else 0)) ** 2
+
+        # Settlement resolution from final minute candle (60s BRTI print proxy)
+        final_candle = candles[-1]
+        final_print_brti = round(
+            (final_candle["open"] + final_candle["high"] + final_candle["low"] + final_candle["close"]) / 4.0,
+            2,
+        )
+        settled = int(low <= final_print_brti <= high)
+        settlement_held = int(settled) if touched else 0
+        settle_brier = round((float(p_settle) - settled) ** 2, 6) if p_settle is not None else None
+
         try:
             with closing(_connect()) as connection:
                 _initialize(connection)
@@ -309,7 +340,8 @@ def resolve_pending_predictions() -> int:
                     SET touched=?, resolved_at_utc=?, brier=?, normal_brier=?,
                         outcome_bucket=?, tail_arrived=?, resolution_source=?,
                         outcome_window_start_utc=?, outcome_window_end_utc=?,
-                        outcome_candles_used=?
+                        outcome_candles_used=?,
+                        final_print_brti=?, settled=?, settlement_held=?, settle_brier=?
                     WHERE id=? AND (resolved_at_utc IS NULL OR resolution_source IS NULL
                                     OR tail_arrived IS NULL)
                     """,
@@ -324,6 +356,10 @@ def resolve_pending_predictions() -> int:
                         timestamp.isoformat(),
                         expiry.isoformat(),
                         len(candles),
+                        final_print_brti,
+                        settled,
+                        settlement_held,
+                        settle_brier,
                         prediction_id,
                     ),
                 )
@@ -332,6 +368,71 @@ def resolve_pending_predictions() -> int:
         except sqlite3.Error:
             continue
     return resolved
+
+
+def backfill_settlement_history(limit_expiries: int = 100) -> dict:
+    """Backfill final-60s BRTI print, settled status, and settlement_held for resolved predictions."""
+    try:
+        with closing(_connect()) as connection:
+            _initialize(connection)
+            expiries = [
+                row[0] for row in connection.execute(
+                    """
+                    SELECT DISTINCT expiry_utc
+                    FROM predictions
+                    WHERE resolved_at_utc IS NOT NULL AND final_print_brti IS NULL
+                    ORDER BY expiry_utc DESC
+                    LIMIT ?
+                    """,
+                    (limit_expiries,),
+                ).fetchall()
+            ]
+    except sqlite3.Error as exc:
+        return {"status": "error", "error": str(exc), "updated_predictions": 0}
+
+    if not expiries:
+        return {"status": "ok", "message": "all resolved predictions have final_print_brti", "updated_predictions": 0}
+
+    total_updated = 0
+    for expiry_text in expiries:
+        try:
+            expiry = datetime.fromisoformat(expiry_text)
+            start = expiry - timedelta(minutes=2)
+            candles = _fetch_minute_candles(start, expiry)
+            if not candles:
+                continue
+            final_candle = candles[-1]
+            final_print_brti = round(
+                (final_candle["open"] + final_candle["high"] + final_candle["low"] + final_candle["close"]) / 4.0,
+                2,
+            )
+            with closing(_connect()) as connection:
+                rows = connection.execute(
+                    """
+                    SELECT id, low, high, touched, p_settle
+                    FROM predictions
+                    WHERE expiry_utc = ? AND final_print_brti IS NULL
+                    """,
+                    (expiry_text,),
+                ).fetchall()
+                for pid, low, high, touched, p_settle in rows:
+                    settled = int(low <= final_print_brti <= high)
+                    settlement_held = int(settled) if touched else 0
+                    settle_brier = round((float(p_settle) - settled) ** 2, 6) if p_settle is not None else None
+                    connection.execute(
+                        """
+                        UPDATE predictions
+                        SET final_print_brti=?, settled=?, settlement_held=?, settle_brier=?
+                        WHERE id=?
+                        """,
+                        (final_print_brti, settled, settlement_held, settle_brier, pid),
+                    )
+                    total_updated += 1
+                connection.commit()
+        except Exception:
+            continue
+
+    return {"status": "ok", "expiries_processed": len(expiries), "updated_predictions": total_updated}
 
 
 def _window_stats(connection: sqlite3.Connection, where: str, args: tuple = ()) -> dict:
@@ -696,6 +797,56 @@ def get_calibration_report() -> dict:
             report["probability_correction"] = _probability_correction(connection)
             report["tail_probability_correction"] = _tail_probability_correction(connection)
             report["bucketed_correction"] = _bucketed_correction(connection)
+
+            # Settlement diagnostics and recent 60-second BRTI print outcomes
+            settlement_row = connection.execute(
+                """
+                SELECT 
+                    COUNT(*),
+                    SUM(CASE WHEN touched = 1 THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN settled = 1 THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN settlement_held = 1 THEN 1 ELSE 0 END),
+                    AVG(settlement_hold_given_touch),
+                    AVG(settle_brier)
+                FROM predictions
+                WHERE resolved_at_utc IS NOT NULL AND final_print_brti IS NOT NULL
+                """
+            ).fetchone()
+            total_resolved_settlements, total_touched, total_settled, total_held, avg_pred_hold, avg_settle_brier = settlement_row
+            realized_hold_rate = (total_held / total_touched) if (total_touched and total_touched > 0) else None
+            report["settlement_diagnostics"] = {
+                "total_resolved_with_brti": total_resolved_settlements or 0,
+                "touched_count": total_touched or 0,
+                "settled_inside_count": total_settled or 0,
+                "settlement_held_count": total_held or 0,
+                "realized_hold_rate": round(realized_hold_rate, 4) if realized_hold_rate is not None else None,
+                "avg_predicted_hold": round(float(avg_pred_hold), 4) if avg_pred_hold is not None else None,
+                "settlement_gap": round(realized_hold_rate - avg_pred_hold, 4) if (realized_hold_rate is not None and avg_pred_hold is not None) else None,
+                "settle_brier": round(float(avg_settle_brier), 6) if avg_settle_brier is not None else None,
+            }
+            recent_settlement_rows = connection.execute(
+                """
+                SELECT band, expiry_utc, low, high, final_print_brti, touched, settled, settlement_held, settlement_hold_given_touch
+                FROM predictions
+                WHERE resolved_at_utc IS NOT NULL AND final_print_brti IS NOT NULL
+                ORDER BY expiry_utc DESC, id DESC
+                LIMIT 12
+                """
+            ).fetchall()
+            report["recent_settlements"] = [
+                {
+                    "band": r[0],
+                    "expiry_utc": r[1],
+                    "low": r[2],
+                    "high": r[3],
+                    "final_print_brti": r[4],
+                    "touched": bool(r[5]),
+                    "settled": bool(r[6]),
+                    "settlement_held": bool(r[7]),
+                    "settlement_hold_given_touch": r[8],
+                }
+                for r in recent_settlement_rows
+            ]
             return report
     except sqlite3.Error as error:
         return {"status": "storage_error", "error": str(error)}

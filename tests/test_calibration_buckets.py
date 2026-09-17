@@ -139,7 +139,6 @@ class BucketedCorrectionReportTests(unittest.TestCase):
 
         self.assertTrue(report["active"])
         self.assertEqual(report["live_path"], "active")
-        self.assertEqual(report["live_path"], "report_only")
         self.assertEqual(report["samples"], 40)
         self.assertIn("current_factors", report)
         self.assertIn("overall_improvement", report)

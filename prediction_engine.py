@@ -2039,6 +2039,8 @@ def predict_hourly_range() -> dict:
             p_calibrated=strike["p_calibrated"],
             calibration_factor=strike["calibration_factor"],
             regime=regime.get("regime", "UNKNOWN"),
+            settlement_hold_given_touch=strike.get("settlement_hold_given_touch"),
+            p_settle=strike.get("p_settle"),
         )
     calibration_report = get_calibration_report()
 

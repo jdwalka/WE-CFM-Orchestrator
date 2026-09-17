@@ -32,8 +32,6 @@ class TailAdjustmentTests(unittest.TestCase):
         both = prediction_engine.get_tail_diagnostics({
             "late_window_spike_frequency_per_hour": 1.2,
             "per_hour": [{"avg_wick_ratio": value} for value in (0, 4, 8, 12, 16)],
-            "late_window_spike_frequency_per_hour": 1.0,
-            "per_hour": [{"avg_wick_ratio": value} for value in (0, 1, 2, 3, 4)],
         })
         self.assertEqual(
             both["tail_adjustment"],
