@@ -321,7 +321,7 @@ def _fetch_bands_from_snapshot() -> dict:
         raise ValueError(f"snapshot fallback failed: {exc}") from exc
 
 
-def get_kalshi_ladder(force_refresh: bool = False) -> dict:
+def get_kalshi_ladder(force_refresh: bool = True) -> dict:
     '''Resilient Kalshi hourly band ladder with Lane 1 backoff, freshness enforcement, and market hours gating.'''
     now = time.time()
     if force_refresh:
@@ -1633,7 +1633,7 @@ def _probs_from_sigma(
     }
 
 
-def predict_hourly_range(force_refresh: bool = False, screen_spot: float | None = None) -> dict:
+def predict_hourly_range(force_refresh: bool = True, screen_spot: float | None = None) -> dict:
     """Main entry: compute current hourly range prediction with probabilities."""
     now = datetime.now(timezone.utc)
     minutes_to_expiry = 60 - now.minute
