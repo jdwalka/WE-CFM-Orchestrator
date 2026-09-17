@@ -103,6 +103,8 @@ SETTLEMENT_HOLD_MIN_SAMPLES = 20
 POSITIONING_FUNDING_NORMALIZATION = 0.001
 POSITIONING_OI_DELTA_NORMALIZATION = 5.0
 POSITIONING_SKEW_MAX_PCT = 0.03
+COINBASE_L2_URL = "http://127.0.0.1:8793"
+V_RATIO_WHIPSAW_THRESHOLD = 0.005
 WICK_TREND_FLAT_SLOPE = 0.05
 SPOT_STALENESS_MIN_PCT_OF_SPOT = 0.0003
 SPOT_STALENESS_BAND_WIDTH_PCT = 0.10
@@ -506,8 +508,40 @@ def get_cross_venue_divergence() -> dict:
     }
 
 
+def get_coinbase_l2_features() -> dict:
+    """Fetch live L-ratio, V-ratio, and tau_res from local Coinbase L2 collector (port 8793)."""
+    l_data = None
+    v_data = None
+    try:
+        r = requests.get(f"{COINBASE_L2_URL}/l_ratio", timeout=0.25)
+        if r.ok:
+            l_data = r.json()
+    except Exception:
+        pass
+
+    try:
+        r = requests.get(f"{COINBASE_L2_URL}/v_ratio", timeout=0.25)
+        if r.ok:
+            v_data = r.json()
+    except Exception:
+        pass
+
+    l_ratio = l_data.get("l_ratio") if isinstance(l_data, dict) else None
+    v_ratio = v_data.get("v_ratio") if isinstance(v_data, dict) else None
+    tau_res_s = v_data.get("tau_res_s") if isinstance(v_data, dict) else None
+
+    return {
+        "l_ratio": float(l_ratio) if l_ratio is not None and math.isfinite(l_ratio) else None,
+        "v_ratio": float(v_ratio) if v_ratio is not None and math.isfinite(v_ratio) else None,
+        "tau_res_s": float(tau_res_s) if tau_res_s is not None and math.isfinite(tau_res_s) else None,
+        "l_data": l_data or {},
+        "v_data": v_data or {},
+        "active": l_ratio is not None and math.isfinite(l_ratio),
+    }
+
+
 def _positioning_skew(funding_rate: float | None, open_interest_delta_pct: float | None) -> float:
-    """Mild contrarian skew from funding, amplified by OI expansion."""
+    """Mild contrarian skew from funding, amplified by OI expansion (legacy fallback)."""
     if funding_rate is None or not math.isfinite(funding_rate):
         return 0.0
     funding_component = max(
@@ -526,7 +560,28 @@ def _positioning_skew(funding_rate: float | None, open_interest_delta_pct: float
 
 
 def get_positioning_skew() -> dict:
-    """Current funding/OI positioning used as a bounded drift skew."""
+    """Order-book depth imbalance (L-ratio) positioning used as a bounded drift skew."""
+    l2 = get_coinbase_l2_features()
+    l_ratio = l2.get("l_ratio")
+
+    # If L-ratio from Coinbase L2 is available, use it directly (replacing geo-blocked Binance futures)
+    if l_ratio is not None and math.isfinite(l_ratio):
+        skew = max(-POSITIONING_SKEW_MAX_PCT, min(POSITIONING_SKEW_MAX_PCT, l_ratio * POSITIONING_SKEW_MAX_PCT))
+        return {
+            "source": "coinbase_l2_depth",
+            "l_ratio": round(l_ratio, 5),
+            "v_ratio": round(l2["v_ratio"], 6) if l2.get("v_ratio") is not None else None,
+            "tau_res_s": round(l2["tau_res_s"], 4) if l2.get("tau_res_s") is not None else None,
+            "funding_rate": None,
+            "open_interest": None,
+            "open_interest_delta_pct": None,
+            "skew_pct": round(skew, 5),
+            "active": True,
+            "max_skew_pct": POSITIONING_SKEW_MAX_PCT,
+            "rule": "order-book depth imbalance (L-ratio) bounded drift skew",
+        }
+
+    # Fallback to legacy funding rate if L2 collector is not reachable
     funding_rate = None
     open_interest = None
     try:
@@ -534,7 +589,7 @@ def get_positioning_skew() -> dict:
             f"{BINANCE_FUTURES_URL}/premiumIndex",
             params={"symbol": "BTCUSDT"},
             headers=_HEADERS,
-            timeout=10,
+            timeout=1,
         )
         response.raise_for_status()
         funding_rate = float(response.json()["lastFundingRate"])
@@ -546,7 +601,7 @@ def get_positioning_skew() -> dict:
             f"{BINANCE_FUTURES_URL}/openInterest",
             params={"symbol": "BTCUSDT"},
             headers=_HEADERS,
-            timeout=10,
+            timeout=1,
         )
         response.raise_for_status()
         open_interest = float(response.json()["openInterest"])
@@ -563,6 +618,10 @@ def get_positioning_skew() -> dict:
 
     skew = _positioning_skew(funding_rate, open_interest_delta_pct)
     return {
+        "source": "binance_futures_fallback",
+        "l_ratio": None,
+        "v_ratio": None,
+        "tau_res_s": None,
         "funding_rate": funding_rate,
         "open_interest": open_interest,
         "open_interest_delta_pct": (
@@ -1152,8 +1211,12 @@ def get_alt_signal() -> dict:
     }
 
 
-def get_tail_diagnostics(wick_stats: dict, liquidations: dict | None = None) -> dict:
-    """Late-window wick trend and liquidation cascade used by the tail adjustment."""
+def get_tail_diagnostics(
+    wick_stats: dict,
+    liquidations: dict | None = None,
+    l2_features: dict | None = None,
+) -> dict:
+    """Late-window wick trend, liquidation cascade, and L2 whipsaw velocity co-trigger."""
     per_hour = wick_stats.get("per_hour", []) if isinstance(wick_stats, dict) else []
     wick_ratios = [h.get("avg_wick_ratio", 0.0) for h in per_hour[-12:]]
     slope = _linear_slope(wick_ratios[-5:])
@@ -1168,6 +1231,20 @@ def get_tail_diagnostics(wick_stats: dict, liquidations: dict | None = None) -> 
     wick_component = (
         min(TAIL_WICK_COMPONENT_MAX_CENTS, slope * 0.04)
         if wick_condition_met
+        else 0.0
+    )
+
+    # Whipsaw gate: V-ratio (flow velocity / resting depth scaled by fitted tau_res) as second co-trigger
+    l2 = l2_features if isinstance(l2_features, dict) else get_coinbase_l2_features()
+    v_ratio = l2.get("v_ratio")
+    tau_res_s = l2.get("tau_res_s")
+    v_ratio_active = v_ratio is not None and math.isfinite(v_ratio)
+    v_condition_met = v_ratio_active and v_ratio >= V_RATIO_WHIPSAW_THRESHOLD
+    price_trigger_met = spike_condition_met or wick_condition_met
+    whipsaw_co_triggered = price_trigger_met and v_condition_met
+    whipsaw_component = (
+        min(0.025, v_ratio * 2.0)
+        if whipsaw_co_triggered
         else 0.0
     )
 
@@ -1192,7 +1269,10 @@ def get_tail_diagnostics(wick_stats: dict, liquidations: dict | None = None) -> 
             elif liq_long_share <= 0.35:
                 liq_skew_direction = "up"
 
-    adjustment = min(TAIL_ADJUSTMENT_MAX_CENTS, spike_component + wick_component + liq_component)
+    adjustment = min(
+        TAIL_ADJUSTMENT_MAX_CENTS,
+        spike_component + wick_component + liq_component + whipsaw_component,
+    )
     if slope > WICK_TREND_FLAT_SLOPE:
         trend_status = "rising"
     elif slope < -WICK_TREND_FLAT_SLOPE:
@@ -1212,10 +1292,24 @@ def get_tail_diagnostics(wick_stats: dict, liquidations: dict | None = None) -> 
         "evidence": {
             "spike_condition_met": spike_condition_met,
             "wick_condition_met": wick_condition_met,
+            "v_ratio_condition_met": v_condition_met,
+            "whipsaw_co_triggered": whipsaw_co_triggered,
+            "v_ratio": round(v_ratio, 6) if v_ratio_active else None,
+            "tau_res_s": round(tau_res_s, 4) if tau_res_s is not None else None,
             "requires_both_conditions": False,
             "spike_component": round(spike_component, 4),
             "wick_component": round(wick_component, 4),
+            "whipsaw_component": round(whipsaw_component, 4),
             "liquidation_component": round(liq_component, 4),
+        },
+        "whipsaw_gate": {
+            "co_triggered": whipsaw_co_triggered,
+            "price_trigger": price_trigger_met,
+            "depth_exhaustion_trigger": v_condition_met,
+            "v_ratio": round(v_ratio, 6) if v_ratio_active else None,
+            "v_ratio_threshold": V_RATIO_WHIPSAW_THRESHOLD,
+            "tau_res_s": round(tau_res_s, 4) if tau_res_s is not None else None,
+            "component_cents": round(whipsaw_component * 100, 2),
         },
         "liquidation_cascade": {
             "burst": liq_burst,
@@ -1230,6 +1324,7 @@ def get_tail_diagnostics(wick_stats: dict, liquidations: dict | None = None) -> 
             f"(required >{TAIL_SPIKE_FREQUENCY_MIN:.3f}); "
             f"wick_ratio_slope={slope:.3f} "
             f"(required >={TAIL_WICK_SLOPE_MIN:.3f}); "
+            f"whipsaw_co_triggered={whipsaw_co_triggered}; "
             f"liq_burst={liq_burst} (skew={liq_skew_direction})"
         ),
     }

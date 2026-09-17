@@ -143,13 +143,22 @@ class OrderBook:
         if best_bid is None or best_ask is None:
             return {}
         mid = (best_bid + best_ask) / 2
+        band = mid * (DWELL_BUCKET_CAP_BPS / 10_000)
         bucket_weights: dict[int, float] = {}
-        for book in (self.bids, self.asks):
-            for price, size in book.items():
-                delta_bps = abs(price - mid) / mid * 10_000
-                key = min(int(delta_bps // DWELL_BUCKET_BPS) * DWELL_BUCKET_BPS, DWELL_BUCKET_CAP_BPS)
-                w = size * math.exp(-delta_bps / lambda_d_bps)
-                bucket_weights[key] = bucket_weights.get(key, 0.0) + w
+        for price, size in self.bids.items():
+            if mid - price > band:
+                continue
+            delta_bps = (mid - price) / mid * 10_000
+            key = int(delta_bps // DWELL_BUCKET_BPS) * DWELL_BUCKET_BPS
+            w = size * math.exp(-delta_bps / lambda_d_bps)
+            bucket_weights[key] = bucket_weights.get(key, 0.0) + w
+        for price, size in self.asks.items():
+            if price - mid > band:
+                continue
+            delta_bps = (price - mid) / mid * 10_000
+            key = int(delta_bps // DWELL_BUCKET_BPS) * DWELL_BUCKET_BPS
+            w = size * math.exp(-delta_bps / lambda_d_bps)
+            bucket_weights[key] = bucket_weights.get(key, 0.0) + w
         return bucket_weights
 
 
@@ -224,15 +233,15 @@ class Collector:
             self.con.commit()
             await asyncio.sleep(600)
 
-    def dwell_buckets(self, lookback_s: int = 3600) -> dict[int, dict]:
-        now = time.time()
-        if hasattr(self, "_cached_dwell_stats") and (now - getattr(self, "_cached_dwell_ts", 0)) < 15:
-            return self._cached_dwell_stats
-        self._flush_dwell()
-        cutoff_ms = int((now - lookback_s) * 1000)
-        rows = self.con.execute(
-            "SELECT price, dwell_ms FROM dwell_events WHERE death_ts_ms >= ?", (cutoff_ms,)
-        ).fetchall()
+    def _compute_dwell_buckets(self, lookback_s: int = 900) -> dict[int, dict]:
+        cutoff_ms = int((time.time() - lookback_s) * 1000)
+        con = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True, timeout=5.0)
+        try:
+            rows = con.execute(
+                "SELECT price, dwell_ms FROM dwell_events WHERE death_ts_ms >= ?", (cutoff_ms,)
+            ).fetchall()
+        finally:
+            con.close()
         best_bid, best_ask = self.book.best_bid_ask()
         if best_bid is None or best_ask is None:
             return {}
@@ -242,13 +251,27 @@ class Collector:
             delta_bps = abs(price - mid) / mid * 10_000
             key = min(int(delta_bps // DWELL_BUCKET_BPS) * DWELL_BUCKET_BPS, DWELL_BUCKET_CAP_BPS)
             buckets.setdefault(key, []).append(dwell_ms)
-        stats = {
+        return {
             k: {"n": len(v), "mean_ms": sum(v) / len(v)}
             for k, v in sorted(buckets.items())
         }
-        self._cached_dwell_stats = stats
-        self._cached_dwell_ts = now
-        return stats
+
+    async def dwell_worker(self):
+        while True:
+            try:
+                loop = asyncio.get_running_loop()
+                stats = await loop.run_in_executor(None, self._compute_dwell_buckets, 900)
+                if stats:
+                    self._cached_dwell_stats = stats
+                    self._cached_dwell_ts = time.time()
+            except Exception as e:
+                print(f"[coinbase-l2] dwell worker error: {e}")
+            await asyncio.sleep(10)
+
+    def dwell_buckets(self, lookback_s: int = 900) -> dict[int, dict]:
+        if hasattr(self, "_cached_dwell_stats") and self._cached_dwell_stats:
+            return self._cached_dwell_stats
+        return self._compute_dwell_buckets(lookback_s)
 
     def estimate_tau_res(self, lambda_d_bps: float = LAMBDA_D_BPS) -> tuple[float, str]:
         stats = self.dwell_buckets()
@@ -331,7 +354,7 @@ async def main():
     await runner.setup()
     await web.TCPSite(runner, "127.0.0.1", 8793).start()
     print("[coinbase-l2] HTTP server listening on http://127.0.0.1:8793")
-    await asyncio.gather(c.stream(), c.retention_loop())
+    await asyncio.gather(c.stream(), c.retention_loop(), c.dwell_worker())
 
 
 if __name__ == "__main__":
