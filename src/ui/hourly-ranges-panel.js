@@ -40,7 +40,19 @@
     BTC: '#f7931a', ETH: '#627eea', SOL: '#00d4aa',
     XRP: '#00aae4', DOGE: '#c2a633', BNB: '#f3ba2f', HYPE: '#50e3c2',
   };
-  const VISIBLE_BUCKETS = 11;   // 5 above + current + 5 below
+  const VISIBLE_BUCKETS = 11;   // 5 above + current + 5 below (synthetic fallback only)
+  const VISIBLE_PTB_ROWS = 5;   // real-ladder mode: single-PTB rows near spot
+  const KALSHI_LADDER_WORKER = 'https://kalshi-ladder-worker.gitgoin87.workers.dev';
+  // Coins Kalshi runs an hourly "between" range series for — kept in sync
+  // with kalshi-ladder-worker's SERIES_BY_SYMBOL. HYPE has no such series,
+  // so it always falls back to the synthetic ladder below.
+  const REAL_LADDER_SYMBOLS = new Set(['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'BNB']);
+  // Sequential blue ramp, light->dark (dataviz skill reference palette,
+  // used as-is — no brand substitution needed). Discrete steps for a
+  // filled-cell heatmap treatment, legible against this app's dark surface
+  // regardless of which end of the ramp: the block itself carries the
+  // magnitude, text stays on top in the app's normal ink color.
+  const WALL_SATURATION_STEPS = ['#cde2fb', '#86b6ef', '#3987e5', '#1c5cab', '#0d366b'];
   const POLL_NORMAL_MS  = 10000;  // First 30 mins (10s)
   const POLL_HALF_MS    = 5000;   // Last 30 mins (5s)
   const POLL_FAST_MS    = 2500;   // Last 15 mins (2.5s)
@@ -49,7 +61,9 @@
 
   // ── State ──────────────────────────────────────────────────────
   let _prices  = {}; // sym → number
-  let _ranges  = {}; // sym → [{ low, high, yesAsk, yesBid, yesAsk%, closeTime }]
+  let _ranges  = {}; // sym → [{ low, high, yesAsk, yesBid, yesAsk%, closeTime }] (synthetic fallback)
+  let _realBands = {}; // sym → real Kalshi "between" bands from kalshi-ladder-worker, or [] if unavailable
+  let _prevYesBid = {}; // sym → Map(low -> previous yes_bid_dollars), for the momentum arrow
   let _closeTimes = {}; // sym → ISO string of active bucket
   let _timer   = null;
   let _mounted = false;
@@ -217,6 +231,31 @@
     return window.PredictionMarkets?.getCoin?.(sym)?.poly60m || null;
   }
 
+  // ── Real Kalshi hourly ladder (single-strike PTB rows, real bid-wall size) ──
+  async function loadRealLadder(sym) {
+    if (!REAL_LADDER_SYMBOLS.has(sym)) return;
+    try {
+      const data = await apiFetch(`${KALSHI_LADDER_WORKER}/ladder?symbol=${sym}`, 8000);
+      const bands = (data && data.status === 'ok' && Array.isArray(data.bands)) ? data.bands : [];
+      const prevMap = _prevYesBid[sym] || (_prevYesBid[sym] = new Map());
+      for (const b of bands) {
+        const bid = Number(b.yes_bid_dollars);
+        if (Number.isFinite(bid)) {
+          b.prev_yes_bid_dollars = prevMap.has(b.low) ? prevMap.get(b.low) : null;
+          prevMap.set(b.low, bid);
+        } else {
+          b.prev_yes_bid_dollars = null;
+        }
+      }
+      _realBands[sym] = bands;
+    } catch (e) {
+      console.warn(`[HR] real ladder fetch failed for ${sym}:`, e.message);
+      // Leave whatever we had before (stale-but-real beats flipping to synthetic
+      // on a single transient failure); buildCoinCard falls back to synthetic
+      // only when _realBands[sym] has never been populated.
+    }
+  }
+
   async function loadCoin(sym) {
     const price = await fetchPrice(sym);
 
@@ -332,59 +371,55 @@
 
     let body;
     let topBuckets = [];
+    const realBands = safeGet(_realBands, sym) || [];
+    const isLive = realBands.length > 0;
 
-    if (!ranges.length && price) {
-      ranges = buildSpotCenteredRanges(sym, price, ctISO);
-      Object.defineProperty(_ranges, sym, { value: ranges, writable: true, enumerable: true, configurable: true });
-    }
+    if (isLive) {
+      // ── Real Kalshi hourly ladder: single-PTB rows, bid-wall saturation ──
+      // PTB = the band's floor_strike — a real, exact number straight from
+      // Kalshi, not a computed midpoint. "In spec" here means: this row
+      // corresponds to an actual open, tradeable Kalshi contract right now.
+      const sorted = [...realBands].sort((a, b) =>
+        Math.abs(a.low - (price ?? a.low)) - Math.abs(b.low - (price ?? b.low))
+      );
+      const nearest = sorted.slice(0, VISIBLE_PTB_ROWS).sort((a, b) => a.low - b.low);
 
-    if (!ranges.length) {
-      body = `<div class="hr-empty">Loading market data…</div>`;
-    } else {
-      const visible = selectVisible(ranges, price);
-      const total = visible.reduce((s, r) => s + Math.max(0, r.prob), 0) || 1;
+      const wallSizes = nearest.map(b => Math.max(0, b.yes_bid_size || b.open_interest || 0));
+      const maxWall = Math.max(1, ...wallSizes);
 
-      // Multi-bucket likelihood calculation (2-5 buckets)
-      const step = getStepSize(sym, price || 1);
-      const ranked = visible.map(r => {
-        const mid = (r.low + r.high) / 2;
-        const distSteps = price ? Math.abs(mid - price) / step : 0;
-        const likelihood = Math.exp(-distSteps * distSteps * 0.45) * Math.max(0.05, r.prob || 0.3);
-        return { ...r, likelihood };
-      }).sort((a, b) => b.likelihood - a.likelihood);
+      const rows = nearest.map(b => {
+        const isCurrent = price !== null && price >= b.low && price <= b.high;
+        const wallSize = Math.max(0, b.yes_bid_size || b.open_interest || 0);
+        const satIdx = Math.min(
+          WALL_SATURATION_STEPS.length - 1,
+          Math.floor((wallSize / maxWall) * WALL_SATURATION_STEPS.length)
+        );
+        const wallColor = wallSize > 0 ? WALL_SATURATION_STEPS[satIdx] : 'transparent';
 
-      const sumL = ranked.reduce((s, b) => s + b.likelihood, 0) || 1;
-      ranked.forEach(b => {
-        b.pctLikely = Math.round((b.likelihood / sumL) * 100);
-      });
-      topBuckets = ranked.slice(0, 5);
-
-      const rankMap = new Map();
-      topBuckets.slice(0, 3).forEach((b, idx) => {
-        rankMap.set(b.low, { rank: idx + 1, pct: b.pctLikely });
-      });
-
-      const rows = visible.map(r => {
-        const isCurrent = price !== null && price >= r.low && price <= r.high;
-        const rInfo     = rankMap.get(r.low);
-        const probNorm  = r.prob / total;
-        const barW      = Math.max(2, Math.round(probNorm * 100));
-        const probPctStr = fmtPct(r.prob);
-
-        let badgeHtml = '';
-        if (isCurrent) {
-          const herePct = rInfo ? `${rInfo.pct}%` : probPctStr;
-          badgeHtml = `<span class="hr-row-badge" style="background:${escapeHTML(color)};color:#000;font-weight:800;padding:2px 6px;border-radius:4px;margin-left:auto;">● HERE (${escapeHTML(herePct)})</span>`;
-        } else if (rInfo) {
-          badgeHtml = `<span class="hr-row-badge-rank" style="background:rgba(0,212,170,0.15);color:var(--color-accent,#00d4aa);font-size:10px;padding:2px 5px;border-radius:3px;margin-left:auto;font-weight:700;">🎯 #${escapeHTML(rInfo.rank)} (${escapeHTML(rInfo.pct)}%)</span>`;
+        const bid = Number(b.yes_bid_dollars);
+        const prevBid = b.prev_yes_bid_dollars;
+        let arrow = '';
+        if (Number.isFinite(bid) && Number.isFinite(prevBid) && bid !== prevBid) {
+          arrow = bid > prevBid
+            ? `<span class="hr-ptb-arrow hr-ptb-arrow--up" title="Yes bid rose since last poll">▲</span>`
+            : `<span class="hr-ptb-arrow hr-ptb-arrow--down" title="Yes bid fell since last poll">▼</span>`;
         }
 
+        const ptbStr = window.CoinPrecision?.formatCoinStrike
+          ? window.CoinPrecision.formatCoinStrike(sym, b.low)
+          : `$${b.low.toLocaleString()}`;
+        // yes_bid_dollars/yes_ask_dollars are dollar units (0.25 = 25 cents)
+        // — Kalshi contracts trade $0.01-$1.00, i.e. 1-100 cents.
+        const bidStr = Number.isFinite(bid) ? `${(bid * 100).toFixed(0)}¢` : '—';
+        const askVal = Number(b.yes_ask_dollars);
+        const askStr = Number.isFinite(askVal) ? `${(askVal * 100).toFixed(0)}¢` : '—';
+
         return `
-          <div class="hr-row${isCurrent ? ' hr-row--current' : ''}">
-            <div class="hr-row-bar" style="width:${escapeHTML(barW)}%;background:${isCurrent ? escapeHTML(color) : 'rgba(255,255,255,0.12)'}"></div>
-            <span class="hr-row-range">${escapeHTML(fmtPrice(r.low, r.high))}</span>
-            <span class="hr-row-prob" style="${isCurrent ? `color:${escapeHTML(color)}` : ''}">${escapeHTML(probPctStr)}</span>
-            ${badgeHtml}
+          <div class="hr-ptb-row${isCurrent ? ' hr-ptb-row--current' : ''}" style="background:${escapeHTML(wallColor)}22;border-left-color:${escapeHTML(wallColor)}">
+            <span class="hr-ptb-price">${escapeHTML(ptbStr)}</span>
+            <span class="hr-ptb-odds">${escapeHTML(bidStr)} / ${escapeHTML(askStr)}</span>
+            ${arrow}
+            ${isCurrent ? `<span class="hr-ptb-here" style="color:${escapeHTML(color)}">● HERE</span>` : ''}
           </div>`;
       });
 
@@ -395,12 +430,61 @@
       body = `
         <div class="hr-ranges-scroll">
           <div class="hr-ranges-header">
-            <span class="hr-ranges-label">Hourly bucket</span>
-            <span class="hr-ranges-label">Prob (YES)</span>
+            <span class="hr-ranges-label">PTB · live Kalshi</span>
+            <span class="hr-ranges-label">Yes bid / ask</span>
           </div>
           ${rows.join('')}
         </div>
         ${closeLabel}`;
+    } else {
+      // ── No real Kalshi coverage for this coin — synthetic fallback,
+      // clearly labeled so it's never mistaken for a live tradeable strike.
+      if (!ranges.length && price) {
+        ranges = buildSpotCenteredRanges(sym, price, ctISO);
+        Object.defineProperty(_ranges, sym, { value: ranges, writable: true, enumerable: true, configurable: true });
+      }
+
+      if (!ranges.length) {
+        body = `<div class="hr-empty">Loading market data…</div>`;
+      } else {
+        const visible = selectVisible(ranges, price);
+
+        const step = getStepSize(sym, price || 1);
+        const ranked = visible.map(r => {
+          const mid = (r.low + r.high) / 2;
+          const distSteps = price ? Math.abs(mid - price) / step : 0;
+          const likelihood = Math.exp(-distSteps * distSteps * 0.45) * Math.max(0.05, r.prob || 0.3);
+          return { ...r, likelihood };
+        }).sort((a, b) => b.likelihood - a.likelihood);
+        const sumL = ranked.reduce((s, b) => s + b.likelihood, 0) || 1;
+        ranked.forEach(b => { b.pctLikely = Math.round((b.likelihood / sumL) * 100); });
+        topBuckets = ranked.slice(0, 5);
+
+        const rows = visible.map(r => {
+          const isCurrent = price !== null && price >= r.low && price <= r.high;
+          const probPctStr = fmtPct(r.prob);
+          return `
+            <div class="hr-row${isCurrent ? ' hr-row--current' : ''}">
+              <span class="hr-row-range">${escapeHTML(fmtPrice(r.low, r.high))}</span>
+              <span class="hr-row-prob" style="${isCurrent ? `color:${escapeHTML(color)}` : ''}">${escapeHTML(probPctStr)}</span>
+              ${isCurrent ? `<span class="hr-ptb-here" style="color:${escapeHTML(color)}">● HERE</span>` : ''}
+            </div>`;
+        });
+
+        const closeLabel = ttc
+          ? `<span class="hr-ttc${isFinal ? ' hr-ttc--fast' : ''}">Closes in ${ttc}</span>`
+          : '';
+
+        body = `
+          <div class="hr-ranges-scroll">
+            <div class="hr-ranges-header">
+              <span class="hr-ranges-label">Synthetic estimate</span>
+              <span class="hr-ranges-label">Prob (YES)</span>
+            </div>
+            ${rows.join('')}
+          </div>
+          ${closeLabel}`;
+      }
     }
 
     // ASI1 hourly bucket guidance, pegged to a fixed 60-minute interval.
@@ -533,8 +617,7 @@
           <span class="hr-sym" style="color:${color}">${escapeHTML(sym)}</span>
           <span class="hr-price">${escapeHTML(priceStr)}</span>
         </div>
-        <div class="hr-card-body">${body}${grokHtml}</div>
-        <div class="hr-card-body">${kalshi15mHtml || '<div class="hr-empty">Kalshi 15m market pending…</div>'}${body}${grokHtml}</div>
+        <div class="hr-card-body">${kalshi15mHtml || ''}${body}${grokHtml}</div>
       </div>`;
   }
 
@@ -637,6 +720,44 @@
           border-radius: 4px;
           color: #000;
         }
+        /* Real-ladder single-PTB rows. Background is the bid-wall saturation
+           color set inline per row (sequential blue ramp, magnitude = wall
+           size) — this block encodes depth; text stays in normal ink. */
+        .hr-ptb-row {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          padding: 6px 12px;
+          min-height: 28px;
+          border-left: 3px solid transparent;
+          border-radius: 2px;
+        }
+        .hr-ptb-row--current {
+          border-left-color: var(--color-accent,#4af) !important;
+        }
+        .hr-ptb-price {
+          flex: 1;
+          font-size: .78rem;
+          font-weight: 600;
+          color: var(--color-text,#ddd);
+          white-space: nowrap;
+        }
+        .hr-ptb-odds {
+          font-size: .74rem;
+          font-weight: 700;
+          font-variant-numeric: tabular-nums;
+          color: var(--color-text-muted,#aaa);
+          white-space: nowrap;
+        }
+        .hr-ptb-arrow { font-size: .7rem; line-height: 1; }
+        .hr-ptb-arrow--up { color: var(--color-green,#26a69a); }
+        .hr-ptb-arrow--down { color: var(--color-red,#ef5350); }
+        .hr-ptb-here {
+          font-size: .6rem;
+          font-weight: 800;
+          letter-spacing: .3px;
+          white-space: nowrap;
+        }
         .hr-ttc {
           display: block;
           text-align: center;
@@ -715,7 +836,9 @@
 
   // ── Load all coins (parallelized per coin) ─────────────────────
   async function loadAll() {
-    await Promise.allSettled(COINS.map(sym => loadCoin(sym)));
+    await Promise.allSettled(
+      COINS.flatMap(sym => [loadCoin(sym), loadRealLadder(sym)])
+    );
   }
 
   function nextPollMs() {

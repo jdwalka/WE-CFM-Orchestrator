@@ -1,32 +1,41 @@
 /**
  * kalshi-ladder-worker — read-only, never places orders.
- * Serves KXBTC hourly band edges + yes_bid/yes_ask + size + minutes-to-expiry.
+ * Serves hourly "between" band ladders (low/high strike + bid/ask + size +
+ * open interest + minutes-to-expiry) for BTC and, as of this version, any
+ * other coin Kalshi runs an hourly range series for.
  *
  * Uses floor_strike / cap_strike fields (native numbers) — no string parsing.
  * Data: strike_type = "between" bands only (excludes floor/cap outlier markets).
  *
  * Caching: same pattern as scalper-market-data — a cron trigger (every 1min)
  * proactively refreshes a KV-backed cache (LADDER_CACHE, shared namespace,
- * distinct key), so on-demand requests almost never call Kalshi directly.
- * The previous version used a 5s in-memory cache, which is per-isolate and
- * essentially ineffective across Cloudflare's edge fleet — every isolate
- * cold-starts empty, so real traffic hit Kalshi's rate limit constantly.
- * An in-memory read-through cache is kept too, for the (rare) case of
- * multiple requests landing on the same warm isolate between KV reads.
+ * one key per symbol), so on-demand requests almost never call Kalshi
+ * directly. The original version used a 5s in-memory cache, which is
+ * per-isolate and essentially ineffective across Cloudflare's edge fleet —
+ * every isolate cold-starts empty, so real traffic hit Kalshi's rate limit
+ * constantly. An in-memory read-through cache is kept too, for the (rare)
+ * case of multiple requests landing on the same warm isolate between KV reads.
  *
- * Routes:
+ * Routes (all accept ?symbol=BTC|ETH|SOL|XRP|DOGE|BNB, default BTC):
  *   GET /ladder       → band list sorted by low strike
  *   GET /health       → worker liveness + cache age
  *   GET /edges        → flat array of [low, high] pairs for LME wiring
  */
 
-const CACHE_KEY = "kalshi-ladder:latest";
 const KV_TTL_S = 60;
-const KALSHI_URL =
-  "https://api.elections.kalshi.com/trade-api/v2/markets" +
-  "?series_ticker=KXBTC&status=open&limit=100";
 
-let MEMO = { fetched_ms: 0, payload: null }; // same-isolate fast path only
+// Kalshi's hourly "range" series ticker per coin. Only these are wired up —
+// HYPE has no Kalshi hourly range series as of this writing.
+const SERIES_BY_SYMBOL = {
+  BTC: "KXBTC",
+  ETH: "KXETH",
+  SOL: "KXSOL",
+  XRP: "KXXRP",
+  DOGE: "KXDOGE",
+  BNB: "KXBNB",
+};
+
+let MEMO = {}; // symbol -> { fetched_ms, payload } — same-isolate fast path only
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -38,9 +47,18 @@ function minutesToExpiry(closeTime) {
   return Math.max(0, (new Date(closeTime).getTime() - Date.now()) / 60_000);
 }
 
-async function fetchLadder() {
-  const res = await fetch(KALSHI_URL, {
-    headers: { Accept: "application/json", "User-Agent": "kalshi-ladder-worker/2.0" },
+function resolveSymbol(url) {
+  const raw = (url.searchParams.get("symbol") || "BTC").toUpperCase();
+  return SERIES_BY_SYMBOL[raw] ? raw : null;
+}
+
+async function fetchLadder(symbol) {
+  const series = SERIES_BY_SYMBOL[symbol];
+  const kalshiUrl =
+    "https://api.elections.kalshi.com/trade-api/v2/markets" +
+    `?series_ticker=${series}&status=open&limit=100`;
+  const res = await fetch(kalshiUrl, {
+    headers: { Accept: "application/json", "User-Agent": "kalshi-ladder-worker/3.0" },
   });
   if (!res.ok) throw new Error(`Kalshi API ${res.status}: ${await res.text()}`);
   const data = await res.json();
@@ -78,7 +96,8 @@ async function fetchLadder() {
     source:     "kalshi-ladder-worker",
     fetched_at: new Date().toISOString(),
     band_count: bands.length,
-    series:     "KXBTC",
+    symbol,
+    series,
     bands,
   };
 }
@@ -91,13 +110,25 @@ export default {
       return new Response(null, { headers: CORS });
     }
 
+    const symbol = resolveSymbol(url);
+    if (!symbol) {
+      return new Response(
+        JSON.stringify({
+          error: "unsupported symbol",
+          supported: Object.keys(SERIES_BY_SYMBOL),
+        }),
+        { status: 400, headers: CORS }
+      );
+    }
+
     // ── /health ──────────────────────────────────────────────────────────────
     if (url.pathname === "/health") {
-      const payload = await getOrFetch(env, ctx);
+      const payload = await getOrFetch(symbol, env, ctx);
       return new Response(
         JSON.stringify({
           status:        "ok",
           worker:        "kalshi-ladder-worker",
+          symbol,
           cache_age_ms:  payload.fetched_at ? Date.now() - Date.parse(payload.fetched_at) : null,
           cache_source:  payload.cache,
           band_count:    payload.band_count ?? null,
@@ -109,7 +140,7 @@ export default {
 
     // ── /edges — flat array of { low, high } for LME direct wiring ──────────
     if (url.pathname === "/edges") {
-      const payload = await getOrFetch(env, ctx);
+      const payload = await getOrFetch(symbol, env, ctx);
       const edges = payload.bands.map((b) => ({ low: b.low, high: b.high }));
       return new Response(
         JSON.stringify({ edges, band_count: edges.length, fetched_at: payload.fetched_at }),
@@ -119,7 +150,7 @@ export default {
 
     // ── /ladder (default) ────────────────────────────────────────────────────
     if (url.pathname === "/ladder" || url.pathname === "/") {
-      const payload = await getOrFetch(env, ctx);
+      const payload = await getOrFetch(symbol, env, ctx);
       return new Response(JSON.stringify(payload), { headers: CORS });
     }
 
@@ -129,65 +160,76 @@ export default {
     );
   },
 
-  // Cron trigger (every 1 minute) — keeps LADDER_CACHE warm so on-demand
-  // requests almost never need to call Kalshi directly.
+  // Cron trigger (every 1 minute) — keeps LADDER_CACHE warm for every
+  // tracked symbol so on-demand requests almost never need to call Kalshi
+  // directly. Six sequential calls from one coordinated cron tick is well
+  // within Kalshi's tolerance — the original 429s came from many uncoordinated
+  // isolates hitting Kalshi independently, not from request volume itself.
   async scheduled(_event, env, ctx) {
-    ctx.waitUntil(refreshCache(env));
+    ctx.waitUntil(
+      Promise.all(Object.keys(SERIES_BY_SYMBOL).map((sym) => refreshCache(sym, env)))
+    );
   },
 };
 
-async function refreshCache(env) {
+function cacheKey(symbol) {
+  return `kalshi-ladder:${symbol}`;
+}
+
+async function refreshCache(symbol, env) {
   try {
-    const payload = await fetchLadder();
-    MEMO = { fetched_ms: Date.now(), payload };
+    const payload = await fetchLadder(symbol);
+    MEMO[symbol] = { fetched_ms: Date.now(), payload };
     if (env.LADDER_CACHE) {
-      await env.LADDER_CACHE.put(CACHE_KEY, JSON.stringify(payload), {
+      await env.LADDER_CACHE.put(cacheKey(symbol), JSON.stringify(payload), {
         expirationTtl: KV_TTL_S * 4, // generous outer bound; freshness is judged by fetched_at, not KV expiry
       });
     }
     return payload;
   } catch (e) {
-    console.error("[kalshi-ladder-worker] refresh failed:", e);
+    console.error(`[kalshi-ladder-worker] refresh failed for ${symbol}:`, e);
     return null;
   }
 }
 
-async function getOrFetch(env, ctx) {
+async function getOrFetch(symbol, env, ctx) {
+  const memo = MEMO[symbol];
+
   // Fast path: same warm isolate served recently.
-  if (MEMO.payload && Date.now() - MEMO.fetched_ms < KV_TTL_S * 1000) {
-    return { ...MEMO.payload, cache: "memo" };
+  if (memo?.payload && Date.now() - memo.fetched_ms < KV_TTL_S * 1000) {
+    return { ...memo.payload, cache: "memo" };
   }
 
   // Cross-isolate path: KV, refreshed by the cron trigger.
   if (env.LADDER_CACHE) {
     try {
-      const raw = await env.LADDER_CACHE.get(CACHE_KEY);
+      const raw = await env.LADDER_CACHE.get(cacheKey(symbol));
       if (raw) {
         const payload = JSON.parse(raw);
         const ageS = (Date.now() - Date.parse(payload.fetched_at)) / 1000;
-        MEMO = { fetched_ms: Date.now(), payload };
+        MEMO[symbol] = { fetched_ms: Date.now(), payload };
         if (ageS < KV_TTL_S) {
           return { ...payload, cache: "kv" };
         }
         // Stale KV entry: serve it immediately, refresh in the background
         // so this request doesn't pay Kalshi's latency (or its 429s).
-        if (ctx) ctx.waitUntil(refreshCache(env));
+        if (ctx) ctx.waitUntil(refreshCache(symbol, env));
         return { ...payload, cache: "kv-stale" };
       }
     } catch (e) {
-      console.error("[kalshi-ladder-worker] KV read failed:", e);
+      console.error(`[kalshi-ladder-worker] KV read failed for ${symbol}:`, e);
     }
   }
 
   // No cache anywhere yet (cold start before the first cron tick) — fetch
   // live, same fallback behavior as before.
   try {
-    const payload = await refreshCache(env);
+    const payload = await refreshCache(symbol, env);
     if (payload) return { ...payload, cache: "miss" };
     throw new Error("refresh returned no payload");
   } catch (e) {
-    if (MEMO.payload) {
-      return { ...MEMO.payload, cache: "stale", error: String(e) };
+    if (memo?.payload) {
+      return { ...memo.payload, cache: "stale", error: String(e) };
     }
     throw e;
   }
