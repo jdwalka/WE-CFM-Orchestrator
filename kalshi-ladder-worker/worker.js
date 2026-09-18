@@ -184,13 +184,14 @@ export default {
 
   // Cron trigger (every 1 minute) — keeps LADDER_CACHE warm for every
   // tracked symbol so on-demand requests almost never need to call Kalshi
-  // directly. Six sequential calls from one coordinated cron tick is well
-  // within Kalshi's tolerance — the original 429s came from many uncoordinated
-  // isolates hitting Kalshi independently, not from request volume itself.
+  // directly. Genuinely sequential with a stagger, not Promise.all: firing
+  // all 6 concurrently hit Kalshi's per-IP concurrency limit every single
+  // tick, and network scheduling order made the SAME 3 symbols (ETH/XRP/BNB)
+  // lose that race every time — a structural bias, not random rate-limiting,
+  // that a random backoff can't fix. One request at a time removes the race
+  // entirely.
   async scheduled(_event, env, ctx) {
-    ctx.waitUntil(
-      Promise.all(Object.keys(SERIES_BY_SYMBOL).map((sym) => refreshCache(sym, env)))
-    );
+    ctx.waitUntil(refreshAllSequential(env));
   },
 };
 
@@ -206,17 +207,37 @@ function cacheKey(symbol) {
 // entry is still served (labeled stale) rather than thrown away.
 const KV_PERSIST_TTL_S = 60 * 60 * 24;
 
-// Per-isolate circuit breaker: once Kalshi 429s a symbol, stop hammering it
-// for a cooldown window instead of letting every subsequent cache-miss
-// request (cron tick or on-demand cold start, possibly several per second
-// across warm isolates) retry immediately and prolong the rate limit.
-const FAILURE_COOLDOWN_MS = 30_000;
-let LAST_FAILURE = {}; // symbol -> { at_ms, message }
+// Circuit breaker, cross-isolate via KV: once Kalshi 429s a symbol, every
+// isolate must back off, not just the one that saw the failure. A symbol
+// that never succeeds gets hit by every client poll PLUS cron across many
+// concurrently-warm isolates, each with its own clock — a purely in-memory
+// per-isolate cooldown can only cap ONE isolate's retry rate, so the
+// aggregate request rate to Kalshi for a stuck symbol stayed high even with
+// a cooldown in place, which is what kept ETH/XRP/BNB permanently 429'd
+// while BTC/SOL/DOGE (lucky enough to succeed once) coasted on the 60s KV
+// cache with near-zero further Kalshi calls. A KV-backed cooldown key is
+// the same clock for every isolate everywhere.
+const FAILURE_COOLDOWN_S = 120;
+// symbol -> { at_ms, message } — fast local path so an isolate that just
+// failed doesn't pay a KV read to rediscover that; it self-expires after
+// FAILURE_COOLDOWN_S so a long-lived isolate keeps retrying periodically
+// rather than refusing a symbol forever once it has failed once.
+let LAST_FAILURE = {};
+
+function cooldownKey(symbol) {
+  return `kalshi-cooldown:${symbol}`;
+}
 
 async function refreshCache(symbol, env) {
-  const failure = LAST_FAILURE[symbol];
-  if (failure && Date.now() - failure.at_ms < FAILURE_COOLDOWN_MS) {
-    return null; // cooling down — don't add to the rate-limit pressure
+  const local = LAST_FAILURE[symbol];
+  if (local && Date.now() - local.at_ms < FAILURE_COOLDOWN_S * 1000) {
+    return null; // this isolate just failed — same cooldown window as the KV key below
+  }
+  if (env.LADDER_CACHE) {
+    try {
+      const cooling = await env.LADDER_CACHE.get(cooldownKey(symbol));
+      if (cooling) return null; // some isolate failed recently — global cooldown, don't add to the pressure
+    } catch (_) { /* KV read failure shouldn't block a live attempt */ }
   }
   try {
     const payload = await fetchLadder(symbol);
@@ -229,9 +250,24 @@ async function refreshCache(symbol, env) {
     }
     return payload;
   } catch (e) {
-    LAST_FAILURE[symbol] = { at_ms: Date.now(), message: String((e && e.message) || e) };
+    const message = String((e && e.message) || e);
+    LAST_FAILURE[symbol] = { at_ms: Date.now(), message };
+    if (env.LADDER_CACHE) {
+      try {
+        await env.LADDER_CACHE.put(cooldownKey(symbol), message, { expirationTtl: FAILURE_COOLDOWN_S });
+      } catch (_) { /* best-effort */ }
+    }
     console.error(`[kalshi-ladder-worker] refresh failed for ${symbol}:`, e);
     return null;
+  }
+}
+
+const CRON_STAGGER_MS = 400;
+
+async function refreshAllSequential(env) {
+  for (const sym of Object.keys(SERIES_BY_SYMBOL)) {
+    await refreshCache(sym, env);
+    await new Promise((r) => setTimeout(r, CRON_STAGGER_MS));
   }
 }
 
@@ -269,7 +305,12 @@ async function getOrFetch(symbol, env, ctx) {
   try {
     const payload = await refreshCache(symbol, env);
     if (payload) return { ...payload, cache: "miss" };
-    throw new Error("refresh returned no payload");
+    // refreshCache swallows its own error into LAST_FAILURE and returns
+    // null (so callers can fall back to stale data); surface that real
+    // reason here instead of a generic message that hides what actually
+    // went wrong (Kalshi HTTP status, cooldown, etc).
+    const reason = LAST_FAILURE[symbol]?.message || "refresh returned no payload (cooling down)";
+    throw new Error(reason);
   } catch (e) {
     if (memo?.payload) {
       return { ...memo.payload, cache: "stale", error: String(e) };
