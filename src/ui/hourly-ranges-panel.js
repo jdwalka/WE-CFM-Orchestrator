@@ -102,7 +102,16 @@
     if (typeof window.suppFetch === 'function') {
       try {
         const res = await race(window.suppFetch(url));
-        if (res && typeof res.json === 'function') return await race(res.json());
+        if (res && typeof res.json === 'function') {
+          // proxyFetch returns a real Response — a persistent upstream 503
+          // comes back as .ok === false, not a thrown error. Skipping this
+          // check meant an error body (e.g. the kalshi-ladder-worker's typed
+          // 503 JSON) got parsed as if it were valid data instead of
+          // rejecting, which silently fed "no bands" into callers that then
+          // wiped out perfectly good previous state on a transient failure.
+          if (res.ok === false) throw new Error(`HTTP ${res.status}`);
+          return await race(res.json());
+        }
         return typeof res === 'string' ? JSON.parse(res) : res;
       } catch (e) {
         console.warn('[HR]', url, 'suppFetch failed:', e.message);
@@ -231,12 +240,36 @@
     return window.PredictionMarkets?.getCoin?.(sym)?.poly60m || null;
   }
 
+  // A successful fetch can still return zero bands — Kalshi briefly shows no
+  // open "between" markets for a symbol during the hourly contract rollover
+  // (old hour's bands close right as the new hour's are still opening).
+  // Treating "succeeded with 0 bands" the same as "never had real data"
+  // caused the panel to flicker: real ladder shown, one poll returns an
+  // empty array, and it flips straight back to synthetic. Require a few
+  // consecutive confirmed-empty polls before believing it (same distrust of
+  // a single sample as the failure path already has), so a 10-30s rollover
+  // blip doesn't wipe out perfectly good real data.
+  const EMPTY_STREAK_TO_FALL_BACK = 3;
+  let _emptyRealStreak = {}; // sym -> consecutive successful-but-empty poll count
+
   // ── Real Kalshi hourly ladder (single-strike PTB rows, real bid-wall size) ──
   async function loadRealLadder(sym) {
     if (!REAL_LADDER_SYMBOLS.has(sym)) return;
     try {
       const data = await apiFetch(`${KALSHI_LADDER_WORKER}/ladder?symbol=${sym}`, 8000);
       const bands = (data && data.status === 'ok' && Array.isArray(data.bands)) ? data.bands : [];
+
+      if (!bands.length) {
+        const streak = (_emptyRealStreak[sym] || 0) + 1;
+        _emptyRealStreak[sym] = streak;
+        if (streak < EMPTY_STREAK_TO_FALL_BACK && (safeGet(_realBands, sym) || []).length) {
+          return; // trust the last known-good bands through a brief rollover gap
+        }
+        _realBands[sym] = [];
+        return;
+      }
+      _emptyRealStreak[sym] = 0;
+
       const prevMap = _prevYesBid[sym] || (_prevYesBid[sym] = new Map());
       for (const b of bands) {
         const bid = Number(b.yes_bid_dollars);
