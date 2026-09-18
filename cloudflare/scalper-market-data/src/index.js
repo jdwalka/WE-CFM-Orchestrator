@@ -31,7 +31,10 @@ function jsonResponse(data, status = 200) {
     headers: {
       "Content-Type": "application/json",
       "Access-Control-Allow-Origin": "*",
-      "Cache-Control": "no-store, max-age=0",
+      "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0, proxy-revalidate",
+      "Pragma": "no-cache",
+      "Expires": "0",
+      "Surrogate-Control": "no-store",
     },
   });
 }
@@ -57,10 +60,10 @@ async function fetchMarketData(url, init = {}, { retries = 2, retryDelayMs = 300
         signal: controller.signal,
       });
       clearTimeout(timer);
-      // Retry transient upstream 5xx errors; a 4xx means retrying won't help.
-      if (res.status >= 500 && attempt < retries) {
+      // Retry transient upstream 5xx errors or 429 rate limits
+      if ((res.status >= 500 || res.status === 429) && attempt < retries) {
         lastErr = new Error(`upstream ${url} -> HTTP ${res.status}`);
-        await new Promise((resolve) => setTimeout(resolve, retryDelayMs * (attempt + 1)));
+        await new Promise((resolve) => setTimeout(resolve, retryDelayMs * (attempt + 1) * 2));
         continue;
       }
       return res;
@@ -87,7 +90,7 @@ async function getCoinbaseSpot(symbol = "BTC") {
 }
 
 async function getCalibrationHealth(env) {
-  const database = env && env.CALIBRATION_DB;
+  const database = env && (env.CALIBRATION_DB || env.truffle);
   if (!database) {
     return {
       storage_reachable: false,
@@ -215,6 +218,8 @@ async function getCoinbaseRecentRange(symbol = "BTC", minutes = 30) {
   return { high: windowHigh, low: windowLow, momentum_signal: momentumSignal };
 }
 
+const MAX_HOURLY_MINUTES_TO_EXPIRY = 65;
+
 async function getKalshiBands(spot, seriesTicker = "KXBTC", maxBandsEachSide = 6) {
   const r = await fetchMarketData(
     `${KALSHI_BASE}/markets?series_ticker=${seriesTicker}&status=open&limit=1000`
@@ -229,20 +234,37 @@ async function getKalshiBands(spot, seriesTicker = "KXBTC", maxBandsEachSide = 6
     (events[m.event_ticker] ||= []).push(m);
   }
 
+  const now = new Date();
   let bestTicker = null;
   let bestMarkets = null;
   let bestClose = null;
+  let minMinutes = Infinity;
+
   for (const [ticker, ms] of Object.entries(events)) {
     const close = new Date(ms[0].close_time);
-    if (!bestClose || close < bestClose) {
-      bestClose = close;
+    const mins = (close - now) / 60000;
+    if (mins > 0 && mins < minMinutes) {
+      minMinutes = mins;
       bestTicker = ticker;
       bestMarkets = ms;
+      bestClose = close;
     }
   }
 
-  const now = new Date();
-  const minutesToExpiry = (bestClose - now) / 60000;
+  // Hourly market gate: if nearest contract is > 65m away, Kalshi's hourly range
+  // market is currently closed (e.g. overnight 1am-6am EDT where only 5pm daily contracts exist).
+  // Never serve 14-hour daily contracts as hourly candidate bands.
+  if (!bestTicker || minMinutes > MAX_HOURLY_MINUTES_TO_EXPIRY) {
+    return {
+      status: "MARKET_CLOSED",
+      error: `Kalshi hourly market closed (next event ${bestTicker || "none"} closes in ${Number.isFinite(minMinutes) ? Math.round(minMinutes) : "unknown"}m)`,
+      candidate_bands: [],
+      minutes_to_expiry: Number.isFinite(minMinutes) ? minMinutes : null,
+      event_ticker: bestTicker,
+      market_active: false,
+      collector_timestamp: new Date().toISOString(),
+    };
+  }
 
   const above = [];
   const below = [];
@@ -270,7 +292,21 @@ async function getKalshiBands(spot, seriesTicker = "KXBTC", maxBandsEachSide = 6
     ...above.slice(0, maxBandsEachSide).map((b) => toBand(b, "ABOVE_SPOT")),
     ...below.slice(0, maxBandsEachSide).map((b) => toBand(b, "BELOW_SPOT")),
   ];
-  return { candidate_bands: candidateBands, minutes_to_expiry: minutesToExpiry, event_ticker: bestTicker };
+  const nowIso = new Date().toISOString();
+  return {
+    status: "ok",
+    market_active: true,
+    candidate_bands: candidateBands,
+    bands: candidateBands,
+    minutes_to_expiry: minMinutes,
+    event_ticker: bestTicker,
+    spot,
+    computed_at: nowIso,
+    collector_timestamp: nowIso,
+    age_seconds: 0,
+    _cache: "miss",
+    cache: "miss",
+  };
 }
 
 async function getKalshiUpdown(seriesTicker = "KXBTC15M") {
@@ -488,8 +524,33 @@ async function getPolymarketHourlyUpdown() {
   };
 }
 
+const CACHE_KEY = "ladder:latest";
+const KV_TTL_S = 90;
+
+async function fetchLadderPayload(spot, seriesTicker = "KXBTC", maxBandsEachSide = 6) {
+  const bandsData = await getKalshiBands(spot, seriesTicker, maxBandsEachSide);
+  const nowIso = new Date().toISOString();
+  return {
+    computed_at: nowIso,
+    age_seconds: 0,
+    cache: "miss",
+    _cache: "miss",
+    status: bandsData.status || "ok",
+    market_active: bandsData.market_active ?? true,
+    candidate_bands: bandsData.candidate_bands || [],
+    bands: bandsData.candidate_bands || [],
+    minutes_to_expiry: bandsData.minutes_to_expiry,
+    event_ticker: bandsData.event_ticker,
+    spot,
+    collector_timestamp: nowIso,
+    error: bandsData.error || null,
+  };
+}
+
 const ROUTES = [
   "GET /health",
+  "GET /calibration/status",
+  "GET /ladder?fresh=1",
   "GET /spot?symbol=BTC",
   "GET /coinbase/range?symbol=BTC&minutes=30",
   "GET /kalshi/bands?symbol=BTC&series=KXBTC",
@@ -503,7 +564,25 @@ const ROUTES = [
 ];
 
 export default {
-  async fetch(request, env) {
+  async scheduled(_event, env, ctx) {
+    if (env.MARKET_CACHE) {
+      ctx.waitUntil(
+        (async () => {
+          try {
+            const spotData = await getCoinbaseSpot("BTC");
+            const payload = await fetchLadderPayload(spotData.price, "KXBTC");
+            payload.cache = "cron";
+            payload._cache = "cron";
+            await env.MARKET_CACHE.put(CACHE_KEY, JSON.stringify(payload), { expirationTtl: KV_TTL_S });
+          } catch (e) {
+            console.error("cron refresh failed:", e?.message || e);
+          }
+        })()
+      );
+    }
+  },
+
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
     if (request.method === "OPTIONS") {
       return new Response(null, {
@@ -525,18 +604,177 @@ export default {
               "Live Coinbase/Kalshi/Polymarket data proxy for the Hourly Range Scalper uAgent.",
             routes: ROUTES,
           });
+        case "/robots.txt":
+          return new Response("User-agent: *\nDisallow: /\n", {
+            status: 200,
+            headers: {
+              "Content-Type": "text/plain; charset=utf-8",
+              "Cache-Control": "public, max-age=86400",
+            },
+          });
         case "/health":
           return jsonResponse(await buildHealthResponse(env, symbol));
+        case "/calibration/status": {
+          const database = env && (env.CALIBRATION_DB || env.truffle);
+          if (!database) {
+            return jsonResponse({
+              status: "degraded",
+              storage_reachable: false,
+              degraded: true,
+              error: "No CALIBRATION_DB or truffle binding found",
+            }, 503);
+          }
+          try {
+            const predCounts = await database
+              .prepare(
+                "SELECT COUNT(*) AS total, " +
+                "COUNT(CASE WHEN resolved_at_utc IS NOT NULL THEN 1 END) AS resolved, " +
+                "COUNT(CASE WHEN resolved_at_utc IS NULL THEN 1 END) AS pending " +
+                "FROM predictions"
+              )
+              .first();
+            const latestRep = await database
+              .prepare("SELECT timestamp_utc, regime, correction_factor, brier_score FROM calibration_reports ORDER BY id DESC LIMIT 1")
+              .first();
+            return jsonResponse({
+              status: "ok",
+              database: "scalper-calibration",
+              storage_reachable: true,
+              degraded: false,
+              predictions: {
+                total: predCounts?.total ?? 0,
+                resolved: predCounts?.resolved ?? 0,
+                pending: predCounts?.pending ?? 0,
+              },
+              latest_report: latestRep || null,
+              collector_timestamp: new Date().toISOString(),
+            });
+          } catch (e) {
+            return jsonResponse({
+              status: "error",
+              storage_reachable: false,
+              degraded: true,
+              error: String(e?.message || e),
+            }, 500);
+          }
+        }
         case "/spot":
           return jsonResponse(await getCoinbaseSpot(symbol));
         case "/coinbase/range":
           return jsonResponse(
             await getCoinbaseRecentRange(symbol, Number(url.searchParams.get("minutes") || 30))
           );
-        case "/kalshi/bands": {
+        case "/ladder": {
+          const isFresh = url.searchParams.get("fresh") === "1" || url.searchParams.get("force") === "1";
           const series = url.searchParams.get("series") || "KXBTC";
+
+          // C4: fresh bypass — entry decisions NEVER read cache
+          if (isFresh || !env.MARKET_CACHE) {
+            try {
+              const spotData = await getCoinbaseSpot(symbol);
+              const payload = await fetchLadderPayload(spotData.price, series);
+              if (env.MARKET_CACHE && ctx && ctx.waitUntil) {
+                ctx.waitUntil(
+                  env.MARKET_CACHE.put(CACHE_KEY, JSON.stringify(payload), { expirationTtl: KV_TTL_S })
+                );
+              }
+              return jsonResponse(payload);
+            } catch (e) {
+              return jsonResponse({ error: "fresh fetch failed", detail: String(e?.message || e) }, 503);
+            }
+          }
+
+          const raw = await env.MARKET_CACHE.get(CACHE_KEY);
+          if (!raw) {
+            // Cold cache: fetch through AND write back (C5) so next reader hits KV
+            try {
+              const spotData = await getCoinbaseSpot(symbol);
+              const payload = await fetchLadderPayload(spotData.price, series);
+              if (ctx && ctx.waitUntil) {
+                ctx.waitUntil(
+                  env.MARKET_CACHE.put(CACHE_KEY, JSON.stringify(payload), { expirationTtl: KV_TTL_S })
+                );
+              }
+              return jsonResponse(payload);
+            } catch (e) {
+              return jsonResponse({ error: "cache cold and fetch failed", detail: String(e?.message || e) }, 503);
+            }
+          }
+
+          const payload = JSON.parse(raw);
+          const computedTs = Date.parse(payload.computed_at);
+          const ageSeconds = Number.isFinite(computedTs)
+            ? Math.max(0, Math.round(((Date.now() - computedTs) / 1000) * 10) / 10)
+            : 0;
+          payload.age_seconds = ageSeconds;
+          payload.cache = "hit";
+          payload._cache = "hit";
+          return jsonResponse(payload);
+        }
+        case "/kalshi/bands": {
+          const isFresh = url.searchParams.get("fresh") === "1" || url.searchParams.get("force") === "1";
+          const series = url.searchParams.get("series") || "KXBTC";
+
+          if (isFresh || !env.MARKET_CACHE) {
+            const spotData = await getCoinbaseSpot(symbol);
+            const bands = await getKalshiBands(spotData.price, series);
+            const nowIso = new Date().toISOString();
+            const payload = {
+              ...bands,
+              _cache: "miss",
+              cache: "miss",
+              age_seconds: 0,
+              computed_at: nowIso,
+              collector_timestamp: nowIso,
+              spot: spotData.price,
+            };
+            if (env.MARKET_CACHE && ctx && ctx.waitUntil) {
+              ctx.waitUntil(
+                env.MARKET_CACHE.put(CACHE_KEY, JSON.stringify({
+                  ...payload,
+                  bands: payload.candidate_bands || [],
+                }), { expirationTtl: KV_TTL_S })
+              );
+            }
+            return jsonResponse(payload);
+          }
+
+          const raw = await env.MARKET_CACHE.get(CACHE_KEY);
+          if (raw) {
+            const cached = JSON.parse(raw);
+            const computedTs = Date.parse(cached.computed_at);
+            const ageSeconds = Number.isFinite(computedTs)
+              ? Math.max(0, Math.round(((Date.now() - computedTs) / 1000) * 10) / 10)
+              : 0;
+            return jsonResponse({
+              ...cached,
+              _cache: "hit",
+              cache: "hit",
+              age_seconds: ageSeconds,
+            });
+          }
+
           const spotData = await getCoinbaseSpot(symbol);
-          return jsonResponse(await getKalshiBands(spotData.price, series));
+          const bands = await getKalshiBands(spotData.price, series);
+          const nowIso = new Date().toISOString();
+          const payload = {
+            ...bands,
+            _cache: "miss",
+            cache: "miss",
+            age_seconds: 0,
+            computed_at: nowIso,
+            collector_timestamp: nowIso,
+            spot: spotData.price,
+          };
+          if (ctx && ctx.waitUntil) {
+            ctx.waitUntil(
+              env.MARKET_CACHE.put(CACHE_KEY, JSON.stringify({
+                ...payload,
+                bands: payload.candidate_bands || [],
+              }), { expirationTtl: KV_TTL_S })
+            );
+          }
+          return jsonResponse(payload);
         }
         case "/kalshi/updown":
           return jsonResponse(await getKalshiUpdown(url.searchParams.get("series") || "KXBTC15M"));

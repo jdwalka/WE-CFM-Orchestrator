@@ -1,9 +1,39 @@
-name = "wecrypto"
+name = "scalper-market-data"
 compatibility_date = "2026-08-28"
-compatibility_flags = ["nodejs_compat"]
+compatibility_flags = ["nodejs_compat_v2", "transformstream_enable_standard_constructor"]
 
 [assets]
 directory = "./dist/public"
-binding = "ASSETS"
 html_handling = "auto-trailing-slash"
 not_found_handling = "single-page-application"
+
+[[d1_databases]]
+binding = "CALIBRATION_DB"
+database_name = "scalper-calibration"
+database_id = "48536b22-03b3-42dd-92fa-44feab144d84"
+
+[[d1_databases]]
+binding = "truffle"
+database_name = "scalper-calibration"
+database_id = "48536b22-03b3-42dd-92fa-44feab144d84"
+
+routes = [
+  { pattern = "scalper.leaksnipe.win", custom_domain = true },
+  { pattern = "scalper.leaksnipe.win/*", zone_name = "leaksnipe.win" }
+]
+
+[observability]
+enabled = true
+head_sampling_rate = 1
+
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+invocation_logs = true
+persist = true
+
+[observability.traces]
+enabled = true
+head_sampling_rate = 1
+persist = true
+

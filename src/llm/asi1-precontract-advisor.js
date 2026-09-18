@@ -109,7 +109,6 @@
     } catch (_) { /* fall through */ }
 
     const coin = window.PredictionMarkets?.getCoin?.(sym) || {};
-    const p15 = coin.kalshi15m || null;
     const p15 = coin.kalshi15m || coin.poly15m || null;
     const p5 = coin.poly5m || null;
     let m = null;
@@ -152,7 +151,6 @@
     const ptb = ptbOk ? roundPtb(rawPtb) : null;
     const ttc = Number(m.secondsToClose);
     const yes = Number(m.probability ?? m.upProbability ?? m.yesProb);
-    const isKalshi15m = horizon === '15m';
     const isKalshi15m = horizon === '15m' && !!m.ticker;
 
     return {

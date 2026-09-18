@@ -430,6 +430,7 @@
           metaLine += ` · Top buckets: ${top3Str}`;
         } else if (bucket && Number.isFinite(Number(bucket.low))) {
           metaLine += ` · fixed 60m interval $${Number(bucket.low).toLocaleString()}–$${Number(bucket.high).toLocaleString()}`;
+        }
         if (label === '15m contract') {
           const peg15 = g.polyPeg || g.poly15m;
           const slug = g.contractSlug || (peg15 && peg15.slug) || '';
@@ -469,8 +470,7 @@
 
       if (b60 || asi1Strip) {
         grokHtml = `<div class="hr-grok">
-          <div class="hr-grok-hdr">✨ ASI1 pre-contract · fixed 60m interval</div>
-          <div class="hr-grok-hdr">✨ ASI1 pre-contract · 🤖 range overlay</div>
+          <div class="hr-grok-hdr">✨ ASI1 pre-contract · 🤖 range overlay · fixed 60m interval</div>
           ${asi1Strip}
           ${b60}
         </div>`;

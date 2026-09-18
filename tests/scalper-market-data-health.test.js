@@ -19,7 +19,6 @@ function createD1({ storageError, timestamp }) {
 function mockUpstreams({ spotTime = new Date().toISOString(), kalshiOk = true, polymarketOk = true } = {}) {
   globalThis.fetch = async (url, init = {}) => {
     globalThis.lastFetchInit = init;
-  globalThis.fetch = async (url) => {
     const value = String(url);
     if (value.includes("/ticker")) {
       return new Response(JSON.stringify({ price: "50000", time: spotTime }));
@@ -95,7 +94,7 @@ test("worker responses and upstream fetches bypass cache", async () => {
       new Request("https://worker.test/health"),
       { CALIBRATION_DB: createD1({ timestamp }) }
     );
-    assert.equal(response.headers.get("cache-control"), "no-store, max-age=0");
+    assert.equal(response.headers.get("cache-control"), "no-store, no-cache, must-revalidate, max-age=0, proxy-revalidate");
     assert.equal(globalThis.lastFetchInit.cache, "no-store");
     assert.equal(globalThis.lastFetchInit.cf, undefined);
   } finally {

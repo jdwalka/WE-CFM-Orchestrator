@@ -43,6 +43,7 @@ import requests
 
 from calibration_buckets import bucket_key
 from market_data import compute_stats, get_hourly_candles, get_spot
+from staleness_guard import MarketData, StalenessGuard, Verdict
 
 # ---------------------------------------------------------------------------
 # Model parameters (single source of truth; exposed via /weights)
@@ -103,6 +104,8 @@ SETTLEMENT_HOLD_MIN_SAMPLES = 20
 POSITIONING_FUNDING_NORMALIZATION = 0.001
 POSITIONING_OI_DELTA_NORMALIZATION = 5.0
 POSITIONING_SKEW_MAX_PCT = 0.03
+COINBASE_L2_URL = "http://127.0.0.1:8793"
+V_RATIO_WHIPSAW_THRESHOLD = 0.005
 WICK_TREND_FLAT_SLOPE = 0.05
 SPOT_STALENESS_MIN_PCT_OF_SPOT = 0.0003
 SPOT_STALENESS_BAND_WIDTH_PCT = 0.10
@@ -135,6 +138,69 @@ _TICKER_STRIKE_RE = re.compile(r"-([BS])(\d{4,})$")
 
 _cross_venue_divergence_history = []
 _open_interest_history = []
+
+# ---------------------------------------------------------------------------
+# Ladder Memory Engine (LME) — four-force physics state detector
+# Singleton persists across predict_hourly_range() calls for memory kernel.
+# ---------------------------------------------------------------------------
+_lme_engine = None  # type: ignore  # LME instance, lazy-imported
+
+
+def _lme_step(
+    spot: float,
+    current_hourly_range: float,
+    band_edges: list,
+) -> dict:
+    """
+    Run one LME tick. Fetches Coinbase L2 book (30 levels, 2s timeout).
+    Never raises — returns {"available": False, "error": ...} on any failure.
+    Called once per predict_hourly_range() invocation; the singleton LME
+    preserves rung memory (touch counts, strength decay) across calls.
+    """
+    global _lme_engine
+    try:
+        import urllib.request as _ur
+        import json as _json
+        from lme_codex import LME, fetch_band_edges as _fe  # noqa: PLC0415
+
+        if _lme_engine is None:
+            _lme_engine = LME()
+            _lme_engine.hour_open = spot  # anchor to first call this hour
+
+        # Fetch Coinbase L2 book — lightweight, 2s timeout, 30 levels
+        bids: list = []
+        asks: list = []
+        try:
+            _book_req = _ur.Request(
+                "https://api.exchange.coinbase.com/products/BTC-USD/book?level=2",
+                headers={"User-Agent": "wecryp-lme/1.0"},
+            )
+            with _ur.urlopen(_book_req, timeout=2.0) as _r:
+                _book = _json.loads(_r.read().decode())
+            bids = [
+                (float(p), float(p) * float(s))
+                for p, s, _ in _book.get("bids", [])[:30]
+            ]
+            asks = [
+                (float(p), float(p) * float(s))
+                for p, s, _ in _book.get("asks", [])[:30]
+            ]
+        except Exception:
+            pass  # wall scan degrades to zeros — LME still runs for recoil force
+
+        out = _lme_engine.step(
+            price=spot,
+            t=time.time(),
+            bids=bids,
+            asks=asks,
+            band_edges=band_edges,
+        )
+        out["available"] = True
+        out["book_levels"] = len(bids)
+        return out
+
+    except Exception as exc:
+        return {"available": False, "error": str(exc)}
 
 
 class DivergenceRegime:
@@ -318,19 +384,32 @@ def _fetch_bands_from_snapshot() -> dict:
         raise ValueError(f"snapshot fallback failed: {exc}") from exc
 
 
-def get_kalshi_ladder() -> dict:
-    '''Resilient Kalshi hourly band ladder with Lane 1 backoff and Lane 2 staleness check.'''
+def get_kalshi_ladder(force_refresh: bool = True) -> dict:
+    '''Resilient Kalshi hourly band ladder with Lane 1 backoff, freshness enforcement, and market hours gating.'''
     now = time.time()
+    if force_refresh:
+        _bands_cache["data"] = None
+        _bands_cache["ts"] = 0.0
     cached = _bands_cache["data"]
-    if cached is not None and now - _bands_cache["ts"] < BANDS_CACHE_TTL_SECONDS:
-        return {
-            **deepcopy(cached),
-            "status": "ok",
-            "error": None,
-            "_cache": "hit",
-            "_source": "cache",
-            "_ts": _bands_cache["ts"],
-        }
+    if (
+        not force_refresh
+        and cached is not None
+        and now - _bands_cache["ts"] < BANDS_CACHE_TTL_SECONDS
+        and cached.get("status") == "ok"
+        and cached.get("minutes_to_expiry", 0) <= 65
+    ):
+        served_age = cached.get("age_seconds", 0) + (now - _bands_cache["ts"])
+        if served_age <= BANDS_CACHE_TTL_SECONDS:
+            return {
+                **deepcopy(cached),
+                "status": "ok",
+                "error": None,
+                "_cache": "hit",
+                "cache": "hit",
+                "age_seconds": round(served_age, 1),
+                "_source": "cache",
+                "_ts": _bands_cache["ts"],
+            }
 
     last_primary_error = None
     
@@ -338,14 +417,47 @@ def get_kalshi_ladder() -> dict:
     delays = [2, 4, 8]
     for attempt in range(3):
         try:
+            params = {"fresh": "1"} if force_refresh else {}
             response = requests.get(
-                f"{MARKET_DATA_WORKER_URL}/kalshi/bands", timeout=15
+                f"{MARKET_DATA_WORKER_URL}/kalshi/bands",
+                params=params,
+                headers={"Cache-Control": "no-cache", "Pragma": "no-cache"},
+                timeout=15,
             )
             response.raise_for_status()
             payload = response.json()
             
             # Lane 2: enforce freshness
             enforce_freshness(payload, "ladder")
+
+            # Check market status: if Kalshi hourly market is closed or contract > 65m away
+            status = payload.get("status", "ok")
+            minutes_to_expiry = payload.get("minutes_to_expiry")
+            is_closed = (
+                status == "MARKET_CLOSED"
+                or (isinstance(minutes_to_expiry, (int, float)) and minutes_to_expiry > 65)
+            )
+
+            if is_closed:
+                error_msg = payload.get("error") or (
+                    f"Kalshi hourly market closed (event {payload.get('event_ticker')} expires in {minutes_to_expiry:.0f}m)"
+                    if minutes_to_expiry else "Kalshi hourly market closed"
+                )
+                res = {
+                    "status": "MARKET_CLOSED",
+                    "error": error_msg,
+                    "candidate_bands": [],
+                    "minutes_to_expiry": minutes_to_expiry,
+                    "event_ticker": payload.get("event_ticker"),
+                    "market_active": False,
+                    "collector_timestamp": payload.get("collector_timestamp"),
+                    "_cache": "miss",
+                    "_source": "primary_worker",
+                    "_ts": time.time(),
+                }
+                _bands_cache["data"] = None  # Do not cache closed market as valid ladder
+                _bands_cache["ts"] = 0.0
+                return res
             
             payload = _normalize_bands_payload(payload)
             
@@ -506,8 +618,40 @@ def get_cross_venue_divergence() -> dict:
     }
 
 
+def get_coinbase_l2_features() -> dict:
+    """Fetch live L-ratio, V-ratio, and tau_res from local Coinbase L2 collector (port 8793)."""
+    l_data = None
+    v_data = None
+    try:
+        r = requests.get(f"{COINBASE_L2_URL}/l_ratio", timeout=0.25)
+        if r.ok:
+            l_data = r.json()
+    except Exception:
+        pass
+
+    try:
+        r = requests.get(f"{COINBASE_L2_URL}/v_ratio", timeout=0.25)
+        if r.ok:
+            v_data = r.json()
+    except Exception:
+        pass
+
+    l_ratio = l_data.get("l_ratio") if isinstance(l_data, dict) else None
+    v_ratio = v_data.get("v_ratio") if isinstance(v_data, dict) else None
+    tau_res_s = v_data.get("tau_res_s") if isinstance(v_data, dict) else None
+
+    return {
+        "l_ratio": float(l_ratio) if l_ratio is not None and math.isfinite(l_ratio) else None,
+        "v_ratio": float(v_ratio) if v_ratio is not None and math.isfinite(v_ratio) else None,
+        "tau_res_s": float(tau_res_s) if tau_res_s is not None and math.isfinite(tau_res_s) else None,
+        "l_data": l_data or {},
+        "v_data": v_data or {},
+        "active": l_ratio is not None and math.isfinite(l_ratio),
+    }
+
+
 def _positioning_skew(funding_rate: float | None, open_interest_delta_pct: float | None) -> float:
-    """Mild contrarian skew from funding, amplified by OI expansion."""
+    """Mild contrarian skew from funding, amplified by OI expansion (legacy fallback)."""
     if funding_rate is None or not math.isfinite(funding_rate):
         return 0.0
     funding_component = max(
@@ -526,7 +670,28 @@ def _positioning_skew(funding_rate: float | None, open_interest_delta_pct: float
 
 
 def get_positioning_skew() -> dict:
-    """Current funding/OI positioning used as a bounded drift skew."""
+    """Order-book depth imbalance (L-ratio) positioning used as a bounded drift skew."""
+    l2 = get_coinbase_l2_features()
+    l_ratio = l2.get("l_ratio")
+
+    # If L-ratio from Coinbase L2 is available, use it directly (replacing geo-blocked Binance futures)
+    if l_ratio is not None and math.isfinite(l_ratio):
+        skew = max(-POSITIONING_SKEW_MAX_PCT, min(POSITIONING_SKEW_MAX_PCT, l_ratio * POSITIONING_SKEW_MAX_PCT))
+        return {
+            "source": "coinbase_l2_depth",
+            "l_ratio": round(l_ratio, 5),
+            "v_ratio": round(l2["v_ratio"], 6) if l2.get("v_ratio") is not None else None,
+            "tau_res_s": round(l2["tau_res_s"], 4) if l2.get("tau_res_s") is not None else None,
+            "funding_rate": None,
+            "open_interest": None,
+            "open_interest_delta_pct": None,
+            "skew_pct": round(skew, 5),
+            "active": True,
+            "max_skew_pct": POSITIONING_SKEW_MAX_PCT,
+            "rule": "order-book depth imbalance (L-ratio) bounded drift skew",
+        }
+
+    # Fallback to legacy funding rate if L2 collector is not reachable
     funding_rate = None
     open_interest = None
     try:
@@ -534,7 +699,7 @@ def get_positioning_skew() -> dict:
             f"{BINANCE_FUTURES_URL}/premiumIndex",
             params={"symbol": "BTCUSDT"},
             headers=_HEADERS,
-            timeout=10,
+            timeout=1,
         )
         response.raise_for_status()
         funding_rate = float(response.json()["lastFundingRate"])
@@ -546,7 +711,7 @@ def get_positioning_skew() -> dict:
             f"{BINANCE_FUTURES_URL}/openInterest",
             params={"symbol": "BTCUSDT"},
             headers=_HEADERS,
-            timeout=10,
+            timeout=1,
         )
         response.raise_for_status()
         open_interest = float(response.json()["openInterest"])
@@ -563,6 +728,10 @@ def get_positioning_skew() -> dict:
 
     skew = _positioning_skew(funding_rate, open_interest_delta_pct)
     return {
+        "source": "binance_futures_fallback",
+        "l_ratio": None,
+        "v_ratio": None,
+        "tau_res_s": None,
         "funding_rate": funding_rate,
         "open_interest": open_interest,
         "open_interest_delta_pct": (
@@ -1152,8 +1321,12 @@ def get_alt_signal() -> dict:
     }
 
 
-def get_tail_diagnostics(wick_stats: dict, liquidations: dict | None = None) -> dict:
-    """Late-window wick trend and liquidation cascade used by the tail adjustment."""
+def get_tail_diagnostics(
+    wick_stats: dict,
+    liquidations: dict | None = None,
+    l2_features: dict | None = None,
+) -> dict:
+    """Late-window wick trend, liquidation cascade, and L2 whipsaw velocity co-trigger."""
     per_hour = wick_stats.get("per_hour", []) if isinstance(wick_stats, dict) else []
     wick_ratios = [h.get("avg_wick_ratio", 0.0) for h in per_hour[-12:]]
     slope = _linear_slope(wick_ratios[-5:])
@@ -1168,6 +1341,20 @@ def get_tail_diagnostics(wick_stats: dict, liquidations: dict | None = None) -> 
     wick_component = (
         min(TAIL_WICK_COMPONENT_MAX_CENTS, slope * 0.04)
         if wick_condition_met
+        else 0.0
+    )
+
+    # Whipsaw gate: V-ratio (flow velocity / resting depth scaled by fitted tau_res) as second co-trigger
+    l2 = l2_features if isinstance(l2_features, dict) else get_coinbase_l2_features()
+    v_ratio = l2.get("v_ratio")
+    tau_res_s = l2.get("tau_res_s")
+    v_ratio_active = v_ratio is not None and math.isfinite(v_ratio)
+    v_condition_met = v_ratio_active and v_ratio >= V_RATIO_WHIPSAW_THRESHOLD
+    price_trigger_met = spike_condition_met or wick_condition_met
+    whipsaw_co_triggered = price_trigger_met and v_condition_met
+    whipsaw_component = (
+        min(0.025, v_ratio * 2.0)
+        if whipsaw_co_triggered
         else 0.0
     )
 
@@ -1192,7 +1379,10 @@ def get_tail_diagnostics(wick_stats: dict, liquidations: dict | None = None) -> 
             elif liq_long_share <= 0.35:
                 liq_skew_direction = "up"
 
-    adjustment = min(TAIL_ADJUSTMENT_MAX_CENTS, spike_component + wick_component + liq_component)
+    adjustment = min(
+        TAIL_ADJUSTMENT_MAX_CENTS,
+        spike_component + wick_component + liq_component + whipsaw_component,
+    )
     if slope > WICK_TREND_FLAT_SLOPE:
         trend_status = "rising"
     elif slope < -WICK_TREND_FLAT_SLOPE:
@@ -1212,10 +1402,24 @@ def get_tail_diagnostics(wick_stats: dict, liquidations: dict | None = None) -> 
         "evidence": {
             "spike_condition_met": spike_condition_met,
             "wick_condition_met": wick_condition_met,
+            "v_ratio_condition_met": v_condition_met,
+            "whipsaw_co_triggered": whipsaw_co_triggered,
+            "v_ratio": round(v_ratio, 6) if v_ratio_active else None,
+            "tau_res_s": round(tau_res_s, 4) if tau_res_s is not None else None,
             "requires_both_conditions": False,
             "spike_component": round(spike_component, 4),
             "wick_component": round(wick_component, 4),
+            "whipsaw_component": round(whipsaw_component, 4),
             "liquidation_component": round(liq_component, 4),
+        },
+        "whipsaw_gate": {
+            "co_triggered": whipsaw_co_triggered,
+            "price_trigger": price_trigger_met,
+            "depth_exhaustion_trigger": v_condition_met,
+            "v_ratio": round(v_ratio, 6) if v_ratio_active else None,
+            "v_ratio_threshold": V_RATIO_WHIPSAW_THRESHOLD,
+            "tau_res_s": round(tau_res_s, 4) if tau_res_s is not None else None,
+            "component_cents": round(whipsaw_component * 100, 2),
         },
         "liquidation_cascade": {
             "burst": liq_burst,
@@ -1230,6 +1434,7 @@ def get_tail_diagnostics(wick_stats: dict, liquidations: dict | None = None) -> 
             f"(required >{TAIL_SPIKE_FREQUENCY_MIN:.3f}); "
             f"wick_ratio_slope={slope:.3f} "
             f"(required >={TAIL_WICK_SLOPE_MIN:.3f}); "
+            f"whipsaw_co_triggered={whipsaw_co_triggered}; "
             f"liq_burst={liq_burst} (skew={liq_skew_direction})"
         ),
     }
@@ -1491,7 +1696,7 @@ def _probs_from_sigma(
     }
 
 
-def predict_hourly_range() -> dict:
+def predict_hourly_range(force_refresh: bool = True, screen_spot: float | None = None) -> dict:
     """Main entry: compute current hourly range prediction with probabilities."""
     now = datetime.now(timezone.utc)
     minutes_to_expiry = 60 - now.minute
@@ -1639,14 +1844,75 @@ def predict_hourly_range() -> dict:
     drift_pct += positioning_skew["skew_pct"]
 
     # --- Per-strike probabilities from live Kalshi ladder ---
-    ladder = get_kalshi_ladder()
+    ladder = get_kalshi_ladder(force_refresh=force_refresh)
     bands = ladder.get("candidate_bands", []) if isinstance(ladder, dict) else []
+    ladder_cache_flag = ladder.get("_cache") or ladder.get("cache") or "miss"
     ladder_feed_status = {
         "status": ladder.get("status", "error") if isinstance(ladder, dict) else "error",
         "error": ladder.get("error") if isinstance(ladder, dict) else "invalid ladder payload",
         "candidate_band_count": len(bands),
         "usable_band_count": 0,
+        "event_ticker": ladder.get("event_ticker"),
+        "minutes_to_expiry": ladder.get("minutes_to_expiry"),
+        "market_active": ladder.get("market_active", True if bands else False),
+        "_cache": ladder_cache_flag,
+        "cache": ladder_cache_flag,
+        "age_seconds": ladder.get("age_seconds"),
+        "computed_at": ladder.get("computed_at"),
+        "_source": ladder.get("_source"),
+        "collector_timestamp": ladder.get("collector_timestamp"),
     }
+
+    # --- Ladder Memory Engine (LME) — state detection tick ---
+    # Extract flat edge list from candidate_bands (both low and high of each band).
+    # Uses the same ladder already fetched — no extra network call.
+    _lme_band_edges = []
+    for _b in bands:
+        if isinstance(_b, dict):
+            if _b.get("low") is not None:
+                _lme_band_edges.append(float(_b["low"]))
+            if _b.get("high") is not None:
+                _lme_band_edges.append(float(_b["high"]))
+    lme_snapshot = _lme_step(
+        spot=spot,
+        current_hourly_range=current_hourly_range,
+        band_edges=_lme_band_edges,
+    )
+
+    # Staleness Guard pre-call gate (R1, R1b, R2, R3, R4)
+    fresh_spot_data = get_spot()
+    if fresh_spot_data.get("price") is not None:
+        spot_data = fresh_spot_data
+        spot = spot_data["price"]
+
+    ladder_ts_raw = ladder.get("computed_at") or ladder.get("collector_timestamp")
+    ladder_ts = time.time()
+    if ladder_ts_raw:
+        try:
+            ladder_ts = datetime.fromisoformat(str(ladder_ts_raw).replace("Z", "+00:00")).timestamp()
+        except Exception:
+            ladder_ts = time.time()
+    elif "_ts" in ladder:
+        ladder_ts = float(ladder["_ts"])
+
+    guard = StalenessGuard()
+    market_data = MarketData(
+        spot=spot,
+        spot_pulled_at=spot_data.get("pulled_at", time.time()),
+        ladder_cache=ladder_cache_flag,
+        ladder_collector_ts=ladder_ts,
+        spot_at_fair=spot,
+        screen_spot=screen_spot,
+        age_seconds=ladder.get("age_seconds"),
+    )
+    staleness_verdict = guard.decide(market_data)
+    if staleness_verdict.effective_spot is not None:
+        spot = staleness_verdict.effective_spot
+
+    # Rule R4: No drift/momentum narrative permitted from a cache-hit ladder. Ever.
+    if ladder_cache_flag == "hit":
+        drift_pct = 0.0
+        positioning_skew = {**positioning_skew, "skew_pct": 0.0, "drift_suppressed": True}
 
     # --- Wick statistics must precede pricing so tail pressure is consumed ---
     candles_1m = get_minute_candles(360)
@@ -1921,6 +2187,15 @@ def predict_hourly_range() -> dict:
 
     entry_scores = _ranked_entry_scores(decay_table, bands)
 
+    # Hard gate: block directional entry recommendations and residuals if stale
+    if not staleness_verdict.allowed:
+        entry_scores = []
+        for strike in strike_probs:
+            strike["fair_status"] = "stale_blocked"
+            strike["flagged"] = False
+            strike["residual_cents"] = None
+            strike["staleness_block_reasons"] = staleness_verdict.reasons
+
     raw_alt_signal = get_alt_signal()
     alt_signal, lead_lag_filter = _filter_alt_signal(raw_alt_signal)
 
@@ -1944,6 +2219,8 @@ def predict_hourly_range() -> dict:
             p_calibrated=strike["p_calibrated"],
             calibration_factor=strike["calibration_factor"],
             regime=regime.get("regime", "UNKNOWN"),
+            settlement_hold_given_touch=strike.get("settlement_hold_given_touch"),
+            p_settle=strike.get("p_settle"),
         )
     calibration_report = get_calibration_report()
 
@@ -1957,6 +2234,13 @@ def predict_hourly_range() -> dict:
     )
 
     result = {
+        "status": "STALE_DATA_BLOCKED" if not staleness_verdict.allowed else "ok",
+        "blocked": not staleness_verdict.allowed,
+        "staleness_verdict": str(staleness_verdict),
+        "staleness_reasons": staleness_verdict.reasons,
+        "effective_spot": staleness_verdict.effective_spot,
+        "ladder_cache": ladder_cache_flag,
+        "ladder_age_seconds": ladder.get("age_seconds"),
         "timestamp_utc": now.isoformat(),
         "minutes_to_hourly_expiry": minutes_to_expiry,
         "spot": round(spot, 2),
@@ -2011,7 +2295,7 @@ def predict_hourly_range() -> dict:
         "ladder_feed_status": ladder_feed_status,
         "regime": regime,
         "strike_probs": strike_probs,
-        "ladder_residuals": [sp for sp in strike_probs if sp.get("flagged")],
+        "ladder_residuals": [] if not staleness_verdict.allowed else [sp for sp in strike_probs if sp.get("flagged")],
         "wick_stats": wick_stats,
         "decay_table": decay_table,
         "entry_scores": entry_scores,

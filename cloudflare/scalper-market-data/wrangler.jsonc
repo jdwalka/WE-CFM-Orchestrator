@@ -1,0 +1,52 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "scalper-market-data",
+  "main": "src/index.js",
+  "compatibility_date": "2026-09-10",
+  "compatibility_flags": [
+    "nodejs_compat_v2"
+  ],
+  "triggers": {
+    "crons": [
+      "* * * * *"
+    ]
+  },
+  "kv_namespaces": [
+    {
+      "binding": "MARKET_CACHE",
+      "id": "11089b487b4048729f3a49e6a302c3fb"
+    }
+  ],
+  "d1_databases": [
+    {
+      "binding": "CALIBRATION_DB",
+      "database_name": "scalper-calibration",
+      "database_id": "48536b22-03b3-42dd-92fa-44feab144d84"
+    }
+  ],
+  "routes": [
+    {
+      "pattern": "scalper.leaksnipe.win",
+      "custom_domain": true
+    },
+    {
+      "pattern": "scalper.leaksnipe.win/*",
+      "zone_name": "leaksnipe.win"
+    }
+  ],
+  "workers_dev": true,
+  "preview_urls": true,
+  "observability": {
+    "logs": {
+      "enabled": true,
+      "head_sampling_rate": 1,
+      "invocation_logs": true,
+      "persist": true
+    },
+    "traces": {
+      "enabled": true,
+      "head_sampling_rate": 1,
+      "persist": true
+    }
+  }
+}

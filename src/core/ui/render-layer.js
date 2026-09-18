@@ -409,7 +409,6 @@ function updateMarkets5MLivePrices(prices) {
     for (const sym of ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'BNB', 'HYPE']) {
       const ticker = prices?.[`${sym}USD`];
       const current = Number(ticker?.last);
-      const mkt = is15m ? markets[sym]?.kalshi15m : markets[sym]?.poly5m;
       const mkt = is15m ? (markets[sym]?.kalshi15m || markets[sym]?.poly15m) : markets[sym]?.poly5m;
       const target = Number(mkt?.targetPriceNum ?? mkt?.priceToBeatNum);
       if (!Number.isFinite(current) || current <= 0) continue;
@@ -548,7 +547,6 @@ function renderMarkets5M() {
     // dataset, which survives other views overwriting content.innerHTML).
     const fingerprint = COINS_5M.map(s => {
       const b = window.Asi1PreContract?.get?.(s, horizon);
-      const mkt = is15m ? pm[s]?.kalshi15m : pm[s]?.poly5m;
       const mkt = is15m ? (pm[s]?.kalshi15m || pm[s]?.poly15m) : pm[s]?.poly5m;
       return `${s}:${horizon}:${mkt?.ticker || mkt?.slug || ''}:${mkt?.targetPriceNum ?? mkt?.priceToBeatNum ?? mkt?.floorPrice ?? ''}:${b?.ts || 0}:${b?.call || ''}`;
     }).join('|');
@@ -887,7 +885,6 @@ function renderMarkets5M() {
 
     function _modelOdds5m(sym) {
       const p = pred[sym];
-      const p5 = is15m ? pm[sym]?.kalshi15m : pm[sym]?.poly5m;
       const p5 = is15m ? (pm[sym]?.kalshi15m || pm[sym]?.poly15m) : pm[sym]?.poly5m;
       const ptb = Number(p5?.targetPriceNum ?? p5?.priceToBeatNum ?? p5?.floorPrice);
       
@@ -968,7 +965,6 @@ function renderMarkets5M() {
     // Polymarket PTB, or is the PTB-independent directional-lean fallback (path 4).
     // Purely a labeling signal for the UI -- does not change the odds computation.
     function _modelOdds5mIsPtbAnchored(sym) {
-      const p5 = is15m ? pm[sym]?.kalshi15m : pm[sym]?.poly5m;
       const p5 = is15m ? (pm[sym]?.kalshi15m || pm[sym]?.poly15m) : pm[sym]?.poly5m;
       const ptb = Number(p5?.targetPriceNum ?? p5?.priceToBeatNum ?? p5?.floorPrice);
       return Number.isFinite(ptb) && ptb > 0;
@@ -1085,7 +1081,6 @@ function renderMarkets5M() {
              const currentOdds = _modelOdds5m(sym);
              
              const coin = pm[sym] || {};
-             const p5 = is15m ? coin.kalshi15m : coin.poly5m;
              const p5 = is15m ? (coin.kalshi15m || coin.poly15m) : coin.poly5m;
              const poly5mMkts = is15m ? (coin.poly15mMkts || []) : (coin.poly5mMkts || []);
              const stepSec = is15m ? 900 : 300;
