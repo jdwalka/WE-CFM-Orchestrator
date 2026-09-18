@@ -993,8 +993,18 @@ function configureCachePaths() {
 
     // V8 Optimizations for AMD Ryzen (max-old-space-size + WASM SIMD)
     // Note: --use-largepages=on causes STATUS_ACCESS_VIOLATION (0xC0000005 / -1073741819) on Windows without SeLockMemoryPrivilege.
+    // 2026-09-18: dropped --no-lazy and --turbo-fast-api-calls from the Windows
+    // flags after a crash with that exact same 0xC0000005 / -1073741819 code —
+    // both are internal/experimental V8 flags, not standard production ones.
+    // --no-lazy forces eager compilation of every script at load time instead
+    // of V8's default lazy parsing; this app loads ~150 <script> tags, and
+    // eager-compiling all of them under memory pressure is a plausible native
+    // crash vector. --turbo-fast-api-calls is an internal Turbofan flag for
+    // optimizing the JS<->native-C++ call boundary and is not guaranteed
+    // stable across V8 patch versions. Kept on non-Windows since the crash
+    // was Windows-specific; revert if these turn out unrelated.
     const v8Flags = process.platform === 'win32'
-      ? '--max-old-space-size=8192 --no-lazy --turbo-fast-api-calls --experimental-wasm-simd'
+      ? '--max-old-space-size=8192 --experimental-wasm-simd'
       : '--use-largepages=on --max-old-space-size=8192 --no-lazy --turbo-fast-api-calls --experimental-wasm-simd';
     app.commandLine.appendSwitch('js-flags', v8Flags);
     app.commandLine.appendSwitch('enable-features', 'SharedArrayBuffer');
