@@ -15,6 +15,7 @@
         'Etherscan',
         'XRP Ledger',
         'Alchemy RPC',
+        'Ethereum RPC',
         'Whale Alert',
     ];
 
@@ -61,6 +62,7 @@
         'Etherscan',
         'XRP Ledger',
         'Alchemy RPC',
+        'Ethereum RPC',
         'Whale Alert',
         'BSCScan',
         'Polygonscan',
@@ -76,6 +78,7 @@
         'etherscan',
         'xrp ledger',
         'alchemy rpc',
+        'ethereum rpc',
         'whale alert',
         'bscscan',
         'polygonscan',
@@ -975,8 +978,8 @@
         'api.whale-alert.io': 'Whale Alert',
         's1.ripple.com': 'XRP Ledger',
         'xrplcluster.com': 'XRP Ledger',
-        'ethereum.publicnode.com': 'Alchemy RPC',
-        'cloudflare-eth.com': 'Alchemy RPC',
+        'ethereum.publicnode.com': 'Ethereum RPC',
+        'cloudflare-eth.com': 'Ethereum RPC',
     };
 
     const ENDPOINT_HOST_PROBES = [
@@ -985,7 +988,7 @@
         { provider: 'Solana RPC', url: 'https://solana-rpc.publicnode.com', fallbackUrl: 'https://api.mainnet-beta.solana.com', method: 'POST', body: '{"jsonrpc":"2.0","id":1,"method":"getEpochInfo"}', viaProxy: true, validateJson: true },
         { provider: 'Etherscan', url: null, viaProxy: true, validateJson: true },
         { provider: 'XRP Ledger', url: 'https://xrplcluster.com', fallbackUrl: 'https://s1.ripple.com:51234', method: 'POST', body: '{"method":"server_info","params":[{}]}' , viaProxy: true, validateJson: true },
-        { provider: 'Alchemy RPC', url: 'https://ethereum.publicnode.com', fallbackUrl: 'https://cloudflare-eth.com', method: 'POST', body: '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber"}', viaProxy: true, validateJson: true },
+        { provider: 'Ethereum RPC', url: 'https://ethereum.publicnode.com', fallbackUrl: 'https://cloudflare-eth.com', method: 'POST', body: '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber"}', viaProxy: true, validateJson: true },
         { provider: 'LocalProxy', url: 'http://127.0.0.1:3010/health' },
     ];
 

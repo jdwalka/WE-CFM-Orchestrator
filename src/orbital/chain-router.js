@@ -153,19 +153,9 @@
     return '';
   }
 
-  async function _getAlchemyKey() {
-    let key = _readEnvLike('ALCHEMY_API_KEY');
-    if (!key && window.electron && window.electron.readFile) {
-      try {
-        const txt = await window.electron.readFile('secrets/ALCHEMY-API-KEY.txt');
-        if (txt) key = txt.trim();
-      } catch (e) { }
-    }
-    return key || 'UNcUYppLXPl4s0jAkQe_J';
-  }
-
   async function _alchemyUrl(chain) {
-    const key = await _getAlchemyKey();
+    const key = await window.AlchemyKey.get();
+    if (!key) return null;
     return `https://${chain}-mainnet.g.alchemy.com/v2/${key}`;
   }
 
@@ -409,13 +399,14 @@
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
     });
     const url = await _alchemyUrl('eth');
+    if (!url) return Promise.reject(new Error('Alchemy key not configured'));
     const [bR, gR] = await Promise.allSettled([
       getJson(url, POST('eth_blockNumber')),
       getJson(url, POST('eth_gasPrice')),
     ]);
     const bRes = bR.status === 'fulfilled' ? bR.value : null;
     const gRes = gR.status === 'fulfilled' ? gR.value : null;
-    
+
     if (!bRes || !gRes || !bRes.result || !gRes.result) {
       return Promise.reject(new Error('Alchemy ETH empty'));
     }
@@ -680,13 +671,14 @@
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
     });
     const url = await _alchemyUrl('bnb');
+    if (!url) return Promise.reject(new Error('Alchemy key not configured'));
     const [bR, gR] = await Promise.allSettled([
       getJson(url, POST('eth_blockNumber')),
       getJson(url, POST('eth_gasPrice')),
     ]);
     const bRes = bR.status === 'fulfilled' ? bR.value : null;
     const gRes = gR.status === 'fulfilled' ? gR.value : null;
-    
+
     if (!bRes || !gRes || !bRes.result || !gRes.result) {
       return Promise.reject(new Error('Alchemy BNB empty'));
     }

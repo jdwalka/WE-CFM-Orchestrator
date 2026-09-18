@@ -12,32 +12,39 @@
 (function () {
   'use strict';
 
-  const ALCHEMY_KEY = localStorage.getItem('alchemyApiKey') ||
-    window._env?.ALCHEMY_KEY ||
-    'UNcUYppLXPl4s0jAkQe_J';
-
-  // Multi-chain Alchemy endpoints (mainnet + devnet/testnet options)
-  const ALCHEMY_ENDPOINTS = {
-    BTC: `https://bitcoin-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}`,
-    ETH: `https://eth-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}`,
-    ETH_SEPOLIA: `https://eth-sepolia.g.alchemy.com/v2/${ALCHEMY_KEY}`,
-    SOL: `https://solana-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}`,
-    SOL_DEVNET: `https://solana-devnet.g.alchemy.com/v2/${ALCHEMY_KEY}`,
-    BNB: `https://bnb-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}`,
-    BASE: `https://base-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}`,
-    BASE_SEPOLIA: `https://base-sepolia.g.alchemy.com/v2/${ALCHEMY_KEY}`,
-    HYPE: `https://hyperliquid-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}`,
-  };
-
-  // Multi-chain support with configurable endpoints
+  // Chain slug + whether a devnet variant exists — endpoints are resolved
+  // on demand via _alchemyEndpoint() so a key set after page load (e.g. via
+  // wallet-intel-config.js) takes effect immediately, and so there is no
+  // module-level fallback key baked into a constant at import time.
   const CHAINS = {
-    BTC: { name: 'bitcoin', endpoint: ALCHEMY_ENDPOINTS.BTC },
-    ETH: { name: 'ethereum', endpoint: ALCHEMY_ENDPOINTS.ETH, devnet: ALCHEMY_ENDPOINTS.ETH_SEPOLIA },
-    SOL: { name: 'solana', endpoint: ALCHEMY_ENDPOINTS.SOL, devnet: ALCHEMY_ENDPOINTS.SOL_DEVNET },
-    BNB: { name: 'bsc', endpoint: ALCHEMY_ENDPOINTS.BNB },
-    BASE: { name: 'base', endpoint: ALCHEMY_ENDPOINTS.BASE, devnet: ALCHEMY_ENDPOINTS.BASE_SEPOLIA },
-    HYPE: { name: 'hyperliquid', endpoint: ALCHEMY_ENDPOINTS.HYPE },
+    BTC: { name: 'bitcoin' },
+    ETH: { name: 'ethereum', hasDevnet: true },
+    SOL: { name: 'solana', hasDevnet: true },
+    BNB: { name: 'bsc' },
+    BASE: { name: 'base', hasDevnet: true },
+    HYPE: { name: 'hyperliquid' },
   };
+
+  // Exact subdomain prefix per chain+variant — stored whole (not derived by
+  // appending "-mainnet") because the devnet/testnet prefixes don't follow
+  // that suffix pattern (e.g. eth-sepolia, solana-devnet, not
+  // eth-sepolia-mainnet).
+  const ALCHEMY_HOST_PREFIX = {
+    BTC: 'bitcoin-mainnet',
+    ETH: 'eth-mainnet', ETH_DEVNET: 'eth-sepolia',
+    SOL: 'solana-mainnet', SOL_DEVNET: 'solana-devnet',
+    BNB: 'bnb-mainnet',
+    BASE: 'base-mainnet', BASE_DEVNET: 'base-sepolia',
+    HYPE: 'hyperliquid-mainnet',
+  };
+
+  async function _alchemyEndpoint(chain, useDevnet) {
+    const key = await window.AlchemyKey.get();
+    if (!key) return null;
+    const prefix = useDevnet ? ALCHEMY_HOST_PREFIX[`${chain}_DEVNET`] : ALCHEMY_HOST_PREFIX[chain];
+    if (!prefix) return null;
+    return `https://${prefix}.g.alchemy.com/v2/${key}`;
+  }
 
   // ── In-memory tracking ────────────────────────────────────────
   const _trackedWallets = new Map(); // addr → { chains, callback, data }
@@ -70,11 +77,7 @@
     const chainConfig = CHAINS[chain];
     if (!chainConfig) return null;
 
-    // Select endpoint (mainnet or devnet)
-    const endpoint = useDevnet && chainConfig.devnet
-      ? chainConfig.devnet
-      : chainConfig.endpoint;
-
+    const endpoint = await _alchemyEndpoint(chain, useDevnet && chainConfig.hasDevnet);
     if (!endpoint) return null;
 
     try {

@@ -11,9 +11,6 @@
 (function () {
   'use strict';
 
-  const ALCHEMY_WSS = 'wss://eth-mainnet.g.alchemy.com/v2/UNcUYppLXPl4s0jAkQe_J';
-  const ALCHEMY_KEY = 'UNcUYppLXPl4s0jAkQe_J';
-
   let   _ws              = null;
   let   _reconnectTimer  = null;
   let   _pingTimer       = null;
@@ -173,11 +170,18 @@
 
   // ── WebSocket lifecycle ───────────────────────────────────────────
 
-  function connect() {
+  async function connect() {
     if (_ws && _ws.readyState <= WebSocket.OPEN) return;
 
+    const key = await window.AlchemyKey.get();
+    if (!key) {
+      console.warn('[AlchemyWS] No Alchemy key configured — live ETH WSS feed disabled.');
+      return;
+    }
+    if (!_running) return; // stop() may have been called while awaiting the key
+
     console.debug('[AlchemyWS] Connecting to Alchemy WSS...');
-    _ws = new WebSocket(ALCHEMY_WSS);
+    _ws = new WebSocket(`wss://eth-mainnet.g.alchemy.com/v2/${key}`);
 
     _ws.onopen = () => {
       console.debug('[AlchemyWS] Connected');

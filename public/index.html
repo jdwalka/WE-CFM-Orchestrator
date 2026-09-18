@@ -337,6 +337,9 @@
   <script src="../settlement-retune.js" defer></script>
   <script src="../src/core/tensor-engine.js" defer></script>
   <script src="../src/ui/floating-orchestrator.js" defer></script>
+  <!-- Single source of truth for the Alchemy key — no file below this line
+       should read env vars/localStorage for it directly; use window.AlchemyKey. -->
+  <script src="../src/infra/alchemy-key.js" defer></script>
   <script src="../src/orbital/alchemy-ws.js" defer></script>
   <script src="../src/orbital/chain-router.js" defer></script>
   <script src="../src/feeds/wallet-cache.js" defer></script>
