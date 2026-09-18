@@ -417,12 +417,17 @@
       );
       const nearest = sorted.slice(0, VISIBLE_PTB_ROWS).sort((a, b) => a.low - b.low);
 
-      const wallSizes = nearest.map(b => Math.max(0, b.yes_bid_size || b.open_interest || 0));
+      // Depth can sit on either side of the book — a band with a big resting
+      // ask and nothing on the bid is still a real wall (BTC's own rows were
+      // showing transparent for every bucket because this only ever checked
+      // yes_bid_size/open_interest while the actual size was on yes_ask_size).
+      const wallDepth = (b) => Math.max(0, b.yes_bid_size || 0, b.yes_ask_size || 0, b.open_interest || 0);
+      const wallSizes = nearest.map(wallDepth);
       const maxWall = Math.max(1, ...wallSizes);
 
       const rows = nearest.map(b => {
         const isCurrent = price !== null && price >= b.low && price <= b.high;
-        const wallSize = Math.max(0, b.yes_bid_size || b.open_interest || 0);
+        const wallSize = wallDepth(b);
         const satIdx = Math.min(
           WALL_SATURATION_STEPS.length - 1,
           Math.floor((wallSize / maxWall) * WALL_SATURATION_STEPS.length)
@@ -447,9 +452,26 @@
         const askVal = Number(b.yes_ask_dollars);
         const askStr = Number.isFinite(askVal) ? `${(askVal * 100).toFixed(0)}¢` : '—';
 
+        // A Kalshi YES price already IS the market-implied probability that
+        // this band gets hit — no separate model needed, just read it off
+        // the book. Mid of bid/ask when both quote; whichever side is
+        // actually quoted otherwise (thin books often have only one side).
+        let probPct = null;
+        if (Number.isFinite(bid) && bid > 0 && Number.isFinite(askVal) && askVal > 0) {
+          probPct = Math.round(((bid + askVal) / 2) * 100);
+        } else if (Number.isFinite(askVal) && askVal > 0) {
+          // No resting bid (common on thin/far-OTM strikes) — averaging with
+          // $0 would understate it; the ask alone is the honest read.
+          probPct = Math.round(askVal * 100);
+        } else if (Number.isFinite(bid) && bid > 0) {
+          probPct = Math.round(bid * 100);
+        }
+        const probStr = probPct !== null ? `${probPct}%` : '—';
+
         return `
           <div class="hr-ptb-row${isCurrent ? ' hr-ptb-row--current' : ''}" style="background:${escapeHTML(wallColor)}22;border-left-color:${escapeHTML(wallColor)}">
             <span class="hr-ptb-price">${escapeHTML(ptbStr)}</span>
+            <span class="hr-ptb-prob"${isCurrent ? ` style="color:${escapeHTML(color)}"` : ''}>${escapeHTML(probStr)}</span>
             <span class="hr-ptb-odds">${escapeHTML(bidStr)} / ${escapeHTML(askStr)}</span>
             ${arrow}
             ${isCurrent ? `<span class="hr-ptb-here" style="color:${escapeHTML(color)}">● HERE</span>` : ''}
@@ -464,7 +486,8 @@
         <div class="hr-ranges-scroll">
           <div class="hr-ranges-header">
             <span class="hr-ranges-label">PTB · live Kalshi</span>
-            <span class="hr-ranges-label">Yes bid / ask</span>
+            <span class="hr-ranges-label">Prob (YES)</span>
+            <span class="hr-ranges-label">Bid / Ask</span>
           </div>
           ${rows.join('')}
         </div>
@@ -775,11 +798,20 @@
           color: var(--color-text,#ddd);
           white-space: nowrap;
         }
-        .hr-ptb-odds {
-          font-size: .74rem;
-          font-weight: 700;
+        .hr-ptb-prob {
+          font-size: .8rem;
+          font-weight: 800;
           font-variant-numeric: tabular-nums;
-          color: var(--color-text-muted,#aaa);
+          min-width: 34px;
+          text-align: right;
+          color: var(--color-text,#ddd);
+          white-space: nowrap;
+        }
+        .hr-ptb-odds {
+          font-size: .68rem;
+          font-weight: 600;
+          font-variant-numeric: tabular-nums;
+          color: var(--color-text-muted,#888);
           white-space: nowrap;
         }
         .hr-ptb-arrow { font-size: .7rem; line-height: 1; }
