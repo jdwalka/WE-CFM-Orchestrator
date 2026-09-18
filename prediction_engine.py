@@ -139,6 +139,69 @@ _TICKER_STRIKE_RE = re.compile(r"-([BS])(\d{4,})$")
 _cross_venue_divergence_history = []
 _open_interest_history = []
 
+# ---------------------------------------------------------------------------
+# Ladder Memory Engine (LME) — four-force physics state detector
+# Singleton persists across predict_hourly_range() calls for memory kernel.
+# ---------------------------------------------------------------------------
+_lme_engine = None  # type: ignore  # LME instance, lazy-imported
+
+
+def _lme_step(
+    spot: float,
+    current_hourly_range: float,
+    band_edges: list,
+) -> dict:
+    """
+    Run one LME tick. Fetches Coinbase L2 book (30 levels, 2s timeout).
+    Never raises — returns {"available": False, "error": ...} on any failure.
+    Called once per predict_hourly_range() invocation; the singleton LME
+    preserves rung memory (touch counts, strength decay) across calls.
+    """
+    global _lme_engine
+    try:
+        import urllib.request as _ur
+        import json as _json
+        from lme_codex import LME, fetch_band_edges as _fe  # noqa: PLC0415
+
+        if _lme_engine is None:
+            _lme_engine = LME()
+            _lme_engine.hour_open = spot  # anchor to first call this hour
+
+        # Fetch Coinbase L2 book — lightweight, 2s timeout, 30 levels
+        bids: list = []
+        asks: list = []
+        try:
+            _book_req = _ur.Request(
+                "https://api.exchange.coinbase.com/products/BTC-USD/book?level=2",
+                headers={"User-Agent": "wecryp-lme/1.0"},
+            )
+            with _ur.urlopen(_book_req, timeout=2.0) as _r:
+                _book = _json.loads(_r.read().decode())
+            bids = [
+                (float(p), float(p) * float(s))
+                for p, s, _ in _book.get("bids", [])[:30]
+            ]
+            asks = [
+                (float(p), float(p) * float(s))
+                for p, s, _ in _book.get("asks", [])[:30]
+            ]
+        except Exception:
+            pass  # wall scan degrades to zeros — LME still runs for recoil force
+
+        out = _lme_engine.step(
+            price=spot,
+            t=time.time(),
+            bids=bids,
+            asks=asks,
+            band_edges=band_edges,
+        )
+        out["available"] = True
+        out["book_levels"] = len(bids)
+        return out
+
+    except Exception as exc:
+        return {"available": False, "error": str(exc)}
+
 
 class DivergenceRegime:
     """Hysteresis for the cross-venue dispersion regime.
@@ -1799,6 +1862,22 @@ def predict_hourly_range(force_refresh: bool = True, screen_spot: float | None =
         "_source": ladder.get("_source"),
         "collector_timestamp": ladder.get("collector_timestamp"),
     }
+
+    # --- Ladder Memory Engine (LME) — state detection tick ---
+    # Extract flat edge list from candidate_bands (both low and high of each band).
+    # Uses the same ladder already fetched — no extra network call.
+    _lme_band_edges = []
+    for _b in bands:
+        if isinstance(_b, dict):
+            if _b.get("low") is not None:
+                _lme_band_edges.append(float(_b["low"]))
+            if _b.get("high") is not None:
+                _lme_band_edges.append(float(_b["high"]))
+    lme_snapshot = _lme_step(
+        spot=spot,
+        current_hourly_range=current_hourly_range,
+        band_edges=_lme_band_edges,
+    )
 
     # Staleness Guard pre-call gate (R1, R1b, R2, R3, R4)
     fresh_spot_data = get_spot()

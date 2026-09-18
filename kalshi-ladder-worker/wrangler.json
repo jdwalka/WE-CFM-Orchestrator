@@ -10,6 +10,22 @@
       "custom_domain": true
     }
   ],
+  "triggers": {
+    "crons": ["*/1 * * * *"]
+  },
+  "kv_namespaces": [
+    {
+      "binding": "LADDER_CACHE",
+      "id": "11089b487b4048729f3a49e6a302c3fb"
+    }
+  ],
+  "d1_databases": [
+    {
+      "binding": "ladder",
+      "database_id": "48536b22-03b3-42dd-92fa-44feab144d84",
+      "database_name": "scalper-calibration"
+    }
+  ],
   "observability": {
     "logs": {
       "enabled": true,

@@ -288,6 +288,125 @@ def get_px(symbol: str = "BTC"):
     }
 
 
+class CascadeRequest(BaseModel):
+    symbol: Optional[str] = "BTC"
+    spot: Optional[float] = None
+    amm_bands: Optional[list[dict]] = Field(default_factory=list)
+    liquidation_queue: Optional[list[dict]] = Field(default_factory=list)
+    flow: Optional[dict] = Field(default_factory=dict)
+    venue_skew: Optional[dict] = None
+
+
+@app.post("/cascade")
+@app.get("/cascade")
+async def cascade_endpoint(
+    req: Optional[CascadeRequest] = None,
+    symbol: str = "BTC",
+    x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+):
+    """
+    AMM Cascade Exhaustion telemetry endpoint for truffle.leaksnipe.win.
+    Supports authenticated POST with custom payload or GET for live defaults.
+    """
+    sym = (req.symbol if req and req.symbol else symbol).upper()
+    try:
+        from amm_cascade_exhaustion import (
+            AmmCascadeExhaustionCalculator,
+            AmmPoolDepthBand,
+            LiquidationBucket,
+            VenueSkew,
+            FlowSnapshot,
+        )
+        from truffle_cascade_bridge import format_asi1_context
+        from dataclasses import asdict
+
+        px_data = get_prices_from_redis(sym)
+        book = px_data.get("book") or {}
+        best_bid = float(book.get("best_bid") or 0.0)
+        best_ask = float(book.get("best_ask") or 0.0)
+        live_spot = (best_bid + best_ask) / 2.0 if best_bid and best_ask else 76500.0
+
+        spot = float(req.spot) if req and req.spot else live_spot
+        calc = AmmCascadeExhaustionCalculator()
+
+        # Parse bands if provided, else use live orderbook depth
+        bands = []
+        if req and req.amm_bands:
+            for b in req.amm_bands:
+                bands.append(AmmPoolDepthBand(
+                    lower_price=float(b["low"]),
+                    upper_price=float(b["high"]),
+                    virtual_liquidity_depth=float(b["depth"]),
+                ))
+        if not bands:
+            floor_price = spot * (1.0 - (calc.slip_bps / 10_000.0))
+            depth = float(book.get("bid_depth_usd") or 500000.0)
+            bands = [AmmPoolDepthBand(lower_price=floor_price, upper_price=spot, virtual_liquidity_depth=depth)]
+
+        # Parse queue if provided
+        queue = []
+        if req and req.liquidation_queue:
+            for q in req.liquidation_queue:
+                queue.append(LiquidationBucket(
+                    trigger_price=float(q["price"]),
+                    notional_volume=float(q["vol"]),
+                    leverage_multiple=float(q.get("leverage", 10.0)),
+                ))
+
+        # Flow
+        flow_dict = req.flow if req and req.flow else {}
+        flow = FlowSnapshot(
+            forced_liquidation_volume=float(flow_dict.get("forced_vol", 0.0)),
+            discretionary_taker_buy_volume=float(flow_dict.get("taker_buy_vol", 10000.0)),
+            discretionary_taker_sell_volume=float(flow_dict.get("taker_sell_vol", 10000.0)),
+            amm_price_velocity=float(flow_dict.get("amm_vel", 0.0)),
+            oracle_price_velocity=float(flow_dict.get("oracle_vel", 0.0)),
+            window_sec=float(flow_dict.get("window_sec", 300.0)),
+        )
+
+        # Skew
+        skew_dict = req.venue_skew if req and req.venue_skew else {}
+        venue_skew = VenueSkew(
+            l_ratio=float(skew_dict.get("l_ratio", 0.0)),
+            divergence_pct=float(skew_dict.get("divergence_pct", 0.0)),
+            funding_skew=float(skew_dict.get("funding_skew", 0.0)),
+            active=bool(skew_dict.get("active", False)),
+        )
+
+        packet = calc.calculate_metrics(
+            symbol=sym,
+            spot_price=spot,
+            amm_bands=bands,
+            liquidation_queue=queue,
+            flow=flow,
+            venue_skew=venue_skew,
+        )
+
+        # Produce signal to Redpanda if state change / action warranted
+        if kafka_producer and packet.verdict in ("FLUSH_EXHAUSTED_ABSORPTION_DETECTED", "VOID_SLIP_ACTIVE"):
+            try:
+                kafka_producer.send("truffle.signals", key=sym, value={
+                    "symbol": sym,
+                    "signal_type": "cascade_exhaustion",
+                    "verdict": packet.verdict,
+                    "coherence": packet.cascade_coherence_index,
+                    "wall_density": packet.sub_orbital_wall_density,
+                    "action": packet.recommended_action,
+                    "ts": packet.timestamp_ms,
+                })
+            except Exception as k_err:
+                print(f"[TruffleBridge] Error streaming cascade signal: {k_err}")
+
+        return {
+            "ok": True,
+            "telemetry": asdict(packet),
+            "context_prompt": format_asi1_context(packet),
+        }
+    except Exception as err:
+        return {"ok": False, "error": str(err)}
+
+
 @app.post("/chat")
 async def chat_endpoint(
     req: ChatRequest,

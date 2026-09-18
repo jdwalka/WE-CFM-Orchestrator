@@ -4,7 +4,8 @@ compatibility_date = "2026-09-10"
 compatibility_flags = ["nodejs_compat_v2"]
 
 routes = [
-  { pattern = "wecrypto.leaksnipe.win/px*", zone_name = "leaksnipe.win" }
+  { pattern = "wecrypto.leaksnipe.win/px*", zone_name = "leaksnipe.win" },
+  { pattern = "wecrypto.leaksnipe.win/cascade*", zone_name = "leaksnipe.win" }
 ]
 
 workers_dev = true

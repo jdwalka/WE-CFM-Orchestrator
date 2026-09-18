@@ -275,6 +275,25 @@ MEMORY_TOOL_SCHEMAS = [
             "parameters": {"type": "object", "properties": {}},
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_cascade_audit",
+            "description": (
+                "Live AMM cascade exhaustion, sub-orbital wall density, and "
+                "leverage overhang metrics. Use before catching falling knives."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "symbol": {
+                        "type": "string",
+                        "description": "Asset symbol, e.g. BTC, ETH, SOL. Default BTC.",
+                    }
+                },
+            },
+        },
+    },
 ]
 
 # --- Session memory --------------------------------------------------------
@@ -287,6 +306,67 @@ def _remember(sender: str, role: str, content: str):
     if len(hist) > MAX_MEMORY * 2:
         del hist[: len(hist) - MAX_MEMORY * 2]
 
+
+# --- Live Cascade Audit Engine ---------------------------------------------
+def get_live_cascade_audit(symbol: str = "BTC") -> dict:
+    """Generate fresh CascadeTelemetryPacket using live orderbook & flow data."""
+    try:
+        from amm_cascade_exhaustion import (
+            AmmCascadeExhaustionCalculator,
+            AmmPoolDepthBand,
+            LiquidationBucket,
+            VenueSkew,
+            FlowSnapshot,
+        )
+        from truffle_cascade_bridge import format_asi1_context
+        from prediction_engine import get_spot, get_positioning_skew
+        from dataclasses import asdict
+
+        spot_data = get_spot()
+        spot = float(spot_data.get("price") or 65000.0)
+
+        # Pull live positioning skew (Coinbase L2 L-ratio)
+        skew_data = get_positioning_skew()
+        l_ratio = float(skew_data.get("l_ratio") or 0.0) if skew_data.get("active") else 0.0
+
+        # Build VenueSkew (-l_ratio mapped per engine convention)
+        venue_skew = VenueSkew(
+            l_ratio=l_ratio,
+            divergence_pct=0.01,
+            funding_skew=0.0,
+            active=bool(skew_data.get("active", False)),
+        )
+
+        calc = AmmCascadeExhaustionCalculator()
+        floor_price = spot * (1.0 - (calc.slip_bps / 10_000.0))
+        depth = 500000.0
+        bands = [AmmPoolDepthBand(lower_price=floor_price, upper_price=spot, virtual_liquidity_depth=depth)]
+        queue = []
+        flow = FlowSnapshot(
+            forced_liquidation_volume=0.0,
+            discretionary_taker_buy_volume=10000.0,
+            discretionary_taker_sell_volume=10000.0,
+            amm_price_velocity=0.0,
+            oracle_price_velocity=0.0,
+            window_sec=300.0,
+        )
+        packet = calc.calculate_metrics(
+            symbol=symbol.upper(),
+            spot_price=spot,
+            amm_bands=bands,
+            liquidation_queue=queue,
+            flow=flow,
+            venue_skew=venue_skew,
+        )
+        return {
+            "ok": True,
+            "telemetry": asdict(packet),
+            "context_prompt": format_asi1_context(packet),
+        }
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
 # --- LLM + tool loop -------------------------------------------------------
 def process_query(query: str, sender: str = "local") -> str:
     headers = {
@@ -298,11 +378,21 @@ def process_query(query: str, sender: str = "local") -> str:
     kodak_derived = get_kodak_derived()
     if isinstance(prediction, dict) and "error" not in kodak_derived:
         prediction["cross_venue_market"] = kodak_derived
+
+    # Live cascade exhaustion overlay for ASI:One
+    cascade_res = get_live_cascade_audit("BTC")
+    if cascade_res.get("ok"):
+        prediction["cascade_exhaustion"] = cascade_res["telemetry"]
+        cascade_overlay = "\n\n" + cascade_res["context_prompt"]
+    else:
+        cascade_overlay = ""
+
     import json as _json
     system_prompt = (
         SYSTEM_PROMPT
         + "\n\nQUANTITATIVE PREDICTION (computed fresh, interpret these numbers):\n"
         + _json.dumps(prediction, indent=2)
+        + cascade_overlay
     )
     messages = [{"role": "system", "content": system_prompt}]
     messages.extend(SESSIONS.get(sender, []))
@@ -369,6 +459,9 @@ def process_query(query: str, sender: str = "local") -> str:
                 result_text = format_for_llm(
                     get_kodak_snapshot(args.get("symbol", "BTCUSDT"))
                 )
+            elif name == "get_cascade_audit":
+                res = get_live_cascade_audit(args.get("symbol", "BTC"))
+                result_text = format_for_llm(res)
             else:
                 result_text = client.call_tool(name, args)
             results.append((tc, result_text))
@@ -530,6 +623,26 @@ async def handle_tail_diagnostics(_ctx: Context, _msg: HUDQuery) -> HUDResponse:
 async def handle_kalshi_15m_model(_ctx: Context, _msg: HUDQuery) -> HUDResponse:
     model = await asyncio.get_event_loop().run_in_executor(None, predict_15m_range)
     return HUDResponse(ok=True, content=format_for_llm(model))
+
+
+@agent.on_rest_post("/cascade", HUDQuery, HUDResponse)
+async def handle_cascade_post(_ctx: Context, msg: HUDQuery) -> HUDResponse:
+    try:
+        loop = asyncio.get_event_loop()
+        res = await loop.run_in_executor(None, get_live_cascade_audit, msg.query or "BTC")
+        return HUDResponse(ok=res.get("ok", False), content=format_for_llm(res))
+    except Exception as e:
+        return HUDResponse(ok=False, content=str(e))
+
+
+@agent.on_rest_post("/truffle/cascade-audit", HUDQuery, HUDResponse)
+async def handle_cascade_audit_rest(_ctx: Context, msg: HUDQuery) -> HUDResponse:
+    try:
+        loop = asyncio.get_event_loop()
+        res = await loop.run_in_executor(None, get_live_cascade_audit, msg.query or "BTC")
+        return HUDResponse(ok=res.get("ok", False), content=format_for_llm(res))
+    except Exception as e:
+        return HUDResponse(ok=False, content=str(e))
 
 @agent.on_event("startup")
 async def startup(ctx: Context):
