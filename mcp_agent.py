@@ -45,7 +45,7 @@ MCP_SERVER_TOKEN = os.getenv("MCP_SERVER_TOKEN", "")
 asyncio.set_event_loop(asyncio.new_event_loop())
 uagents_asgi.HOST = "0.0.0.0"
 
-agent = Agent(network="testnet", 
+agent = Agent(
     name="trufflez",
     seed=AGENT_SEED,
     port=8002,
