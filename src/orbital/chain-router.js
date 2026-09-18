@@ -566,6 +566,15 @@
     };
   }
 
+  // solRpc() already accepts any Solana JSON-RPC URL — Alchemy's is just
+  // another candidate, resolved async (unlike the static public URLs in
+  // _solRpcCandidates(), which are frozen into ROUTES at module load).
+  async function solAlchemy() {
+    const url = await _alchemyUrl('solana');
+    if (!url) return Promise.reject(new Error('Alchemy key not configured'));
+    return solRpc(url);
+  }
+
   async function xrpLedger(url) {
     const data = await getJson(url, {
       method: 'POST',
@@ -811,6 +820,37 @@
     };
   }
 
+  // Dogecoin via Alchemy uses Bitcoin-Core-style RPC methods (getblockcount),
+  // not eth_blockNumber — verified directly against the live endpoint before
+  // writing this; eth_blockNumber returns "not available on the
+  // DOGECOIN_MAINNET".
+  async function dogeAlchemy() {
+    const url = await _alchemyUrl('dogecoin');
+    if (!url) return Promise.reject(new Error('Alchemy key not configured'));
+    const POST = (method, params = []) => ({
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+    });
+    const data = await getJson(url, POST('getblockcount'));
+    const height = data?.result;
+    if (data?.error || height == null) return Promise.reject(new Error('Alchemy DOGE empty'));
+    return {
+      sym: 'DOGE', label: 'Dogecoin', chain: 'Dogecoin Network',
+      source: 'Alchemy', explorerUrl: 'https://blockchair.com/dogecoin',
+      metrics: [
+        { k: 'Block Height', v: height.toLocaleString() },
+        { k: 'RPC Node',     v: 'Alchemy' },
+        { k: 'Status',       v: 'LIVE' },
+      ],
+      // No mempool/fee data available from this method — congestion/score
+      // stay neutral rather than fabricating a number Alchemy didn't give us.
+      congestion: 'LOW',
+      score: 0, signal: scoreLabel(0), ts: Date.now(),
+      raw: { txCount: 0, highFee: 0, medFee: 0 },
+    };
+  }
+
   // ── BNB: Ankr public BSC RPC (no key required) ────────────────────
 
   async function bnbAnkrRpc() {
@@ -888,6 +928,95 @@
     };
   }
 
+  // Fallback only — HyperEVM's execution-layer block/gas health, not perp
+  // funding data (Hyperliquid's own API has no HTTP fallback of its own, so
+  // this is a different data domain entirely, honestly labeled as such
+  // rather than faking a funding-rate-shaped result from an EVM RPC call).
+  // Verified this account's key resolves eth_blockNumber against
+  // hyperliquid-mainnet.g.alchemy.com before writing this.
+  async function hypeAlchemy() {
+    const POST = (method, params = []) => ({
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+    });
+    const url = await _alchemyUrl('hyperliquid');
+    if (!url) return Promise.reject(new Error('Alchemy key not configured'));
+    const [bR, gR] = await Promise.allSettled([
+      getJson(url, POST('eth_blockNumber')),
+      getJson(url, POST('eth_gasPrice')),
+    ]);
+    const bRes = bR.status === 'fulfilled' ? bR.value : null;
+    const gRes = gR.status === 'fulfilled' ? gR.value : null;
+    if (!bRes || !bRes.result) return Promise.reject(new Error('Alchemy HYPE empty'));
+
+    const block   = parseInt(bRes.result, 16) || 0;
+    const gasWei  = gRes && gRes.result ? parseInt(gRes.result, 16) : 0;
+    const gasGwei = gasWei / 1e9;
+    return {
+      sym: 'HYPE', label: 'HyperLiquid', chain: 'Hyperliquid L1 (EVM)',
+      source: 'Alchemy', explorerUrl: 'https://hypurrscan.io',
+      metrics: [
+        { k: 'Block Height', v: block ? block.toLocaleString() : '—' },
+        { k: 'Gas Price',    v: gasGwei ? `${gasGwei.toFixed(2)} Gwei` : '—' },
+        { k: 'RPC Node',     v: 'Alchemy' },
+        { k: 'Status',       v: 'LIVE' },
+      ],
+      // Not the same signal domain as the primary handler's funding rate —
+      // stays neutral rather than inventing a funding-shaped score from
+      // block/gas data.
+      congestion: 'LOW',
+      score: 0, signal: scoreLabel(0), ts: Date.now(),
+      raw: { funding: 0, oi: 0, vol: 0 },
+    };
+  }
+
+  // ── BASE: Alchemy (only source so far — no free public Base RPC wired
+  // up yet, unlike ETH/BNB which have one). Verified against the live
+  // key before writing this.
+  async function baseAlchemy() {
+    const POST = (method, params = []) => ({
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+    });
+    const url = await _alchemyUrl('base');
+    if (!url) return Promise.reject(new Error('Alchemy key not configured'));
+    const [bR, gR] = await Promise.allSettled([
+      getJson(url, POST('eth_blockNumber')),
+      getJson(url, POST('eth_gasPrice')),
+    ]);
+    const bRes = bR.status === 'fulfilled' ? bR.value : null;
+    const gRes = gR.status === 'fulfilled' ? gR.value : null;
+
+    if (!bRes || !gRes || !bRes.result || !gRes.result) {
+      return Promise.reject(new Error('Alchemy BASE empty'));
+    }
+
+    const block   = parseInt(bRes.result, 16) || 0;
+    const gasWei  = parseInt(gRes.result, 16) || 0;
+    const gasGwei = gasWei / 1e9;
+
+    if (!block && !gasGwei) return Promise.reject(new Error('Alchemy BASE empty'));
+
+    const score = gasGwei > 2 ? 0.30 : gasGwei > 0.5 ? 0.10 : 0;
+    return {
+      sym: 'BASE', label: 'Base', chain: 'Base Mainnet',
+      source: 'Alchemy', explorerUrl: 'https://basescan.org',
+      metrics: [
+        { k: 'Gas Price',    v: gasGwei ? `${gasGwei.toFixed(3)} Gwei` : '—' },
+        { k: 'Block Height', v: block ? block.toLocaleString() : '—' },
+        { k: 'Gas Fast',     v: gasGwei ? `${(gasGwei * 1.2).toFixed(3)} Gwei` : '—' },
+        { k: 'Gas Slow',     v: gasGwei ? `${(gasGwei * 0.8).toFixed(3)} Gwei` : '—' },
+        { k: 'RPC Node',     v: 'Alchemy' },
+        { k: 'Status',       v: 'LIVE' },
+      ],
+      congestion: gasGwei > 1.5 ? 'HIGH' : gasGwei > 0.5 ? 'MED' : 'LOW',
+      score, signal: scoreLabel(score), ts: Date.now(),
+      raw: { gasAvg: gasGwei, gasFast: gasGwei * 1.2, gasSlow: gasGwei * 0.8, txsToday: 0 },
+    };
+  }
+
   // ── Route table: primary handler first, then fallback(s) ─────────
 
   function computeVelocity(sym, currRaw, prevRaw) {
@@ -907,7 +1036,7 @@
       const txVel = velPct(currRaw.txCount, prevRaw.txCount);
       score = Math.max(-1, Math.min(1, feeVel * 1.4 + vsizeVel * 0.5 + txVel * 0.3));
       dominant = Math.abs(feeVel) >= 0.08 ? 'fee' : Math.abs(vsizeVel) >= 0.1 ? 'mempool' : 'tx';
-    } else if (sym === 'ETH' || sym === 'BNB') {
+    } else if (sym === 'ETH' || sym === 'BNB' || sym === 'BASE') {
       const gasVel = velPct(currRaw.gasAvg, prevRaw.gasAvg);
       score = Math.max(-1, Math.min(1, gasVel * 1.5));
       dominant = 'gas';
@@ -939,6 +1068,7 @@
     { sym: 'ETH',  handlers: [ethPublicRpc, ethAlchemy, ethEtherscan, ethBlockscout, ethBlockcypher] },
     { sym: 'SOL',  handlers: [
         ..._solRpcCandidates().map((url) => () => solRpc(url)),
+        solAlchemy,
       ]
     },
     {
@@ -950,8 +1080,9 @@
       ]
     },
     { sym: 'BNB',  handlers: [bnbPublicRpc, bnbAlchemy, bnbAnkrRpc, bnbBscscan, bnbBlockscout] },
-    { sym: 'DOGE', handlers: [dogeBlockchair, dogeBlockcypher] },
-    { sym: 'HYPE', handlers: [hypeHyperliquid] },
+    { sym: 'DOGE', handlers: [dogeBlockchair, dogeBlockcypher, dogeAlchemy] },
+    { sym: 'HYPE', handlers: [hypeHyperliquid, hypeAlchemy] },
+    { sym: 'BASE', handlers: [baseAlchemy] },
   ];
 
   // ── Run a route: try each handler until one succeeds ─────────────
