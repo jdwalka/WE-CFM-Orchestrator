@@ -16,6 +16,14 @@
   const ERRORS = {};   // sym → last error message
   let _timer = null;
 
+  // WSS-pushed results (from alchemy-ws.js) — checked first in runRoute()
+  // before falling through to the HTTP handler chain below. A push older
+  // than LIVE_PUSH_FRESH_MS is treated as "the WSS connection isn't
+  // actively feeding this symbol right now" and HTTP takes back over,
+  // rather than trusting a stale value indefinitely.
+  const LIVE_PUSH = {};   // sym → latest result pushed from a live WSS feed
+  const LIVE_PUSH_FRESH_MS = 30000;
+
   const POLL_MS = 60000;  // 60s polling interval; failing handlers back off independently
   const TIMEOUT = 25000;  // 12s — extra headroom for Tailscale/IPv6 routing
   const ERROR_LOG_COOLDOWN_MS = 60000;
@@ -1087,7 +1095,40 @@
 
   // ── Run a route: try each handler until one succeeds ─────────────
 
+  // Wraps a fresh result (from either a WSS push or an HTTP handler) with
+  // the same velocity/leadingScore computation, so it doesn't matter which
+  // source answered — the shape and scoring are identical either way.
+  function finalizeResult(sym, result) {
+    const prev = CACHE[sym];
+    if (prev?.raw && prev.ts && (result.ts - prev.ts) < 180000) {
+      result.velocity = computeVelocity(sym, result.raw, prev.raw);
+    } else {
+      result.velocity = { score: 0, dominant: 'none' };
+    }
+    const velScore = result.velocity.score;
+    const velStrength = Math.min(Math.abs(velScore), 0.8);
+    const velWeight = velStrength > 0.15 ? 0.60 : 0.30;
+    result.leadingScore = Math.max(-1, Math.min(1,
+      result.score * (1 - velWeight) + velScore * velWeight
+    ));
+    result.velocityLabel = velScore > 0.15 ? 'Rising' : velScore < -0.10 ? 'Falling' : 'Stable';
+    return result;
+  }
+
   async function runRoute(route) {
+    // A live WSS push (see pushLive()) takes priority over polling — if
+    // it's fresh, use it and skip every HTTP handler entirely. Falls
+    // through to HTTP automatically once the push goes stale (WSS down,
+    // reconnecting, or this symbol was never wired to a WSS feed).
+    const live = LIVE_PUSH[route.sym];
+    if (live && (Date.now() - live.ts) < LIVE_PUSH_FRESH_MS) {
+      // Already finalized at push time (see pushLive) — re-finalizing here
+      // would compute velocity against CACHE[sym], which pushLive already
+      // set to this exact object, always yielding zero velocity.
+      ERRORS[route.sym] = null;
+      return { ...live };
+    }
+
     let lastErr = null;
     let skipped = 0;
 
@@ -1103,20 +1144,7 @@
         if (result?.sym) {
           ERRORS[route.sym] = null;
           markHandlerSuccess(route.sym, i);
-          const prev = CACHE[route.sym];
-          if (prev?.raw && prev.ts && (result.ts - prev.ts) < 180000) {
-            result.velocity = computeVelocity(route.sym, result.raw, prev.raw);
-          } else {
-            result.velocity = { score: 0, dominant: 'none' };
-          }
-          const velScore = result.velocity.score;
-          const velStrength = Math.min(Math.abs(velScore), 0.8);
-          const velWeight = velStrength > 0.15 ? 0.60 : 0.30;
-          result.leadingScore = Math.max(-1, Math.min(1,
-            result.score * (1 - velWeight) + velScore * velWeight
-          ));
-          result.velocityLabel = velScore > 0.15 ? 'Rising' : velScore < -0.10 ? 'Falling' : 'Stable';
-          return result;
+          return finalizeResult(route.sym, result);
         }
       } catch (e) {
         lastErr = e;
@@ -1182,6 +1210,23 @@
     fmtCompact,
     fmtHashrate,
     fetchAll,
+    // Called by alchemy-ws.js on every new block head. Finalized once here
+    // (against whatever was in CACHE just before this push) and reflected
+    // immediately — not queued for the next 60s poll tick, since sub-second
+    // latency is the entire reason a WSS feed exists. runRoute() then serves
+    // this exact object as-is for up to LIVE_PUSH_FRESH_MS before falling
+    // back to HTTP polling.
+    pushLive(sym, result) {
+      if (!sym || !result) return;
+      result.ts = result.ts || Date.now();
+      const finalized = finalizeResult(sym, result);
+      LIVE_PUSH[sym] = finalized;
+      CACHE[sym] = finalized;
+      ERRORS[sym] = null;
+      const detail = { ...CACHE };
+      window.dispatchEvent(new CustomEvent('chain-router-update', { detail }));
+      window.dispatchEvent(new CustomEvent('blockchain-scan-update', { detail }));
+    },
     start() {
       if (_timer) return;
       fetchAll();
