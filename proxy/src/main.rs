@@ -103,20 +103,21 @@ async fn main() -> anyhow::Result<()> {
 // ─── Port binding ────────────────────────────────────────────────────────────────
 
 async fn bind_cascade() -> anyhow::Result<(tokio::net::TcpListener, u16)> {
+    // NOTE: never bind the ultra-fallbacks (:8080 is a local nginx trap that
+    // answers 200 'OK' on /health but 404s every real route — latching it
+    // wedges the whole app behind a fake proxy).
     let up:    Vec<u16> = (3011u16..=3020).collect();
     let down:  Vec<u16> = (3000u16..=3009).rev().collect();
-    let ultra: &[u16]   = &[8080, 8000, 4000, 5000, 9000];
     let candidates: Vec<u16> = std::iter::once(3010u16)
         .chain(up)
         .chain(down)
-        .chain(ultra.iter().copied())
         .collect();
     for &port in &candidates {
         if let Ok(l) = tokio::net::TcpListener::bind(format!("127.0.0.1:{port}")).await {
             return Ok((l, port));
         }
     }
-    anyhow::bail!("no available port in 3000-3020 or ultra-fallbacks")
+    anyhow::bail!("no available port in 3000-3020")
 }
 
 fn write_port_file(port: u16) {

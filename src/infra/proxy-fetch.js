@@ -24,9 +24,9 @@
   'use strict';
 
   // Must match proxy/src/main.rs bind_cascade() + tauri-bridge.js cascade.
-  // If the Rust proxy lands on 3009/8080 etc and JS never scans there, the
-  // app sits in permanent "proxy-not-found" bypass → LocalProxy DEGRADED.
-  const PORT_CASCADE = [3010, 3011, 3012, 3013, 3014, 3015, 3016, 3017, 3018, 3019, 3020, 3009, 3008, 3007, 3006, 3005, 3004, 3003, 3002, 3001, 3000, 8080, 8000, 4000, 5000, 9000];
+  // NOTE: 8080/8000/4000/5000/9000 excluded — :8080 is a local nginx trap
+  // (200 'OK' on /health, 404 on every real route).
+  const PORT_CASCADE = [3010, 3011, 3012, 3013, 3014, 3015, 3016, 3017, 3018, 3019, 3020, 3009, 3008, 3007, 3006, 3005, 3004, 3003, 3002, 3001, 3000];
 
   // Initialize PROXY_ORIGIN immediately so early fetches are never sent unproxied.
   let PROXY_ORIGIN = (typeof window !== 'undefined' && window.__PROXY_PORT__)
@@ -338,7 +338,25 @@
 
     if (!hostname || isLocalUtil) return fetchPromise;
     return fetchPromise.then(
-      (res) => { trackHostResult(hostname, res); return res; },
+      (res) => {
+        // Per-request direct retry: proxied 403/404 for a NON-CF host means
+        // the upstream refused the proxy's TLS (e.g. Bitstamp Incapsula)
+        // or the route is missing on a stale proxy binary — direct usually
+        // works. CF-protected hosts stay proxied (direct blocked by design).
+        // 5xx stays breaker-managed (see above).
+        const retryableRefusal = (res.status === 403 || res.status === 404)
+          && !CF_PROTECTED.has(hostname)
+          && /^https?:\/\//.test(originalUrl)
+          && urlToUse !== originalUrl;
+        if (retryableRefusal) {
+          return _origFetch(originalUrl, init).then(
+            (dRes) => { noteDirectResult(hostname, dRes); trackHostResult(hostname, dRes); return dRes; },
+            (dErr) => { trackHostResult(hostname, res); throw dErr; },
+          );
+        }
+        trackHostResult(hostname, res);
+        return res;
+      },
       (err) => { trackHostFailure(hostname); throw err; },
     );
   }

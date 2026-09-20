@@ -166,7 +166,8 @@
   const PROXY_CASCADE_PORTS = [
     3010, 3011, 3012, 3013, 3014, 3015, 3016, 3017, 3018, 3019, 3020,
     3009, 3008, 3007, 3006, 3005, 3004, 3003, 3002, 3001, 3000,
-    8080, 8000, 4000, 5000, 9000,
+    // NOTE: 8080/8000/4000/5000/9000 deliberately excluded — :8080 is a
+    // local nginx trap (200 'OK' on /health, 404 on every real route).
   ];
 
   function _isProxyConnectionError(err, proxiedUrl) {
@@ -250,6 +251,26 @@
   let _proxyDisabled = _readProxyDisabledFlag();
   _cachedProxyPort = _readCachedProxyPort();
 
+  // XHR-based local probe: bypasses the window.fetch patch (no breaker /
+  // rewrite re-entrancy) and fails silently without fetch-promise logging.
+  function _xhrGetText(url, timeoutMs) {
+    return new Promise((resolve) => {
+      try {
+        const xhr = new XMLHttpRequest();
+        xhr.timeout = timeoutMs;
+        xhr.onload = () => resolve({ ok: xhr.status >= 200 && xhr.status < 300, text: xhr.responseText || '' });
+        xhr.onerror = () => resolve({ ok: false, text: '' });
+        xhr.ontimeout = () => resolve({ ok: false, text: '' });
+        xhr.open('GET', url, true);
+        xhr.send();
+      } catch (_) {
+        resolve({ ok: false, text: '' });
+      }
+    });
+  }
+
+  let _initInFlight = false;
+
   async function _init() {
     _proxyDisabled = _readProxyDisabledFlag();
     if (_proxyDisabled) {
@@ -293,25 +314,21 @@
       if (!ports.includes(p)) ports.push(p);
     }
     for (const tryPort of ports) {
+      // Silent XHR probe (see _xhrGetText): dead ports fail quiet, no
+      // 'Failed to load resource' wall in the console per sweep.
+      const h = await _xhrGetText(`http://127.0.0.1:${tryPort}/health`, PROXY_HEALTH_TIMEOUT_MS);
+      if (!h.ok || h.text.trim() !== 'OK') continue;
+      // Identity check: /health 'OK' is also served by unrelated local
+      // servers (nginx :8080 returns 200 'OK' but 404s every real route).
+      // Only latch when /port proves it is OUR proxy on THIS port.
+      let identityOk = false;
       try {
-        const r = await fetch(`http://127.0.0.1:${tryPort}/health`, {
-          signal: AbortSignal.timeout(PROXY_HEALTH_TIMEOUT_MS),
-        });
-        if (!r.ok) continue;
-        const txt = await r.text();
-        if (txt.trim() !== 'OK') continue;
-        // Identity check: /health 'OK' is also served by unrelated local
-        // servers (nginx :8080 returns 200 'OK' but 404s every real route).
-        // Only latch when /port proves it is OUR proxy on THIS port.
-        let identityOk = false;
-        try {
-          const d = await fetch(`http://127.0.0.1:${tryPort}/port`, {
-            signal: AbortSignal.timeout(PROXY_HEALTH_TIMEOUT_MS),
-          }).then((rr) => rr.json());
-          identityOk = Number(d && d.port) === tryPort;
-        } catch (_) {
-          identityOk = false;
-        }
+        const p = await _xhrGetText(`http://127.0.0.1:${tryPort}/port`, PROXY_HEALTH_TIMEOUT_MS);
+        const d = JSON.parse(p.text || '{}');
+        identityOk = p.ok && Number(d && d.port) === tryPort;
+      } catch (_) {
+        identityOk = false;
+      }
         if (!identityOk) {
           // Poisoned cache entry (e.g. a stale :8080): drop it so the next
           // launch sweeps clean instead of latching a dead port first.
@@ -339,7 +356,6 @@
           _lastInitErr = '';
           return;
         }
-      } catch (_) { /* try next */ }
     }
     _proxyAvailable = false;
     _lastInitErr = 'proxy-not-found';
@@ -352,7 +368,16 @@
   }
 
   function initOnce() {
-    if (!_initPromise) _initPromise = _init();
+    // In-flight guard: concurrent proxyFetch calls during boot must share
+    // one sweep — otherwise N callers × 21 ports = a console wall and a
+    // discovery storm.
+    if (!_initPromise) {
+      _initInFlight = true;
+      _initPromise = _init().then(
+        (v) => { _initInFlight = false; return v; },
+        (e) => { _initInFlight = false; throw e; },
+      );
+    }
     return _initPromise;
   }
 
@@ -413,6 +438,32 @@
 
   const IGNORE_DOMAINS = /timeapi\.io|kalshi\.com|polymarket\.com/i;
 
+  // Mirror of proxy-fetch.js CF_PROTECTED: hosts that REQUIRE the proxy
+  // (CF Bot Mgmt / geo-restricted). A 403/404 for these via proxy must NOT
+  // retry direct — direct is blocked by design. A 403/404 for any other
+  // host (e.g. Bitstamp's Incapsula rejecting proxied TLS while direct
+  // returns 200, or a stale proxy binary missing a route) retries direct
+  // once for THIS request, same as 502/503/504.
+  const CF_PROTECTED_TB = new Set([
+    'api.binance.com',
+    'fapi.binance.com',
+    'dapi.binance.com',
+    'data-api.binance.vision',
+    'api.bybit.com',
+    'api.bytick.com',
+    'api.kraken.com',
+    'www.kraken.com',
+    'api.hyperliquid.xyz',
+    'www.okx.com',
+    'api.okx.com',
+    'api-pub.bitfinex.com',
+    'api.kucoin.com',
+    'api.mexc.com',
+    'api.crypto.com',
+    'api.bitvavo.com',
+    'api.upbit.com',
+  ]);
+
   function _buildProxyUrl(originalUrl) {
     try {
       const u = new URL(originalUrl);
@@ -432,7 +483,9 @@
 
   // ── Core fetch ───────────────────────────────────────────────────────────────
   window.proxyFetch = async function (url, options = {}) {
-    if (!_proxyAvailable && (Date.now() - _lastInitAt > 15000)) {
+    // Never orphan an in-flight sweep: resetting _initPromise while a sweep
+    // runs leaves the orphan probing AND starts a duplicate (boot storm).
+    if (!_proxyAvailable && !_initInFlight && (Date.now() - _lastInitAt > 15000)) {
        _initPromise = null;
     }
     await initOnce();
@@ -475,7 +528,13 @@
           signal: options.signal,
         });
 
-        if ([502, 503, 504].includes(response.status) && attempt < maxAttempts) {
+        // Gateway errors (502/503/504) always retry direct. Refusals
+        // (403/404) retry direct ONLY for non-CF hosts — CF-protected
+        // hosts are blocked direct by design, so retrying is pure spam.
+        const retryableGateway = [502, 503, 504].includes(response.status);
+        const retryableRefusal = (response.status === 403 || response.status === 404)
+          && !CF_PROTECTED_TB.has(targetHost);
+        if ((retryableGateway || retryableRefusal) && attempt < maxAttempts) {
           // Upstream rejected VIA proxy (provider edge, flagged egress IP,
           // rate limit). NOT proxy-down. Emit per-host diagnostics so the
           // per-host breaker (proxy-fetch.js) and EndpointTransport circuit

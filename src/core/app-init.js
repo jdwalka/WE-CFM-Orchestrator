@@ -1225,13 +1225,16 @@ window._fetchAllNow = () => fetchAll(true).then(() => {
     const cgBase = 'https://assets.coingecko.com/coins/images';
     const cgIds = {
       BTC: '1/large/bitcoin.png', ETH: '279/large/ethereum.png', SOL: '4128/large/solana.png',
-      XRP: '44/large/xrp-symbol-white-128.png', HYPE: '39198/large/hyperliquid.png',
+      XRP: '44/large/xrp-symbol-white-128.png', HYPE: 'hype@2x.png',
       DOGE: '5/large/dogecoin.png', BNB: '825/large/bnb-icon2_2x.png',
     };
+    // HYPE lives on CoinCap (gecko 39198 403s, atomiclabs has no hype.png).
+    const cgBases = { HYPE: 'https://assets.coincap.io/assets/icons' };
     syms.forEach(sym => {
       const img = new Image();
-      img.src = `${cgBase}/${cgIds[sym]}`;
+      img.src = sym === 'HYPE' ? `${cgBases.HYPE}/${cgIds[sym]}` : `${cgBase}/${cgIds[sym]}`;
       img.onerror = () => {
+        if (sym === 'HYPE') return; // coincap is the last working source
         const fb = new Image();
         fb.src = `https://cdn.jsdelivr.net/gh/atomiclabs/cryptocurrency-icons/128/color/${sym.toLowerCase()}.png`;
       };

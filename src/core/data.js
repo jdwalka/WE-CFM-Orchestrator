@@ -161,7 +161,8 @@ const PREDICTION_COINS = [
     sym: 'HYPE', name: 'Hyperliquid', instrument: 'HYPEUSD', geckoId: 'hyperliquid',
     color: '#50e3c2', icon: 'H',
     iconSources: [
-      'https://assets.coingecko.com/coins/images/50882/small/hyperliquid.png',
+      // NOTE: gecko 50882 403s and atomiclabs has no hype icon — coincap 200s.
+      'https://assets.coincap.io/assets/icons/hype@2x.png',
     ],
   },
 ];
