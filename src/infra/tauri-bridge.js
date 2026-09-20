@@ -309,10 +309,14 @@
 
     // 2. Verify a cached last-good port before scanning the cascade.
     // Must match proxy/src/main.rs bind_cascade() + proxy-fetch.js cascade.
+    // Latch the LOWEST healthy port, not the first: a stale proxy binary
+    // can linger on a higher port (missing newer routes) while a fresh one
+    // serves lower — first-hit latching wedges the app behind the stale one.
     const ports = _cachedProxyPort ? [_cachedProxyPort] : [];
     for (const p of PROXY_CASCADE_PORTS) {
       if (!ports.includes(p)) ports.push(p);
     }
+    let bestPort = 0;
     for (const tryPort of ports) {
       // Silent XHR probe (see _xhrGetText): dead ports fail quiet, no
       // 'Failed to load resource' wall in the console per sweep.
@@ -338,8 +342,11 @@
           }
           continue;
         }
+        if (!bestPort || tryPort < bestPort) bestPort = tryPort;
+    }
+    if (bestPort) {
         {
-          _proxyPort = tryPort;
+          _proxyPort = bestPort;
           _cachedProxyPort = _proxyPort;
           _proxyAvailable = true;
           _writeCachedProxyPort(_proxyPort);
@@ -534,7 +541,7 @@
         const retryableGateway = [502, 503, 504].includes(response.status);
         const retryableRefusal = (response.status === 403 || response.status === 404)
           && !CF_PROTECTED_TB.has(targetHost);
-        if ((retryableGateway || retryableRefusal) && attempt < maxAttempts) {
+        if (retryableGateway || retryableRefusal) {
           // Upstream rejected VIA proxy (provider edge, flagged egress IP,
           // rate limit). NOT proxy-down. Emit per-host diagnostics so the
           // per-host breaker (proxy-fetch.js) and EndpointTransport circuit
@@ -550,8 +557,10 @@
             perRequestFallback: useProxy,
           });
           if (useProxy && proxied !== url) {
-            // Request-scoped fallback: try direct once for this request.
-            await _sleep(_jitter(60 * attempt));
+            // Request-scoped fallback: try direct once for this request —
+            // even on the last attempt (single-attempt callers like the
+            // health probes must still fail over, not just report).
+            if (attempt < maxAttempts) await _sleep(_jitter(60 * attempt));
             try {
               const directRes = await fetch(url, {
                 method: options.method || 'GET',
@@ -568,8 +577,11 @@
               // Direct also failed — fall through to normal retry loop.
             }
           }
-          await _sleep(_jitter(60 * attempt));
-          continue;
+          if (attempt < maxAttempts) {
+            await _sleep(_jitter(60 * attempt));
+            continue;
+          }
+          return response;
         }
         if (useProxy && response.ok) {
           // Successful proxied response clears stale proxy-down counters only.
