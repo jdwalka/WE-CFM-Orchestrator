@@ -28,6 +28,9 @@ test('margithub key roles split 5m, 15m, and overall inference', () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'asi1-margithub-'));
   const previousCwd = process.cwd();
   const previousEnv = process.env.ASI1_API_KEY_MARGITHUB;
+  // Hermetic: ambient ASI1_ONLY_ACCOUNT (e.g. leaksnipe in dev shells) would
+  // zero the key list and fail this test for environmental reasons.
+  const previousOnlyAccount = process.env.ASI1_ONLY_ACCOUNT;
   fs.mkdirSync(path.join(tempDir, 'secrets'), { recursive: true });
   fs.writeFileSync(path.join(tempDir, 'secrets', 'ASI1_MARGITHUB.txt'), [
     '# account: margithub',
@@ -40,6 +43,7 @@ test('margithub key roles split 5m, 15m, and overall inference', () => {
   ].join('\n'));
   try {
     process.chdir(tempDir);
+    delete process.env.ASI1_ONLY_ACCOUNT;
     process.env.ASI1_API_KEY_MARGITHUB = token5m;
     const rows = Asi1.resolveAsi1ApiKeys(true)
       .filter(row => row.value === token5m || row.value === token15m);
@@ -54,6 +58,8 @@ test('margithub key roles split 5m, 15m, and overall inference', () => {
     process.chdir(previousCwd);
     if (previousEnv === undefined) delete process.env.ASI1_API_KEY_MARGITHUB;
     else process.env.ASI1_API_KEY_MARGITHUB = previousEnv;
+    if (previousOnlyAccount === undefined) delete process.env.ASI1_ONLY_ACCOUNT;
+    else process.env.ASI1_ONLY_ACCOUNT = previousOnlyAccount;
     fs.rmSync(tempDir, { recursive: true, force: true });
     Asi1.resolveAsi1ApiKeys(true);
   }
