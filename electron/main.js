@@ -1732,6 +1732,7 @@ const PROXY_PORT_CASCADE = [3010, 3011, 3012, 3013, 3014, 3015, 3016, 3017, 3018
 const PROXY_EXCHANGE_BASES = {
   'binance': 'https://api.binance.com',
   'binance-us': 'https://api.binance.us',
+  'polymarket-perps': 'https://api.perpetuals.polymarket.com',
   'binance-data': 'https://data-api.binance.vision',
   'binance-f': 'https://fapi.binance.com',
   'binance-d': 'https://dapi.binance.com',

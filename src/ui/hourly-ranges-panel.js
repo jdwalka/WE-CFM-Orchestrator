@@ -253,8 +253,19 @@
   let _emptyRealStreak = {}; // sym -> consecutive successful-but-empty poll count
 
   // ── Real Kalshi hourly ladder (single-strike PTB rows, real bid-wall size) ──
+  const _kalshiWorkerHost = (() => { try { return new URL(KALSHI_LADDER_WORKER).hostname; } catch (_) { return ''; } })();
+  function kalshiWorkerCircuitOpen() {
+    // Worker down (5xx) → breaker opens for 60s. Skip the fetch entirely
+    // while open: the tick runs every 2.5–10s and each attempt otherwise
+    // burns a proxied + direct call that both 503. Keep last-known bands.
+    try {
+      const b = window.ApiCircuitBreaker?.getBreaker?.(`proxy-fetch:${_kalshiWorkerHost}`, { threshold: 5, timeout: 60000 });
+      return !!(b && typeof b.isAvailable === 'function' && !b.isAvailable());
+    } catch (_) { return false; }
+  }
   async function loadRealLadder(sym) {
     if (!REAL_LADDER_SYMBOLS.has(sym)) return;
+    if (kalshiWorkerCircuitOpen()) return;
     try {
       const data = await apiFetch(`${KALSHI_LADDER_WORKER}/ladder?symbol=${sym}`, 8000);
       const bands = (data && data.status === 'ok' && Array.isArray(data.bands)) ? data.bands : [];

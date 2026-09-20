@@ -137,7 +137,10 @@
   // pyth added 2026-08-24: Hermes/Lazer aren't geo-blocked, so routing them through
   // the local proxy (and from there, the Mullvad/Sweden path) only adds latency and
   // ties price-feed reliability to that tunnel's health for no access-control benefit.
-  const IGNORE_DOMAINS = /localhost|127\.0\.0\.1|asi1\.ai|fetch-ai\.com|openai\.com|anthropic\.com|x\.ai|deepseek\.com|timeapi\.io|pyth/i;
+  // Bitstamp 2026-09: its Incapsula WAF 403s proxied (non-browser TLS)
+  // requests while direct browser-TLS requests return 200 with ACAO:* —
+  // so Bitstamp always goes direct, never through the proxy.
+  const IGNORE_DOMAINS = /localhost|127\.0\.0\.1|asi1\.ai|fetch-ai\.com|openai\.com|anthropic\.com|x\.ai|deepseek\.com|timeapi\.io|pyth|bitstamp\.net/i;
 
   function needsProxy(hostname) {
     if (IGNORE_DOMAINS.test(hostname)) return false;
@@ -347,7 +350,10 @@
         const retryableRefusal = (res.status === 403 || res.status === 404)
           && !CF_PROTECTED.has(hostname)
           && /^https?:\/\//.test(originalUrl)
-          && urlToUse !== originalUrl;
+          && urlToUse !== originalUrl
+          // Worker-down quiet: if a recent direct attempt also 5xx'd, the
+          // origin itself is down — don't double every call, fail fast.
+          && Date.now() >= ((_lastDirect5xx[hostname] || 0) + DIRECT_FAIL_QUIET_MS);
         if (retryableRefusal) {
           return _origFetch(originalUrl, init).then(
             (dRes) => { noteDirectResult(hostname, dRes); trackHostResult(hostname, dRes); return dRes; },

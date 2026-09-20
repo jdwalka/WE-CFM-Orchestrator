@@ -443,7 +443,9 @@
     'xrplcluster.com':                 'xrpl',
   };
 
-  const IGNORE_DOMAINS = /timeapi\.io|kalshi\.com|polymarket\.com/i;
+  // Bitstamp: Incapsula 403s proxied TLS, direct returns 200 (ACAO:*) —
+  // always direct, in both shims.
+  const IGNORE_DOMAINS = /timeapi\.io|kalshi\.com|polymarket\.com|bitstamp\.net/i;
 
   // Mirror of proxy-fetch.js CF_PROTECTED: hosts that REQUIRE the proxy
   // (CF Bot Mgmt / geo-restricted). A 403/404 for these via proxy must NOT
@@ -487,6 +489,12 @@
     } catch (_) {}
     return originalUrl; // not a valid URL or already local
   }
+
+  // Hosts whose last DIRECT attempt also failed with a 5xx: the upstream
+  // itself is down (e.g. kalshi worker 503s from its own isolates), so a
+  // direct retry just doubles traffic. Quiet window mirrors proxy-fetch.js.
+  const _tbLastDirect5xx = {};
+  const TB_DIRECT_FAIL_QUIET_MS = 60_000;
 
   // ── Core fetch ───────────────────────────────────────────────────────────────
   window.proxyFetch = async function (url, options = {}) {
@@ -560,7 +568,13 @@
             // Request-scoped fallback: try direct once for this request —
             // even on the last attempt (single-attempt callers like the
             // health probes must still fail over, not just report).
+            // Skipped while a recent direct attempt 5xx'd (origin itself
+            // down — retrying just doubles traffic, e.g. kalshi worker).
             if (attempt < maxAttempts) await _sleep(_jitter(60 * attempt));
+            if (Date.now() < ((_tbLastDirect5xx[targetHost] || 0) + TB_DIRECT_FAIL_QUIET_MS)) {
+              if (attempt < maxAttempts) continue;
+              return response;
+            }
             try {
               const directRes = await fetch(url, {
                 method: options.method || 'GET',
@@ -570,6 +584,8 @@
                   : undefined,
                 signal: options.signal,
               });
+              if (directRes && Number(directRes.status) >= 500) _tbLastDirect5xx[targetHost] = Date.now();
+              else if (directRes && directRes.ok) delete _tbLastDirect5xx[targetHost];
               // Direct succeeded (or gave a non-gateway status) — return it.
               // Do NOT touch _proxyBypassUntil / _proxyFailures / mode.
               return directRes;
