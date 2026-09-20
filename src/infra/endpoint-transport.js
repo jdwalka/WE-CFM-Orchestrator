@@ -37,10 +37,29 @@
     localproxy: 'optional',
   };
   const ROLE_ORDER = {
-    // Critical domains now prefer direct/API paths first; proxy is fallback transport.
-    critical: ['direct', 'ipc', 'supp', 'proxyOrchestrator'],
-    optional: ['direct', 'ipc', 'supp', 'proxyOrchestrator'],
+    // HTTP-leg sub-order. Top-level transport priority stays WSS → gRPC →
+    // RPC → HTTP (see PRIORITY + chooseTransportOrder). Within the HTTP leg,
+    // CF-protected hosts MUST try the proxy (supp/proxyOrchestrator) before
+    // direct — direct fails at the Cloudflare edge and used to wedge the
+    // global bypass. Open hosts prefer direct (lower latency).
+    critical: ['supp', 'proxyOrchestrator', 'direct', 'ipc'],
+    optional: ['supp', 'proxyOrchestrator', 'direct', 'ipc'],
   };
+  // Hosts that REQUIRE the local proxy (Cloudflare Bot Mgmt / geo-block).
+  // Direct-first for these burns a doomed attempt every poll and fed the old
+  // global-bypass storm. Keep in sync with proxy-fetch.js CF_PROTECTED.
+  const CF_PROTECTED_HOSTS = new Set([
+    'api.binance.com', 'fapi.binance.com', 'dapi.binance.com',
+    'data-api.binance.vision', 'api.bybit.com', 'api.bytick.com',
+    'api.kraken.com', 'www.kraken.com', 'api.hyperliquid.xyz',
+    'api.bitstamp.net', 'www.bitstamp.net', 'www.okx.com', 'api.okx.com',
+    'api-pub.bitfinex.com', 'api.kucoin.com', 'api.mexc.com',
+    'api.crypto.com', 'api.bitvavo.com', 'api.upbit.com',
+  ]);
+
+  function _hostOf(url) {
+    try { return new URL(String(url)).hostname.toLowerCase(); } catch (_) { return ''; }
+  }
   const routeCircuit = {};
   const CIRCUIT_THRESHOLD = 3;
   const CIRCUIT_COOLDOWN_MS = 20_000;
@@ -211,9 +230,14 @@
   function shouldBypassProxy(provider, opts = {}) {
     if (opts.forceProxy) return false;
     const state = getProxyState();
-    const role = providerRole(provider);
-    if (state.mode === 'bypass' || state.bypassActive) return true;
-    if (role === 'optional' && state.healthy === false) return true;
+    // Global bypass ONLY while the proxy process is down. A stale
+    // mode==='bypass' with an expired window + available proxy must NOT
+    // bypass — otherwise one 3s proxy-down event sticks every later request
+    // to direct forever (sticky bypass). Per-host upstream rejects never set
+    // global bypass anymore (see tauri-bridge.js), they demote via circuit.
+    if (state.available === false) return true;
+    if (state.bypassActive) return true;
+    if (state.healthy === false && state.available === false) return true;
     return false;
   }
 
@@ -643,8 +667,20 @@
 
     if (!attempts.length) throw new Error('no transport attempts available');
 
+    // WSS → gRPC → RPC → HTTP is enforced at fetchWithPriority level. Within
+    // the HTTP leg, CF-protected hosts must try proxy legs (supp /
+    // proxyOrchestrator) before direct — direct is doomed at the CF edge.
+    // Apply a penalty bonus so the generic penalty sort can't reorder direct
+    // ahead of the proxy for those hosts.
+    const cfProtected = CF_PROTECTED_HOSTS.has(_hostOf(url));
     const ordered = attempts
-      .map((entry) => ({ ...entry, score: getCandidatePenalty(provider, entry.transport, domain || `${provider}-http`) }))
+      .map((entry) => {
+        let score = getCandidatePenalty(provider, entry.transport, domain || `${provider}-http`);
+        if (cfProtected && (entry.transport === 'supp' || entry.transport === 'proxyOrchestrator')) {
+          score -= 100;
+        }
+        return { ...entry, score };
+      })
       .sort((a, b) => a.score - b.score);
 
     // Global provider cool-down (set after 429) — fail fast without hammering more routes
@@ -940,10 +976,15 @@
       poll: async () => {
         const p = getProxyState();
         if (!p || Object.keys(p).length === 0) throw new Error('proxy state unavailable');
-        if (p.healthy === false && p.mode !== 'proxy') throw new Error('proxy degraded');
+        // DEGRADED only when the proxy process is down. A short per-request
+        // bypass with a live proxy is healthy+fallback, not a bus error —
+        // otherwise the bus flaps LocalProxy DEGRADED every 8s during the
+        // old 20s global bypass window.
+        if (p.available === false) throw new Error('proxy degraded');
+        if (p.healthy === false && p.available === false) throw new Error('proxy degraded');
         return {
           mode: p.mode || 'unknown',
-          healthy: p.healthy !== false,
+          healthy: p.healthy !== false && p.available !== false,
           bypassActive: !!p.bypassActive,
           failures: Number(p.failures || 0),
         };

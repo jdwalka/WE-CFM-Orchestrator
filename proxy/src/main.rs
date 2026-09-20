@@ -77,6 +77,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/cache",          delete(cache_clear_handler))
         // ── Proxy ────────────────────────────────────────────────────────────
         .route("/proxy",          any(direct_proxy))
+        .route("/:exchange",      any(exchange_proxy_root))
         .route("/:exchange/*path", any(exchange_proxy))
         .with_state(state)
         .layer(CatchPanicLayer::new())
@@ -102,20 +103,21 @@ async fn main() -> anyhow::Result<()> {
 // ─── Port binding ────────────────────────────────────────────────────────────────
 
 async fn bind_cascade() -> anyhow::Result<(tokio::net::TcpListener, u16)> {
+    // NOTE: never bind the ultra-fallbacks (:8080 is a local nginx trap that
+    // answers 200 'OK' on /health but 404s every real route — latching it
+    // wedges the whole app behind a fake proxy).
     let up:    Vec<u16> = (3011u16..=3020).collect();
     let down:  Vec<u16> = (3000u16..=3009).rev().collect();
-    let ultra: &[u16]   = &[8080, 8000, 4000, 5000, 9000];
     let candidates: Vec<u16> = std::iter::once(3010u16)
         .chain(up)
         .chain(down)
-        .chain(ultra.iter().copied())
         .collect();
     for &port in &candidates {
         if let Ok(l) = tokio::net::TcpListener::bind(format!("127.0.0.1:{port}")).await {
             return Ok((l, port));
         }
     }
-    anyhow::bail!("no available port in 3000-3020 or ultra-fallbacks")
+    anyhow::bail!("no available port in 3000-3020")
 }
 
 fn write_port_file(port: u16) {
@@ -201,12 +203,36 @@ async fn exchange_proxy(
     let Some(base) = state.upstreams.get(&exchange).cloned() else {
         return err_resp(StatusCode::NOT_FOUND, &format!("unknown exchange '{exchange}'"));
     };
-    let spoof     = grades::spoof_for(&exchange);
-    let cache_ttl = grades::ttl_for(&exchange);
-    let grade     = grades::grade_for(&exchange)
+    forward_exchange(&state, &exchange, &base, &path, req).await
+}
+
+/// `/:exchange` with no trailing path (e.g. `POST /solana/`, `/xrpl/` hit the
+/// router as an empty path on some axum versions and 404 without this).
+/// Same as exchange_proxy with an empty path.
+async fn exchange_proxy_root(
+    State(state): State<AppState>,
+    Path(exchange): Path<String>,
+    req: Request,
+) -> Response {
+    let Some(base) = state.upstreams.get(&exchange).cloned() else {
+        return err_resp(StatusCode::NOT_FOUND, &format!("unknown exchange '{exchange}'"));
+    };
+    forward_exchange(&state, &exchange, &base, "", req).await
+}
+
+async fn forward_exchange(
+    state:    &AppState,
+    exchange: &str,
+    base:     &str,
+    path:     &str,
+    req:      Request,
+) -> Response {
+    let spoof     = grades::spoof_for(exchange);
+    let cache_ttl = grades::ttl_for(exchange);
+    let grade     = grades::grade_for(exchange)
         .map(|g| g.as_char())
         .unwrap_or('B');
-    forward_to(&state, &base, &path, req, spoof, cache_ttl, grade).await
+    forward_to(state, base, path, req, spoof, cache_ttl, grade).await
 }
 
 async fn direct_proxy(

@@ -358,9 +358,10 @@
         }
       } catch (_) {}
 
-      // Soft-refresh whale cache for BTC/ETH (SOL if mapped)
+      // Whale cache refresh: DROPPED feed (dead API key → permanent 401s).
+      // Re-enable per-call with window.__WE_ENABLE_WHALE__ === true.
       try {
-        if (window.WhaleAlertMonitor && typeof window.WhaleAlertMonitor.getWhaleTransactions === 'function') {
+        if (window.__WE_ENABLE_WHALE__ === true && window.WhaleAlertMonitor && typeof window.WhaleAlertMonitor.getWhaleTransactions === 'function') {
           for (const c of ['BTC', 'ETH']) {
             window.WhaleAlertMonitor.getWhaleTransactions(c).catch(() => {});
           }

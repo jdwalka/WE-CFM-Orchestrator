@@ -709,7 +709,7 @@ try {
       console.log(`[LLM] 5m PTB binary markets (polycool.app / Chainlink) using: ${diagnostics.fiveMinuteProvider} / ${diagnostics.fiveMinuteModel}`);
     }
   } else {
-    console.warn('[LLM] Assistant loaded but disabled - check ASI1 API key (ASI1_API_KEY_LEAKSNIPE / ASI_ONE_API_KEY_LEAKSNIPE or secrets/ASI1_LEAKSNIPE.txt).');
+    console.warn('[LLM] Assistant loaded but disabled - check ASI1 API key (ASI1_API_KEY_MARGITHUB / ASI1_API_KEY or secrets/ASI1_MARGITHUB.txt).');
   }
 } catch (e) {
   console.warn('[LLM] Assistant module unavailable:', e.message);
@@ -993,8 +993,18 @@ function configureCachePaths() {
 
     // V8 Optimizations for AMD Ryzen (max-old-space-size + WASM SIMD)
     // Note: --use-largepages=on causes STATUS_ACCESS_VIOLATION (0xC0000005 / -1073741819) on Windows without SeLockMemoryPrivilege.
+    // 2026-09-18: dropped --no-lazy and --turbo-fast-api-calls from the Windows
+    // flags after a crash with that exact same 0xC0000005 / -1073741819 code —
+    // both are internal/experimental V8 flags, not standard production ones.
+    // --no-lazy forces eager compilation of every script at load time instead
+    // of V8's default lazy parsing; this app loads ~150 <script> tags, and
+    // eager-compiling all of them under memory pressure is a plausible native
+    // crash vector. --turbo-fast-api-calls is an internal Turbofan flag for
+    // optimizing the JS<->native-C++ call boundary and is not guaranteed
+    // stable across V8 patch versions. Kept on non-Windows since the crash
+    // was Windows-specific; revert if these turn out unrelated.
     const v8Flags = process.platform === 'win32'
-      ? '--max-old-space-size=8192 --no-lazy --turbo-fast-api-calls --experimental-wasm-simd'
+      ? '--max-old-space-size=8192 --experimental-wasm-simd'
       : '--use-largepages=on --max-old-space-size=8192 --no-lazy --turbo-fast-api-calls --experimental-wasm-simd';
     app.commandLine.appendSwitch('js-flags', v8Flags);
     app.commandLine.appendSwitch('enable-features', 'SharedArrayBuffer');
@@ -1721,6 +1731,8 @@ const PROXY_PORT_CASCADE = [3010, 3011, 3012, 3013, 3014, 3015, 3016, 3017, 3018
 
 const PROXY_EXCHANGE_BASES = {
   'binance': 'https://api.binance.com',
+  'binance-us': 'https://api.binance.us',
+  'polymarket-perps': 'https://api.perpetuals.polymarket.com',
   'binance-data': 'https://data-api.binance.vision',
   'binance-f': 'https://fapi.binance.com',
   'binance-d': 'https://dapi.binance.com',
@@ -2783,7 +2795,7 @@ async function handleAsi1NarrativeRequest(args = {}, defaultModel = 'asi1-ultra'
       {
         model,
         candidateModels: [model], // HUD is a lone wolf: no model cascade, fail fast
-        onlyAccount: process.env.ASI1_PREFERRED_ACCOUNT || 'leaksnipe',
+        onlyAccount: process.env.ASI1_PREFERRED_ACCOUNT || 'margithub',
         max_tokens: model.includes('ultra') ? 350 : 120,
         temperature: 0.1,
         timeoutMs: model.includes('ultra') ? 25000 : 12000,
@@ -2983,7 +2995,7 @@ ${ladderLines ? `- Active Hourly Range Ladder:\n${ladderLines}` : ''}`;
         temperature: 0.2,
         reasoning_effort: reasoning_effort !== 'auto' ? reasoning_effort : 'medium',
         web_search,
-        onlyAccount: process.env.ASI1_PREFERRED_ACCOUNT || 'leaksnipe',
+        onlyAccount: process.env.ASI1_PREFERRED_ACCOUNT || 'margithub',
         timeoutMs: 30000,
       }
     );

@@ -324,7 +324,7 @@ async function runAutonomousHunt(marketContext = {}) {
  */
 function startAutonomousScheduler(options = {}) {
   const bootDelayMs = options.bootDelayMs != null ? options.bootDelayMs : 60_000;
-  const intervalMs = options.intervalMs != null ? options.intervalMs : 300_000; // 5 mins
+  const intervalMs = Math.max(options.intervalMs != null ? options.intervalMs : 900_000, 900_000); // 15 mins max (credit preservation)
 
   if (_cueTimer) clearTimeout(_cueTimer);
   if (_recurringTimer) clearInterval(_recurringTimer);

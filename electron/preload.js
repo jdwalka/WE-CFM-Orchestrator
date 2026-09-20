@@ -205,6 +205,31 @@ function readPythLazerSecret() {
   ]);
 }
 
+// Alchemy (new gitgoin key file holds the key on line 1 plus a helper URL
+// below it — take the alch_ line, not the longest line).
+function readAlchemySecret() {
+  if (!fs || !path) return { value: '', path: '' };
+  for (const dir of secretDirCandidates()) {
+    for (const fileName of [
+      'ALCHEMY-API-KEY-gitgoin.txt',
+      'ALCHEMY-API-KEY.txt',
+      'ALCHEMY API KEY.txt',
+    ]) {
+      const p = path.join(dir, fileName);
+      try {
+        if (!fs.existsSync(p)) continue;
+        const raw = fs.readFileSync(p, 'utf8');
+        const alchLine = String(raw).split(/\r?\n/).map(s => s.trim()).find(s => /^alch_/i.test(s));
+        const value = stripEnvValue(alchLine || readSecretScalar(raw));
+        if (value) return { value, path: p };
+      } catch (_) {
+        // keep looking
+      }
+    }
+  }
+  return { value: '', path: '' };
+}
+
 // Pyth Pro (docs.pyth.network/price-feeds/pro) — a distinct product/key from
 // the Lazer streaming token above; used for the REST history API
 // (/v1/real_time/history), which now requires this specific key.
@@ -278,6 +303,14 @@ function readPublicEnv() {
   const pythProKey = pythProSecret.value || readEnvValue(['PYTH_PRO_API_KEY']);
   if (pythProKey) {
     out.PYTH_PRO_API_KEY = pythProKey;
+  }
+
+  // Alchemy key (secrets/ALCHEMY-API-KEY-gitgoin.txt preferred) — feeds the
+  // ETH WSS feed (alchemy-ws.js) and chain-router Alchemy handlers.
+  const alchemySecret = readAlchemySecret();
+  const alchemyKey = alchemySecret.value || readEnvValue(['ALCHEMY_API_KEY', 'ALCHEMY_KEY']);
+  if (alchemyKey) {
+    out.ALCHEMY_API_KEY = alchemyKey;
   }
 
   return out;

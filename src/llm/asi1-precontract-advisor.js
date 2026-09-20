@@ -16,7 +16,11 @@
   // DOGE/BNB/HYPE cut from 5m/15m pre-contract LLM firing too, to protect the
   // ASI1 daily request quota.
   const COINS = ['BTC', 'ETH', 'SOL', 'XRP'];
-  const REFRESH_MS = Number(window.__ASI1_PRECONTRACT_MS || 75_000);
+  // Rate-limited to max 1 call every 15 minutes to prevent blasting credits,
+  // leaning on deterministic logic between LLM windows.
+  const REFRESH_MS = Number(window.__ASI1_PRECONTRACT_MS || 900_000);
+  const MIN_INFERENCE_COOLDOWN_MS = Number(window.__ASI1_MIN_INFERENCE_COOLDOWN_MS || 900_000);
+  let _lastLlmCallTs = 0;
   const MIN_TTC_FIRE = 20;
   const MAX_TTC_5M = 8 * 60;
   const MAX_TTC_15M = 22 * 60;
@@ -419,6 +423,55 @@
       return _briefs.get(key) || null;
     }
 
+    const now = Date.now();
+    const onCooldown = (now - _lastLlmCallTs) < MIN_INFERENCE_COOLDOWN_MS;
+
+    // Lean on deterministic logic if within the 15-minute inference cooldown window
+    if (onCooldown) {
+      const pack = resolvePredPack(sym);
+      const call = pack?.direction || (ctx.liveDirection === 'UP' || ctx.liveDirection === 'DOWN' ? ctx.liveDirection : null);
+      const conf = pack?.confidence ?? (pack?.score != null ? Math.min(0.88, Math.max(0.5, 0.5 + Math.abs(pack.score) * 0.4)) : 0.6);
+      const deltaStr = ctx.deltaVsPtb != null ? ((ctx.deltaVsPtb > 0 ? '+' : '') + ctx.deltaVsPtb) : '0';
+      const cdMins = Math.ceil((MIN_INFERENCE_COOLDOWN_MS - (now - _lastLlmCallTs)) / 60000);
+      const deterministicNotes = `[Deterministic Truffle Read] ${sym} ${ctx.horizon}: Signal=${pack?.signal || call || 'NEUTRAL'} ` +
+        `(score=${pack?.score != null ? pack.score.toFixed(3) : '—'}, regime=${pack?.regime || 'NORMAL'}). ` +
+        `PTB=${ctx.priceToBeatNum || '—'}, Spot=${ctx.spot || '—'}, Delta=${deltaStr}. ` +
+        `(ASI1 15m credit guard active: next LLM window in ~${cdMins}m).`;
+
+      let brief = {
+        sym: String(sym).toUpperCase(),
+        ts: now,
+        slug: ctx.slug,
+        horizon: ctx.horizon,
+        call: call === 'UP' || call === 'DOWN' ? call : null,
+        confidence: clamp(conf, 0, 1),
+        regime: pack?.regime || 'deterministic',
+        notes: deterministicNotes,
+        primaryRationale: deterministicNotes,
+        marketPatterns: null,
+        preContract: null,
+        polyPeg: null,
+        provider: 'deterministic-truffle',
+        model: 'truffle-deterministic',
+        market: ctx,
+        degraded: false,
+      };
+
+      if (window.InferenceTruthGuard?.gateBrief) {
+        brief = window.InferenceTruthGuard.gateBrief(brief, {
+          horizon: ctx.horizon,
+          market: ctx,
+          modelScore: pack?.score,
+        });
+      }
+      _briefs.set(key, brief);
+      _persistBriefs();
+      try {
+        window.dispatchEvent(new CustomEvent('asi1:precontract', { detail: brief }));
+      } catch (_) { /* */ }
+      return brief;
+    }
+
     const invoke = window.electron?.invoke;
     if (typeof invoke !== 'function') return null;
 
@@ -426,6 +479,7 @@
     try {
       const res = await invoke('llm:analyzeSnapshot', snapshot);
       if (!res?.success || !res.output) return null;
+      _lastLlmCallTs = Date.now();
       const o = res.output;
       const scrubLocal = (t) => {
         let s = String(t || '');

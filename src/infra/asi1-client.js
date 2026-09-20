@@ -5,8 +5,8 @@
  * shape per account: asi1 (default), asi1-ultra (deep), asi1-mini (fast).
  * We also try undocumented `asi1-fast` last because this repo used it.
  *
- * The only supported ASI:One account is mauro@leaksnipe.win:
- *   ASI1_API_KEY_LEAKSNIPE / secrets/ASI1_LEAKSNIPE.txt
+ * The only supported ASI:One account is margithub@icloud.com:
+ *   ASI1_API_KEY_MARGITHUB / ASI1_API_KEY / secrets/ASI1_MARGITHUB.txt
  * Secret-file `# role:` lines can route one key to 5m, 15m, or overall.
  *
  * Auth: Authorization: Bearer $ASI_ONE_API_KEY
@@ -50,17 +50,17 @@ const ASI1_ALL_MODELS = Object.freeze([...ASI1_OFFICIAL_MODELS, ...ASI1_EXTRA_MO
 
 const ASI1_ACCOUNTS = Object.freeze([
   {
-    id: 'leaksnipe',
-    email: 'mauro@leaksnipe.win',
-    envNames: ['ASI1_API_KEY_LEAKSNIPE', 'ASI_ONE_API_KEY_LEAKSNIPE'],
-    sessionEnv: 'ASI1_SESSION_LEAKSNIPE',
-    secretFiles: ['ASI1_LEAKSNIPE.txt'],
+    id: 'margithub',
+    email: 'margithub@icloud.com',
+    envNames: ['ASI1_API_KEY_MARGITHUB', 'ASI1_API_KEY', 'ASI_ONE_API_KEY_MARGITHUB'],
+    sessionEnv: 'ASI1_SESSION_MARGITHUB',
+    secretFiles: ['ASI1_MARGITHUB.txt', 'ASI1_API_KEY.txt'],
   },
 ]);
 
 function inferAccountFromLabel(token) {
   const s = String(token || '').toLowerCase();
-  if (s.includes('leaksnipe')) return { account: 'leaksnipe', email: 'mauro@leaksnipe.win' };
+  if (s.includes('margithub')) return { account: 'margithub', email: 'margithub@icloud.com' };
   return null;
 }
 
@@ -223,7 +223,7 @@ function resolveAsi1ApiKeys(force = false) {
   }
 
   const keys = Array.from(accountKeys.values());
-  if (process.env.ASI1_ONLY_ACCOUNT && process.env.ASI1_ONLY_ACCOUNT !== 'leaksnipe') keys.length = 0;
+  if (process.env.ASI1_ONLY_ACCOUNT && process.env.ASI1_ONLY_ACCOUNT !== 'margithub') keys.length = 0;
 
   _cachedAsi1Keys = keys;
   _cachedAsi1KeysTs = now;
@@ -387,7 +387,7 @@ async function chatCompletion(messagesOrOptions, maybeOptions = {}) {
     ? accountKeys.filter((k) => Array.isArray(k.roles) && k.roles.includes(options.keyRole))
     : accountKeys;
   if (!keys.length) {
-    throw new Error('ASI:One API key missing — set ASI1_API_KEY_LEAKSNIPE or secrets/ASI1_LEAKSNIPE.txt');
+    throw new Error('ASI:One API key missing — set ASI1_API_KEY_MARGITHUB (or ASI1_API_KEY) or secrets/ASI1_MARGITHUB.txt');
   }
 
   const requestedModel = resolveModelForTier(options.tier, options.model) || 'asi1-mini';
@@ -423,7 +423,7 @@ async function chatCompletion(messagesOrOptions, maybeOptions = {}) {
           'Content-Type': 'application/json',
           ...(options.extraHeaders || {}),
         };
-        const accountSession = account === 'leaksnipe' ? process.env.ASI1_SESSION_LEAKSNIPE : '';
+        const accountSession = account === 'margithub' ? process.env.ASI1_SESSION_MARGITHUB : '';
         const plannerOn = options.plannerMode === true
           || options.planner_mode === true
           || process.env.ASI1_PLANNER_MODE === '1';

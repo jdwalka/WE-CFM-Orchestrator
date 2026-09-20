@@ -384,15 +384,19 @@
         }
 
         const proxy = transport.proxy || {};
-        if (proxy.mode || proxy.healthy === false || proxy.bypassActive) {
+        if (proxy.mode || proxy.healthy === false || proxy.bypassActive || proxy.available !== undefined) {
+            // Unified with tauri-bridge.js _setProxyMode: HEALTHY = proxy
+            // process reachable (available). A short per-request bypass is
+            // healthy+fallback, NOT degraded. DEGRADED only when down.
+            const proxyUp = proxy.available !== false && proxy.enabled !== false && proxy.healthy !== false;
             update('LocalProxy', {
-                status: proxy.mode === 'proxy' && !proxy.healthy ? 'degraded' : 'healthy',
+                status: proxyUp ? 'healthy' : 'degraded',
                 lastFetch: proxy.ts || Date.now(),
                 fallback: proxy.mode === 'bypass' || !!proxy.bypassActive,
-                transient: !!proxy.bypassActive || proxy.healthy === false,
+                transient: !proxyUp || !!proxy.bypassActive,
                 reason: proxy.mode === 'bypass'
                     ? `hybrid bypass (${proxy.bypassMsLeft > 0 ? Math.round(proxy.bypassMsLeft / 1000) + 's' : 'active'})`
-                    : (proxy.healthy ? 'proxy healthy' : `proxy degraded (${proxy.failures || 0})`),
+                    : (proxyUp ? 'proxy healthy' : `proxy degraded (${proxy.failures || 0})`),
             });
         }
     }
@@ -986,7 +990,11 @@
         { provider: 'Etherscan', url: null, viaProxy: true, validateJson: true },
         { provider: 'XRP Ledger', url: 'https://xrplcluster.com', fallbackUrl: 'https://s1.ripple.com:51234', method: 'POST', body: '{"method":"server_info","params":[{}]}' , viaProxy: true, validateJson: true },
         { provider: 'Alchemy RPC', url: 'https://ethereum.publicnode.com', fallbackUrl: 'https://cloudflare-eth.com', method: 'POST', body: '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber"}', viaProxy: true, validateJson: true },
-        { provider: 'LocalProxy', url: 'http://127.0.0.1:3010/health' },
+        // LocalProxy is sourced from the bridge state (ProxyTransport.getState),
+        // NOT probed over HTTP: a hardcoded :3010 probe marks the proxy
+        // DEGRADED whenever the cascade binds :3011+ even though the proxy is
+        // healthy. See probeEndpointHostBatch() bridge-state branch below.
+        { provider: 'LocalProxy', url: null, fromBridge: true },
     ];
 
     const ENDPOINT_PROBE_STALE_MS = 90_000;
@@ -1033,6 +1041,31 @@
             endpointProbeCursor = (endpointProbeCursor + due.length) % ENDPOINT_HOST_PROBES.length;
 
             for (const cfg of due) {
+                // LocalProxy: source from bridge state (live port), never a
+                // hardcoded :3010 HTTP probe. The bridge owns discovery across
+                // the full cascade; probing :3010 here would report DEGRADED
+                // whenever the proxy correctly bound :3011+.
+                if (cfg.fromBridge && cfg.provider === 'LocalProxy') {
+                    try {
+                        const p = window.ProxyTransport?.getState?.() || {};
+                        if (p && (p.available !== undefined || p.port)) {
+                            const proxyUp = p.available !== false && p.enabled !== false && p.healthy !== false;
+                            update('LocalProxy', {
+                                status: proxyUp ? 'healthy' : 'degraded',
+                                lastFetch: p.ts || now,
+                                fallback: p.mode === 'bypass' || !!p.bypassActive,
+                                optional: true,
+                                transient: !proxyUp || !!p.bypassActive,
+                                reason: p.mode === 'bypass'
+                                    ? `hybrid bypass (${p.bypassMsLeft > 0 ? Math.round(p.bypassMsLeft / 1000) + 's' : 'active'})`
+                                    : (proxyUp ? `proxy healthy (:${p.port || '?'})` : `proxy degraded (${p.failures || 0})`),
+                                bucket: proxyUp ? BUCKETS.UNKNOWN : BUCKETS.NETWORK_TRANSPORT,
+                                bucketReason: proxyUp ? '' : 'local proxy process unreachable',
+                            });
+                        }
+                    } catch (_) { /* keep last known state */ }
+                    continue;
+                }
                 // Route RPC/datacenter endpoints through the local proxy (SOCKS
                 // egress) — they are geo-blocked or slow when hit directly and
                 // previously burned 10s timeouts every cycle. LocalProxy is
@@ -1043,7 +1076,7 @@
 
             const fetchWithTimeout = async (url) => {
                 const ctrl = new AbortController();
-                const timer = setTimeout(() => ctrl.abort(new Error('endpoint-probe-timeout')), 8000);
+                const timer = setTimeout(() => ctrl.abort(new Error('endpoint-probe-timeout')), 12000);
                 try {
                     return await fetchFn(url, {
                             method: cfg.method || 'GET',
@@ -1060,11 +1093,10 @@
                     }
                 };
 
-                const etherscanKey = window.__env?.ETHERSCAN_API_KEY
-                    || window.__env?.ETHERSCAN_API_KEY_2
-                    || window.__env?.ETHERSCAN_API_KEY_3
-                    || '';
-                if (cfg.provider === 'Etherscan' && !etherscanKey) {
+                const etherscanKeys = (cfg.provider === 'Etherscan')
+                    ? [window.__env?.ETHERSCAN_API_KEY, window.__env?.ETHERSCAN_API_KEY_2, window.__env?.ETHERSCAN_API_KEY_3].filter(Boolean)
+                    : [];
+                if (cfg.provider === 'Etherscan' && !etherscanKeys.length) {
                     update(cfg.provider, {
                         status: 'unknown',
                         lastFetch: now,
@@ -1092,12 +1124,25 @@
                 };
 
                 try {
-                    const primaryUrl = cfg.provider === 'Etherscan'
-                        ? `https://api.etherscan.io/v2/api?chainid=1&module=block&action=eth_block_number&apikey=${encodeURIComponent(etherscanKey)}`
-                        : cfg.url;
-                    let res = await fetchWithTimeout(primaryUrl);
-                    let ok = await responseOk(res);
+                    let res;
+                    let ok = false;
                     let usedFallback = false;
+                    if (cfg.provider === 'Etherscan') {
+                        // Rotate all configured keys: free tier rate-limits per key.
+                        // getblocknobytime returns the wrapped {status:"1"} shape;
+                        // eth_block_number / proxy actions do not validate.
+                        const ts = Math.floor(Date.now() / 1000);
+                        for (const k of etherscanKeys) {
+                            const keyUrl = `https://api.etherscan.io/v2/api?chainid=1&module=block&action=getblocknobytime&timestamp=${ts}&closest=before&apikey=${encodeURIComponent(k)}`;
+                            try {
+                                res = await fetchWithTimeout(keyUrl);
+                                if (await responseOk(res)) { ok = true; break; }
+                            } catch (_) { /* try next key */ }
+                        }
+                    } else {
+                        res = await fetchWithTimeout(cfg.url);
+                        ok = await responseOk(res);
+                    }
                     if (!ok && cfg.fallbackUrl) {
                         try {
                             const res2 = await fetchWithTimeout(cfg.fallbackUrl);

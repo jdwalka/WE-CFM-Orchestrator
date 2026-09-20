@@ -39,6 +39,19 @@
   let cmcFearGreedUnsupported = false;
   let cmcRateLimitedUntil = 0;
   let cmcProDisabledUntil = 0;
+  // Consecutive-failure kill switch: the ProxyOrchestrator path throws a
+  // generic "all endpoints exhausted" error with no HTTP status, so its 401s
+  // never armed the auth cooldown in handleCmcFailure. After 3 straight
+  // failures from any path, CMC Pro is disabled for the session window.
+  let cmcConsecutiveFailures = 0;
+  function noteCmcSuccess() { cmcConsecutiveFailures = 0; }
+  function noteCmcFailure() {
+    cmcConsecutiveFailures += 1;
+    if (cmcConsecutiveFailures >= 3 && Date.now() >= cmcProDisabledUntil) {
+      cmcProDisabledUntil = Date.now() + CMC_AUTH_COOLDOWN_MS;
+      console.warn('[CMC] 3 consecutive failures; disabling CMC Pro for this session window.');
+    }
+  }
   let lastQuotesCmcRequestTs = 0;
   let lastGlobalCmcRequestTs = 0;
 
@@ -218,8 +231,10 @@
           }
 
           console.info(`[CMC ${isProMode ? 'Pro' : 'Trial'}] Quotes via proxy: ${Object.keys(result?.data || {}).length} coins ✓`);
+          noteCmcSuccess();
           return result?.data || {};
         } catch (err) {
+          noteCmcFailure();
           if (/401|403|unauthorized|forbidden|api key/i.test(err?.message || '')) {
             handleCmcFailure(401, err?.message || '');
             markCmcUnavailable(cmcUnavailableReason());
@@ -251,6 +266,7 @@
 
       if (!resp.ok) {
         handleCmcFailure(resp.status, errText);
+        noteCmcFailure();
         console.warn(`[CMC ${isProMode ? 'Pro' : 'Trial'}] Quotes (${resp.status}):`, errText.slice(0, 100));
         return cachedQuotes(symbols);
       }
@@ -278,8 +294,10 @@
       });
 
       console.info(`[CMC ${isProMode ? 'Pro' : 'Trial'}] Quotes: ${Object.keys(result).length} coins ✓`);
+      noteCmcSuccess();
       return result;
     } catch (e) {
+      noteCmcFailure();
       console.warn(`[CMC ${isProMode ? 'Pro' : 'Trial'}] Quotes error:`, e.message);
       return cachedQuotes(symbols);
     }

@@ -299,7 +299,7 @@ def resolve_pending_predictions() -> int:
                        OR tail_arrived IS NULL)
                   AND expiry_utc < ?
                 ORDER BY expiry_utc
-                LIMIT 200
+                LIMIT 20
                 """,
                 (now.isoformat(),),
             ).fetchall()
@@ -715,8 +715,16 @@ def _bucketed_correction(connection: sqlite3.Connection) -> dict:
     }
 
 
+_REPORT_CACHE = None
+_REPORT_CACHE_TIME = 0.0
+
 def get_calibration_report() -> dict:
     """Rolling and bucketed Brier/calibration report for recent predictions."""
+    global _REPORT_CACHE, _REPORT_CACHE_TIME
+    import time
+    if _REPORT_CACHE is not None and time.time() - _REPORT_CACHE_TIME < 300:
+        return _REPORT_CACHE
+
     now = datetime.now(timezone.utc)
     resolve_pending_predictions()
     try:
@@ -855,6 +863,8 @@ def get_calibration_report() -> dict:
                 }
                 for r in recent_settlement_rows
             ]
+            _REPORT_CACHE = report
+            _REPORT_CACHE_TIME = time.time()
             return report
     except sqlite3.Error as error:
         return {"status": "storage_error", "error": str(error)}
