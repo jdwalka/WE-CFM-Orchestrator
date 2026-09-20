@@ -709,7 +709,7 @@ try {
       console.log(`[LLM] 5m PTB binary markets (polycool.app / Chainlink) using: ${diagnostics.fiveMinuteProvider} / ${diagnostics.fiveMinuteModel}`);
     }
   } else {
-    console.warn('[LLM] Assistant loaded but disabled - check ASI1 API key (ASI1_API_KEY_LEAKSNIPE / ASI_ONE_API_KEY_LEAKSNIPE or secrets/ASI1_LEAKSNIPE.txt).');
+    console.warn('[LLM] Assistant loaded but disabled - check ASI1 API key (ASI1_API_KEY_MARGITHUB / ASI1_API_KEY or secrets/ASI1_MARGITHUB.txt).');
   }
 } catch (e) {
   console.warn('[LLM] Assistant module unavailable:', e.message);
@@ -1731,6 +1731,7 @@ const PROXY_PORT_CASCADE = [3010, 3011, 3012, 3013, 3014, 3015, 3016, 3017, 3018
 
 const PROXY_EXCHANGE_BASES = {
   'binance': 'https://api.binance.com',
+  'binance-us': 'https://api.binance.us',
   'binance-data': 'https://data-api.binance.vision',
   'binance-f': 'https://fapi.binance.com',
   'binance-d': 'https://dapi.binance.com',
@@ -2793,7 +2794,7 @@ async function handleAsi1NarrativeRequest(args = {}, defaultModel = 'asi1-ultra'
       {
         model,
         candidateModels: [model], // HUD is a lone wolf: no model cascade, fail fast
-        onlyAccount: process.env.ASI1_PREFERRED_ACCOUNT || 'leaksnipe',
+        onlyAccount: process.env.ASI1_PREFERRED_ACCOUNT || 'margithub',
         max_tokens: model.includes('ultra') ? 350 : 120,
         temperature: 0.1,
         timeoutMs: model.includes('ultra') ? 25000 : 12000,
@@ -2993,7 +2994,7 @@ ${ladderLines ? `- Active Hourly Range Ladder:\n${ladderLines}` : ''}`;
         temperature: 0.2,
         reasoning_effort: reasoning_effort !== 'auto' ? reasoning_effort : 'medium',
         web_search,
-        onlyAccount: process.env.ASI1_PREFERRED_ACCOUNT || 'leaksnipe',
+        onlyAccount: process.env.ASI1_PREFERRED_ACCOUNT || 'margithub',
         timeoutMs: 30000,
       }
     );

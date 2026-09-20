@@ -60,8 +60,13 @@ const WalletIntelConfig = {
       .filter(Boolean);
     const callback = opts.callback || (() => { });
 
-    if (window.WhaleAlertMonitor) {
+    // Whale Alert: DROPPED (dead API key → permanent 401s). The monitor module
+    // stays loadable for manual/emergency-desk use, but auto-start is off.
+    // Opt back in per-call with opts.whale === true.
+    if (opts.whale === true && window.WhaleAlertMonitor) {
       window.WhaleAlertMonitor.startMonitoring(chains, callback);
+    } else {
+      console.log('[WalletIntel] WhaleAlert auto-start skipped (feed dropped)');
     }
 
     if (window.DexActivityMonitor) {

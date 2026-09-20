@@ -433,7 +433,7 @@
     const rows = accountIds.map((id) => {
       const a = accounts[id] || {};
       const keys = a.keys || 0;
-      const email = a.email || 'mauro@leaksnipe.win';
+      const email = a.email || 'margithub@icloud.com';
       const live = keys > 0;
       const dotClass = live ? 'live' : 'rate';
       const label = 'mauro (LeakSnipe)';
@@ -554,9 +554,6 @@
 
     const pmCoin = (typeof window !== 'undefined' && window.PredictionMarkets?.getCoin?.(coin)) || {};
     const poly = horizon === 'anytime' ? {} : (
-      isHourly ? (pmCoin.poly60m || {})
-      : is5m ? (pmCoin.poly5m || {})
-      : (pmCoin.kalshi15m || {})
       (isHourly ? pmCoin.poly60m : (is5m ? pmCoin.poly5m : pmCoin.kalshi15m))
       || (isHourly ? pmCoin.poly60m : (is5m ? pmCoin.poly5m : pmCoin.poly15m))
       || pmCoin.poly5m

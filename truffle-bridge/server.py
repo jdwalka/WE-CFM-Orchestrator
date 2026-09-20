@@ -11,6 +11,7 @@ import threading
 from typing import Any, Optional
 import urllib.request
 import urllib.error
+import httpx
 
 from fastapi import FastAPI, Header, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -508,6 +509,51 @@ def post_signal(
             return {"status": "error", "message": str(e)}
 
     return {"status": "success", "message": f"Signal for {signal.symbol} published to truffle.signals", "data": payload}
+
+
+UAGENT_PORT = int(os.getenv("UAGENT_PORT", "8002"))
+
+
+@app.get("/submit")
+@app.head("/submit")
+async def submit_health_check():
+    """Liveness probe for Agentverse and webhook pingers."""
+    return {
+        "status": "ok",
+        "agent": "Trufflezzz",
+        "address": "agent1qw7fvhx3x0nsjppcpz7e5a92rq8k7qzsl3rug9nryc0mvz0r4kve28xfzhm",
+        "handle": "truffz",
+        "protocol": "proto:30a801ed3a83f9a0ff0a9f1e6fe958cb91da1fc2218b153df7b6cbf87bd33d62",
+    }
+
+
+@app.post("/submit")
+async def submit_proxy(request: Request):
+    """
+    Proxy Agentverse envelope messages to the uAgent on port 8002.
+    truffle.leaksnipe.win (CF tunnel) → 8040 (this server), but the
+    uAgents envelope protocol (/submit) lives on 8002. Forward transparently.
+    """
+    body = await request.body()
+    headers = {
+        k: v for k, v in request.headers.items()
+        if k.lower() not in ("host", "content-length")
+    }
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(
+                f"http://127.0.0.1:{UAGENT_PORT}/submit",
+                content=body,
+                headers=headers,
+            )
+        return Response(
+            content=resp.content,
+            status_code=resp.status_code,
+            media_type=resp.headers.get("content-type", "application/json"),
+        )
+    except Exception as e:
+        print(f"[TruffleBridge] /submit proxy error: {e}")
+        raise HTTPException(status_code=502, detail=f"uAgent unreachable: {e}")
 
 
 def _run_kafka_tick_consumer():

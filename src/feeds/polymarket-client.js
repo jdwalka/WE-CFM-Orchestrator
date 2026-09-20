@@ -1387,8 +1387,11 @@
      * @returns {Promise<{ blocked: boolean, ip: string, country: string, region: string, status: 'UNRESTRICTED'|'CLOSE_ONLY'|'BLOCKED_COMPLETELY' }>}
      */
     async checkGeoblock() {
-      const PROXY_GEO_URL = `${PROXY_ORIGIN}/polymarket-geo/geoblock`;
+      // No '/polymarket-geo/*' route exists on either local proxy (and never
+      // did) — the old slug URL 404'd every check. Use the generic escape
+      // hatch so the geo read keeps proxy egress, then direct fallback.
       const DIRECT_GEO_URL = 'https://polymarket.com/api/geoblock';
+      const PROXY_GEO_URL = `${PROXY_ORIGIN}/proxy?url=${encodeURIComponent(DIRECT_GEO_URL)}`;
 
       let geo = null;
       try {

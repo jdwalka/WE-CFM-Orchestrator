@@ -77,6 +77,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/cache",          delete(cache_clear_handler))
         // ── Proxy ────────────────────────────────────────────────────────────
         .route("/proxy",          any(direct_proxy))
+        .route("/:exchange",      any(exchange_proxy_root))
         .route("/:exchange/*path", any(exchange_proxy))
         .with_state(state)
         .layer(CatchPanicLayer::new())
@@ -201,12 +202,36 @@ async fn exchange_proxy(
     let Some(base) = state.upstreams.get(&exchange).cloned() else {
         return err_resp(StatusCode::NOT_FOUND, &format!("unknown exchange '{exchange}'"));
     };
-    let spoof     = grades::spoof_for(&exchange);
-    let cache_ttl = grades::ttl_for(&exchange);
-    let grade     = grades::grade_for(&exchange)
+    forward_exchange(&state, &exchange, &base, &path, req).await
+}
+
+/// `/:exchange` with no trailing path (e.g. `POST /solana/`, `/xrpl/` hit the
+/// router as an empty path on some axum versions and 404 without this).
+/// Same as exchange_proxy with an empty path.
+async fn exchange_proxy_root(
+    State(state): State<AppState>,
+    Path(exchange): Path<String>,
+    req: Request,
+) -> Response {
+    let Some(base) = state.upstreams.get(&exchange).cloned() else {
+        return err_resp(StatusCode::NOT_FOUND, &format!("unknown exchange '{exchange}'"));
+    };
+    forward_exchange(&state, &exchange, &base, "", req).await
+}
+
+async fn forward_exchange(
+    state:    &AppState,
+    exchange: &str,
+    base:     &str,
+    path:     &str,
+    req:      Request,
+) -> Response {
+    let spoof     = grades::spoof_for(exchange);
+    let cache_ttl = grades::ttl_for(exchange);
+    let grade     = grades::grade_for(exchange)
         .map(|g| g.as_char())
         .unwrap_or('B');
-    forward_to(&state, &base, &path, req, spoof, cache_ttl, grade).await
+    forward_to(state, base, path, req, spoof, cache_ttl, grade).await
 }
 
 async fn direct_proxy(

@@ -23,7 +23,10 @@
 (function () {
   'use strict';
 
-  const PORT_CASCADE = [3010, 3011, 3012, 3013, 3014, 3015, 3016, 3017, 3018, 3019, 3020];
+  // Must match proxy/src/main.rs bind_cascade() + tauri-bridge.js cascade.
+  // If the Rust proxy lands on 3009/8080 etc and JS never scans there, the
+  // app sits in permanent "proxy-not-found" bypass → LocalProxy DEGRADED.
+  const PORT_CASCADE = [3010, 3011, 3012, 3013, 3014, 3015, 3016, 3017, 3018, 3019, 3020, 3009, 3008, 3007, 3006, 3005, 3004, 3003, 3002, 3001, 3000, 8080, 8000, 4000, 5000, 9000];
 
   // Initialize PROXY_ORIGIN immediately so early fetches are never sent unproxied.
   let PROXY_ORIGIN = (typeof window !== 'undefined' && window.__PROXY_PORT__)
@@ -44,8 +47,9 @@
     'api.kraken.com',
     'www.kraken.com',
     'api.hyperliquid.xyz',
-    'api.bitstamp.net',
-    'www.bitstamp.net',
+    // NOTE: bitstamp is deliberately NOT in this set. Its Imperva WAF 403s
+    // proxied (non-browser TLS) requests while direct browser-TLS requests
+    // return 200 — so on a tripped breaker the direct leg must be attempted.
     'www.okx.com',
     'api.okx.com',
     'api-pub.bitfinex.com',
@@ -184,7 +188,10 @@
   // open backoff window instead. Reuses ApiCircuitBreaker (src/feeds/api-
   // circuit-breaker.js) when present so state shows up alongside the app's
   // other resilience tooling; degrades to a no-op if that module isn't loaded.
-  const CIRCUIT_TRIP_STATUSES = new Set([502, 503, 504, 522, 524]);
+  // 502/503/504 = gateway errors (proxy can't reach upstream).
+  // 403/404 via the local proxy path = upstream is refusing or route is missing —
+  // treat as a circuit failure so the breaker isolates that feed, not the proxy itself.
+  const CIRCUIT_TRIP_STATUSES = new Set([403, 404, 502, 503, 504, 522, 524]);
 
   function safeHostname(url) {
     try { return new URL(url).hostname; } catch (_) { return null; }
@@ -194,6 +201,7 @@
   // fetch, the hostname is 127.0.0.1. Attributing failures to the local proxy
   // trips ONE global breaker and disables every proxied host together.
   // Resolve the real upstream host (slug prefix or /proxy?url=) instead.
+  // Note: matches all local ports (3010–3019, 3012 for secondary services, etc.)
   const LOCAL_PROXY_HOST = /^(127\.0\.0\.1|localhost|\[::1\])$/i;
   const REVERSE_HOST_MAP = Object.fromEntries(
     Object.entries(HOST_MAP).map(([host, slug]) => [slug, host])
@@ -207,6 +215,12 @@
         const target = u.searchParams.get('url');
         return target ? new URL(target).hostname : null;
       }
+      // Slug-based path: /xrpl/..., /bitstamp/..., etc.
+      // Unmapped local utility paths (/health, /port, /grades, /cache, /test)
+      // must return null — never the raw slug. Attributing them to a breaker
+      // named e.g. "health" wedges proxy discovery itself: once that bogus
+      // breaker trips, every later /health sweep fails fast without network
+      // and a restarted proxy is never rediscovered.
       const slug = u.pathname.replace(/^\//, '').split('/')[0];
       return REVERSE_HOST_MAP[slug] || null;
     } catch (_) {
@@ -216,7 +230,7 @@
 
   function getHostBreaker(hostname) {
     if (!hostname || !window.ApiCircuitBreaker) return null;
-    return window.ApiCircuitBreaker.getBreaker(`proxy-fetch:${hostname}`, { threshold: 3, timeout: 30000 });
+    return window.ApiCircuitBreaker.getBreaker(`proxy-fetch:${hostname}`, { threshold: 5, timeout: 60000 });
   }
 
   function hostCircuitResponse(hostname, breaker) {
@@ -251,10 +265,54 @@
     if (breaker) breaker.recordFailure();
   }
 
+  // Hosts whose last DIRECT attempt also failed with a 5xx: the upstream
+  // itself is down (not the proxy), so hammering it every poll tick is pure
+  // log spam. While the breaker is open AND a recent direct 5xx is recorded,
+  // fail fast with a synthetic 503 and no network. A single direct probe is
+  // still allowed once the quiet window expires (recovery chance).
+  const _lastDirect5xx = {};
+  const DIRECT_FAIL_QUIET_MS = 60_000;
+
+  function noteDirectResult(hostname, res) {
+    if (!hostname) return;
+    if (res && Number(res.status) >= 500) {
+      _lastDirect5xx[hostname] = Date.now();
+    } else if (res && res.ok) {
+      delete _lastDirect5xx[hostname];
+    }
+  }
+
   function dispatch(originalUrl, requestInput, init) {
-    const hostname = breakerHostname(originalUrl) || safeHostname(originalUrl);
-    const breaker = getHostBreaker(hostname);
+    const mapped = breakerHostname(originalUrl);
+    const hostname = mapped || safeHostname(originalUrl);
+    // Local utility paths (/health, /port, ...) map to nothing and must
+    // never be tracked — they are infrastructure, not upstream hosts.
+    const isLocalUtil = !mapped && LOCAL_PROXY_HOST.test(safeHostname(originalUrl) || '');
+    const breaker = (isLocalUtil || !hostname) ? null : getHostBreaker(hostname);
     if (breaker && !breaker.isAvailable()) {
+      // Per-host breaker open: this upstream via proxy is failing.
+      // WSS → gRPC → RPC → HTTP fallback: for non-CF-protected hosts the
+      // HTTP leg can still try DIRECT for this request instead of forcing a
+      // synthetic 503 (which is what wedged every feed behind one bad host).
+      // CF-protected hosts REQUIRE the proxy — fail fast with 503 there.
+      // Upstream-dead shortcut: if a direct attempt recently 5xx'd too, the
+      // origin itself is down — fail fast with zero network, zero log spam.
+      const cfProtected = hostname ? CF_PROTECTED.has(hostname) : true;
+      if (!cfProtected && /^https?:\/\//.test(originalUrl)) {
+        const quietUntil = (_lastDirect5xx[hostname] || 0) + DIRECT_FAIL_QUIET_MS;
+        if (Date.now() < quietUntil) {
+          return Promise.resolve(hostCircuitResponse(hostname, breaker));
+        }
+        const finalInput = requestInput instanceof Request ? requestInput : originalUrl;
+        // Bypass rewrite: go direct, still track result for breaker recovery.
+        const directP = (requestInput instanceof Request
+          ? _origFetch(requestInput, init)
+          : _origFetch(finalInput, init)).then(
+          (res) => { noteDirectResult(hostname, res); trackHostResult(hostname, res); return res; },
+          (err) => { trackHostFailure(hostname); throw err; },
+        );
+        return directP;
+      }
       return Promise.resolve(hostCircuitResponse(hostname, breaker));
     }
 
@@ -278,7 +336,7 @@
       fetchPromise = _origFetch(finalInput, init);
     }
 
-    if (!hostname) return fetchPromise;
+    if (!hostname || isLocalUtil) return fetchPromise;
     return fetchPromise.then(
       (res) => { trackHostResult(hostname, res); return res; },
       (err) => { trackHostFailure(hostname); throw err; },
@@ -293,6 +351,24 @@
     }
     return _origFetch(input, init);
   };
+
+  // Keep PROXY_ORIGIN in sync with tauri-bridge discovery (single source of
+  // truth for the live port). Without this the two shims can disagree —
+  // one on :3010, one on :3011 — and half the app bypasses while the other
+  // half proxies.
+  try {
+    window.addEventListener('proxy-mode-update', (e) => {
+      const port = Number(e?.detail?.port || 0);
+      if (Number.isInteger(port) && port > 0 && port <= 65535) {
+        const origin = `http://127.0.0.1:${port}`;
+        if (origin !== PROXY_ORIGIN) {
+          PROXY_ORIGIN = origin;
+          proxyReady = true;
+        }
+        try { window.__PROXY_PORT__ = port; } catch (_) { }
+      }
+    });
+  } catch (_) { }
 
   // ── Port cascade discovery via XHR (avoids patching our own patched fetch) ──
   // Uses XMLHttpRequest so it bypasses the window.fetch patch above.
@@ -316,22 +392,46 @@
       xhr.timeout = 500;
       xhr.onload = function () {
         if (xhr.status === 200 && xhr.responseText.trim() === 'OK') {
-          PROXY_ORIGIN = `http://127.0.0.1:${port}`;
-          proxyReady = true;
-          console.info(`[WE] proxy-fetch v1.4 — live on port ${port}`);
-          // Also let the IPC confirm (in case main.js finishes parsing stdout later)
-          if (window.desktopApp?.proxyPort) {
-            window.desktopApp.proxyPort().then(p => {
-              if (p && p !== port) {
-                PROXY_ORIGIN = `http://127.0.0.1:${p}`;
-                console.info(`[WE] proxy-fetch — IPC corrected port to ${p}`);
+          // Identity check before latching: nginx :8080 also answers 'OK'
+          // on /health but 404s every real route. Require /port to prove
+          // this port is OUR proxy.
+          try {
+            const check = new XMLHttpRequest();
+            check.timeout = 500;
+            check.onload = function () {
+              let okPort = 0;
+              try { okPort = Number(JSON.parse(check.responseText || '{}').port || 0); } catch (_) { okPort = 0; }
+              if (check.status === 200 && okPort === port) {
+                latchPort(port);
+              } else {
+                tryNext();
               }
-            }).catch(() => { });
+            };
+            check.onerror = tryNext;
+            check.ontimeout = tryNext;
+            check.open('GET', `http://127.0.0.1:${port}/port`, true);
+            check.send();
+          } catch (_) {
+            tryNext();
           }
-        } else {
-          tryNext();
+          return;
         }
+        tryNext();
       };
+      function latchPort(port) {
+        PROXY_ORIGIN = `http://127.0.0.1:${port}`;
+        proxyReady = true;
+        console.info(`[WE] proxy-fetch v1.4 — live on port ${port}`);
+        // Also let the IPC confirm (in case main.js finishes parsing stdout later)
+        if (window.desktopApp?.proxyPort) {
+          window.desktopApp.proxyPort().then(p => {
+            if (p && p !== port) {
+              PROXY_ORIGIN = `http://127.0.0.1:${p}`;
+              console.info(`[WE] proxy-fetch — IPC corrected port to ${p}`);
+            }
+          }).catch(() => { });
+        }
+      }
       xhr.onerror = tryNext;
       xhr.ontimeout = tryNext;
       xhr.open('GET', `http://127.0.0.1:${port}/health`, true);

@@ -15,23 +15,23 @@ function test(name, fn) {
   catch (err) { failed += 1; console.error(`FAIL ${name}`); console.error(err); }
 }
 
-test('only mauro@leaksnipe.win is configured', () => {
+test('only margithub@icloud.com is configured', () => {
   assert.deepStrictEqual(
     Asi1.ASI1_ACCOUNTS.map((account) => ({ id: account.id, email: account.email })),
-    [{ id: 'leaksnipe', email: 'mauro@leaksnipe.win' }],
+    [{ id: 'margithub', email: 'margithub@icloud.com' }],
   );
 });
 
-test('LeakSnipe key roles split 5m, 15m, and overall inference', () => {
+test('margithub key roles split 5m, 15m, and overall inference', () => {
   const token5m = `sk_${'f'.repeat(64)}`;
   const token15m = `sk_${'e'.repeat(64)}`;
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'asi1-leaksnipe-'));
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'asi1-margithub-'));
   const previousCwd = process.cwd();
-  const previousEnv = process.env.ASI1_API_KEY_LEAKSNIPE;
+  const previousEnv = process.env.ASI1_API_KEY_MARGITHUB;
   fs.mkdirSync(path.join(tempDir, 'secrets'), { recursive: true });
-  fs.writeFileSync(path.join(tempDir, 'secrets', 'ASI1_LEAKSNIPE.txt'), [
-    '# account: leaksnipe',
-    '# email: mauro@leaksnipe.win',
+  fs.writeFileSync(path.join(tempDir, 'secrets', 'ASI1_MARGITHUB.txt'), [
+    '# account: margithub',
+    '# email: margithub@icloud.com',
     '# role: 5m',
     token5m,
     '# role: 15m,overall',
@@ -40,20 +40,20 @@ test('LeakSnipe key roles split 5m, 15m, and overall inference', () => {
   ].join('\n'));
   try {
     process.chdir(tempDir);
-    process.env.ASI1_API_KEY_LEAKSNIPE = token5m;
+    process.env.ASI1_API_KEY_MARGITHUB = token5m;
     const rows = Asi1.resolveAsi1ApiKeys(true)
       .filter(row => row.value === token5m || row.value === token15m);
     assert.strictEqual(rows.length, 2);
-    assert.deepStrictEqual(rows[0], { env: 'file:ASI1_LEAKSNIPE.txt', value: token5m, account: 'leaksnipe', email: 'mauro@leaksnipe.win', roles: ['5m'] });
+    assert.deepStrictEqual(rows[0], { env: 'file:ASI1_MARGITHUB.txt', value: token5m, account: 'margithub', email: 'margithub@icloud.com', roles: ['5m'] });
     assert.deepStrictEqual(rows[1].roles, ['15m', 'overall']);
     for (const row of rows) {
-      assert.strictEqual(row.account, 'leaksnipe');
-      assert.strictEqual(row.email, 'mauro@leaksnipe.win');
+      assert.strictEqual(row.account, 'margithub');
+      assert.strictEqual(row.email, 'margithub@icloud.com');
     }
   } finally {
     process.chdir(previousCwd);
-    if (previousEnv === undefined) delete process.env.ASI1_API_KEY_LEAKSNIPE;
-    else process.env.ASI1_API_KEY_LEAKSNIPE = previousEnv;
+    if (previousEnv === undefined) delete process.env.ASI1_API_KEY_MARGITHUB;
+    else process.env.ASI1_API_KEY_MARGITHUB = previousEnv;
     fs.rmSync(tempDir, { recursive: true, force: true });
     Asi1.resolveAsi1ApiKeys(true);
   }
