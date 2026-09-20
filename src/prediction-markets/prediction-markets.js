@@ -2271,6 +2271,12 @@
   }
 
   const _polyCryptoPriceCache = new Map();
+  // In-flight dedupe (concurrent fetchAll + lock ticks share one request per
+  // contract) + 429 backoff (Polymarket throttles crypto-price; a 429 parks
+  // that contract for 60s instead of hammering every tick).
+  const _polyCryptoPriceInFlight = new Map();
+  const _polyCryptoPriceBackoffUntil = new Map();
+  const POLY_CRYPTO_PRICE_429_BACKOFF_MS = 60_000;
 
   async function fetchPolymarketContractCryptoPrice(slug) {
     const slugMatch = slug?.match?.(/^([a-z0-9-]+)-updown-(5m|15m|60m|1h)-(\d+)$/i);
@@ -2287,6 +2293,11 @@
     const cacheKey = `${symbol}:${horizonTag}:${startSec}`;
     const cached = _polyCryptoPriceCache.get(cacheKey);
     if (cached && cached.value != null && Date.now() - cached.fetchedAt < 4_000) return cached.value;
+    if (Date.now() < (_polyCryptoPriceBackoffUntil.get(cacheKey) || 0)) return cached?.value ?? null;
+    const inFlight = _polyCryptoPriceInFlight.get(cacheKey);
+    if (inFlight) { try { return await inFlight; } catch (_) { return cached?.value ?? null; } }
+    const run = (async () => {
+    try {
     if (cached && cached.value == null && Date.now() - cached.fetchedAt < 1_000) return null;
 
     const windowSec = horizonTag === '15m' ? 900 : (horizonTag === '60m' || horizonTag === '1h' ? 3600 : 300);
@@ -2305,6 +2316,21 @@
     const value = openPrice != null && openPrice > 0 ? openPrice : null;
     _polyCryptoPriceCache.set(cacheKey, { value, fetchedAt: Date.now() });
     return value;
+    } catch (err) {
+      if (/\b429\b|too many requests|rate.?limit/i.test(String(err?.message || ''))) {
+        _polyCryptoPriceBackoffUntil.set(cacheKey, Date.now() + POLY_CRYPTO_PRICE_429_BACKOFF_MS);
+      }
+      throw err;
+    } finally {
+      _polyCryptoPriceInFlight.delete(cacheKey);
+    }
+    })();
+    _polyCryptoPriceInFlight.set(cacheKey, run);
+    try {
+      return await run;
+    } catch (_) {
+      return cached?.value ?? null;
+    }
   }
 
   async function fetchPolymarketPriceToBeat(slug) {
