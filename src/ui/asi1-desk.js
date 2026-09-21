@@ -926,7 +926,15 @@
         const askedEl = document.getElementById('adAskedAt');
         if (askedEl) askedEl.textContent = new Date().toLocaleTimeString();
         const query = `Give me your live read on ${coinNow} right now: current spot, the live Kalshi hourly range ladder (or the 15m/5m contracts if more relevant), and the best out-of-range scalp setup if there is one.`;
-        const res = await invoke('truffleQuery', { query });
+        // Full bid-wall + depth datapoints for this query — logged to
+        // logs/truffle-wall-stats.log by the truffle:query handler.
+        const wallSnap = window.WallDepthSnapshot?.build?.(coinNow) || null;
+        if (wallSnap) {
+          window.WallDepthSnapshot.summarize(wallSnap).forEach((l) => console.info(l));
+          try { window.dispatchEvent(new CustomEvent('truffle:wallstats', { detail: wallSnap })); } catch (_) { /* */ }
+        }
+        const t0 = Date.now();
+        const res = await invoke('truffleQuery', { query, wallStats: wallSnap, focus: coinNow, channel: 'truffle-horizon' });
         const content = res?.ok
           ? (res.content || 'No response from truffle.')
           : `Truffle error: ${res?.error || 'unknown — is the agent running on port 8002?'}`;

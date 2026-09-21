@@ -685,7 +685,6 @@ function startHistoricalPolling() {
             }
             // Fetch settled contracts from historical market data
             const { settled, errors } = await settledFetcher.fetchSettledContracts();
-            if (!Array.isArray(window._scorecardLog)) window._scorecardLog = [];
             if (settled && settled.length > 0) {
                 console.log(`[Historical] Fetched ${settled.length} settled contracts`);
                 // Add historical settlements to _scorecardLog for scorecard display
