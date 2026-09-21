@@ -3432,9 +3432,17 @@ function dedupePaths(paths) {
 function enumerateReadableDriveRoots() {
   // Disabled C-Z brute-force scan to prevent Electron main thread freezing on disconnected network drives.
   // Known drives are already hardcoded in buildStaticContractCacheFiles.
+  // WECRYPTO_EXCLUDE_DRIVES: comma-separated letters to skip (default "E" — 15MB volume, always ENOSPC).
+  // Set to "" to include every drive.
+  const excluded = new Set(
+    (process.env.WECRYPTO_EXCLUDE_DRIVES ?? 'E')
+      .split(',')
+      .map(s => s.trim().toUpperCase())
+      .filter(Boolean)
+  );
   return dedupePaths([
     'C:\\', 'D:\\', 'E:\\', 'F:\\', 'G:\\', 'H:\\', 'I:\\'
-  ]);
+  ].filter(r => !excluded.has(r[0].toUpperCase())));
 }
 
 function buildDynamicCloudDriveCandidates(driveRoots = []) {
