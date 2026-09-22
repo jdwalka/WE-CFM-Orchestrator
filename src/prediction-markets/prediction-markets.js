@@ -3221,9 +3221,15 @@ function polymarketSentiment(markets, sym) {
   // ── Polymarket 60-minute / hourly pull ──────────────────────────────────
   // Same immutable-at-open model as 5m and 15m. Slug candidates:
   //   {prefix}-updown-1h-{hourStart}  and  {prefix}-updown-60m-{hourStart}
+  // NOTE 2026-09-22: Gamma API verified these hourly series DO NOT EXIST
+  // (only 5m/15m list). Keep the code path for if Polymarket ever lists
+  // hourly crypto markets, but disable all polling until then — otherwise
+  // every tick 404s and trips the polymarket.com circuit breaker.
+  const POLY_HOURLY_MARKETS_EXIST = false;
   const _poly60mCache = Object.create(null);
 
   async function fetchPolymarket60MBySlug(sym) {
+    if (!POLY_HOURLY_MARKETS_EXIST) return null;
     const coinSlugPrefix = POLY_5M_COIN_SLUGS[sym];
     if (!coinSlugPrefix) return null;
 
@@ -3474,8 +3480,10 @@ function polymarketSentiment(markets, sym) {
           const prefix = POLY_5M_COIN_SLUGS[sym];
           _seedPendingPtbLock(sym, `${prefix}-updown-5m-${boundary5}`, boundary5 * 1000);
           _seedPendingPtbLock(sym, `${prefix}-updown-15m-${boundary15}`, boundary15 * 1000);
-          _seedPendingPtbLock(sym, `${prefix}-updown-1h-${boundary60}`, boundary60 * 1000);
-          _seedPendingPtbLock(sym, `${prefix}-updown-60m-${boundary60}`, boundary60 * 1000);
+          if (POLY_HOURLY_MARKETS_EXIST) {
+            _seedPendingPtbLock(sym, `${prefix}-updown-1h-${boundary60}`, boundary60 * 1000);
+            _seedPendingPtbLock(sym, `${prefix}-updown-60m-${boundary60}`, boundary60 * 1000);
+          }
         });
       })();
       timer = setInterval(() => { if (!document.hidden) fetchAll(); }, POLL_MS);
@@ -3640,6 +3648,7 @@ function polymarketSentiment(markets, sym) {
           lastBoundary60Sec = boundary60;
           Object.keys(POLY_5M_COIN_SLUGS).forEach((sym) => {
             const prefix = POLY_5M_COIN_SLUGS[sym];
+            if (!POLY_HOURLY_MARKETS_EXIST) return;
             const slug1h = `${prefix}-updown-1h-${boundary60}`;
             const slug60m = `${prefix}-updown-60m-${boundary60}`;
             _seedPendingPtbLock(sym, slug1h, boundary60 * 1000);
