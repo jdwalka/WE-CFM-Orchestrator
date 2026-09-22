@@ -20,6 +20,8 @@
  *   GET /ladder       → band list sorted by low strike
  *   GET /health       → worker liveness + cache age
  *   GET /edges        → flat array of [low, high] pairs for LME wiring
+ *   GET /signals      → compact per-symbol snapshots for residual consumers
+ *                       (?symbol= for one symbol, default all six)
  */
 
 const KV_TTL_S = 60;
@@ -139,7 +141,7 @@ export default {
             status:        "ok",
             worker:        "kalshi-ladder-worker",
             symbol,
-            cache_age_ms:  payload.fetched_at ? Date.now() - Date.parse(payload.fetched_at) : null,
+            cache_age_ms:  ageAtReadMs(payload.fetched_at),
             cache_source:  payload.cache,
             band_count:    payload.band_count ?? null,
             ts:            new Date().toISOString(),
@@ -158,6 +160,36 @@ export default {
         );
       }
 
+      // ── /signals — compact snapshots for residual consumers ──────────
+      // One entry per symbol (or ?symbol= for one): fetched_at, read-time
+      // cache age, cache source, band_count, tightest-spread band, nearest
+      // expiry. Served from the same KV/memo cache as /ladder — never calls
+      // Kalshi directly beyond the normal getOrFetch path.
+      if (url.pathname === "/signals") {
+        const only = url.searchParams.get("symbol");
+        const symbols = only
+          ? (() => { const s = resolveSymbol(url); if (!s) return null; return [s]; })()
+          : Object.keys(SERIES_BY_SYMBOL);
+        if (!symbols) {
+          return new Response(
+            JSON.stringify({
+              error: "unsupported symbol",
+              supported: Object.keys(SERIES_BY_SYMBOL),
+            }),
+            { status: 400, headers: CORS }
+          );
+        }
+        const signals = [];
+        for (const sym of symbols) {
+          const payload = await getOrFetch(sym, env, ctx);
+          signals.push(summarizeSignal(sym, payload));
+        }
+        return new Response(
+          JSON.stringify({ signals, ts: new Date().toISOString() }),
+          { headers: CORS }
+        );
+      }
+
       // ── /ladder (default) ──────────────────────────────────────────────────
       if (url.pathname === "/ladder" || url.pathname === "/") {
         const payload = await getOrFetch(symbol, env, ctx);
@@ -165,7 +197,7 @@ export default {
       }
 
       return new Response(
-        JSON.stringify({ error: "not found", routes: ["/ladder", "/edges", "/health"] }),
+        JSON.stringify({ error: "not found", routes: ["/ladder", "/edges", "/health", "/signals"] }),
         { status: 404, headers: CORS }
       );
     } catch (e) {
@@ -269,6 +301,44 @@ async function refreshAllSequential(env) {
     await refreshCache(sym, env);
     await new Promise((r) => setTimeout(r, CRON_STAGGER_MS));
   }
+}
+
+// Read-time cache age: computed from Date.now() on every read, never
+// baked into a stored payload, so repeated reads always report a live age.
+function ageAtReadMs(fetched_at) {
+  if (!fetched_at) return null;
+  const t = Date.parse(fetched_at);
+  return Number.isNaN(t) ? null : Date.now() - t;
+}
+
+// Compact one-symbol snapshot for /signals consumers.
+function summarizeSignal(symbol, payload) {
+  const bands = payload.bands || [];
+  let tightest = null;
+  let nearest_expiry = null;
+  for (const b of bands) {
+    if (b.yes_bid != null && b.yes_ask != null) {
+      const spread = b.yes_ask - b.yes_bid;
+      if (!tightest || spread < tightest.spread) {
+        tightest = { ticker: b.ticker, low: b.low, high: b.high, spread };
+      }
+    }
+    if (b.minutes_to_expiry != null) {
+      if (nearest_expiry == null || b.minutes_to_expiry < nearest_expiry) {
+        nearest_expiry = b.minutes_to_expiry;
+      }
+    }
+  }
+  return {
+    symbol,
+    series: SERIES_BY_SYMBOL[symbol],
+    fetched_at: payload.fetched_at ?? null,
+    cache_age_ms: ageAtReadMs(payload.fetched_at),
+    cache_source: payload.cache ?? null,
+    band_count: payload.band_count ?? bands.length,
+    tightest_band: tightest,
+    nearest_minutes_to_expiry: nearest_expiry,
+  };
 }
 
 async function getOrFetch(symbol, env, ctx) {

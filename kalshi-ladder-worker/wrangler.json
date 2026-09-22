@@ -3,6 +3,7 @@
   "main": "worker.js",
   "compatibility_date": "2026-09-01",
   "compatibility_flags": ["nodejs_compat_v2"],
+  "account_id": "f226035af09775dbffd7e6350adc8a12",
   "workers_dev": true,
   "routes": [
     {
