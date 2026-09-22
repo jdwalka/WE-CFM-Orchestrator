@@ -156,10 +156,19 @@
   async function _getAlchemyKey() {
     let key = _readEnvLike('ALCHEMY_API_KEY');
     if (!key && window.electron && window.electron.readFile) {
-      try {
-        const txt = await window.electron.readFile('secrets/ALCHEMY-API-KEY.txt');
-        if (txt) key = txt.trim();
-      } catch (e) { }
+      // New gitgoin key file first (key on line 1, helper URL below —
+      // take the alch_ line). Old file + legacy fallback kept last so
+      // existing installs never regress to no-key.
+      for (const f of ['secrets/ALCHEMY-API-KEY-gitgoin.txt', 'secrets/ALCHEMY-API-KEY.txt']) {
+        try {
+          const txt = await window.electron.readFile(f);
+          if (txt) {
+            const lines = String(txt).split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+            const hit = lines.find(s => /^alch_/i.test(s)) || lines[0];
+            if (hit) { key = hit; break; }
+          }
+        } catch (e) { }
+      }
     }
     return key || 'UNcUYppLXPl4s0jAkQe_J';
   }

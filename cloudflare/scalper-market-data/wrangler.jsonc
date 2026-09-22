@@ -3,14 +3,23 @@
   "name": "scalper-market-data",
   "main": "src/index.js",
   "compatibility_date": "2026-09-10",
+  "compatibility_flags": [
+    "nodejs_compat_v2"
+  ],
+  "triggers": {
+    "crons": [
+      "* * * * *"
+    ]
+  },
+  "kv_namespaces": [
+    {
+      "binding": "MARKET_CACHE",
+      "id": "11089b487b4048729f3a49e6a302c3fb"
+    }
+  ],
   "d1_databases": [
     {
       "binding": "CALIBRATION_DB",
-      "database_name": "scalper-calibration",
-      "database_id": "48536b22-03b3-42dd-92fa-44feab144d84"
-    },
-    {
-      "binding": "truffle",
       "database_name": "scalper-calibration",
       "database_id": "48536b22-03b3-42dd-92fa-44feab144d84"
     }

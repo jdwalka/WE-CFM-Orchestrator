@@ -1,5 +1,6 @@
 """Live market data for BTC hourly range predictions."""
 from datetime import datetime, timezone
+import time
 
 import httpx
 
@@ -35,6 +36,7 @@ def get_spot() -> dict:
     configured in this deployment yet. Coinbase spot is therefore a stamped
     fallback rather than an implicit source.
     """
+    now_ts = time.time()
     try:
         r = httpx.get(COINBASE_SPOT, headers=_HEADERS, timeout=10)
         r.raise_for_status()
@@ -44,6 +46,8 @@ def get_spot() -> dict:
             "source": "coinbase_spot_fallback",
             "canonical_source": "BRTI",
             "error": None,
+            "pulled_at": now_ts,
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         }
     except (httpx.HTTPError, KeyError, ValueError, TypeError) as e:
         return {
@@ -51,6 +55,8 @@ def get_spot() -> dict:
             "source": "unavailable",
             "canonical_source": "BRTI",
             "error": str(e),
+            "pulled_at": now_ts,
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         }
 
 def get_hourly_candles(count: int = 24) -> list:

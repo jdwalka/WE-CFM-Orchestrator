@@ -68,8 +68,10 @@ The repository across GitHub (`JohnDaWalka`, `johndawalka-sudo`) and GitLab (`wa
 - **`asi1-mini` (Fast Path)**: Sub-2s latency for order book depth imbalance, spread velocity, and rapid tick scoring.
 - **`asi1-ultra` (Deep Reasoning)**: Macro regime classification, volatility surface review, and pre-contract lookahead planning.
 - **Account Routing**:
-  1. `mauro` (`maurofanellijr@gmail.com`, Pro Unlimited) — **Primary**.
-  2. `icloud` (`mauro_fanelli@icloud.com`) — **Secondary Fallback**.
+  1. `margithub` (`margithub@icloud.com`) — **Primary and only account**.
+  2. No other ASI1 accounts are in use. Never reference `mauro` / `icloud` /
+     `leaksnipe` / `gitgoin` ASI1 accounts or their keys — those were blocked
+     (ERC-20 FET billing dispute) and fully purged.
 - **Cascade Fallback**: Always uses `[preferredModel, fallbackModel]` to prevent cascading latency timeouts.
 
 ### C. Redpanda & Orbital Matrix Bridge

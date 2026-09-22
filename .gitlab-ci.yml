@@ -59,7 +59,7 @@ test-node-contracts:
   script:
     - echo "Running ASI1 Desk Contract & Model Cascade tests..."
     - node tests/asi1-desk-contract.test.js
-    - node tests/asi1-leaksnipe-account.test.js
+    - node tests/asi1-margithub-account.test.js
     - node tests/asi1-credit-orchestrator.test.js
     - echo "Running Orbital Matrix & Signal Calibrator tests..."
     - node tests/orbital-quantum-state.test.js
@@ -69,9 +69,13 @@ test-node-contracts:
 test-python-engines:
   stage: test
   image: python:3.11-slim
+  variables:
+    # Root-level engine modules (prediction_engine, calibration_ledger, …)
+    # are imported by tests/engines/* — repo root must be on sys.path.
+    PYTHONPATH: '$CI_PROJECT_DIR'
   before_script:
     - pip install --upgrade pip
-    - pip install numpy pytest
+    - pip install numpy pytest requests httpx
   script:
     - echo "Running Python execution engine tests..."
     - pytest tests/engines/ -v

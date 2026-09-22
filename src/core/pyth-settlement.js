@@ -131,13 +131,22 @@ class PythSettlementValidator {
       }
     }
 
-    // 3. Query Hermes with Pro key (skipped while the endpoint is in a 403 cooldown)
+    // 3. Query Hermes with Pro key (skipped while the endpoint is in a 403 cooldown).
+    // NOTE: pythBases is deduped by host — the default constructor arg and the
+    // literal below resolve to the same Hermes host, and without dedupe every
+    // uncooled call burned 2 identical Hermes legs (direct + proxy retry).
     try {
       try {
         let json = null;
         let lastError = null;
         if (Date.now() >= this.hermesBlockedUntil) {
+          const seenHosts = new Set();
           for (const base of this.pythBases) {
+            try {
+              const host = new URL(base).hostname;
+              if (seenHosts.has(host)) continue;
+              seenHosts.add(host);
+            } catch (_) { /* keep unknown-shape bases */ }
             try {
               const url = `${base.replace(/\/+$/, '')}/v2/updates/price/latest?ids[]=${encodeURIComponent(feedId)}`;
               json = await this.fetchJsonWithTimeout(url, this.requestTimeoutMs);

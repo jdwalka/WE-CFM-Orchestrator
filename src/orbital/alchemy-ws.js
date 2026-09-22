@@ -1,5 +1,5 @@
 // ================================================================
-// alchemy-ws.js — Alchemy WebSocket Real-time Feed  v1.0
+// alchemy-ws.js — Alchemy WebSocket Real-time Feed  v2.0
 // Replaces ETH polling with live push subscriptions via WSS
 // ================================================================
 // Exports:  window.AlchemyWS
@@ -11,8 +11,21 @@
 (function () {
   'use strict';
 
-  const ALCHEMY_WSS = 'wss://eth-mainnet.g.alchemy.com/v2/UNcUYppLXPl4s0jAkQe_J';
-  const ALCHEMY_KEY = 'UNcUYppLXPl4s0jAkQe_J';
+  // ── Key resolution — never hardcode. Reads from runtime env injected by main.js. ──
+  function resolveAlchemyKey() {
+    try {
+      if (window.__env?.ALCHEMY_API_KEY) return window.__env.ALCHEMY_API_KEY;
+      if (window.__env?.ALCHEMY_KEY) return window.__env.ALCHEMY_KEY;
+      const pub = window.desktopApp?.publicEnv;
+      if (pub?.ALCHEMY_API_KEY) return pub.ALCHEMY_API_KEY;
+      if (pub?.ALCHEMY_KEY) return pub.ALCHEMY_KEY;
+    } catch (_) {}
+    return null;
+  }
+
+  function buildWssUrl(key) {
+    return `wss://eth-mainnet.g.alchemy.com/v2/${key}`;
+  }
 
   let   _ws              = null;
   let   _reconnectTimer  = null;
@@ -176,8 +189,16 @@
   function connect() {
     if (_ws && _ws.readyState <= WebSocket.OPEN) return;
 
+    const key = resolveAlchemyKey();
+    if (!key) {
+      console.warn('[AlchemyWS] No ALCHEMY_API_KEY configured — WebSocket disabled. Set ALCHEMY_API_KEY in .env or secrets/.');
+      _running = false;
+      return;
+    }
+
+    const wssUrl = buildWssUrl(key);
     console.debug('[AlchemyWS] Connecting to Alchemy WSS...');
-    _ws = new WebSocket(ALCHEMY_WSS);
+    _ws = new WebSocket(wssUrl);
 
     _ws.onopen = () => {
       console.debug('[AlchemyWS] Connected');
@@ -262,17 +283,28 @@
         lastUpdate: _latestHead?.timestamp || null,
         subscriptions: { ...(_subscriptions) },
         addressFilters: [..._addressFilters],
+        keyConfigured: !!resolveAlchemyKey(),
       };
     },
   };
 
   window.AlchemyWS = AlchemyWS;
 
-  // Auto-start when DOM is ready
+  // Auto-start when DOM is ready — only if a key is actually configured.
+  // Without this guard the module would enter an infinite reconnect loop
+  // against an invalid / missing key and spam console errors.
+  function maybeStart() {
+    if (resolveAlchemyKey()) {
+      AlchemyWS.start();
+    } else {
+      console.info('[AlchemyWS] No ALCHEMY_API_KEY in env — ETH WSS feed disabled. Configure key to enable.');
+    }
+  }
+
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', () => AlchemyWS.start());
+    document.addEventListener('DOMContentLoaded', maybeStart);
   } else {
-    AlchemyWS.start();
+    maybeStart();
   }
 
 })();

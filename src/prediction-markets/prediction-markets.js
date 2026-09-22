@@ -2271,6 +2271,12 @@
   }
 
   const _polyCryptoPriceCache = new Map();
+  // In-flight dedupe (concurrent fetchAll + lock ticks share one request per
+  // contract) + 429 backoff (Polymarket throttles crypto-price; a 429 parks
+  // that contract for 60s instead of hammering every tick).
+  const _polyCryptoPriceInFlight = new Map();
+  const _polyCryptoPriceBackoffUntil = new Map();
+  const POLY_CRYPTO_PRICE_429_BACKOFF_MS = 60_000;
 
   async function fetchPolymarketContractCryptoPrice(slug) {
     const slugMatch = slug?.match?.(/^([a-z0-9-]+)-updown-(5m|15m|60m|1h)-(\d+)$/i);
@@ -2287,6 +2293,11 @@
     const cacheKey = `${symbol}:${horizonTag}:${startSec}`;
     const cached = _polyCryptoPriceCache.get(cacheKey);
     if (cached && cached.value != null && Date.now() - cached.fetchedAt < 4_000) return cached.value;
+    if (Date.now() < (_polyCryptoPriceBackoffUntil.get(cacheKey) || 0)) return cached?.value ?? null;
+    const inFlight = _polyCryptoPriceInFlight.get(cacheKey);
+    if (inFlight) { try { return await inFlight; } catch (_) { return cached?.value ?? null; } }
+    const run = (async () => {
+    try {
     if (cached && cached.value == null && Date.now() - cached.fetchedAt < 1_000) return null;
 
     const windowSec = horizonTag === '15m' ? 900 : (horizonTag === '60m' || horizonTag === '1h' ? 3600 : 300);
@@ -2305,6 +2316,21 @@
     const value = openPrice != null && openPrice > 0 ? openPrice : null;
     _polyCryptoPriceCache.set(cacheKey, { value, fetchedAt: Date.now() });
     return value;
+    } catch (err) {
+      if (/\b429\b|too many requests|rate.?limit/i.test(String(err?.message || ''))) {
+        _polyCryptoPriceBackoffUntil.set(cacheKey, Date.now() + POLY_CRYPTO_PRICE_429_BACKOFF_MS);
+      }
+      throw err;
+    } finally {
+      _polyCryptoPriceInFlight.delete(cacheKey);
+    }
+    })();
+    _polyCryptoPriceInFlight.set(cacheKey, run);
+    try {
+      return await run;
+    } catch (_) {
+      return cached?.value ?? null;
+    }
   }
 
   async function fetchPolymarketPriceToBeat(slug) {
@@ -3195,9 +3221,15 @@ function polymarketSentiment(markets, sym) {
   // ── Polymarket 60-minute / hourly pull ──────────────────────────────────
   // Same immutable-at-open model as 5m and 15m. Slug candidates:
   //   {prefix}-updown-1h-{hourStart}  and  {prefix}-updown-60m-{hourStart}
+  // NOTE 2026-09-22: Gamma API verified these hourly series DO NOT EXIST
+  // (only 5m/15m list). Keep the code path for if Polymarket ever lists
+  // hourly crypto markets, but disable all polling until then — otherwise
+  // every tick 404s and trips the polymarket.com circuit breaker.
+  const POLY_HOURLY_MARKETS_EXIST = false;
   const _poly60mCache = Object.create(null);
 
   async function fetchPolymarket60MBySlug(sym) {
+    if (!POLY_HOURLY_MARKETS_EXIST) return null;
     const coinSlugPrefix = POLY_5M_COIN_SLUGS[sym];
     if (!coinSlugPrefix) return null;
 
@@ -3448,8 +3480,10 @@ function polymarketSentiment(markets, sym) {
           const prefix = POLY_5M_COIN_SLUGS[sym];
           _seedPendingPtbLock(sym, `${prefix}-updown-5m-${boundary5}`, boundary5 * 1000);
           _seedPendingPtbLock(sym, `${prefix}-updown-15m-${boundary15}`, boundary15 * 1000);
-          _seedPendingPtbLock(sym, `${prefix}-updown-1h-${boundary60}`, boundary60 * 1000);
-          _seedPendingPtbLock(sym, `${prefix}-updown-60m-${boundary60}`, boundary60 * 1000);
+          if (POLY_HOURLY_MARKETS_EXIST) {
+            _seedPendingPtbLock(sym, `${prefix}-updown-1h-${boundary60}`, boundary60 * 1000);
+            _seedPendingPtbLock(sym, `${prefix}-updown-60m-${boundary60}`, boundary60 * 1000);
+          }
         });
       })();
       timer = setInterval(() => { if (!document.hidden) fetchAll(); }, POLL_MS);
@@ -3614,6 +3648,7 @@ function polymarketSentiment(markets, sym) {
           lastBoundary60Sec = boundary60;
           Object.keys(POLY_5M_COIN_SLUGS).forEach((sym) => {
             const prefix = POLY_5M_COIN_SLUGS[sym];
+            if (!POLY_HOURLY_MARKETS_EXIST) return;
             const slug1h = `${prefix}-updown-1h-${boundary60}`;
             const slug60m = `${prefix}-updown-60m-${boundary60}`;
             _seedPendingPtbLock(sym, slug1h, boundary60 * 1000);

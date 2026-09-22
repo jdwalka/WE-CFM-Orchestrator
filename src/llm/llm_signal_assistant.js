@@ -569,7 +569,10 @@ Use this recall only as context, and prioritize current market snapshot data if 
       || String(snapshot?.horizon || '') === '1h'
     );
 
-    if (LLM_PRIMARY_PROVIDER === 'openai' && OPENAI_API_KEY && process.env.LLM_DISABLE_OPENAI !== '1') {
+    // OpenAI path is CUT (all attempts fail: callOpenAIAPI is stubbed to
+    // null, so res.content throws before any network call). Re-enable only
+    // with LLM_ENABLE_OPENAI=1 plus a working key.
+    if (process.env.LLM_ENABLE_OPENAI === '1' && LLM_PRIMARY_PROVIDER === 'openai' && OPENAI_API_KEY && process.env.LLM_DISABLE_OPENAI !== '1') {
       const coinOpenAI = String(snapshot?.coin || 'GLOBAL');
       const horizonOpenAI = is5mPtb ? '5m-ptb' : String(snapshot?.horizon || snapshot?.horizonMinutes || '15m');
       const promptLengthOpenAI = (systemPrompt || '').length + (userPrompt || '').length;
@@ -1580,7 +1583,7 @@ Use this recall only as context, and prioritize current market snapshot data if 
     const lastProvider = this._lastProvider || this.provider || null;
     const lastModel = this._lastModel || null;
     const asi1Diag = (() => { try { return Asi1Client.getDiagnostics(); } catch (_) { return {}; } })();
-    const currentAccount = asi1Diag.currentAccount || 'mauro@leaksnipe.win';
+    const currentAccount = asi1Diag.currentAccount || 'margithub@icloud.com';
     const currentAccountId = asi1Diag.currentAccountId || 'leaksnipe';
     return {
       enabled: this.enabled,

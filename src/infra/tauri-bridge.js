@@ -156,15 +156,54 @@
     } catch (_) { }
   }
 
+  // Transport priority: WSS → gRPC → RPC → HTTP. The local HTTP proxy is the
+  // HTTP-leg transport only — it must never poison WSS/gRPC/RPC legs.
+  // Hence: upstream HTTP status (502/503/504 = provider rejected via proxy)
+  // is a PER-REQUEST signal (retry that request direct), never a global
+  // bypass. Global bypass fires ONLY when the proxy process itself is
+  // unreachable (connection refused to 127.0.0.1 / /health down).
+  const PROXY_DOWN_BYPASS_MS = 3000;
+  const PROXY_CASCADE_PORTS = [
+    3010, 3011, 3012, 3013, 3014, 3015, 3016, 3017, 3018, 3019, 3020,
+    3009, 3008, 3007, 3006, 3005, 3004, 3003, 3002, 3001, 3000,
+    // NOTE: 8080/8000/4000/5000/9000 deliberately excluded — :8080 is a
+    // local nginx trap (200 'OK' on /health, 404 on every real route).
+  ];
+
+  function _isProxyConnectionError(err, proxiedUrl) {
+    try {
+      const u = new URL(String(proxiedUrl || ''));
+      const isLocal = /^(127\.0\.0\.1|localhost|\[::1\])$/i.test(u.hostname);
+      if (!isLocal) return false;
+    } catch (_) {
+      return false;
+    }
+    const msg = String(err?.message || err || '').toLowerCase();
+    return (
+      msg.includes('failed to fetch') ||
+      msg.includes('econnrefused') ||
+      msg.includes('connection refused') ||
+      msg.includes('networkerror') ||
+      msg.includes('load failed') ||
+      msg.includes('enetunreach') ||
+      msg.includes('econnreset') && msg.includes('127.0.0.1')
+    );
+  }
+
   function _proxyState() {
     const now = Date.now();
+    const bypassActive = now < _proxyBypassUntil;
+    // HEALTHY = proxy process reachable. A single upstream rejecting via the
+    // proxy (502/503/504 for one host) must NOT mark LocalProxy degraded —
+    // that failure belongs to that provider, handled by its per-host breaker.
+    const healthy = !!_proxyAvailable && !_proxyDisabled;
     return {
       available: !!_proxyAvailable,
-      healthy: !!_proxyAvailable && _proxyFailures < 3,
+      healthy,
       enabled: !_proxyDisabled,
       mode: _proxyMode,
       reason: _proxyModeReason,
-      bypassActive: now < _proxyBypassUntil,
+      bypassActive,
       bypassMsLeft: Math.max(0, _proxyBypassUntil - now),
       failures: _proxyFailures,
       port: _proxyPort,
@@ -190,14 +229,18 @@
     } catch (_) { }
     try {
       if (window.NetworkHealth?.update) {
+        // Single source of truth with network-health.js updateTransport:
+        // bypass with a live proxy process = HEALTHY + fallback=true
+        // (per-request direct retry). DEGRADED only when proxy down/disabled.
+        const proxyUp = !!detail.available && detail.enabled !== false;
         window.NetworkHealth.update('LocalProxy', {
-          status: detail.mode === 'proxy' && detail.healthy ? 'healthy' : 'degraded',
+          status: proxyUp ? 'healthy' : 'degraded',
           lastFetch: Date.now(),
-          fallback: detail.mode === 'bypass',
-          transient: detail.bypassActive || !detail.healthy,
+          fallback: detail.mode === 'bypass' || !!detail.bypassActive,
+          transient: !proxyUp || !!detail.bypassActive,
           reason: detail.mode === 'bypass'
             ? `hybrid bypass (${detail.bypassMsLeft > 0 ? Math.round(detail.bypassMsLeft / 1000) + 's left' : 'active'})`
-            : (detail.healthy ? 'proxy healthy' : `proxy degraded (${detail.failures} failures)`),
+            : (proxyUp ? 'proxy healthy' : `proxy degraded (${detail.failures} failures)`),
         });
       }
     } catch (_) { }
@@ -207,6 +250,26 @@
   let _lastForceReinitTs = 0;
   let _proxyDisabled = _readProxyDisabledFlag();
   _cachedProxyPort = _readCachedProxyPort();
+
+  // XHR-based local probe: bypasses the window.fetch patch (no breaker /
+  // rewrite re-entrancy) and fails silently without fetch-promise logging.
+  function _xhrGetText(url, timeoutMs) {
+    return new Promise((resolve) => {
+      try {
+        const xhr = new XMLHttpRequest();
+        xhr.timeout = timeoutMs;
+        xhr.onload = () => resolve({ ok: xhr.status >= 200 && xhr.status < 300, text: xhr.responseText || '' });
+        xhr.onerror = () => resolve({ ok: false, text: '' });
+        xhr.ontimeout = () => resolve({ ok: false, text: '' });
+        xhr.open('GET', url, true);
+        xhr.send();
+      } catch (_) {
+        resolve({ ok: false, text: '' });
+      }
+    });
+  }
+
+  let _initInFlight = false;
 
   async function _init() {
     _proxyDisabled = _readProxyDisabledFlag();
@@ -244,39 +307,62 @@
       } catch (_) { /* fall through */ }
     }
 
-    // 2. Verify a cached last-good port before scanning the default cascade.
+    // 2. Verify a cached last-good port before scanning the cascade.
+    // Must match proxy/src/main.rs bind_cascade() + proxy-fetch.js cascade.
+    // Latch the LOWEST healthy port, not the first: a stale proxy binary
+    // can linger on a higher port (missing newer routes) while a fresh one
+    // serves lower — first-hit latching wedges the app behind the stale one.
     const ports = _cachedProxyPort ? [_cachedProxyPort] : [];
-    ports.push(3010, 3011, 3012, 3013, 3014, 3015, 3016, 3017, 3018, 3019, 3020);
+    for (const p of PROXY_CASCADE_PORTS) {
+      if (!ports.includes(p)) ports.push(p);
+    }
+    let bestPort = 0;
     for (const tryPort of ports) {
+      // Silent XHR probe (see _xhrGetText): dead ports fail quiet, no
+      // 'Failed to load resource' wall in the console per sweep.
+      const h = await _xhrGetText(`http://127.0.0.1:${tryPort}/health`, PROXY_HEALTH_TIMEOUT_MS);
+      if (!h.ok || h.text.trim() !== 'OK') continue;
+      // Identity check: /health 'OK' is also served by unrelated local
+      // servers (nginx :8080 returns 200 'OK' but 404s every real route).
+      // Only latch when /port proves it is OUR proxy on THIS port.
+      let identityOk = false;
       try {
-        const r = await fetch(`http://127.0.0.1:${tryPort}/health`, {
-          signal: AbortSignal.timeout(PROXY_HEALTH_TIMEOUT_MS),
-        });
-        if (r.ok) {
-          const txt = await r.text();
-          if (txt.trim() === 'OK') {
-            const d = await fetch(`http://127.0.0.1:${tryPort}/port`)
-              .then(r => r.json())
-              .catch(() => ({ port: tryPort }));
-            _proxyPort = d.port || tryPort;
-            _cachedProxyPort = _proxyPort;
-            _proxyAvailable = true;
-            _writeCachedProxyPort(_proxyPort);
-            if (Date.now() >= _proxyBypassUntil) {
-              _proxyFailures = 0;
-              _proxyBypassUntil = 0;
-              _setProxyMode('proxy', 'proxy-discovered');
-            }
-            if (_lastLoggedPort !== _proxyPort) {
-              _lastLoggedPort = _proxyPort;
-              console.log(`[BRIDGE] proxy discovered on :${_proxyPort}`);
-            }
-            _lastInitAt = Date.now();
-            _lastInitErr = '';
-            return;
+        const p = await _xhrGetText(`http://127.0.0.1:${tryPort}/port`, PROXY_HEALTH_TIMEOUT_MS);
+        const d = JSON.parse(p.text || '{}');
+        identityOk = p.ok && Number(d && d.port) === tryPort;
+      } catch (_) {
+        identityOk = false;
+      }
+        if (!identityOk) {
+          // Poisoned cache entry (e.g. a stale :8080): drop it so the next
+          // launch sweeps clean instead of latching a dead port first.
+          if (tryPort === _cachedProxyPort) {
+            _cachedProxyPort = null;
+            try { window.localStorage?.removeItem?.(PROXY_PORT_CACHE_KEY); } catch (_) { }
           }
+          continue;
         }
-      } catch (_) { /* try next */ }
+        if (!bestPort || tryPort < bestPort) bestPort = tryPort;
+    }
+    if (bestPort) {
+        {
+          _proxyPort = bestPort;
+          _cachedProxyPort = _proxyPort;
+          _proxyAvailable = true;
+          _writeCachedProxyPort(_proxyPort);
+          if (Date.now() >= _proxyBypassUntil) {
+            _proxyFailures = 0;
+            _proxyBypassUntil = 0;
+            _setProxyMode('proxy', 'proxy-discovered');
+          }
+          if (_lastLoggedPort !== _proxyPort) {
+            _lastLoggedPort = _proxyPort;
+            console.log(`[BRIDGE] proxy discovered on :${_proxyPort}`);
+          }
+          _lastInitAt = Date.now();
+          _lastInitErr = '';
+          return;
+        }
     }
     _proxyAvailable = false;
     _lastInitErr = 'proxy-not-found';
@@ -289,7 +375,16 @@
   }
 
   function initOnce() {
-    if (!_initPromise) _initPromise = _init();
+    // In-flight guard: concurrent proxyFetch calls during boot must share
+    // one sweep — otherwise N callers × 21 ports = a console wall and a
+    // discovery storm.
+    if (!_initPromise) {
+      _initInFlight = true;
+      _initPromise = _init().then(
+        (v) => { _initInFlight = false; return v; },
+        (e) => { _initInFlight = false; throw e; },
+      );
+    }
     return _initPromise;
   }
 
@@ -318,6 +413,7 @@
     'api.binance.com':                 'binance',
     'data-api.binance.vision':         'binance-data',
     'fapi.binance.com':                'binance-f',
+    'dapi.binance.com':                'binance-d',
     'api.bybit.com':                   'bybit',
     'www.okx.com':                     'okx',
     'api.kraken.com':                  'kraken',
@@ -328,6 +424,7 @@
     'api-pub.bitfinex.com':            'bitfinex',
     'api.crypto.com':                  'crypto-com',
     'api.coingecko.com':               'coingecko',
+    'api.gemini.com':                  'gemini',
     'api.dexscreener.com':             'dexscreener',
     'gamma-api.polymarket.com':        'polymarket',
     'clob.polymarket.com':             'polymarket-clob',
@@ -346,7 +443,35 @@
     'xrplcluster.com':                 'xrpl',
   };
 
-  const IGNORE_DOMAINS = /timeapi\.io|kalshi\.com|polymarket\.com/i;
+  // Bitstamp: Incapsula 403s proxied TLS, direct returns 200 (ACAO:*) —
+  // always direct, in both shims.
+  const IGNORE_DOMAINS = /timeapi\.io|kalshi\.com|polymarket\.com|bitstamp\.net/i;
+
+  // Mirror of proxy-fetch.js CF_PROTECTED: hosts that REQUIRE the proxy
+  // (CF Bot Mgmt / geo-restricted). A 403/404 for these via proxy must NOT
+  // retry direct — direct is blocked by design. A 403/404 for any other
+  // host (e.g. Bitstamp's Incapsula rejecting proxied TLS while direct
+  // returns 200, or a stale proxy binary missing a route) retries direct
+  // once for THIS request, same as 502/503/504.
+  const CF_PROTECTED_TB = new Set([
+    'api.binance.com',
+    'fapi.binance.com',
+    'dapi.binance.com',
+    'data-api.binance.vision',
+    'api.bybit.com',
+    'api.bytick.com',
+    'api.kraken.com',
+    'www.kraken.com',
+    'api.hyperliquid.xyz',
+    'www.okx.com',
+    'api.okx.com',
+    'api-pub.bitfinex.com',
+    'api.kucoin.com',
+    'api.mexc.com',
+    'api.crypto.com',
+    'api.bitvavo.com',
+    'api.upbit.com',
+  ]);
 
   function _buildProxyUrl(originalUrl) {
     try {
@@ -365,9 +490,17 @@
     return originalUrl; // not a valid URL or already local
   }
 
+  // Hosts whose last DIRECT attempt also failed with a 5xx: the upstream
+  // itself is down (e.g. kalshi worker 503s from its own isolates), so a
+  // direct retry just doubles traffic. Quiet window mirrors proxy-fetch.js.
+  const _tbLastDirect5xx = {};
+  const TB_DIRECT_FAIL_QUIET_MS = 60_000;
+
   // ── Core fetch ───────────────────────────────────────────────────────────────
   window.proxyFetch = async function (url, options = {}) {
-    if (!_proxyAvailable && (Date.now() - _lastInitAt > 15000)) {
+    // Never orphan an in-flight sweep: resetting _initPromise while a sweep
+    // runs leaves the orphan probing AND starts a duplicate (boot storm).
+    if (!_proxyAvailable && !_initInFlight && (Date.now() - _lastInitAt > 15000)) {
        _initPromise = null;
     }
     await initOnce();
@@ -391,8 +524,15 @@
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       const bypassActive = Date.now() < _proxyBypassUntil;
       const forceProxy = !!options.forceProxy;
+      // Global bypass ONLY when the proxy process itself is down. A single
+      // upstream rejecting via the proxy must not flip every other host to
+      // direct (that was the "fallback bullshit": one 502 → 20s global
+      // bypass → CF-protected hosts fail direct → dashboard flaps).
+      // Per-request direct retry is handled below without touching globals.
       const useProxy = _proxyAvailable && (forceProxy || !bypassActive);
       const proxied = useProxy ? _buildProxyUrl(url) : url;
+      // Per-request flag: this attempt's upstream rejected via proxy, so the
+      // NEXT attempt for THIS request goes direct — no global state change.
       try {
         const response = await fetch(proxied, {
           method: options.method || 'GET',
@@ -403,12 +543,17 @@
           signal: options.signal,
         });
 
-        if ([502, 503, 504].includes(response.status) && attempt < maxAttempts) {
-          if (useProxy) {
-            _proxyFailures++;
-            _proxyBypassUntil = Date.now() + _jitter(20_000);
-            _setProxyMode('bypass', `proxy-http-${response.status}`, { attempt, proxied });
-          }
+        // Gateway errors (502/503/504) always retry direct. Refusals
+        // (403/404) retry direct ONLY for non-CF hosts — CF-protected
+        // hosts are blocked direct by design, so retrying is pure spam.
+        const retryableGateway = [502, 503, 504].includes(response.status);
+        const retryableRefusal = (response.status === 403 || response.status === 404)
+          && !CF_PROTECTED_TB.has(targetHost);
+        if (retryableGateway || retryableRefusal) {
+          // Upstream rejected VIA proxy (provider edge, flagged egress IP,
+          // rate limit). NOT proxy-down. Emit per-host diagnostics so the
+          // per-host breaker (proxy-fetch.js) and EndpointTransport circuit
+          // can demote THIS route, then retry THIS request direct.
           const failureClass = `proxy-http-${response.status}`;
           _emitRouteEvent('route-error', `http-${response.status}`, {
             attempt,
@@ -417,29 +562,85 @@
             host: targetHost,
             proxyUsed: useProxy,
             failureClass,
+            perRequestFallback: useProxy,
           });
-          // On next attempt, bypassActive is true so it will immediately fetch direct
-          await _sleep(_jitter(60 * attempt));
-          continue;
+          if (useProxy && proxied !== url) {
+            // Request-scoped fallback: try direct once for this request —
+            // even on the last attempt (single-attempt callers like the
+            // health probes must still fail over, not just report).
+            // Skipped while a recent direct attempt 5xx'd (origin itself
+            // down — retrying just doubles traffic, e.g. kalshi worker).
+            if (attempt < maxAttempts) await _sleep(_jitter(60 * attempt));
+            if (Date.now() < ((_tbLastDirect5xx[targetHost] || 0) + TB_DIRECT_FAIL_QUIET_MS)) {
+              if (attempt < maxAttempts) continue;
+              return response;
+            }
+            try {
+              const directRes = await fetch(url, {
+                method: options.method || 'GET',
+                headers: options.headers || {},
+                body: options.body
+                  ? (typeof options.body === 'string' ? options.body : JSON.stringify(options.body))
+                  : undefined,
+                signal: options.signal,
+              });
+              if (directRes && Number(directRes.status) >= 500) _tbLastDirect5xx[targetHost] = Date.now();
+              else if (directRes && directRes.ok) delete _tbLastDirect5xx[targetHost];
+              // Direct succeeded (or gave a non-gateway status) — return it.
+              // Do NOT touch _proxyBypassUntil / _proxyFailures / mode.
+              return directRes;
+            } catch (_) {
+              // Direct also failed — fall through to normal retry loop.
+            }
+          }
+          if (attempt < maxAttempts) {
+            await _sleep(_jitter(60 * attempt));
+            continue;
+          }
+          return response;
         }
-        if (useProxy) {
-          _proxyFailures = 0;
-          _proxyBypassUntil = 0;
-          _setProxyMode('proxy', 'proxy-ok', { attempt, proxied });
+        if (useProxy && response.ok) {
+          // Successful proxied response clears stale proxy-down counters only.
+          // Upstream non-gateway statuses (4xx) are provider signals, not
+          // proxy health signals — leave counters alone.
+          if (_proxyFailures > 0 && Date.now() >= _proxyBypassUntil) {
+            _proxyFailures = 0;
+            _setProxyMode('proxy', 'proxy-ok', { attempt, proxied });
+          }
         }
         return response;
       } catch (err) {
         lastErr = err;
         const diag = _classifyNetworkFailure(err, { url, proxied });
         lastDiag = diag;
-        if (_isRouteChurnError(err) && attempt < maxAttempts && useProxy) {
+        const proxyDown = useProxy && _isProxyConnectionError(err, proxied);
+        if (proxyDown) {
+          // The proxy PROCESS is unreachable (ECONNREFUSED to 127.0.0.1).
+          // This is the ONLY case that earns a short global bypass (3s) so
+          // concurrent requests fail fast to direct instead of hanging.
           _proxyFailures++;
-          _proxyBypassUntil = Date.now() + _jitter(20_000);
-          _setProxyMode('bypass', 'proxy-route-churn', {
+          _proxyBypassUntil = Date.now() + _jitter(PROXY_DOWN_BYPASS_MS);
+          _setProxyMode('bypass', 'proxy-down', {
             attempt,
             proxied,
-            error: String(err?.message || err || 'route churn'),
+            error: String(err?.message || err || 'proxy unreachable'),
           });
+          _emitRouteEvent('route-error', 'proxy-down', {
+            attempt,
+            proxied,
+            error: String(err?.message || err || 'proxy unreachable'),
+            provider: targetProvider,
+            host: targetHost,
+            proxyUsed: useProxy,
+            failureClass: 'proxy-down',
+          });
+          if (attempt < maxAttempts) {
+            await _sleep(_jitter(60 * attempt));
+            continue;
+          }
+        } else if (_isRouteChurnError(err) && attempt < maxAttempts && useProxy) {
+          // Transient via proxy for THIS request (timeout/abort through the
+          // local hop). Retry THIS request direct once — no global bypass.
           _emitRouteEvent('route-error', 'transient-network-error', {
             attempt,
             proxied,
@@ -448,7 +649,20 @@
             host: targetHost,
             proxyUsed: useProxy,
             failureClass: diag.kind,
+            perRequestFallback: true,
           });
+          try {
+            return await fetch(url, {
+              method: options.method || 'GET',
+              headers: options.headers || {},
+              body: options.body
+                ? (typeof options.body === 'string' ? options.body : JSON.stringify(options.body))
+                : undefined,
+              signal: options.signal,
+            });
+          } catch (directErr) {
+            lastErr = directErr;
+          }
           await _sleep(_jitter(60 * attempt));
           continue;
         }

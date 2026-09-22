@@ -45,8 +45,14 @@ def _connect() -> sqlite3.Connection:
     database_path = ledger_path()
     database_path.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(database_path, timeout=10)
-    connection.execute("PRAGMA journal_mode=WAL")
-    connection.execute("PRAGMA busy_timeout=5000")
+    try:
+        connection.execute("PRAGMA journal_mode=WAL")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        connection.execute("PRAGMA busy_timeout=5000")
+    except sqlite3.OperationalError:
+        pass
     return connection
 
 
@@ -212,8 +218,9 @@ def record_prediction(
     p_settle: float | None = None,
 ) -> bool:
     """Append one prediction; duplicate timestamp/band/expiry rows are ignored."""
-    connection = _connect()
+    connection = None
     try:
+        connection = _connect()
         _initialize(connection)
         connection.execute(
             """
@@ -254,10 +261,11 @@ def record_prediction(
         )
         connection.commit()
         return True
-    except sqlite3.Error:
+    except (sqlite3.Error, Exception):
         return False
     finally:
-        connection.close()
+        if connection is not None:
+            connection.close()
 
 
 def _bucket(p_touch: float, p_normal: float, touched: bool) -> str:
@@ -291,7 +299,7 @@ def resolve_pending_predictions() -> int:
                        OR tail_arrived IS NULL)
                   AND expiry_utc < ?
                 ORDER BY expiry_utc
-                LIMIT 200
+                LIMIT 20
                 """,
                 (now.isoformat(),),
             ).fetchall()
@@ -707,8 +715,16 @@ def _bucketed_correction(connection: sqlite3.Connection) -> dict:
     }
 
 
+_REPORT_CACHE = None
+_REPORT_CACHE_TIME = 0.0
+
 def get_calibration_report() -> dict:
     """Rolling and bucketed Brier/calibration report for recent predictions."""
+    global _REPORT_CACHE, _REPORT_CACHE_TIME
+    import time
+    if _REPORT_CACHE is not None and time.time() - _REPORT_CACHE_TIME < 300:
+        return _REPORT_CACHE
+
     now = datetime.now(timezone.utc)
     resolve_pending_predictions()
     try:
@@ -847,6 +863,8 @@ def get_calibration_report() -> dict:
                 }
                 for r in recent_settlement_rows
             ]
+            _REPORT_CACHE = report
+            _REPORT_CACHE_TIME = time.time()
             return report
     except sqlite3.Error as error:
         return {"status": "storage_error", "error": str(error)}
