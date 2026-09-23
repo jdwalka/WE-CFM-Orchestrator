@@ -380,19 +380,12 @@ def get_live_cascade_audit(symbol: str = "BTC") -> dict:
 
 
 # --- Truffle inference policy ----------------------------------------------
-# HUD-ONLY inference: live ASI1 calls are served ONLY to HUD callers
-# (localhost REST /query ← asi1-desk). Every other channel — Agentverse
-# mailbox (iPhone), the 15-minute periodic refresh, and the auxiliary
-# summary endpoints — answers deterministically with zero token spend.
-# Escape hatch: TRUFFLE_HUD_ONLY=0 restores live inference everywhere.
-TRUFFLE_INFERENCE_INTERVAL_SEC = int(
-    os.getenv("TRUFFLE_INFERENCE_INTERVAL_SEC", os.getenv("ASI1_INFERENCE_COOLDOWN_SEC", "900"))
-)
-# Full-live mode: every channel (HUD, mailbox, periodic, aux endpoints) gets
-# live ASI1 inference. Cost is not a constraint. Set TRUFFLE_HUD_ONLY=1 to
-# re-enable HUD-only gating.
-HUD_ONLY_INFERENCE = os.getenv("TRUFFLE_HUD_ONLY", "0") == "1"
-HUD_ONLY_NOTE = "[HUD-only inference mode: this channel answers deterministically.]"
+# Full-live, unconditionally: every channel (HUD, mailbox, periodic, aux
+# endpoints) gets live ASI1 inference. Cost is not a constraint.
+# NOTE (2026-09-21): the old TRUFFLE_HUD_ONLY / HUD_ONLY_INFERENCE
+# deterministic-only policy was removed permanently — silent deterministic
+# fallbacks confused the HUD. The only deterministic output left is the
+# last-resort fallback when ASI1 itself fails, and it says so explicitly.
 
 _snapshot_cache = None
 _snapshot_time = 0.0
@@ -499,24 +492,21 @@ def generate_deterministic_truffle_summary(prediction: dict, cascade_overlay: st
     )
 
 
-def get_or_refresh_truffle_model_summary(force_refresh: bool = False, live: bool = True) -> tuple[str, str, float]:
+def get_or_refresh_truffle_model_summary(force_refresh: bool = False) -> tuple[str, str, float]:
     """Get or refresh the Truffle model summary.
 
-    LIVE MODE: every call attempts a fresh ASI1 inference when a key is
-    present and this channel is live-enabled. HUD-only policy: pass
-    live=False for non-HUD channels (mailbox, periodic refresh, aux
-    endpoints) to answer deterministically with zero token spend.
+    Always attempts a fresh live ASI1 inference when a key is present.
     Returns: (summary_content, source, cooldown_remaining_sec)
-    source is either 'asi1' or 'deterministic' (deterministic = channel not
-    live, ASI1 failed, or no key configured).
+    source is either 'asi1' or 'deterministic' (deterministic = ASI1 failed
+    or no key configured — last resort only, never a policy choice).
     """
     global _last_asi1_call_time, _cached_truffle_summary, _cached_truffle_summary_time, _cached_truffle_source
     now = time.time()
 
     prediction, cascade_overlay = _get_or_compute_snapshot()
 
-    # 2. Live ASI1 call whenever a key is present and channel allows it.
-    if ASI1_API_KEY and live:
+    # 2. Live ASI1 call whenever a key is present.
+    if ASI1_API_KEY:
         try:
             headers = {
                 "Authorization": f"Bearer {ASI1_API_KEY}",
@@ -560,9 +550,15 @@ def get_or_refresh_truffle_model_summary(force_refresh: bool = False, live: bool
                     _cached_truffle_summary_time = time.time()
                     _cached_truffle_source = "asi1"
                     return (_cached_truffle_summary, "asi1", 0.0)
-        except Exception:
+                else:
+                    ch0 = data.get("choices", [{}])[0]
+                    print(f"[truffle] model-summary ASI1 200 but empty content "
+                          f"(finish={ch0.get('finish_reason')} refusal={ch0.get('message', {}).get('refusal')})", flush=True)
+            else:
+                print(f"[truffle] model-summary ASI1 HTTP {resp.status_code}: {resp.text[:200]}", flush=True)
+        except Exception as ex:
             # Fall back to deterministic summary on any failure
-            pass
+            print(f"[truffle] model-summary ASI1 exception: {type(ex).__name__}: {ex}", flush=True)
 
     # 3. Deterministic summary fallback (ASI1 failed or no key — instantaneous)
     det_summary = generate_deterministic_truffle_summary(prediction, cascade_overlay)
@@ -572,47 +568,49 @@ def get_or_refresh_truffle_model_summary(force_refresh: bool = False, live: bool
     return (det_summary, "deterministic", 0.0)
 
 
-def process_query(query: str, sender: str = "local", live: bool = True) -> str:
-    """Answer a query. live=True (HUD callers) may spend ASI1 inference;
-    live=False (mailbox, background jobs) is deterministic-only, zero tokens.
+def process_query(query: str, sender: str = "local") -> str:
+    """Answer a query with live ASI1 inference — always. There is no
+    deterministic-only mode anymore (removed 2026-09-21).
+    Discrete quantitative intents still fetch their data block first, but it
+    is synthesized into an ASI1 answer instead of dumped raw.
     """
     global _last_asi1_call_time
     q_clean = (query or "").strip()
     q_lower = q_clean.lower()
-    now = time.time()
 
-    # Fast deterministic routing for discrete quantitative intents
+    # Discrete quantitative intents: fetch the data block for ASI1 synthesis.
+    data_block = ""
     if any(k in q_lower for k in ["alt signal", "lead lag", "alt_signal"]):
-        return format_for_llm(get_alt_signal())
-    if any(k in q_lower for k in ["calibration", "brier"]):
-        return format_for_llm(get_calibration_report())
-    if any(k in q_lower for k in ["kalshi 15m", "15m model", "15m fair"]):
-        return format_for_llm(predict_15m_range())
-    if any(k in q_lower for k in ["weights", "parameters", "model weights"]):
-        return format_for_llm(get_model_weights())
-    if any(k in q_lower for k in ["decision tree", "trees"]):
-        return format_for_llm(get_decision_trees())
-    if any(k in q_lower for k in ["kodak", "orderbook depth"]):
-        return format_for_llm(get_kodak_snapshot("BTCUSDT"))
-    if any(k in q_lower for k in ["cascade audit", "cascade", "wall density", "knife catch"]):
-        return format_for_llm(get_live_cascade_audit("BTC"))
+        data_block = format_for_llm(get_alt_signal())
+    elif any(k in q_lower for k in ["calibration", "brier"]):
+        data_block = format_for_llm(get_calibration_report())
+    elif any(k in q_lower for k in ["kalshi 15m", "15m model", "15m fair"]):
+        data_block = format_for_llm(predict_15m_range())
+    elif any(k in q_lower for k in ["weights", "parameters", "model weights"]):
+        data_block = format_for_llm(get_model_weights())
+    elif any(k in q_lower for k in ["decision tree", "trees"]):
+        data_block = format_for_llm(get_decision_trees())
+    elif any(k in q_lower for k in ["kodak", "orderbook depth"]):
+        data_block = format_for_llm(get_kodak_snapshot("BTCUSDT"))
+    elif any(k in q_lower for k in ["cascade audit", "cascade", "wall density", "knife catch"]):
+        data_block = format_for_llm(get_live_cascade_audit("BTC"))
 
     # If asking for summary, live read, setup, advice, or general read:
-    summary, source, cd_left = get_or_refresh_truffle_model_summary(live=live)
+    summary, source, cd_left = get_or_refresh_truffle_model_summary()
+    print(f"[truffle] process_query sender={sender} summary_source={source} data_block={bool(data_block)} q={q_clean[:60]!r}", flush=True)
 
     is_summary_request = (
         not q_clean
         or any(k in q_lower for k in ["summary", "live read", "read on", "setup", "brief", "status", "truffle", "update"])
     )
 
-    if is_summary_request:
-        cd_info = ""
+    if is_summary_request and not data_block:
         if source != "asi1":
-            cd_info = ("\n\n" + HUD_ONLY_NOTE) if not live else "\n\n[Live ASI1 inference unavailable — deterministic fallback. Check ASI1 key/credits and retry.]"
-        return f"{summary}{cd_info}"
+            return f"{summary}\n\n[Live ASI1 inference unavailable — deterministic fallback. Check ASI1 key/credits and retry.]"
+        return summary
 
-    # For conversational questions (live ASI1 on HUD channel when key present):
-    can_call_asi1 = bool(ASI1_API_KEY) and live
+    # For conversational questions (live ASI1 whenever a key is present):
+    can_call_asi1 = bool(ASI1_API_KEY)
 
     if can_call_asi1:
         # Single, targeted ASI1 inference call (NO tool looping to preserve credits)
@@ -629,6 +627,8 @@ def process_query(query: str, sender: str = "local", live: bool = True) -> str:
                 + f"QUANTITATIVE PREDICTION:\n{_json.dumps(prediction, indent=2)}\n"
                 + cascade_overlay
             )
+            if data_block:
+                sys_prompt += f"\n\nREQUESTED DATA BLOCK (ground numbers in this):\n{data_block}\n"
             payload = {
                 "model": "asi1",
                 "messages": [
@@ -642,24 +642,41 @@ def process_query(query: str, sender: str = "local", live: bool = True) -> str:
             if resp.status_code == 200:
                 _last_asi1_call_time = time.time()
                 ans = resp.json()["choices"][0]["message"].get("content") or ""
+                if not ans:
+                    # Transient empty completion — retry once before giving up.
+                    ch0 = resp.json().get("choices", [{}])[0]
+                    print(f"[truffle] process_query sender={sender} ASI1 200 empty "
+                          f"(finish={ch0.get('finish_reason')} refusal={ch0.get('message', {}).get('refusal')}), retrying once", flush=True)
+                    resp = requests.post(ASI1_API_URL, headers=headers, json=payload, timeout=45)
+                    if resp.status_code == 200:
+                        ans = resp.json()["choices"][0]["message"].get("content") or ""
                 if ans:
                     _remember(sender, "user", q_clean)
                     _remember(sender, "assistant", ans)
+                    print(f"[truffle] process_query sender={sender} source=asi1 chars={len(ans)}", flush=True)
                     return ans
-        except Exception:
-            pass
+            else:
+                print(f"[truffle] process_query sender={sender} ASI1 HTTP {resp.status_code}: {resp.text[:200]}", flush=True)
+        except Exception as ex:
+            print(f"[truffle] process_query sender={sender} ASI1 exception: {type(ex).__name__}: {ex}", flush=True)
 
-    # Live-ASI1-unavailable fallback: answer with deterministic model summary.
-    # (Reached only when the ASI1 call above failed or no key is configured —
-    # there is no cooldown; just retry.)
-    ans = (
-        f"🍄 @truffz (Deterministic Engine — ASI1 unavailable):\n\n"
-        f"{summary}\n\n"
-        f"Regarding: '{q_clean[:80]}'\n"
-        f"Deterministic models are aligned to the current hourly expiry bracket. "
-        f"Maintain discipline on the 15-20m window and monitor BRTI wicks.\n\n"
-        f"[Live ASI1 inference failed — check ASI1 key/credits and retry anytime.]"
-    )
+    # Last-resort fallback: ASI1 itself failed or no key is configured.
+    # (There is no cooldown and no policy gate here — just retry.)
+    print(f"[truffle] process_query sender={sender} source=deterministic-fallback q={q_clean[:60]!r}", flush=True)
+    if data_block:
+        ans = (
+            f"{data_block}\n\n"
+            f"[Live ASI1 synthesis failed — raw data above. Check ASI1 key/credits and retry anytime.]"
+        )
+    else:
+        ans = (
+            f"🍄 @truffz (Deterministic Engine — ASI1 unavailable):\n\n"
+            f"{summary}\n\n"
+            f"Regarding: '{q_clean[:80]}'\n"
+            f"Deterministic models are aligned to the current hourly expiry bracket. "
+            f"Maintain discipline on the 15-20m window and monitor BRTI wicks.\n\n"
+            f"[Live ASI1 inference failed — check ASI1 key/credits and retry anytime.]"
+        )
     _remember(sender, "user", q_clean)
     _remember(sender, "assistant", ans)
     return ans
@@ -683,8 +700,7 @@ async def handle_chat(ctx: Context, sender: str, msg: ChatMessage):
     ctx.logger.info(f"Query from {sender}: {text[:120]}")
     try:
         loop = asyncio.get_running_loop()
-        hud_live = not HUD_ONLY_INFERENCE  # mailbox (iPhone/Agentverse) is never the HUD
-        answer = await loop.run_in_executor(None, lambda: process_query(text, sender=sender, live=hud_live))
+        answer = await loop.run_in_executor(None, lambda: process_query(text, sender=sender))
     except Exception as e:
         ctx.logger.error(f"Error in process_query for {sender}: {e}", exc_info=True)
         answer = f"Error processing query: {e}"
@@ -742,7 +758,7 @@ async def handle_query(ctx: Context, msg: HUDQuery) -> HUDResponse:
     # /query is the HUD channel (asi1-desk + truffle:query IPC) — live inference.
     try:
         loop = asyncio.get_event_loop()
-        answer = await loop.run_in_executor(None, lambda: process_query(msg.query, live=True))
+        answer = await loop.run_in_executor(None, lambda: process_query(msg.query))
         return HUDResponse(ok=True, content=answer)
     except (requests.RequestException, KeyError, ValueError, TypeError) as e:
         return HUDResponse(ok=False, content=str(e))
@@ -829,12 +845,11 @@ async def handle_cascade_audit_rest(_ctx: Context, msg: HUDQuery) -> HUDResponse
 
 @agent.on_rest_post("/truffle/model-summary", HUDQuery, HUDResponse)
 async def handle_truffle_summary_post(_ctx: Context, msg: HUDQuery) -> HUDResponse:
-    # Aux endpoint (no in-app callers) — deterministic under HUD-only policy.
     try:
         force = (msg.query or "").strip().lower() == "force"
         loop = asyncio.get_event_loop()
         summary, source, cd_left = await loop.run_in_executor(
-            None, lambda: get_or_refresh_truffle_model_summary(force_refresh=force, live=not HUD_ONLY_INFERENCE)
+            None, lambda: get_or_refresh_truffle_model_summary(force_refresh=force)
         )
         return HUDResponse(ok=True, content=summary)
     except Exception as e:
@@ -843,11 +858,10 @@ async def handle_truffle_summary_post(_ctx: Context, msg: HUDQuery) -> HUDRespon
 
 @agent.on_rest_get("/truffle/model-summary", HUDResponse)
 async def handle_truffle_summary_get(_ctx: Context) -> HUDResponse:
-    # Aux endpoint (no in-app callers) — deterministic under HUD-only policy.
     try:
         loop = asyncio.get_event_loop()
         summary, source, cd_left = await loop.run_in_executor(
-            None, lambda: get_or_refresh_truffle_model_summary(force_refresh=False, live=not HUD_ONLY_INFERENCE)
+            None, lambda: get_or_refresh_truffle_model_summary(force_refresh=False)
         )
         return HUDResponse(ok=True, content=summary)
     except Exception as e:
@@ -871,7 +885,7 @@ async def periodic_truffle_refresh(ctx: Context):
     try:
         loop = asyncio.get_running_loop()
         summary, source, _ = await loop.run_in_executor(
-            None, lambda: get_or_refresh_truffle_model_summary(force_refresh=False, live=not HUD_ONLY_INFERENCE)
+            None, lambda: get_or_refresh_truffle_model_summary(force_refresh=False)
         )
         ctx.logger.info(f"Periodic Truffle Model Summary check [{source}]")
     except Exception as e:

@@ -41,7 +41,7 @@
     XRP: '#00aae4', DOGE: '#c2a633', BNB: '#f3ba2f', HYPE: '#50e3c2',
   };
   const VISIBLE_BUCKETS = 11;   // 5 above + current + 5 below (synthetic fallback only)
-  const VISIBLE_PTB_ROWS = 5;   // real-ladder mode: single-PTB rows near spot
+  const VISIBLE_PTB_ROWS = 8;   // real-ladder mode: single-PTB rows near spot
   const KALSHI_LADDER_WORKER = 'https://kalshi-ladder-worker.gitgoin87.workers.dev';
   // Coins Kalshi runs an hourly "between" range series for — kept in sync
   // with kalshi-ladder-worker's SERIES_BY_SYMBOL. HYPE has no such series,
@@ -300,8 +300,62 @@
     }
   }
 
-  async function loadCoin(sym) {
-    const price = await fetchPrice(sym);
+  // ── Model strike probabilities (engine artifact, Kalshi-independent) ──
+  // prediction_engine.py writes data/engine_latest.json every ~5 min.
+  // Indexed by "low-high" → p_touch (model's predicted touch probability
+  // for the hourly close window). Only BTC until the engine covers more
+  // coins; everything else stays Kalshi-only.
+  const MODEL_STRIKE_TTL_MS = 600_000; // artifact older than 10m = stale
+  const MODEL_REFRESH_MS = 60_000;     // re-read at most once a minute
+  let _modelStrikes = {}; // sym → { ts, byKey: Map("low-high" → p_touch) }
+  let _modelFetchTs = 0;
+  async function loadModelStrikes() {
+    const now = Date.now();
+    if (now - _modelFetchTs < MODEL_REFRESH_MS && Object.keys(_modelStrikes).length) return;
+    _modelFetchTs = now;
+    try {
+      // Prefer the absolute-path channel (works regardless of launch dir);
+      // fall back to the workspace-relative read.
+      let res = null;
+      if (window.electron && typeof window.electron.invoke === 'function') {
+        try { res = await window.electron.invoke('data:engineLatest'); } catch (_) { res = null; }
+      }
+      if ((!res || !res.ok) && window.electron && typeof window.electron.readFile === 'function') {
+        const content = await window.electron.readFile('data/engine_latest.json');
+        res = content ? { ok: true, content } : null;
+      }
+      if (!res || !res.ok || !res.content) return;
+      const doc = JSON.parse(typeof res.content === 'string' ? res.content : res.content);
+      const ageMs = now - Date.parse(doc.timestamp_utc || 0);
+      if (!Number.isFinite(ageMs) || ageMs > MODEL_STRIKE_TTL_MS) { _modelStrikes = {}; return; }
+      const byKey = new Map();
+      for (const s of (doc.strike_probs || [])) {
+        if (s && Number.isFinite(s.low) && Number.isFinite(s.high) && Number.isFinite(s.p_touch)) {
+          byKey.set(`${s.low}-${s.high}`, s.p_touch);
+        }
+      }
+      _modelStrikes = { BTC: { ts: now, byKey } };
+    } catch (e) { console.warn('[HR] model strikes unavailable:', e.message); }
+  }
+  function modelTouchPct(sym, low, high) {
+    const entry = _modelStrikes[sym];
+    if (!entry) return null;
+    const exact = entry.byKey.get(`${low}-${high}`);
+    if (Number.isFinite(exact)) return Math.round(exact * 100);
+    // Hour-roll tolerance: panel may still show last hour's cached bands
+    // while the artifact already rolled — nearest band within $500.
+    let best = null, bestD = 500;
+    for (const [key, v] of entry.byKey) {
+      const sep = key.indexOf('-');
+      const klo = Number(key.slice(0, sep));
+      if (!Number.isFinite(klo)) continue;
+      const d = Math.abs(klo - low);
+      if (d < bestD) { bestD = d; best = v; }
+    }
+    return Number.isFinite(best) ? Math.round(best * 100) : null;
+  }
+
+  async function loadCoin(sym) {    const price = await fetchPrice(sym);
 
     if (price !== null && Number.isFinite(price) && sym) {
       Object.defineProperty(_prices, sym, { value: price, writable: true, enumerable: true, configurable: true });
@@ -479,10 +533,21 @@
         }
         const probStr = probPct !== null ? `${probPct}%` : '—';
 
+        // MODEL probability: engine's predicted touch for this band
+        // (calibrated, Kalshi-independent). Residual = market − model:
+        // big gaps are the mispricings. Null when the engine artifact is
+        // missing/stale or doesn't cover this coin.
+        const modelPct = modelTouchPct(sym, b.low, b.high);
+        const modelStr = modelPct !== null ? `${modelPct}%` : '—';
+        const resid = (probPct !== null && modelPct !== null) ? probPct - modelPct : null;
+        const residStr = resid !== null ? `${resid > 0 ? '+' : ''}${resid}` : '—';
+        const hot = resid !== null && Math.abs(resid) >= 10;
+
         return `
           <div class="hr-ptb-row${isCurrent ? ' hr-ptb-row--current' : ''}" style="background:${escapeHTML(wallColor)}22;border-left-color:${escapeHTML(wallColor)}">
             <span class="hr-ptb-price">${escapeHTML(ptbStr)}</span>
             <span class="hr-ptb-prob"${isCurrent ? ` style="color:${escapeHTML(color)}"` : ''}>${escapeHTML(probStr)}</span>
+            <span class="hr-ptb-model" title="Model touch probability (engine)${resid !== null ? ` — market-model residual ${residStr}¢` : ''}"${hot ? ' style="font-weight:700;text-decoration:underline"' : ''}>${escapeHTML(modelStr)}</span>
             <span class="hr-ptb-odds">${escapeHTML(bidStr)} / ${escapeHTML(askStr)}</span>
             ${arrow}
             ${isCurrent ? `<span class="hr-ptb-here" style="color:${escapeHTML(color)}">● HERE</span>` : ''}
@@ -498,6 +563,7 @@
           <div class="hr-ranges-header">
             <span class="hr-ranges-label">PTB · live Kalshi</span>
             <span class="hr-ranges-label">Prob (YES)</span>
+            <span class="hr-ranges-label" title="Model touch probability — engine, Kalshi-independent">Model</span>
             <span class="hr-ranges-label">Bid / Ask</span>
           </div>
           ${rows.join('')}
@@ -525,15 +591,20 @@
         }).sort((a, b) => b.likelihood - a.likelihood);
         const sumL = ranked.reduce((s, b) => s + b.likelihood, 0) || 1;
         ranked.forEach(b => { b.pctLikely = Math.round((b.likelihood / sumL) * 100); });
-        topBuckets = ranked.slice(0, 5);
+        topBuckets = ranked.slice(0, 8);
 
         const rows = visible.map(r => {
           const isCurrent = price !== null && price >= r.low && price <= r.high;
           const probPctStr = fmtPct(r.prob);
+          // Same Model column as live rows: engine touch for this band,
+          // Kalshi-independent. Null when uncovered/stale.
+          const modelPct = modelTouchPct(sym, r.low, r.high);
+          const modelStr = modelPct !== null ? `${modelPct}%` : '—';
           return `
             <div class="hr-row${isCurrent ? ' hr-row--current' : ''}">
               <span class="hr-row-range">${escapeHTML(fmtPrice(r.low, r.high))}</span>
               <span class="hr-row-prob" style="${isCurrent ? `color:${escapeHTML(color)}` : ''}">${escapeHTML(probPctStr)}</span>
+              <span class="hr-ptb-model" title="Model touch probability (engine)">${escapeHTML(modelStr)}</span>
               ${isCurrent ? `<span class="hr-ptb-here" style="color:${escapeHTML(color)}">● HERE</span>` : ''}
             </div>`;
         });
@@ -544,10 +615,11 @@
 
         body = `
           <div class="hr-ranges-scroll">
-            <div class="hr-ranges-header">
-              <span class="hr-ranges-label">Synthetic estimate</span>
-              <span class="hr-ranges-label">Prob (YES)</span>
-            </div>
+          <div class="hr-ranges-header">
+            <span class="hr-ranges-label">Synthetic estimate</span>
+            <span class="hr-ranges-label">Prob (YES)</span>
+            <span class="hr-ranges-label" title="Model touch probability — engine, Kalshi-independent">Model</span>
+          </div>
             ${rows.join('')}
           </div>
           ${closeLabel}`;
@@ -912,9 +984,10 @@
 
   // ── Load all coins (parallelized per coin) ─────────────────────
   async function loadAll() {
-    await Promise.allSettled(
-      COINS.flatMap(sym => [loadCoin(sym), loadRealLadder(sym)])
-    );
+    await Promise.allSettled([
+      loadModelStrikes(),
+      ...COINS.flatMap(sym => [loadCoin(sym), loadRealLadder(sym)]),
+    ]);
   }
 
   function nextPollMs() {

@@ -486,6 +486,67 @@ def get_kalshi_ladder(force_refresh: bool = True) -> dict:
             if attempt < 2:
                 time.sleep(delays[attempt])
 
+    # Middle lane: our own kalshi-ladder-worker (strictly Kalshi hourly
+    # "between" bands). Used when the primary market-data worker is down
+    # (it was overwritten by an assets deploy) and before the kodak
+    # snapshot fallback. Shape-mapped into candidate_bands.
+    # NOTE: aliased datetime import — get_kalshi_ladder has a local
+    # `from datetime import ...` further down that shadows the module name
+    # for the whole function scope; plain datetime.now() raises
+    # UnboundLocalError on paths that skip that import.
+    from datetime import datetime as _dt, timezone as _tz
+    try:
+        ladder_base = os.getenv(
+            "LADDER_WORKER_URL", "https://ladder.leaksnipe.win").rstrip("/")
+        lres = requests.get(
+            f"{ladder_base}/ladder",
+            params={"symbol": "BTC"},
+            headers={"User-Agent": "wecrypto-engine/1.0"},
+            timeout=15,
+        )
+        lres.raise_for_status()
+        ldata = lres.json()
+        lbands = [b for b in (ldata.get("bands") or []) if isinstance(b, dict)]
+        lbands = [b for b in lbands
+                  if isinstance(b.get("low"), (int, float))
+                  and isinstance(b.get("high"), (int, float))]
+        # Our ladder worker emits Kalshi fp quote fields as strings
+        # ("0.0100"); the strike loop needs floats for residual math.
+        for _b in lbands:
+            for _k in ("yes_ask", "yes_bid",
+                       "yes_ask_dollars", "yes_bid_dollars"):
+                try:
+                    if _b.get(_k) is not None:
+                        _b[_k] = float(_b[_k])
+                except (TypeError, ValueError):
+                    _b[_k] = None
+        if lbands:
+            expiries = [b.get("minutes_to_expiry") for b in lbands
+                        if isinstance(b.get("minutes_to_expiry"), (int, float))]
+            payload = _normalize_bands_payload({
+                "candidate_bands": lbands,
+                "minutes_to_expiry": min(expiries) if expiries else None,
+                "event_ticker": "KXBTC-hourly",
+                "market_active": True,
+                # Freshness is proven by this live fetch (just completed),
+                # not by the KV write timestamp (60s TTL races the 60s gate).
+                "collector_timestamp": _dt.now(_tz.utc).isoformat(),
+                "kv_fetched_at": ldata.get("fetched_at"),
+                "status": "ok",
+                "error": None,
+                "_cache": "miss",
+                "_source": "ladder_worker",
+                "_primary_error": last_primary_error,
+                "_ts": time.time(),
+            })
+            enforce_freshness(payload, "ladder_worker")
+            _bands_cache["data"] = deepcopy(payload)
+            _bands_cache["ts"] = time.time()
+            return payload
+        last_primary_error = "ladder_worker: empty band list"
+    except Exception as e:
+        last_primary_error = f"ladder_worker: {e}"
+
     try:
         ladder = _fetch_bands_from_snapshot()
         enforce_freshness(ladder, "snapshot_ladder")
@@ -2476,4 +2537,25 @@ def predict_15m_range(contract: dict | None = None, series_ticker: str = KALSHI_
 
 if __name__ == "__main__":
     import json
-    print(json.dumps(predict_hourly_range(), indent=2))
+    from pathlib import Path
+    result = predict_hourly_range()
+    print(json.dumps(result, indent=2))
+    # Artifact for the hourly-ranges panel MODEL column (read by the app
+    # via window.electron IPC 'data:engineLatest'). Atomic write so readers
+    # never see a half-written file. NEVER overwrite good data with an
+    # error payload: a transient candle/venue failure must not wipe the
+    # last good board (that clobber is what blanked the panel).
+    try:
+        from pathlib import Path as _Pl
+        _artifact_dir = _Pl(__file__).with_name("data")
+        _artifact_dir.mkdir(parents=True, exist_ok=True)
+        _good = bool(result.get("strike_probs")) and not result.get("error")
+        _target = (_artifact_dir / "engine_latest.json"
+                   if _good else _artifact_dir / "engine_latest.error.json")
+        _tmp = _artifact_dir / "engine_latest.json.tmp"
+        _tmp.write_text(json.dumps(result))
+        _tmp.replace(_target)
+        if not _good:
+            print("artifact: error payload kept out of engine_latest.json")
+    except Exception as _e:
+        print(f"artifact write skipped: {_e}")

@@ -103,3 +103,43 @@
 - Days: 20  Candles: 5760
 - Coins analyzed: BTC, ETH, SOL, XRP, DOGE, BNB, HYPE
 - Log: G:\WECRYP\backtest-logs\advanced-2026-08-25.log
+
+## Advanced Backtest — 2026-09-22T15:21:38.452Z
+- Days: 18  Candles: 5184
+- Coins analyzed: BTC
+- Log: /mnt/g/WECRYP/backtest-logs/advanced-2026-09-22.log
+
+## Advanced Backtest — 2026-09-22T15:21:52.968Z
+- Days: 18  Candles: 5184
+- Coins analyzed: ETH
+- Log: /mnt/g/WECRYP/backtest-logs/advanced-2026-09-22.log
+
+## Advanced Backtest — 2026-09-22T15:22:06.176Z
+- Days: 18  Candles: 5184
+- Coins analyzed: SOL
+- Log: /mnt/g/WECRYP/backtest-logs/advanced-2026-09-22.log
+
+## Advanced Backtest — 2026-09-22T15:22:18.244Z
+- Days: 18  Candles: 5184
+- Coins analyzed: XRP
+- Log: /mnt/g/WECRYP/backtest-logs/advanced-2026-09-22.log
+
+## Walk-Forward Backtest — 2026-09-22T15:22:32.431Z
+- Days: 18  Train: 400  Test: 100  Step: 50
+- Coins: BTC
+- Log: /mnt/g/WECRYP/backtest-logs/wf-2026-09-22.log
+
+## Walk-Forward Backtest — 2026-09-22T15:23:03.928Z
+- Days: 18  Train: 400  Test: 100  Step: 50
+- Coins: ETH
+- Log: /mnt/g/WECRYP/backtest-logs/wf-2026-09-22.log
+
+## Walk-Forward Backtest — 2026-09-22T15:23:35.037Z
+- Days: 18  Train: 400  Test: 100  Step: 50
+- Coins: SOL
+- Log: /mnt/g/WECRYP/backtest-logs/wf-2026-09-22.log
+
+## Walk-Forward Backtest — 2026-09-22T15:24:06.118Z
+- Days: 18  Train: 400  Test: 100  Step: 50
+- Coins: XRP
+- Log: /mnt/g/WECRYP/backtest-logs/wf-2026-09-22.log
