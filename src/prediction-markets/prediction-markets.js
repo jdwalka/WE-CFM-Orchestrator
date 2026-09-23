@@ -60,7 +60,17 @@
     ETH: 'KXETH15M',
     SOL: 'KXSOL15M',
     XRP: 'KXXRP15M',
+    BNB: 'KXBNB15M',
+    DOGE: 'KXDOGE15M',
+    // HYPE has no Kalshi 15m up/down series — stays null/pending.
   };
+  // Reverse lookup: series ticker -> coin, for coin-context formatting and
+  // cross-series contamination guards.
+  const SYM_BY_KALSHI_SERIES = {};
+  for (const [k, v] of Object.entries(KALSHI_15M_SERIES)) SYM_BY_KALSHI_SERIES[v] = k;
+  for (const [k, v] of Object.entries(KALSHI_5M_SERIES)) {
+    if (!SYM_BY_KALSHI_SERIES[v]) SYM_BY_KALSHI_SERIES[v] = k;
+  }
 
   // Direct 5-minute UP/DOWN series — BNB/HYPE gracefully null if not live on Kalshi
   const KALSHI_5M_SERIES = {
@@ -885,6 +895,10 @@
       minTradableMs,
       strictQuarterHour,
     });
+    // Cross-series guard: the selected contract MUST belong to the requested
+    // series. A wrong-series market here puts another coin's strike on this
+    // coin's card (e.g. BNB's $764 floor rendered as BTC's strike).
+    if (m && !(m.ticker || '').startsWith(series)) m = null;
     if (!m && opts.allowNearExpiry !== false && markets.length) {
       m = selectKalshiContract(markets, {
         nowMs: Date.now(),
@@ -892,6 +906,7 @@
         minTradableMs: 0,
         strictQuarterHour,
       });
+      if (m && !(m.ticker || '').startsWith(series)) m = null;
       nearClose = !!m;
     }
     if (!m) {
@@ -905,7 +920,12 @@
       return null;
     }
 
-    const built = buildKalshiContractData(m, nearClose ? { tradable: false, nearClose: true } : { tradable: true });
+    const built = buildKalshiContractData(m, {
+      ...(nearClose ? { tradable: false, nearClose: true } : { tradable: true }),
+      // Coin context for strike formatting — never fall back to the raw
+      // market ticker (wrong decimals/context on another coin's card).
+      ...(SYM_BY_KALSHI_SERIES[series] ? { sym: SYM_BY_KALSHI_SERIES[series] } : {}),
+    });
     return applyWsTickerToContract(built);
   }
 
