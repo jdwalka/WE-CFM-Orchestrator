@@ -470,7 +470,15 @@
     let body;
     let topBuckets = [];
     const realBands = safeGet(_realBands, sym) || [];
-    const isLive = realBands.length > 0;
+    // Off-grid guard: when spot has moved past the end of Kalshi's listed
+    // grid (e.g. a $2k dump below the lowest bracket), every real row is
+    // untradeable noise. Fall back to spot-centered synthetic rows and say
+    // so, instead of rendering a ladder thousands away from the price.
+    const gridLo = realBands.length ? Math.min(...realBands.map(b => Number(b.low))) : null;
+    const gridHi = realBands.length ? Math.max(...realBands.map(b => Number(b.high ?? b.low))) : null;
+    const offGrid = price != null && Number.isFinite(gridLo) && Number.isFinite(gridHi) &&
+      (price < gridLo || price > gridHi);
+    const isLive = realBands.length > 0 && !offGrid;
 
     if (isLive) {
       // ── Real Kalshi hourly ladder: single-PTB rows, bid-wall saturation ──
@@ -616,7 +624,7 @@
         body = `
           <div class="hr-ranges-scroll">
           <div class="hr-ranges-header">
-            <span class="hr-ranges-label">Synthetic estimate</span>
+            <span class="hr-ranges-label">Synthetic estimate${offGrid ? ' · spot off Kalshi grid' : ''}</span>
             <span class="hr-ranges-label">Prob (YES)</span>
             <span class="hr-ranges-label" title="Model touch probability — engine, Kalshi-independent">Model</span>
           </div>
