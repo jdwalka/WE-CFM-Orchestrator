@@ -175,59 +175,39 @@
     return result;
   }
 
-  function readLivePrice(sym) {
-    const instrument = safeGet(INSTRUMENTS, sym);
-    const ticker = instrument
-      ? (safeGet(window.tickers, instrument) || safeGet(window._appTickers, instrument))
-      : null;
-    if (ticker) {
-      const p = parseFloat(ticker.last ?? ticker.price ?? ticker.close);
+  // ── Spot price: Pyth ONLY ────────────────────────────────────
+  // Never Kalshi, never exchange averages. Kalshi quotes are market odds,
+  // not spot; mixing them into the spot moves every bucket and the HERE
+  // marker off the true price. If Pyth has no reading, return null and let
+  // the card show pending — a stale/wrong spot is worse than none.
+  function readPythPrice(sym) {
+    try {
+      const raw = window.PythClient?.getPrice?.(sym);
+      const p = (raw != null && typeof raw === 'object')
+        ? parseFloat(raw.price ?? raw.priceData ?? raw.value)
+        : parseFloat(raw);
       if (Number.isFinite(p) && p > 0) return p;
-    }
-
-    const wsProviders = ['BINANCE', 'COINBASE', 'KRAKEN', 'BYBIT'];
-    const wsQuotes = wsProviders
-      .map((provider) => window.ExchangeWS?.getTicker?.(provider, sym, 120_000)?.price)
-      .filter((p) => Number.isFinite(p) && p > 0);
-    if (wsQuotes.length) {
-      return wsQuotes.reduce((sum, p) => sum + p, 0) / wsQuotes.length;
-    }
-
-    const pred = safeGet(window._predictions, sym)?.price;
-    if (pred && Number.isFinite(+pred) && +pred > 0) return +pred;
-
+    } catch (_) {}
+    try {
+      const all = window.PythClient?.getPrices?.();
+      const raw = all ? all[sym] : null;
+      const p = (raw != null && typeof raw === 'object')
+        ? parseFloat(raw.price ?? raw.priceData ?? raw.value)
+        : parseFloat(raw);
+      if (Number.isFinite(p) && p > 0) return p;
+    } catch (_) {}
     return null;
   }
 
-  // ── Live price fetcher ─────────────────────────────────────────
+  function readLivePrice(sym) {
+    return readPythPrice(sym);
+  }
+
+  // ── Live price fetcher: Pyth only, no exchange REST ─────────────
   async function fetchPrice(sym) {
-    const cached = readLivePrice(sym);
-    if (cached !== null) return cached;
-
-    const cbProd = safeGet(CB_PRODUCTS, sym);
-    if (cbProd) {
-      try {
-        const d = await apiFetch(`${COINBASE_EXCH_BASE}/products/${cbProd}/ticker`, 8000);
-        if (d?.price) {
-          const p = parseFloat(d.price);
-          if (Number.isFinite(p) && p > 0) return p;
-        }
-      } catch (e) { console.warn(`[HR] Coinbase exchange ticker failed for ${sym}:`, e.message); }
-    }
-
-    const kt = safeGet(KRAKEN_TICKERS, sym);
-    if (kt) {
-      try {
-        const d = await apiFetch(`${KRAKEN_BASE}/Ticker?pair=${kt}`, 8000);
-        const c = safeGet(d?.result, kt)?.c;
-        if (c && Array.isArray(c)) {
-          const p = parseFloat(c.at(0));
-          if (Number.isFinite(p) && p > 0) return p;
-        }
-      } catch (e) { console.warn(`[HR] Kraken price fetch failed for ${sym}:`, e.message); }
-    }
-
-    return readLivePrice(sym);
+    const p = readLivePrice(sym);
+    if (p === null) console.warn(`[HR] no Pyth spot for ${sym} — card shows pending`);
+    return p;
   }
 
   // ── Build range list for a coin ────────────────────────────────
