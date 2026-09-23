@@ -97,7 +97,7 @@
           <option value="lookahead-15m">Look Ahead (15m)</option>
           <option value="anytime">Look Ahead (Anytime)</option>
           <option value="mispricings">Contract Mispricings</option>
-          <option value="jdwalka">jdwalka (Live Agent)</option>
+          <option value="jdwalkaz">jdwalkaz (Live Agent)</option>
         </select>
       </div>
       <div class="ad-selects">
@@ -226,7 +226,7 @@
         <div style="display:flex;gap:4px">
           <textarea id="adCustomPrompt" placeholder="Ask ASI1 anything with live market context..." rows="2" style="flex:1;background:#06080a;color:#e6e8eb;border:1px solid #1f2a38;border-radius:6px;padding:6px;font-size:11px;resize:none;outline:none;font-family:inherit"></textarea>
           <button id="adSendPrompt" type="button" style="background:#00d4ff;color:#06080a;font-weight:700;border:0;border-radius:6px;padding:0 10px;font-size:11px;cursor:pointer">Send</button>
-          <button id="adJdwalkaToggle" type="button" title="Route query to local jdwalka agent (port 8002)" style="background:#111318;border:1px solid #2a2f38;color:#8b929a;font-weight:700;border-radius:6px;padding:0 8px;font-size:11px;cursor:pointer">jdwalka</button>
+          <button id="adJdwalkazToggle" type="button" title="Route query to local jdwalkaz agent (port 8002)" style="background:#111318;border:1px solid #2a2f38;color:#8b929a;font-weight:700;border-radius:6px;padding:0 8px;font-size:11px;cursor:pointer">jdwalkaz</button>
           <button id="adResetMemory" type="button" title="Clear conversation memory and start a new session" style="background:#1c2530;color:#ff8a80;font-weight:700;border:1px solid #ff5252;border-radius:6px;padding:0 8px;font-size:11px;cursor:pointer">Reset</button>
         </div>
         <div id="adCustomAnswer" style="display:none;background:#06080a;border:1px solid #1f2a38;border-radius:6px;padding:8px;font-size:11px;line-height:1.45;color:#e6e8eb;max-height:160px;overflow-y:auto"></div>
@@ -921,7 +921,7 @@
     btn.textContent = 'Asking…';
     try {
       const horizonNow = document.getElementById('adHorizon')?.value || '15m';
-      if (horizonNow === 'jdwalka') {
+      if (horizonNow === 'jdwalkaz') {
         const coinNow = document.getElementById('adCoin')?.value || 'BTC';
         const askedEl = document.getElementById('adAskedAt');
         if (askedEl) askedEl.textContent = new Date().toLocaleTimeString();
@@ -936,9 +936,9 @@
         const t0 = Date.now();
         const res = await invoke('truffleQuery', { query, wallStats: wallSnap, focus: coinNow, channel: 'truffle-horizon' });
         const content = res?.ok
-          ? (res.content || 'No response from jdwalka.')
-          : `jdwalka error: ${res?.error || 'unknown — is the agent running on port 8002?'}`;
-        const jdwalkaContract = {
+          ? (res.content || 'No response from jdwalkaz.')
+          : `jdwalkaz error: ${res?.error || 'unknown — is the agent running on port 8002?'}`;
+        const jdwalkazContract = {
           call: '—',
           action: 'HOLD_FLAT',
           confidence: null,
@@ -949,10 +949,10 @@
           invalidation: '',
           notes: content,
           warnings: [],
-          _meta: { model: 'jdwalka', account: 'jdwalka-live-agent' },
+          _meta: { model: 'jdwalkaz', account: 'jdwalkaz-live-agent' },
         };
-        paintContract(jdwalkaContract, {});
-        window.dispatchEvent(new CustomEvent('asi1:desk', { detail: { contract: jdwalkaContract } }));
+        paintContract(jdwalkazContract, {});
+        window.dispatchEvent(new CustomEvent('asi1:desk', { detail: { contract: jdwalkazContract } }));
         return;
       }
 
@@ -1028,40 +1028,40 @@
     }
   }
 
-  let jdwalkaActive = false;
-  let jdwalkaAvailable = false;
+  let jdwalkazActive = false;
+  let jdwalkazAvailable = false;
 
-  async function refreshJdwalkaAvailability() {
+  async function refreshJdwalkazAvailability() {
     try {
       const ctrl = new AbortController();
       const timer = setTimeout(() => ctrl.abort(new Error('probe-timeout')), 1500);
       const res = await fetch('http://127.0.0.1:8002/health', { signal: ctrl.signal, cache: 'no-store' });
-      jdwalkaAvailable = res.ok;
+      jdwalkazAvailable = res.ok;
     } catch (_) {
-      jdwalkaAvailable = false;
+      jdwalkazAvailable = false;
     }
-    const btn = document.getElementById('adJdwalkaToggle');
+    const btn = document.getElementById('adJdwalkazToggle');
     if (btn) {
-      if (!jdwalkaAvailable) {
-        btn.title = 'jdwalka offline — no service on 127.0.0.1:8002';
+      if (!jdwalkazAvailable) {
+        btn.title = 'jdwalkaz offline — no service on 127.0.0.1:8002';
         btn.style.borderColor = '#ff5252';
       } else {
-        btn.title = 'Route query to local jdwalka agent (port 8002)';
-        btn.style.borderColor = jdwalkaActive ? '#00d4ff' : '#2a2f38';
+        btn.title = 'Route query to local jdwalkaz agent (port 8002)';
+        btn.style.borderColor = jdwalkazActive ? '#00d4ff' : '#2a2f38';
       }
     }
   }
 
-  async function askJdwalka(query) {
+  async function askJdwalkaz(query) {
     const r = await fetch('http://127.0.0.1:8002/query', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ query }),
     });
-    if (!r.ok) throw new Error('jdwalka agent HTTP ' + r.status);
+    if (!r.ok) throw new Error('jdwalkaz agent HTTP ' + r.status);
     const data = await r.json();
     if (data && data.ok) return data.content;
-    throw new Error('jdwalka agent error: ' + (data?.error || 'unknown'));
+    throw new Error('jdwalkaz agent error: ' + (data?.error || 'unknown'));
   }
 
   async function sendCustomPrompt() {
@@ -1106,27 +1106,27 @@
           }
         }
       }
-      if (jdwalkaActive) {
-        if (!jdwalkaAvailable) {
+      if (jdwalkazActive) {
+        if (!jdwalkazAvailable) {
           if (answerEl) {
-            answerEl.textContent = 'jdwalka offline — start the agent on 127.0.0.1:8002, then retry. This prompt was not sent to ASI1.';
+            answerEl.textContent = 'jdwalkaz offline — start the agent on 127.0.0.1:8002, then retry. This prompt was not sent to ASI1.';
           }
           return;
         }
         try {
-          const jdwalkaAnswer = await askJdwalka(query);
+          const jdwalkazAnswer = await askJdwalkaz(query);
           if (answerEl) {
             answerEl.textContent = '';
             const pre = document.createElement('pre');
             pre.style.whiteSpace = 'pre-wrap';
             pre.style.fontFamily = 'inherit';
-            pre.textContent = jdwalkaAnswer;
+            pre.textContent = jdwalkazAnswer;
             answerEl.appendChild(pre);
           }
           return;
         } catch (err) {
           if (answerEl) {
-            answerEl.textContent = 'jdwalka unavailable — falling back to ASI1.';
+            answerEl.textContent = 'jdwalkaz unavailable — falling back to ASI1.';
           }
         }
       }
@@ -1231,18 +1231,18 @@
   document.getElementById('adMin')?.addEventListener('click', () => setMinimized(!minimized));
   document.getElementById('adAsk')?.addEventListener('click', ask);
   document.getElementById('adSendPrompt')?.addEventListener('click', sendCustomPrompt);
-  const jdwalkaBtn = document.getElementById('adJdwalkaToggle');
-  if (jdwalkaBtn) {
-    jdwalkaBtn.addEventListener('click', () => {
-      jdwalkaActive = !jdwalkaActive;
-      jdwalkaBtn.style.background = jdwalkaActive ? '#00d4ff' : '#111318';
-      jdwalkaBtn.style.color = jdwalkaActive ? '#06080a' : '#8b929a';
-      jdwalkaBtn.style.border = jdwalkaActive ? '1px solid #00d4ff' : '1px solid #2a2f38';
-      jdwalkaBtn.textContent = jdwalkaActive ? 'jdwalka ON' : 'jdwalka';
+  const jdwalkazBtn = document.getElementById('adJdwalkazToggle');
+  if (jdwalkazBtn) {
+    jdwalkazBtn.addEventListener('click', () => {
+      jdwalkazActive = !jdwalkazActive;
+      jdwalkazBtn.style.background = jdwalkazActive ? '#00d4ff' : '#111318';
+      jdwalkazBtn.style.color = jdwalkazActive ? '#06080a' : '#8b929a';
+      jdwalkazBtn.style.border = jdwalkazActive ? '1px solid #00d4ff' : '1px solid #2a2f38';
+      jdwalkazBtn.textContent = jdwalkazActive ? 'jdwalkaz ON' : 'jdwalkaz';
     });
   }
-  setInterval(refreshJdwalkaAvailability, 5000);
-  void refreshJdwalkaAvailability();
+  setInterval(refreshJdwalkazAvailability, 5000);
+  void refreshJdwalkazAvailability();
   document.getElementById('adResetMemory')?.addEventListener('click', async () => {
     try {
       let sessionId = null;
