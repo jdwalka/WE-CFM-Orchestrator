@@ -335,7 +335,42 @@
         }
       }
       _modelStrikes = { BTC: { ts: now, byKey } };
+      // Engine predicted range + remaining-window probabilities for
+      // spot-centered synthetic buckets. strike_probs only covers Kalshi's
+      // listed bands, so synthetic rows would otherwise show no model odds.
+      try {
+        const rp = doc.probabilities_remaining || {};
+        const rlo = Number(doc.range && doc.range.lower);
+        const rhi = Number(doc.range && doc.range.upper);
+        if (Number.isFinite(rlo) && Number.isFinite(rhi) && rhi > rlo) {
+          _modelStrikes.BTC.range = {
+            lower: rlo, upper: rhi,
+            inRange: Number.isFinite(rp.in_range) ? rp.in_range : null,
+            aboveUpper: Number.isFinite(rp.above_upper) ? rp.above_upper : null,
+            belowLower: Number.isFinite(rp.below_lower) ? rp.below_lower : null,
+          };
+        }
+      } catch (_) {}
     } catch (e) { console.warn('[HR] model strikes unavailable:', e.message); }
+  }
+  // Model odds for spot-centered synthetic buckets: distribute the
+  // engine's remaining-window region probabilities (in_range / above_upper
+  // / below_lower) across the bucket by overlap with the predicted range.
+  // Band-key lookup (modelTouchPct) only covers Kalshi's listed strikes.
+  function modelRangePct(sym, low, high) {
+    const entry = _modelStrikes[sym];
+    const rg = entry && entry.range;
+    if (!rg || !Number.isFinite(rg.lower) || !Number.isFinite(rg.upper) || rg.upper <= rg.lower) return null;
+    const lo = Number(low), hi = Number(high);
+    if (!Number.isFinite(lo) || !Number.isFinite(hi) || hi <= lo) return null;
+    const w = hi - lo;
+    const overlap = (a, b) => Math.max(0, Math.min(hi, b) - Math.max(lo, a)) / w;
+    let p = 0, covered = false;
+    if (rg.inRange != null) { p += overlap(rg.lower, rg.upper) * rg.inRange; covered = true; }
+    if (rg.aboveUpper != null) { p += overlap(rg.upper, Infinity) * rg.aboveUpper; covered = true; }
+    if (rg.belowLower != null) { p += overlap(-Infinity, rg.lower) * rg.belowLower; covered = true; }
+    if (!covered) return null;
+    return Math.round(Math.max(0, Math.min(1, p)) * 100);
   }
   function modelTouchPct(sym, low, high) {
     const entry = _modelStrikes[sym];
@@ -606,7 +641,7 @@
           const probPctStr = fmtPct(r.prob);
           // Same Model column as live rows: engine touch for this band,
           // Kalshi-independent. Null when uncovered/stale.
-          const modelPct = modelTouchPct(sym, r.low, r.high);
+          const modelPct = modelTouchPct(sym, r.low, r.high) ?? modelRangePct(sym, r.low, r.high);
           const modelStr = modelPct !== null ? `${modelPct}%` : '—';
           return `
             <div class="hr-row${isCurrent ? ' hr-row--current' : ''}">

@@ -254,14 +254,23 @@ async function fetchLadder(symbol) {
 
   bands.sort((a, b) => a.low - b.low);
 
+  // Single-window guard: Kalshi keeps expired windows listed as "open" for
+  // hours — mixing them duplicates strikes on the panel (e.g. XRP showing
+  // two $1.48 rows from different windows). Keep only the nearest window
+  // that hasn't closed yet; fall back to the latest window if all expired.
+  const closes = [...new Set(bands.map((b) => b.close_time))].sort();
+  const liveClose =
+    closes.find((ct) => Date.parse(ct) > Date.now() - 60_000) || closes[closes.length - 1];
+  const windowBands = liveClose ? bands.filter((b) => b.close_time === liveClose) : bands;
+
   return {
     status:     "ok",
     source:     "kalshi-ladder-worker",
     fetched_at: new Date().toISOString(),
-    band_count: bands.length,
+    band_count: windowBands.length,
     symbol,
     series,
-    bands,
+    bands:      windowBands,
   };
 }
 
