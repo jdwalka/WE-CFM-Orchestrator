@@ -502,6 +502,18 @@ contextBridge.exposeInMainWorld('electron', {
         }
       });
     }
+  },
+  poker: {
+    onAnalysisUpdate: (cb) => {
+      const handler = (_e, data) => cb(data);
+      ipcRenderer.on('hud:update-analysis', handler);
+      return () => ipcRenderer.removeListener('hud:update-analysis', handler);
+    },
+    onProcessingStart: (cb) => {
+      const handler = (_e, data) => cb(data);
+      ipcRenderer.on('hud:processing-start', handler);
+      return () => ipcRenderer.removeListener('hud:processing-start', handler);
+    },
   }
 });
 

@@ -41,7 +41,7 @@
     XRP: '#00aae4', DOGE: '#c2a633', BNB: '#f3ba2f', HYPE: '#50e3c2',
   };
   const VISIBLE_BUCKETS = 11;   // 5 above + current + 5 below (synthetic fallback only)
-  const VISIBLE_PTB_ROWS = 5;   // real-ladder mode: single-PTB rows near spot
+  const VISIBLE_PTB_ROWS = 8;   // real-ladder mode: single-PTB rows near spot
   const KALSHI_LADDER_WORKER = 'https://kalshi-ladder-worker.gitgoin87.workers.dev';
   // Coins Kalshi runs an hourly "between" range series for — kept in sync
   // with kalshi-ladder-worker's SERIES_BY_SYMBOL. HYPE has no such series,
@@ -175,59 +175,39 @@
     return result;
   }
 
-  function readLivePrice(sym) {
-    const instrument = safeGet(INSTRUMENTS, sym);
-    const ticker = instrument
-      ? (safeGet(window.tickers, instrument) || safeGet(window._appTickers, instrument))
-      : null;
-    if (ticker) {
-      const p = parseFloat(ticker.last ?? ticker.price ?? ticker.close);
+  // ── Spot price: Pyth ONLY ────────────────────────────────────
+  // Never Kalshi, never exchange averages. Kalshi quotes are market odds,
+  // not spot; mixing them into the spot moves every bucket and the HERE
+  // marker off the true price. If Pyth has no reading, return null and let
+  // the card show pending — a stale/wrong spot is worse than none.
+  function readPythPrice(sym) {
+    try {
+      const raw = window.PythClient?.getPrice?.(sym);
+      const p = (raw != null && typeof raw === 'object')
+        ? parseFloat(raw.price ?? raw.priceData ?? raw.value)
+        : parseFloat(raw);
       if (Number.isFinite(p) && p > 0) return p;
-    }
-
-    const wsProviders = ['BINANCE', 'COINBASE', 'KRAKEN', 'BYBIT'];
-    const wsQuotes = wsProviders
-      .map((provider) => window.ExchangeWS?.getTicker?.(provider, sym, 120_000)?.price)
-      .filter((p) => Number.isFinite(p) && p > 0);
-    if (wsQuotes.length) {
-      return wsQuotes.reduce((sum, p) => sum + p, 0) / wsQuotes.length;
-    }
-
-    const pred = safeGet(window._predictions, sym)?.price;
-    if (pred && Number.isFinite(+pred) && +pred > 0) return +pred;
-
+    } catch (_) {}
+    try {
+      const all = window.PythClient?.getPrices?.();
+      const raw = all ? all[sym] : null;
+      const p = (raw != null && typeof raw === 'object')
+        ? parseFloat(raw.price ?? raw.priceData ?? raw.value)
+        : parseFloat(raw);
+      if (Number.isFinite(p) && p > 0) return p;
+    } catch (_) {}
     return null;
   }
 
-  // ── Live price fetcher ─────────────────────────────────────────
+  function readLivePrice(sym) {
+    return readPythPrice(sym);
+  }
+
+  // ── Live price fetcher: Pyth only, no exchange REST ─────────────
   async function fetchPrice(sym) {
-    const cached = readLivePrice(sym);
-    if (cached !== null) return cached;
-
-    const cbProd = safeGet(CB_PRODUCTS, sym);
-    if (cbProd) {
-      try {
-        const d = await apiFetch(`${COINBASE_EXCH_BASE}/products/${cbProd}/ticker`, 8000);
-        if (d?.price) {
-          const p = parseFloat(d.price);
-          if (Number.isFinite(p) && p > 0) return p;
-        }
-      } catch (e) { console.warn(`[HR] Coinbase exchange ticker failed for ${sym}:`, e.message); }
-    }
-
-    const kt = safeGet(KRAKEN_TICKERS, sym);
-    if (kt) {
-      try {
-        const d = await apiFetch(`${KRAKEN_BASE}/Ticker?pair=${kt}`, 8000);
-        const c = safeGet(d?.result, kt)?.c;
-        if (c && Array.isArray(c)) {
-          const p = parseFloat(c.at(0));
-          if (Number.isFinite(p) && p > 0) return p;
-        }
-      } catch (e) { console.warn(`[HR] Kraken price fetch failed for ${sym}:`, e.message); }
-    }
-
-    return readLivePrice(sym);
+    const p = readLivePrice(sym);
+    if (p === null) console.warn(`[HR] no Pyth spot for ${sym} — card shows pending`);
+    return p;
   }
 
   // ── Build range list for a coin ────────────────────────────────
@@ -300,8 +280,97 @@
     }
   }
 
-  async function loadCoin(sym) {
-    const price = await fetchPrice(sym);
+  // ── Model strike probabilities (engine artifact, Kalshi-independent) ──
+  // prediction_engine.py writes data/engine_latest.json every ~5 min.
+  // Indexed by "low-high" → p_touch (model's predicted touch probability
+  // for the hourly close window). Only BTC until the engine covers more
+  // coins; everything else stays Kalshi-only.
+  const MODEL_STRIKE_TTL_MS = 600_000; // artifact older than 10m = stale
+  const MODEL_REFRESH_MS = 60_000;     // re-read at most once a minute
+  let _modelStrikes = {}; // sym → { ts, byKey: Map("low-high" → p_touch) }
+  let _modelFetchTs = 0;
+  async function loadModelStrikes() {
+    const now = Date.now();
+    if (now - _modelFetchTs < MODEL_REFRESH_MS && Object.keys(_modelStrikes).length) return;
+    _modelFetchTs = now;
+    try {
+      // Prefer the absolute-path channel (works regardless of launch dir);
+      // fall back to the workspace-relative read.
+      let res = null;
+      if (window.electron && typeof window.electron.invoke === 'function') {
+        try { res = await window.electron.invoke('data:engineLatest'); } catch (_) { res = null; }
+      }
+      if ((!res || !res.ok) && window.electron && typeof window.electron.readFile === 'function') {
+        const content = await window.electron.readFile('data/engine_latest.json');
+        res = content ? { ok: true, content } : null;
+      }
+      if (!res || !res.ok || !res.content) return;
+      const doc = JSON.parse(typeof res.content === 'string' ? res.content : res.content);
+      const ageMs = now - Date.parse(doc.timestamp_utc || 0);
+      if (!Number.isFinite(ageMs) || ageMs > MODEL_STRIKE_TTL_MS) { _modelStrikes = {}; return; }
+      const byKey = new Map();
+      for (const s of (doc.strike_probs || [])) {
+        if (s && Number.isFinite(s.low) && Number.isFinite(s.high) && Number.isFinite(s.p_touch)) {
+          byKey.set(`${s.low}-${s.high}`, s.p_touch);
+        }
+      }
+      _modelStrikes = { BTC: { ts: now, byKey } };
+      // Engine predicted range + remaining-window probabilities for
+      // spot-centered synthetic buckets. strike_probs only covers Kalshi's
+      // listed bands, so synthetic rows would otherwise show no model odds.
+      try {
+        const rp = doc.probabilities_remaining || {};
+        const rlo = Number(doc.range && doc.range.lower);
+        const rhi = Number(doc.range && doc.range.upper);
+        if (Number.isFinite(rlo) && Number.isFinite(rhi) && rhi > rlo) {
+          _modelStrikes.BTC.range = {
+            lower: rlo, upper: rhi,
+            inRange: Number.isFinite(rp.in_range) ? rp.in_range : null,
+            aboveUpper: Number.isFinite(rp.above_upper) ? rp.above_upper : null,
+            belowLower: Number.isFinite(rp.below_lower) ? rp.below_lower : null,
+          };
+        }
+      } catch (_) {}
+    } catch (e) { console.warn('[HR] model strikes unavailable:', e.message); }
+  }
+  // Model odds for spot-centered synthetic buckets: distribute the
+  // engine's remaining-window region probabilities (in_range / above_upper
+  // / below_lower) across the bucket by overlap with the predicted range.
+  // Band-key lookup (modelTouchPct) only covers Kalshi's listed strikes.
+  function modelRangePct(sym, low, high) {
+    const entry = _modelStrikes[sym];
+    const rg = entry && entry.range;
+    if (!rg || !Number.isFinite(rg.lower) || !Number.isFinite(rg.upper) || rg.upper <= rg.lower) return null;
+    const lo = Number(low), hi = Number(high);
+    if (!Number.isFinite(lo) || !Number.isFinite(hi) || hi <= lo) return null;
+    const w = hi - lo;
+    const overlap = (a, b) => Math.max(0, Math.min(hi, b) - Math.max(lo, a)) / w;
+    let p = 0, covered = false;
+    if (rg.inRange != null) { p += overlap(rg.lower, rg.upper) * rg.inRange; covered = true; }
+    if (rg.aboveUpper != null) { p += overlap(rg.upper, Infinity) * rg.aboveUpper; covered = true; }
+    if (rg.belowLower != null) { p += overlap(-Infinity, rg.lower) * rg.belowLower; covered = true; }
+    if (!covered) return null;
+    return Math.round(Math.max(0, Math.min(1, p)) * 100);
+  }
+  function modelTouchPct(sym, low, high) {
+    const entry = _modelStrikes[sym];
+    if (!entry) return null;
+    const exact = entry.byKey.get(`${low}-${high}`);
+    if (Number.isFinite(exact)) return Math.round(exact * 100);
+    // Hour-roll tolerance: panel may still show last hour's cached bands
+    // while the artifact already rolled — nearest band within $500.
+    let best = null, bestD = 500;
+    for (const [key, v] of entry.byKey) {
+      const sep = key.indexOf('-');
+      const klo = Number(key.slice(0, sep));
+      if (!Number.isFinite(klo)) continue;
+      const d = Math.abs(klo - low);
+      if (d < bestD) { bestD = d; best = v; }
+    }
+    return Number.isFinite(best) ? Math.round(best * 100) : null;
+  }
+
+  async function loadCoin(sym) {    const price = await fetchPrice(sym);
 
     if (price !== null && Number.isFinite(price) && sym) {
       Object.defineProperty(_prices, sym, { value: price, writable: true, enumerable: true, configurable: true });
@@ -416,7 +485,15 @@
     let body;
     let topBuckets = [];
     const realBands = safeGet(_realBands, sym) || [];
-    const isLive = realBands.length > 0;
+    // Off-grid guard: when spot has moved past the end of Kalshi's listed
+    // grid (e.g. a $2k dump below the lowest bracket), every real row is
+    // untradeable noise. Fall back to spot-centered synthetic rows and say
+    // so, instead of rendering a ladder thousands away from the price.
+    const gridLo = realBands.length ? Math.min(...realBands.map(b => Number(b.low))) : null;
+    const gridHi = realBands.length ? Math.max(...realBands.map(b => Number(b.high ?? b.low))) : null;
+    const offGrid = price != null && Number.isFinite(gridLo) && Number.isFinite(gridHi) &&
+      (price < gridLo || price > gridHi);
+    const isLive = realBands.length > 0 && !offGrid;
 
     if (isLive) {
       // ── Real Kalshi hourly ladder: single-PTB rows, bid-wall saturation ──
@@ -479,10 +556,21 @@
         }
         const probStr = probPct !== null ? `${probPct}%` : '—';
 
+        // MODEL probability: engine's predicted touch for this band
+        // (calibrated, Kalshi-independent). Residual = market − model:
+        // big gaps are the mispricings. Null when the engine artifact is
+        // missing/stale or doesn't cover this coin.
+        const modelPct = modelTouchPct(sym, b.low, b.high);
+        const modelStr = modelPct !== null ? `${modelPct}%` : '—';
+        const resid = (probPct !== null && modelPct !== null) ? probPct - modelPct : null;
+        const residStr = resid !== null ? `${resid > 0 ? '+' : ''}${resid}` : '—';
+        const hot = resid !== null && Math.abs(resid) >= 10;
+
         return `
           <div class="hr-ptb-row${isCurrent ? ' hr-ptb-row--current' : ''}" style="background:${escapeHTML(wallColor)}22;border-left-color:${escapeHTML(wallColor)}">
             <span class="hr-ptb-price">${escapeHTML(ptbStr)}</span>
             <span class="hr-ptb-prob"${isCurrent ? ` style="color:${escapeHTML(color)}"` : ''}>${escapeHTML(probStr)}</span>
+            <span class="hr-ptb-model" title="Model touch probability (engine)${resid !== null ? ` — market-model residual ${residStr}¢` : ''}"${hot ? ' style="font-weight:700;text-decoration:underline"' : ''}>${escapeHTML(modelStr)}</span>
             <span class="hr-ptb-odds">${escapeHTML(bidStr)} / ${escapeHTML(askStr)}</span>
             ${arrow}
             ${isCurrent ? `<span class="hr-ptb-here" style="color:${escapeHTML(color)}">● HERE</span>` : ''}
@@ -498,6 +586,7 @@
           <div class="hr-ranges-header">
             <span class="hr-ranges-label">PTB · live Kalshi</span>
             <span class="hr-ranges-label">Prob (YES)</span>
+            <span class="hr-ranges-label" title="Model touch probability — engine, Kalshi-independent">Model</span>
             <span class="hr-ranges-label">Bid / Ask</span>
           </div>
           ${rows.join('')}
@@ -525,15 +614,20 @@
         }).sort((a, b) => b.likelihood - a.likelihood);
         const sumL = ranked.reduce((s, b) => s + b.likelihood, 0) || 1;
         ranked.forEach(b => { b.pctLikely = Math.round((b.likelihood / sumL) * 100); });
-        topBuckets = ranked.slice(0, 5);
+        topBuckets = ranked.slice(0, 8);
 
         const rows = visible.map(r => {
           const isCurrent = price !== null && price >= r.low && price <= r.high;
           const probPctStr = fmtPct(r.prob);
+          // Same Model column as live rows: engine touch for this band,
+          // Kalshi-independent. Null when uncovered/stale.
+          const modelPct = modelTouchPct(sym, r.low, r.high) ?? modelRangePct(sym, r.low, r.high);
+          const modelStr = modelPct !== null ? `${modelPct}%` : '—';
           return `
             <div class="hr-row${isCurrent ? ' hr-row--current' : ''}">
               <span class="hr-row-range">${escapeHTML(fmtPrice(r.low, r.high))}</span>
               <span class="hr-row-prob" style="${isCurrent ? `color:${escapeHTML(color)}` : ''}">${escapeHTML(probPctStr)}</span>
+              <span class="hr-ptb-model" title="Model touch probability (engine)">${escapeHTML(modelStr)}</span>
               ${isCurrent ? `<span class="hr-ptb-here" style="color:${escapeHTML(color)}">● HERE</span>` : ''}
             </div>`;
         });
@@ -544,10 +638,11 @@
 
         body = `
           <div class="hr-ranges-scroll">
-            <div class="hr-ranges-header">
-              <span class="hr-ranges-label">Synthetic estimate</span>
-              <span class="hr-ranges-label">Prob (YES)</span>
-            </div>
+          <div class="hr-ranges-header">
+            <span class="hr-ranges-label">Synthetic estimate${offGrid ? ' · spot off Kalshi grid' : ''}</span>
+            <span class="hr-ranges-label">Prob (YES)</span>
+            <span class="hr-ranges-label" title="Model touch probability — engine, Kalshi-independent">Model</span>
+          </div>
             ${rows.join('')}
           </div>
           ${closeLabel}`;
@@ -912,9 +1007,10 @@
 
   // ── Load all coins (parallelized per coin) ─────────────────────
   async function loadAll() {
-    await Promise.allSettled(
-      COINS.flatMap(sym => [loadCoin(sym), loadRealLadder(sym)])
-    );
+    await Promise.allSettled([
+      loadModelStrikes(),
+      ...COINS.flatMap(sym => [loadCoin(sym), loadRealLadder(sym)]),
+    ]);
   }
 
   function nextPollMs() {

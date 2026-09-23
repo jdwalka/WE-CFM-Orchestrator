@@ -387,7 +387,7 @@ async def cascade_endpoint(
         # Produce signal to Redpanda if state change / action warranted
         if kafka_producer and packet.verdict in ("FLUSH_EXHAUSTED_ABSORPTION_DETECTED", "VOID_SLIP_ACTIVE"):
             try:
-                kafka_producer.send("truffle.signals", key=sym, value={
+                kafka_producer.send("truffle.signals", key=sym.encode(), value={
                     "symbol": sym,
                     "signal_type": "cascade_exhaustion",
                     "verdict": packet.verdict,
@@ -455,7 +455,7 @@ async def chat_endpoint(
         if req.params and req.params.signals and kafka_producer:
             for sym, sig in req.params.signals.items():
                 try:
-                    kafka_producer.send("truffle.signals", key=sym.upper(), value={"symbol": sym.upper(), "data": sig, "ts": int(time.time())})
+                    kafka_producer.send("truffle.signals", key=sym.upper().encode(), value={"symbol": sym.upper(), "data": sig, "ts": int(time.time())})
                 except Exception as e:
                     print(f"[TruffleBridge] Error publishing signal from chat: {e}")
 
@@ -559,17 +559,19 @@ async def submit_proxy(request: Request):
 def _run_kafka_tick_consumer():
     """Background consumer subscribing to wecrypto.prices.ticks and updating Redis."""
     try:
-        from kafka import KafkaConsumer
+        from kafka import KafkaConsumer, TopicPartition
+        # No consumer groups on the dev bridge (stub has no coordinator):
+        # pin partition 0 directly and tail it.
         consumer = KafkaConsumer(
-            "wecrypto.prices.ticks",
             bootstrap_servers=REDPANDA_BROKERS.split(","),
             auto_offset_reset="latest",
-            enable_auto_commit=True,
-            group_id="truffle-bridge-roll",
+            enable_auto_commit=False,
             value_deserializer=lambda m: json.loads(m.decode("utf-8")),
             consumer_timeout_ms=2000,
         )
-        print(f"[TruffleBridge] Subscribed to wecrypto.prices.ticks on {REDPANDA_BROKERS}")
+        consumer.assign([TopicPartition("wecrypto.prices.ticks", 0)])
+        consumer.seek_to_end()
+        print(f"[TruffleBridge] Tailing wecrypto.prices.ticks p0 on {REDPANDA_BROKERS}")
         while True:
             for message in consumer:
                 try:
@@ -594,7 +596,7 @@ def _run_kafka_tick_consumer():
 
                     # 3. Roll to 1m topic
                     if kafka_producer:
-                        kafka_producer.send("wecrypto.prices.1m", key=symbol, value=candle)
+                        kafka_producer.send("wecrypto.prices.1m", key=symbol.encode(), value=candle)
                 except Exception as ex:
                     print(f"[TruffleBridge] Consumer tick processing error: {ex}")
             time.sleep(0.1)

@@ -17,12 +17,12 @@ _HEADERS = {"User-Agent": "wecryp-truffle/1.0 (+https://agentverse.ai)"}
 _TAIL_EVENT_NORMAL_P = 0.20
 DISTRIBUTION_FALLBACK_MIN_SAMPLE = 500
 DISTRIBUTION_FALLBACK_BRIER_IMPROVEMENT = 0.05
-PROBABILITY_CORRECTION_PRIOR_STRENGTH = 200.0
+PROBABILITY_CORRECTION_PRIOR_STRENGTH = 400.0
 PROBABILITY_CORRECTION_MIN_SAMPLES = 12
 PROBABILITY_CORRECTION_MAX_SHRINK = 0.85
 PROBABILITY_CORRECTION_MAX_FACTOR = 4.0
-PROBABILITY_CORRECTION_MIN_FACTOR = 1.0
-PROBABILITY_CORRECTION_RECENT_WEIGHT = 0.60
+PROBABILITY_CORRECTION_MIN_FACTOR = 1.25
+PROBABILITY_CORRECTION_RECENT_WEIGHT = 0.45
 PROBABILITY_CORRECTION_RECENT_WINDOW = 50
 PROBABILITY_CORRECTION_TRAILING_WINDOW = 200
 PROBABILITY_CORRECTION_REGIME_BREAK_WINDOW = 100
@@ -593,7 +593,7 @@ def _probability_correction(connection: sqlite3.Connection) -> dict:
         "reason": (
             "recent-100 correction after a regime break"
             if regime_break
-            else "60/40 recent-to-trailing window blend with a no-bias prior"
+            else "45/55 recent-to-trailing window blend, prior-anchored floor"
         ),
     }
 

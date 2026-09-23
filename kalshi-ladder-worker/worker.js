@@ -17,7 +17,10 @@
  * case of multiple requests landing on the same warm isolate between KV reads.
  *
  * Routes (all accept ?symbol=BTC|ETH|SOL|XRP|DOGE|BNB, default BTC):
- *   GET /ladder       → band list sorted by low strike
+ *   GET /ladder       → band list sorted by low strike (HOURLY range series)
+ *   GET /updown       → 15-minute binary Up/Down snapshot (single market:
+ *                       floor strike + yes bid/ask + close time). 15m panel
+ *                       cards MUST use this — never /ladder.
  *   GET /health       → worker liveness + cache age
  *   GET /edges        → flat array of [low, high] pairs for LME wiring
  *   GET /signals      → compact per-symbol snapshots for residual consumers
@@ -37,7 +40,23 @@ const SERIES_BY_SYMBOL = {
   BNB: "KXBNB",
 };
 
+// Kalshi's 15-minute Up/Down BINARY series per coin. These markets are a
+// single yes/no contract vs floor_strike — there is no bracket ladder.
+// The 15m panel cards must read /updown: feeding them /ladder (the hourly
+// KX* range series above) shows strikes from a different instrument that
+// can sit ~$1,000+ away from the 15m strike ("a thousand off").
+// HYPE has no Kalshi 15m up/down series as of this writing.
+const UPDOWN_SERIES_BY_SYMBOL = {
+  BTC: "KXBTC15M",
+  ETH: "KXETH15M",
+  SOL: "KXSOL15M",
+  XRP: "KXXRP15M",
+  DOGE: "KXDOGE15M",
+  BNB: "KXBNB15M",
+};
+
 let MEMO = {}; // symbol -> { fetched_ms, payload } — same-isolate fast path only
+let MEMO_UPDOWN = {}; // updown symbol -> { fetched_ms, payload }
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -52,6 +71,148 @@ function minutesToExpiry(closeTime) {
 function resolveSymbol(url) {
   const raw = (url.searchParams.get("symbol") || "BTC").toUpperCase();
   return SERIES_BY_SYMBOL[raw] ? raw : null;
+}
+
+function resolveUpDownSymbol(url) {
+  const raw = (url.searchParams.get("symbol") || "BTC").toUpperCase();
+  return UPDOWN_SERIES_BY_SYMBOL[raw] ? raw : null;
+}
+
+// 15-minute Up/Down binary snapshot. One open market per window: yes/no
+// vs floor_strike. Returns nulls (never throws on thin books) when Kalshi
+// has no bid/ask yet — callers must handle empty quotes.
+async function fetchUpDown(symbol) {
+  const series = UPDOWN_SERIES_BY_SYMBOL[symbol];
+  const kalshiUrl =
+    "https://api.elections.kalshi.com/trade-api/v2/markets" +
+    `?series_ticker=${series}&status=open&limit=10`;
+  const res = await fetch(kalshiUrl, {
+    headers: { Accept: "application/json", "User-Agent": "kalshi-ladder-worker/3.0" },
+  });
+  if (!res.ok) throw new Error(`Kalshi API ${res.status}: ${await res.text()}`);
+  const data = await res.json();
+  // NOTE: Kalshi's per-market `status` reads "active" (not "open") for live
+  // windows even when queried with ?status=open — exclude only finished ones.
+  const markets = (data.markets || []).filter(
+    (m) => m.status !== "closed" && m.status !== "settled"
+  );
+  if (!markets.length) {
+    return {
+      status:        "ok",
+      source:        "kalshi-ladder-worker",
+      fetched_at:    new Date().toISOString(),
+      market_type:   "updown-15m",
+      symbol,
+      series,
+      open:          false,
+      ticker:        null,
+      floor_strike:  null,
+      close_time:    null,
+    };
+  }
+  // Nearest-expiring open window (normally exactly one).
+  markets.sort((a, b) => Date.parse(a.close_time) - Date.parse(b.close_time));
+  const m = markets[0];
+  return {
+    status:            "ok",
+    source:            "kalshi-ladder-worker",
+    fetched_at:        new Date().toISOString(),
+    market_type:       "updown-15m",
+    symbol,
+    series,
+    open:              true,
+    ticker:            m.ticker,
+    event_ticker:      m.event_ticker ?? null,
+    floor_strike:      m.floor_strike ?? null,
+    cap_strike:        m.cap_strike ?? null,
+    yes_bid:           m.yes_bid         ?? m.yes_bid_dollars  ?? null,
+    yes_ask:           m.yes_ask         ?? m.yes_ask_dollars  ?? null,
+    yes_bid_dollars:   m.yes_bid_dollars ?? null,
+    yes_ask_dollars:   m.yes_ask_dollars ?? null,
+    last_price_dollars: m.last_price_dollars ?? null,
+    minutes_to_expiry: minutesToExpiry(m.close_time),
+    close_time:        m.close_time,
+    market_status:     m.status,
+  };
+}
+
+function updownCacheKey(symbol) {
+  return `kalshi-updown:${symbol}`;
+}
+
+function updownCooldownKey(symbol) {
+  return `kalshi-updown-cooldown:${symbol}`;
+}
+
+let LAST_FAILURE_UPDOWN = {};
+
+async function refreshUpDown(symbol, env) {
+  const local = LAST_FAILURE_UPDOWN[symbol];
+  if (local && Date.now() - local.at_ms < FAILURE_COOLDOWN_S * 1000) {
+    return null;
+  }
+  if (env.LADDER_CACHE) {
+    try {
+      const cooling = await env.LADDER_CACHE.get(updownCooldownKey(symbol));
+      if (cooling) return null;
+    } catch (_) { /* KV read failure shouldn't block a live attempt */ }
+  }
+  try {
+    const payload = await fetchUpDown(symbol);
+    MEMO_UPDOWN[symbol] = { fetched_ms: Date.now(), payload };
+    delete LAST_FAILURE_UPDOWN[symbol];
+    if (env.LADDER_CACHE) {
+      await env.LADDER_CACHE.put(updownCacheKey(symbol), JSON.stringify(payload), {
+        expirationTtl: KV_PERSIST_TTL_S,
+      });
+    }
+    return payload;
+  } catch (e) {
+    const message = String((e && e.message) || e);
+    LAST_FAILURE_UPDOWN[symbol] = { at_ms: Date.now(), message };
+    if (env.LADDER_CACHE) {
+      try {
+        await env.LADDER_CACHE.put(updownCooldownKey(symbol), message, { expirationTtl: FAILURE_COOLDOWN_S });
+      } catch (_) { /* best-effort */ }
+    }
+    console.error(`[kalshi-ladder-worker] updown refresh failed for ${symbol}:`, e);
+    return null;
+  }
+}
+
+async function getOrFetchUpDown(symbol, env, ctx) {
+  const memo = MEMO_UPDOWN[symbol];
+  if (memo?.payload && Date.now() - memo.fetched_ms < KV_TTL_S * 1000) {
+    return { ...memo.payload, cache: "memo" };
+  }
+  if (env.LADDER_CACHE) {
+    try {
+      const raw = await env.LADDER_CACHE.get(updownCacheKey(symbol));
+      if (raw) {
+        const payload = JSON.parse(raw);
+        const ageS = (Date.now() - Date.parse(payload.fetched_at)) / 1000;
+        MEMO_UPDOWN[symbol] = { fetched_ms: Date.now(), payload };
+        if (ageS < KV_TTL_S) {
+          return { ...payload, cache: "kv" };
+        }
+        if (ctx) ctx.waitUntil(refreshUpDown(symbol, env));
+        return { ...payload, cache: "kv-stale" };
+      }
+    } catch (e) {
+      console.error(`[kalshi-ladder-worker] KV read failed for updown ${symbol}:`, e);
+    }
+  }
+  try {
+    const payload = await refreshUpDown(symbol, env);
+    if (payload) return { ...payload, cache: "miss" };
+    const reason = LAST_FAILURE_UPDOWN[symbol]?.message || "refresh returned no payload (cooling down)";
+    throw new Error(reason);
+  } catch (e) {
+    if (memo?.payload) {
+      return { ...memo.payload, cache: "stale", error: String(e) };
+    }
+    throw e;
+  }
 }
 
 async function fetchLadder(symbol) {
@@ -93,14 +254,23 @@ async function fetchLadder(symbol) {
 
   bands.sort((a, b) => a.low - b.low);
 
+  // Single-window guard: Kalshi keeps expired windows listed as "open" for
+  // hours — mixing them duplicates strikes on the panel (e.g. XRP showing
+  // two $1.48 rows from different windows). Keep only the nearest window
+  // that hasn't closed yet; fall back to the latest window if all expired.
+  const closes = [...new Set(bands.map((b) => b.close_time))].sort();
+  const liveClose =
+    closes.find((ct) => Date.parse(ct) > Date.now() - 60_000) || closes[closes.length - 1];
+  const windowBands = liveClose ? bands.filter((b) => b.close_time === liveClose) : bands;
+
   return {
     status:     "ok",
     source:     "kalshi-ladder-worker",
     fetched_at: new Date().toISOString(),
-    band_count: bands.length,
+    band_count: windowBands.length,
     symbol,
     series,
-    bands,
+    bands:      windowBands,
   };
 }
 
@@ -190,6 +360,25 @@ export default {
         );
       }
 
+      // ── /updown — 15-minute binary Up/Down snapshot ───────────────────
+      // Single market per window (floor strike + yes bid/ask). This is the
+      // endpoint the 15m panel cards must use. /ladder is the HOURLY range
+      // series — a different instrument.
+      if (url.pathname === "/updown") {
+        const upsym = resolveUpDownSymbol(url);
+        if (!upsym) {
+          return new Response(
+            JSON.stringify({
+              error: "unsupported symbol",
+              supported: Object.keys(UPDOWN_SERIES_BY_SYMBOL),
+            }),
+            { status: 400, headers: CORS }
+          );
+        }
+        const payload = await getOrFetchUpDown(upsym, env, ctx);
+        return new Response(JSON.stringify(payload), { headers: CORS });
+      }
+
       // ── /ladder (default) ──────────────────────────────────────────────────
       if (url.pathname === "/ladder" || url.pathname === "/") {
         const payload = await getOrFetch(symbol, env, ctx);
@@ -197,7 +386,7 @@ export default {
       }
 
       return new Response(
-        JSON.stringify({ error: "not found", routes: ["/ladder", "/edges", "/health", "/signals"] }),
+        JSON.stringify({ error: "not found", routes: ["/ladder", "/updown", "/edges", "/health", "/signals"] }),
         { status: 404, headers: CORS }
       );
     } catch (e) {
@@ -299,6 +488,12 @@ const CRON_STAGGER_MS = 400;
 async function refreshAllSequential(env) {
   for (const sym of Object.keys(SERIES_BY_SYMBOL)) {
     await refreshCache(sym, env);
+    await new Promise((r) => setTimeout(r, CRON_STAGGER_MS));
+  }
+  // Warm the 15m binaries in the same tick, same stagger — one request at
+  // a time, so the cron never bursts Kalshi's per-IP concurrency limit.
+  for (const sym of Object.keys(UPDOWN_SERIES_BY_SYMBOL)) {
+    await refreshUpDown(sym, env);
     await new Promise((r) => setTimeout(r, CRON_STAGGER_MS));
   }
 }

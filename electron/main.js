@@ -3338,6 +3338,16 @@ ipcMain.handle('data:readFile', async (_, filePath) => {
   } catch (e) { return { ok: false, error: e.message }; }
 });
 
+// Engine model-strike artifact: absolute repo path, no CWD dependence.
+// The hourly-ranges panel MODEL column reads this (its own numbers,
+// never Kalshi-derived).
+ipcMain.handle('data:engineLatest', async () => {
+  try {
+    const p = path.join(__dirname, '..', 'data', 'engine_latest.json');
+    return { ok: true, content: await fsp.readFile(p, 'utf8') };
+  } catch (e) { return { ok: false, notFound: true }; }
+});
+
 ipcMain.handle('data:listDir', async (_, dirPath) => {
   if (!isPathSafe(dirPath)) return { ok: false, error: 'Access denied: Path outside workspace' };
   try {
@@ -4113,6 +4123,39 @@ async function runLLMInferencePacket(snapshot = {}) {
     return { success: false, error: 'Invalid snapshot payload' };
   }
 
+  // ── Coherence budget: ASI inference is a periodic coherence check, not a
+  // per-tick feed. Max 5 live calls per 15-minute window across ALL renderer
+  // overlays (predictions, 5m, grok, precontract all funnel through here).
+  // Over budget → degraded carry-forward packet with cooldown so every
+  // caller backs off instead of hammering the quota. Tune via env.
+  const now = Date.now();
+  const windowMs = Number(process.env.LLM_COHERENCE_WINDOW_MS || 900_000);
+  const maxCalls = Number(process.env.LLM_COHERENCE_MAX_CALLS || 5);
+  globalThis.__llmCoherenceMarks = (globalThis.__llmCoherenceMarks || [])
+    .filter((ts) => now - ts < windowMs);
+  if (globalThis.__llmCoherenceMarks.length >= maxCalls) {
+    const oldest = globalThis.__llmCoherenceMarks[0] || now;
+    const remainingMs = Math.max(0, windowMs - (now - oldest));
+    const cooldown = {
+      active: true,
+      remaining_ms: remainingMs,
+      last_reason: `coherence budget: ${maxCalls} calls per ${Math.round(windowMs / 60000)}m window`,
+    };
+    return {
+      success: true,
+      output: {
+        confidence: 0,
+        call: 'HOLD',
+        suggestions: { notes: 'coherence budget exhausted — carrying forward last verdict' },
+        warnings: ['coherence budget exhausted'],
+      },
+      diagnostics: { cooldown, degraded: true },
+      degraded: true,
+      providerStatus: { degraded: true, provider: null, model: null, cooldown },
+    };
+  }
+  globalThis.__llmCoherenceMarks.push(now);
+
   try {
     const output = await LLMSignalAssistant.analyzeSnapshot(snapshot);
     const diagnostics = typeof LLMSignalAssistant.getDiagnostics === 'function'
@@ -4751,6 +4794,20 @@ app.whenReady().then(async () => {
 
   await startProxy();
   startCexFlowMonitor(); // best-effort; never blocks boot
+  // --- Poker HUD: SOCKS5 session + Swedish egress check + hand watcher ---
+  // Best-effort throughout; a dead bridge must never block boot.
+  (async () => {
+    try {
+      const { initProxiedSession, verifySwedishEgress } = require('./proxy-session');
+      const { startHandWatcher } = require('./poker-watcher');
+      await initProxiedSession(Number(process.env.SOCKS_PORT || 1080));
+      await verifySwedishEgress();
+      const dirs = [process.env.POKER_HAND_DIR, 'C:/ACR Poker/handHistory', 'C:\\ACR Poker\\handHistory'].filter(Boolean);
+      startHandWatcher(() => mainWin, dirs);
+    } catch (err) {
+      console.warn('[Main] poker HUD bootstrap skipped:', err.message);
+    }
+  })();
   // --- Orbital Matrix (Redpanda Orchestration + Ingestion & Sync) ---
   (async () => {
     const workspacePath = process.env.WECRYP_ROOT || path.join(__dirname, '..');
