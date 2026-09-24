@@ -1,0 +1,23 @@
+name = "cloudflare-mcp-d1-connector"
+main = "src/index.ts"
+compatibility_date = "2024-09-24"
+
+[[d1_databases]]
+binding = "DB_GOOGLE"
+database_name = "google"
+database_id = "001e31f4-52ad-4514-8d64-1bd7f0ab3e20"
+
+[[d1_databases]]
+binding = "DB_SCALPER"
+database_name = "scalper-calibration"
+database_id = "48536b22-03b3-42dd-92fa-44feab144d84"
+
+[[d1_databases]]
+binding = "DB_OPPONENTS"
+database_name = "opponents"
+database_id = "caae95aa-2359-41c8-ab44-13e4860a1d01"
+
+[[d1_databases]]
+binding = "DB_LEAKSNIPE"
+database_name = "leaksnipe-hands"
+database_id = "9a9ba1db-5e5e-4fd7-9ff4-bcd6e25ddc2e"

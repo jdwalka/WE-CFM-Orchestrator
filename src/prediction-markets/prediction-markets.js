@@ -61,6 +61,10 @@
     SOL: 'KXSOL15M',
     XRP: 'KXXRP15M',
   };
+  // Reverse lookup: series ticker -> coin, for coin-context formatting and
+  // cross-series contamination guards.
+  const SYM_BY_KALSHI_SERIES = {};
+  for (const [k, v] of Object.entries(KALSHI_15M_SERIES)) SYM_BY_KALSHI_SERIES[v] = k;
 
   // Direct 5-minute UP/DOWN series — BNB/HYPE gracefully null if not live on Kalshi
   const KALSHI_5M_SERIES = {
@@ -70,6 +74,9 @@
     XRP: 'KXXRP5M',
     DOGE: 'KXDOGE5M',
   };
+  for (const [k, v] of Object.entries(KALSHI_5M_SERIES)) {
+    if (!SYM_BY_KALSHI_SERIES[v]) SYM_BY_KALSHI_SERIES[v] = k;
+  }
 
   // Polymarket Up/Down 5-minute markets use deterministic slugs:
   // {prefix}-updown-5m-{unixWindowStart}. Outcomes are ["Up", "Down"].
@@ -868,6 +875,43 @@
       ? opts.minTradableMs
       : (bucketMs === BUCKET_MS_15M ? MIN_TRADABLE_MS_15M : MIN_TRADABLE_MS_5M);
     const strictQuarterHour = !!opts.strictQuarterHour;
+
+    // Worker-first transport for 15M series: kalshi-ladder-worker /updown
+    // serves the live 15m binary snapshot (single nearest-expiry market).
+    // Direct Kalshi from the renderer is rate-limited/geoblocked, so prefer
+    // the worker and fall through to the IPC/direct cascade below on any
+    // failure or when the cached window is no longer tradable.
+    if (bucketMs === BUCKET_MS_15M) {
+      try {
+        const wSym = (typeof SYM_BY_KALSHI_SERIES === 'object' && SYM_BY_KALSHI_SERIES[series])
+          || Object.keys(KALSHI_15M_SERIES).find(k => KALSHI_15M_SERIES[k] === series)
+          || null;
+        if (wSym) {
+          const wRes = await apiFetch(`https://ladder.leaksnipe.win/updown?symbol=${encodeURIComponent(wSym)}`);
+          const wCloseMs = wRes && wRes.close_time ? new Date(wRes.close_time).getTime() : NaN;
+          if (wRes && wRes.open && wRes.ticker && Number.isFinite(wCloseMs) && wCloseMs > Date.now()) {
+            const wNearClose = (wCloseMs - Date.now()) <= minTradableMs;
+            const wBuilt = buildKalshiContractData({
+              ticker: wRes.ticker,
+              status: 'open',
+              close_time: wRes.close_time,
+              open_time: new Date(wCloseMs - BUCKET_MS_15M).toISOString(),
+              yes_bid: wRes.yes_bid, yes_ask: wRes.yes_ask,
+              no_bid: null, no_ask: null, last: wRes.last_price_dollars ?? null,
+              strike_type: 'above',
+              yes_sub_title: `Above ${wRes.floor_strike ?? ''}`.trim(),
+              floor_strike: wRes.floor_strike ?? null,
+              cap_strike: wRes.cap_strike ?? null,
+              volume_fp: 0, liquidity_dollars: 0, open_interest_fp: 0,
+            }, {
+              ...(wNearClose ? { tradable: false, nearClose: true } : { tradable: true }),
+              ...(SYM_BY_KALSHI_SERIES[series] ? { sym: SYM_BY_KALSHI_SERIES[series] } : { sym: wSym }),
+            });
+            if (wBuilt && wBuilt.probability != null) return applyWsTickerToContract(wBuilt);
+          }
+        }
+      } catch (_) { /* fall through to IPC/direct cascade */ }
+    }
 
     let d = await kalshiFetch(`${KALSHI_BASE}/markets?series_ticker=${series}&status=open&limit=${KALSHI_MARKET_LIMIT}`);
     if (!d) {
