@@ -226,6 +226,7 @@
         <div style="display:flex;gap:4px">
           <textarea id="adCustomPrompt" placeholder="Ask ASI1 anything with live market context..." rows="2" style="flex:1;background:#06080a;color:#e6e8eb;border:1px solid #1f2a38;border-radius:6px;padding:6px;font-size:11px;resize:none;outline:none;font-family:inherit"></textarea>
           <button id="adSendPrompt" type="button" style="background:#00d4ff;color:#06080a;font-weight:700;border:0;border-radius:6px;padding:0 10px;font-size:11px;cursor:pointer">Send</button>
+          <button id="adGeminiToggle" type="button" title="Route query to Gemini" style="background:#111318;border:1px solid #2a2f38;color:#8b929a;font-weight:700;border-radius:6px;padding:0 8px;font-size:11px;cursor:pointer">Gemini</button>
           <button id="adJdwalkazToggle" type="button" title="Route query to local jdwalkaz agent (port 8002)" style="background:#111318;border:1px solid #2a2f38;color:#8b929a;font-weight:700;border-radius:6px;padding:0 8px;font-size:11px;cursor:pointer">jdwalkaz</button>
           <button id="adResetMemory" type="button" title="Clear conversation memory and start a new session" style="background:#1c2530;color:#ff8a80;font-weight:700;border:1px solid #ff5252;border-radius:6px;padding:0 8px;font-size:11px;cursor:pointer">Reset</button>
         </div>
@@ -1028,8 +1029,31 @@
     }
   }
 
+  let geminiActive = false;
+  let geminiAvailable = false;
   let jdwalkazActive = false;
   let jdwalkazAvailable = false;
+
+  async function refreshGeminiAvailability() {
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(new Error('probe-timeout')), 1500);
+      const res = await fetch('http://127.0.0.1:8003/health', { signal: ctrl.signal, cache: 'no-store' });
+      geminiAvailable = res.ok;
+    } catch (_) {
+      geminiAvailable = false;
+    }
+    const btn = document.getElementById('adGeminiToggle');
+    if (btn) {
+      if (!geminiAvailable) {
+        btn.title = 'Gemini offline - no service on 127.0.0.1:8003';
+        btn.style.borderColor = '#ff5252';
+      } else {
+        btn.title = 'Route query to local Gemini agent (port 8003)';
+        btn.style.borderColor = geminiActive ? '#00dcfa' : '#2a2f38';
+      }
+    }
+  }
 
   async function refreshJdwalkazAvailability() {
     try {
@@ -1050,6 +1074,18 @@
         btn.style.borderColor = jdwalkazActive ? '#00d4ff' : '#2a2f38';
       }
     }
+  }
+
+  async function askGemini(query) {
+    const r = await fetch('http://127.0.0.1:8003/query', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query }),
+    });
+    if (!r.ok) throw new Error('Gemini agent HTTP ' + r.status);
+    const data = await r.json();
+    if (data && data.ok) return data.content;
+    throw new Error('Gemini agent error: ' + (data?.error || 'unknown'));
   }
 
   async function askJdwalkaz(query) {
@@ -1106,6 +1142,30 @@
           }
         }
       }
+      if (geminiActive) {
+        if (!geminiAvailable) {
+          if (answerEl) {
+            answerEl.textContent = 'Gemini offline - start the agent on 127.0.0.1:8003, then retry. This prompt was not sent to ASI1.';
+          }
+          return;
+        }
+        try {
+          const geminiAnswer = await askGemini(query);
+          if (answerEl) {
+            answerEl.textContent = '';
+            const pre = document.createElement('pre');
+            pre.style.whiteSpace = 'pre-wrap';
+            pre.style.fontFamily = 'inherit';
+            pre.textContent = geminiAnswer;
+            answerEl.appendChild(pre);
+          }
+          return;
+        } catch (err) {
+          if (answerEl) {
+            answerEl.textContent = 'Gemini unavailable - falling back to ASI1.';
+          }
+        }
+      }
       if (jdwalkazActive) {
         if (!jdwalkazAvailable) {
           if (answerEl) {
@@ -1143,11 +1203,15 @@
         try { window.localStorage.setItem(SESSION_ID_KEY, sessionId); } catch (_) {}
       }
       try {
+        let overrideModel = modelChoice !== 'auto' ? modelChoice : 'asi1-mini';
+        if (geminiActive) {
+          overrideModel = 'gemini-pro';
+        }
         res = await invoke('chat', {
           prompt: query,
           sessionId,
           packet,
-          model: modelChoice !== 'auto' ? modelChoice : 'asi1-mini',
+          model: overrideModel,
           reasoning_effort: effortChoice !== 'auto' ? effortChoice : 'low',
           web_search: webSearch,
         });
@@ -1231,6 +1295,16 @@
   document.getElementById('adMin')?.addEventListener('click', () => setMinimized(!minimized));
   document.getElementById('adAsk')?.addEventListener('click', ask);
   document.getElementById('adSendPrompt')?.addEventListener('click', sendCustomPrompt);
+  const geminiBtn = document.getElementById('adGeminiToggle');
+  if (geminiBtn) {
+    geminiBtn.addEventListener('click', () => {
+      geminiActive = !geminiActive;
+      geminiBtn.style.background = geminiActive ? '#00dcfa' : '#111318';
+      geminiBtn.style.color = geminiActive ? '#06080a' : '#8b929a';
+      geminiBtn.style.border = geminiActive ? '1px solid #00dcfa' : '1px solid #2a2f38';
+      geminiBtn.textContent = geminiActive ? 'Gemini ON' : 'Gemini';
+    });
+  }
   const jdwalkazBtn = document.getElementById('adJdwalkazToggle');
   if (jdwalkazBtn) {
     jdwalkazBtn.addEventListener('click', () => {
@@ -1243,6 +1317,8 @@
   }
   setInterval(refreshJdwalkazAvailability, 5000);
   void refreshJdwalkazAvailability();
+  setInterval(refreshGeminiAvailability, 5000);
+  void refreshGeminiAvailability();
   document.getElementById('adResetMemory')?.addEventListener('click', async () => {
     try {
       let sessionId = null;

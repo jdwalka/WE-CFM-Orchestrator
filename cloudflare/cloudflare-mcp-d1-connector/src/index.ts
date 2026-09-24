@@ -151,6 +151,50 @@ export default {
       return new Response(null, { status: 204, headers: corsHeaders() });
     }
 
+    // ── Mock OAuth Endpoints for Gemini MCP ──────────────────────────────
+    if (url.pathname.startsWith("/.well-known/oauth-authorization-server") || url.pathname.startsWith("/.well-known/oauth-protected-resource")) {
+      return json({
+        issuer: url.origin,
+        authorization_endpoint: url.origin + "/oauth/authorize",
+        token_endpoint: url.origin + "/oauth/token",
+        response_types_supported: ["code"],
+        grant_types_supported: ["authorization_code"],
+        token_endpoint_auth_methods_supported: ["client_secret_post", "client_secret_basic"],
+      });
+    }
+
+    if (url.pathname === "/oauth/authorize") {
+      const redirectUri = url.searchParams.get("redirect_uri");
+      const state = url.searchParams.get("state");
+      if (!redirectUri) return new Response("Missing redirect_uri", { status: 400 });
+      const target = new URL(redirectUri);
+      target.searchParams.set("code", "mock_auth_code_123");
+      if (state) target.searchParams.set("state", state);
+      return Response.redirect(target.toString(), 302);
+    }
+
+    if (url.pathname === "/oauth/token") {
+      return json({
+        access_token: env.API_SECRET || "mock_token_456",
+        token_type: "Bearer",
+        expires_in: 315360000,
+      });
+    }
+    
+    // Force 401 for Gemini on /mcp if no token is provided so it initiates OAuth
+    if ((url.pathname === "/mcp" || url.pathname === "/sse") && !request.headers.get("Authorization") && !url.searchParams.get("token")) {
+      return new Response(JSON.stringify({ error: "unauthorized" }), {
+        status: 401,
+        headers: {
+          "Content-Type": "application/json",
+          "WWW-Authenticate": `Bearer realm="${url.origin}", authorization_uri="${url.origin}/oauth/authorize"`,
+          ...corsHeaders()
+        }
+      });
+    }
+
+    // ── Normal Request Handling ──────────────────────────────────────────
+
     // Public health
     if (url.pathname === "/health" || url.pathname === "/") {
       if (url.pathname === "/" && request.method === "POST") {

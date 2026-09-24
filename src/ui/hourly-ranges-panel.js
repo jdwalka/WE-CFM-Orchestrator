@@ -40,9 +40,11 @@
     BTC: '#f7931a', ETH: '#627eea', SOL: '#00d4aa',
     XRP: '#00aae4', DOGE: '#c2a633', BNB: '#f3ba2f', HYPE: '#50e3c2',
   };
-  const VISIBLE_BUCKETS = 11;   // 5 above + current + 5 below (synthetic fallback only)
-  const VISIBLE_PTB_ROWS = 5;   // real-ladder mode: single-PTB rows near spot
+  const VISIBLE_BUCKETS = 15;   // 7 above + current + 7 below (expanded by 4 rows)
+  const VISIBLE_PTB_ROWS = 9;   // real-ladder mode: single-PTB rows near spot (expanded by 4 rows from 5)
+  const KALSHI_LOCAL_BRIDGE = 'http://127.0.0.1:8788';
   const KALSHI_LADDER_WORKER = 'https://kalshi-ladder-worker.gitgoin87.workers.dev';
+  const KALSHI_FALLBACK_WORKER = 'https://ladder.leaksnipe.win';
   // Coins Kalshi runs an hourly "between" range series for — kept in sync
   // with kalshi-ladder-worker's SERIES_BY_SYMBOL. HYPE has no such series,
   // so it always falls back to the synthetic ladder below.
@@ -98,17 +100,23 @@
     const race = (p) => Promise.race([p, new Promise((_, r) =>
       setTimeout(() => r(new Error('timeout')), timeoutMs))]);
 
+    // Local bridge (127.0.0.1:8788) requests always use direct native fetch
+    if (/^https?:\/\/(127\.0\.0\.1|localhost):8788/i.test(url)) {
+      try {
+        const res = await race(fetch(url));
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return await res.json();
+      } catch (e) {
+        console.warn('[HR]', url, 'local bridge fetch failed:', e.message);
+        return null;
+      }
+    }
+
     // Try suppFetch (Tauri/proxy layer)
     if (typeof window.suppFetch === 'function') {
       try {
         const res = await race(window.suppFetch(url));
         if (res && typeof res.json === 'function') {
-          // proxyFetch returns a real Response — a persistent upstream 503
-          // comes back as .ok === false, not a thrown error. Skipping this
-          // check meant an error body (e.g. the kalshi-ladder-worker's typed
-          // 503 JSON) got parsed as if it were valid data instead of
-          // rejecting, which silently fed "no bands" into callers that then
-          // wiped out perfectly good previous state on a transient failure.
           if (res.ok === false) throw new Error(`HTTP ${res.status}`);
           return await race(res.json());
         }
@@ -146,8 +154,8 @@
     if (!Number.isFinite(refPrice) || refPrice <= 0) return [];
     const step = getStepSize(sym, refPrice);
     const pivotLow = Math.floor(refPrice / step) * step;
-    const numBelow = 5;
-    const numAbove = 5;
+    const numBelow = 7;
+    const numAbove = 7;
     const result = [];
     const closeIso = closeTimeIso || new Date(Math.ceil(Date.now() / 3600000) * 3600000).toISOString();
 
@@ -265,9 +273,26 @@
   }
   async function loadRealLadder(sym) {
     if (!REAL_LADDER_SYMBOLS.has(sym)) return;
-    if (kalshiWorkerCircuitOpen()) return;
     try {
-      const data = await apiFetch(`${KALSHI_LADDER_WORKER}/ladder?symbol=${sym}`, 8000);
+      let data = null;
+      // 1. Try local wecrypto-bridge first (fast, fully paginated, never 429'd)
+      try {
+        data = await apiFetch(`${KALSHI_LOCAL_BRIDGE}/ladder?symbol=${sym}`, 3000);
+      } catch (_) {}
+
+      // 2. Fallback to remote worker if local bridge was unavailable
+      if (!data || data.status !== 'ok' || !Array.isArray(data.bands) || !data.bands.length) {
+        if (!kalshiWorkerCircuitOpen()) {
+          try {
+            data = await apiFetch(`${KALSHI_FALLBACK_WORKER}/ladder?symbol=${sym}`, 5000);
+          } catch (_) {
+            try {
+              data = await apiFetch(`${KALSHI_LADDER_WORKER}/ladder?symbol=${sym}`, 5000);
+            } catch (_) {}
+          }
+        }
+      }
+
       const bands = (data && data.status === 'ok' && Array.isArray(data.bands)) ? data.bands : [];
 
       if (!bands.length) {
@@ -416,17 +441,29 @@
     let body;
     let topBuckets = [];
     const realBands = safeGet(_realBands, sym) || [];
-    const isLive = realBands.length > 0;
+    let isLive = realBands.length > 0;
+    let sortedBands = [];
+
+    if (isLive) {
+      sortedBands = [...realBands].sort((a, b) =>
+        Math.abs(a.low - (price ?? a.low)) - Math.abs(b.low - (price ?? b.low))
+      );
+      // Distance sanity guard: if the closest band is > 3.5% away from spot,
+      // it means the real ladder is stale/truncated for this hour. Fall through to synthetic!
+      const minDistancePct = price && sortedBands.length > 0
+        ? Math.abs(sortedBands[0].low - price) / price
+        : 0;
+      if (minDistancePct > 0.035) {
+        isLive = false;
+      }
+    }
 
     if (isLive) {
       // ── Real Kalshi hourly ladder: single-PTB rows, bid-wall saturation ──
       // PTB = the band's floor_strike — a real, exact number straight from
       // Kalshi, not a computed midpoint. "In spec" here means: this row
       // corresponds to an actual open, tradeable Kalshi contract right now.
-      const sorted = [...realBands].sort((a, b) =>
-        Math.abs(a.low - (price ?? a.low)) - Math.abs(b.low - (price ?? b.low))
-      );
-      const nearest = sorted.slice(0, VISIBLE_PTB_ROWS).sort((a, b) => a.low - b.low);
+      const nearest = sortedBands.slice(0, VISIBLE_PTB_ROWS).sort((a, b) => a.low - b.low);
 
       // Depth can sit on either side of the book — a band with a big resting
       // ask and nothing on the bid is still a real wall (BTC's own rows were
@@ -479,10 +516,33 @@
         }
         const probStr = probPct !== null ? `${probPct}%` : '—';
 
+        let modelProbStr = '—';
+        if (price && price > 0 && Number.isFinite(b.low) && Number.isFinite(b.high) && b.high > b.low) {
+          const pred = safeGet(window._predictions, sym) || window.PredictionEngine?.get?.(sym);
+          const atrPctRaw = Number(pred?.volatility?.atrPct);
+          const atrPct = Number.isFinite(atrPctRaw) && atrPctRaw > 0 ? atrPctRaw / 100 : 0.0055;
+          const minsLeft = ttcMs != null ? Math.max(1, ttcMs / 60000) : 30;
+          const sigma = price * atrPct * Math.sqrt(minsLeft / 60);
+          if (sigma > 0) {
+            const zLow = (b.low - price) / sigma;
+            const zHigh = (b.high - price) / sigma;
+            const cdf = (z) => {
+              const sign = z < 0 ? -1 : 1;
+              const x = Math.abs(z) / Math.SQRT2;
+              const t = 1 / (1 + 0.3275911 * x);
+              const y = 1 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * Math.exp(-x * x);
+              return 0.5 * (1 + sign * y);
+            };
+            const pBand = Math.max(0.01, Math.min(0.99, cdf(zHigh) - cdf(zLow)));
+            modelProbStr = `${Math.round(pBand * 100)}%`;
+          }
+        }
+
         return `
           <div class="hr-ptb-row${isCurrent ? ' hr-ptb-row--current' : ''}" style="background:${escapeHTML(wallColor)}22;border-left-color:${escapeHTML(wallColor)}">
             <span class="hr-ptb-price">${escapeHTML(ptbStr)}</span>
             <span class="hr-ptb-prob"${isCurrent ? ` style="color:${escapeHTML(color)}"` : ''}>${escapeHTML(probStr)}</span>
+            <span class="hr-ptb-model">${escapeHTML(modelProbStr)}</span>
             <span class="hr-ptb-odds">${escapeHTML(bidStr)} / ${escapeHTML(askStr)}</span>
             ${arrow}
             ${isCurrent ? `<span class="hr-ptb-here" style="color:${escapeHTML(color)}">● HERE</span>` : ''}
@@ -496,9 +556,10 @@
       body = `
         <div class="hr-ranges-scroll">
           <div class="hr-ranges-header">
-            <span class="hr-ranges-label">PTB · live Kalshi</span>
-            <span class="hr-ranges-label">Prob (YES)</span>
-            <span class="hr-ranges-label">Bid / Ask</span>
+            <span class="hr-ranges-label hr-col-ptb">PTB · live Kalshi</span>
+            <span class="hr-ranges-label hr-col-prob">Prob</span>
+            <span class="hr-ranges-label hr-col-model">Model</span>
+            <span class="hr-ranges-label hr-col-odds">Bid / Ask</span>
           </div>
           ${rows.join('')}
         </div>
@@ -655,10 +716,38 @@
       const closeLabel15 = k15?.closeTime ? timeToClose(k15.closeTime) : null;
       const currentPrice15 = _prices[sym] || readLivePrice(sym);
       const prediction15 = window._predictions?.[sym] || window.PredictionEngine?.get?.(sym) || null;
-      const fair15 = window.GrokRangeOverlay?.get15mModelFair?.(k15, currentPrice15, prediction15);
-      const fair15Label = fair15?.model_fair_cents != null
-        ? `Model fair ${Number(fair15.model_fair_cents).toFixed(1)}¢${fair15.residual_cents != null ? ` · residual ${Number(fair15.residual_cents).toFixed(1)}¢` : ''}`
-        : 'Model fair pending';
+      const k15Contract = k15 ? {
+        ...k15,
+        live: true,
+        coin: sym,
+        secondsToClose: k15.closeTime ? Math.max(0, (new Date(k15.closeTime).getTime() - Date.now()) / 1000) : 0,
+        bestAsk: k15.yesAsk != null ? k15.yesAsk : k15.bestAsk,
+      } : null;
+      const fair15 = window.GrokRangeOverlay?.get15mModelFair?.(k15Contract, currentPrice15, prediction15);
+      let fair15Label = 'Model fair pending';
+      if (fair15?.model_fair_cents != null) {
+        fair15Label = `Model fair ${Number(fair15.model_fair_cents).toFixed(1)}¢ (${fair15.p_up != null ? Math.round(fair15.p_up * 100) : Math.round(fair15.model_fair_cents)}% odds)${fair15.residual_cents != null ? ` · residual ${Number(fair15.residual_cents).toFixed(1)}¢` : ''}`;
+      } else if (k15 && currentPrice15) {
+        const target = Number(k15.targetPriceNum || k15.floorPrice) || (k15.targetPrice ? parseFloat(String(k15.targetPrice).replace(/[^0-9.]/g, '')) : null);
+        if (target && target > 0) {
+          const sec = k15.closeTime ? Math.max(5, (new Date(k15.closeTime).getTime() - Date.now()) / 1000) : 300;
+          const sigma = currentPrice15 * 0.0055 * Math.sqrt(Math.max(0.02, Math.min(1, sec / 900)));
+          const z = (currentPrice15 - target) / (sigma || 1);
+          const cdf = (val) => {
+            const s = val < 0 ? -1 : 1;
+            const x = Math.abs(val) / Math.SQRT2;
+            const t = 1 / (1 + 0.3275911 * x);
+            const y = 1 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * Math.exp(-x * x);
+            return 0.5 * (1 + s * y);
+          };
+          const pAbove = cdf(z);
+          const prob = String(k15.strikeDir || '').toLowerCase() === 'below' ? 1 - pAbove : pAbove;
+          const fairCents = Math.max(1, Math.min(99, Math.round(prob * 1000) / 10));
+          const askCents = k15.yesAsk != null ? (Number(k15.yesAsk) <= 1 ? Number(k15.yesAsk) * 100 : Number(k15.yesAsk)) : null;
+          const resCents = askCents != null ? Math.round((askCents - fairCents) * 10) / 10 : null;
+          fair15Label = `Model fair ${fairCents.toFixed(1)}¢ (${Math.round(prob * 100)}% odds)${resCents != null ? ` · residual ${resCents.toFixed(1)}¢` : ''}`;
+        }
+      }
 
       if (ticker) {
         kalshi15mHtml = `<div class="hr-kalshi15m" style="margin-bottom:8px;">
@@ -818,10 +907,25 @@
           color: var(--color-text,#ddd);
           white-space: nowrap;
         }
+        .hr-ptb-model {
+          font-size: .78rem;
+          font-weight: 700;
+          font-variant-numeric: tabular-nums;
+          min-width: 38px;
+          text-align: right;
+          color: var(--color-cyan, #38bdf8);
+          white-space: nowrap;
+        }
+        .hr-col-ptb { flex: 1; text-align: left; }
+        .hr-col-prob { min-width: 34px; text-align: right; }
+        .hr-col-model { min-width: 38px; text-align: right; color: var(--color-cyan, #38bdf8); }
+        .hr-col-odds { min-width: 60px; text-align: right; }
         .hr-ptb-odds {
           font-size: .68rem;
           font-weight: 600;
           font-variant-numeric: tabular-nums;
+          min-width: 60px;
+          text-align: right;
           color: var(--color-text-muted,#888);
           white-space: nowrap;
         }

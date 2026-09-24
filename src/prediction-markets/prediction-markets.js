@@ -126,6 +126,12 @@
 
   async function apiFetch(url, opts = {}) {
     const requestOpts = { ...opts, headers: _injectPolyHeaders(url, { Accept: 'application/json', ...opts.headers }) };
+    if (/^https?:\/\/(127\.0\.0\.1|localhost):8788/i.test(url)) {
+      try {
+        const r = await fetch(url, requestOpts);
+        if (r.ok) return await r.json();
+      } catch (_) {}
+    }
     if (typeof window.suppFetch === 'function') {
       try {
         return await readJsonPayload(await window.suppFetch(url, requestOpts));
@@ -887,7 +893,15 @@
           || Object.keys(KALSHI_15M_SERIES).find(k => KALSHI_15M_SERIES[k] === series)
           || null;
         if (wSym) {
-          const wRes = await apiFetch(`https://ladder.leaksnipe.win/updown?symbol=${encodeURIComponent(wSym)}`);
+          let wRes = null;
+          try {
+            wRes = await apiFetch(`http://127.0.0.1:8788/updown?symbol=${encodeURIComponent(wSym)}`, 2000);
+          } catch (_) {}
+          if (!wRes || !wRes.ticker) {
+            try {
+              wRes = await apiFetch(`https://ladder.leaksnipe.win/updown?symbol=${encodeURIComponent(wSym)}`, 4000);
+            } catch (_) {}
+          }
           const wCloseMs = wRes && wRes.close_time ? new Date(wRes.close_time).getTime() : NaN;
           if (wRes && wRes.open && wRes.ticker && Number.isFinite(wCloseMs) && wCloseMs > Date.now()) {
             const wNearClose = (wCloseMs - Date.now()) <= minTradableMs;

@@ -338,10 +338,32 @@
   }
 
   function estimateKalshi15mFair(contract, currentPrice, prediction) {
-    if (!contract || !contract.live || !contract.ticker) return null;
-    const current = Number(currentPrice);
-    const target = Number(contract.targetPriceNum);
-    const secondsToClose = Number(contract.secondsToClose);
+    if (!contract || !contract.ticker) return null;
+    const isLive = contract.live !== false && (contract.live === true || contract.status === 'open' || contract.status === 'active' || !contract.status);
+    if (!isLive) return null;
+
+    let current = Number(currentPrice);
+    if (!Number.isFinite(current) || current <= 0) {
+      const sym = contract.coin || contract.sym || (contract.ticker ? contract.ticker.slice(2, 5) : null);
+      if (sym) current = resolvePrice(sym);
+    }
+
+    let target = Number(contract.targetPriceNum || contract.priceToBeatNum || contract.floorPrice || contract.floor_strike || contract.strike);
+    if (!Number.isFinite(target) || target <= 0) {
+      if (contract.targetPrice) {
+        const numMatch = String(contract.targetPrice).replace(/[$,]/g, '').match(/\d+\.?\d*/);
+        if (numMatch) target = parseFloat(numMatch[0]);
+      }
+    }
+
+    let secondsToClose = Number(contract.secondsToClose);
+    if (!Number.isFinite(secondsToClose) || secondsToClose <= 0) {
+      if (contract.closeTime) {
+        secondsToClose = (new Date(contract.closeTime).getTime() - Date.now()) / 1000;
+      }
+    }
+    secondsToClose = Math.max(5, secondsToClose || 5);
+
     if (!Number.isFinite(current) || current <= 0
       || !Number.isFinite(target) || target <= 0
       || !Number.isFinite(secondsToClose) || secondsToClose <= 0) {
@@ -354,13 +376,14 @@
       : 0.0055;
     const remainingFraction = Math.max(0.02, Math.min(1, secondsToClose / 900));
     const sigma = current * atrPct * Math.sqrt(remainingFraction);
-    const z = (target - current) / (sigma || 1);
+    const z = (current - target) / (sigma || 1);
     const pAbove = _normalCdf(z);
     const strikeDir = String(contract.strikeDir || '').toLowerCase();
     const probability = strikeDir === 'below' ? 1 - pAbove : pAbove;
     const fairCents = Math.max(1, Math.min(99, probability * 100));
-    const askCents = Number.isFinite(Number(contract.bestAsk))
-      ? Number(contract.bestAsk) * 100
+    const rawAsk = contract.bestAsk != null ? contract.bestAsk : contract.yesAsk;
+    const askCents = Number.isFinite(Number(rawAsk))
+      ? (Number(rawAsk) <= 1.0 ? Number(rawAsk) * 100 : Number(rawAsk))
       : null;
     const residualCents = askCents != null ? askCents - fairCents : null;
 

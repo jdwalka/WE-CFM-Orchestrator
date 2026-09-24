@@ -23,13 +23,15 @@ function resolveTunnelAddress() {
     return envAddr;
   }
 
-  // Look for wireguard/wecrypto/mullvad/wsl/10.6* interface
+  // Look for wireguard/wecrypto-mullvad/mullvad/10.6* interface (exclude WSL 10.13 link)
   const tunnelIface = allIps.find(i => 
-    i.name.includes('wireguard') || 
-    i.name.includes('wecrypto') || 
-    i.name.includes('mullvad') || 
-    i.name.includes('wsl') || 
-    i.ip.startsWith('10.6')
+    !i.name.includes('wsl') && 
+    !i.ip.startsWith('10.13.') && 
+    (
+      i.name.includes('wecrypto-mullvad') || 
+      i.name.includes('mullvad') || 
+      i.ip.startsWith('10.6')
+    )
   );
 
   return tunnelIface ? tunnelIface.ip : undefined;

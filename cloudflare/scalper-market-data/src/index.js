@@ -596,6 +596,9 @@ const ROUTES = [
   "GET /polymarket/hourly-updown",
   "GET /snapshot/kalshi?symbol=BTC",
   "GET /snapshot/polymarket?symbol=BTC",
+  "GET /dydx/orderbook?ticker=<ticker>",
+  "GET /dydx/funding?ticker=<ticker>",
+  "POST /hyperliquid/info",
 ];
 
 export default {
@@ -623,7 +626,8 @@ export default {
       return new Response(null, {
         headers: {
           "Access-Control-Allow-Origin": "*",
-          "Access-Control-Allow-Methods": "GET, OPTIONS",
+          "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+          "Access-Control-Allow-Headers": "Content-Type, Authorization",
           "Cache-Control": "no-store, max-age=0",
         },
       });
@@ -916,6 +920,27 @@ export default {
           return jsonResponse(await buildKalshiSnapshot(symbol));
         case "/snapshot/polymarket":
           return jsonResponse(await buildPolymarketSnapshot(symbol));
+        case "/dydx/orderbook": {
+          const ticker = url.searchParams.get("ticker") || `${symbol}-USD`;
+          const r = await fetchMarketData(`https://indexer.dydx.trade/v4/orderbooks/perpetualMarket/${ticker}`);
+          return jsonResponse(await r.json());
+        }
+        case "/dydx/funding": {
+          const ticker = url.searchParams.get("ticker") || `${symbol}-USD`;
+          const limit = url.searchParams.get("limit") || "1";
+          const r = await fetchMarketData(`https://indexer.dydx.trade/v4/historicalFunding/${ticker}?limit=${limit}`);
+          return jsonResponse(await r.json());
+        }
+        case "/hyperliquid/info": {
+          if (request.method !== "POST") return jsonResponse({ error: "Hyperliquid requires POST" }, 405);
+          const body = await request.text();
+          const r = await fetchMarketData("https://api.hyperliquid.xyz/info", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: body || JSON.stringify({ type: "metaAndAssetCtxs" }),
+          });
+          return jsonResponse(await r.json());
+        }
         default:
           return jsonResponse({ error: "not found", routes: ROUTES }, 404);
       }

@@ -197,6 +197,41 @@ async function stopProcessor() {
     }
 }
 
+let _predictedFundingsCache = { ts: 0, data: {} };
+
+async function fetchPredictedFundings() {
+    if (Date.now() - _predictedFundingsCache.ts < 60_000 && Object.keys(_predictedFundingsCache.data).length) {
+        return _predictedFundingsCache.data;
+    }
+    try {
+        const res = await fetch('https://api.hyperliquid.xyz/info', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ type: 'predictedFundings' }),
+        });
+        if (res.ok) {
+            const list = await res.json();
+            const map = {};
+            if (Array.isArray(list)) {
+                for (const item of list) {
+                    const [coin, venueList] = item;
+                    if (Array.isArray(venueList)) {
+                        const hlPred = venueList.find(v => v[0] === 'hl' || v[0] === 'hyperliquid') || venueList[0];
+                        if (hlPred && hlPred[1]?.fundingRate != null) {
+                            map[coin] = parseFloat(hlPred[1].fundingRate) * 100;
+                        }
+                    }
+                }
+            }
+            _predictedFundingsCache = { ts: Date.now(), data: map };
+            return map;
+        }
+    } catch (e) {
+        console.warn('[OrbitalProcessor] Failed to fetch Hyperliquid predictedFundings:', e.message);
+    }
+    return _predictedFundingsCache.data;
+}
+
 /**
  * Execute the 15-minute synchronization barrier for all buffered assets.
  * For each asset:
@@ -205,9 +240,11 @@ async function stopProcessor() {
  *   3. Synthesize matrix element
  *   4. Dispatch to Firebase via OrbitalBroadcaster
  */
-function runBarrier() {
+async function runBarrier() {
     const now = Date.now();
     console.log(`[OrbitalProcessor] 15-min barrier executing at ${new Date().toISOString()}`);
+
+    const predictedFundings = await fetchPredictedFundings().catch(() => ({}));
 
     for (const [asset, state] of buffer.entries()) {
         // ── 1. Cross-Reference Price Check ──────────────────────────────────────
@@ -246,12 +283,32 @@ function runBarrier() {
         // Use the latest tick from each orbital ring.
         // Prefer Coinbase price for s_core (more liquid / lower latency).
         const latestSCore = cbTick || latestS;
+        const pRing = latestRingData(state, 'p');
+        const dRing = latestRingData(state, 'd');
+        const fRing = latestRingData(state, 'f');
+
+        // Wire Hyperliquid predictedFundings into cascade_skew input:
+        // Cross-referencing predicted rate against live rate indicates positioning unwind / cascade skew
+        const hlPredicted = predictedFundings[asset] ?? dRing?.predicted_funding ?? dRing?.predictedFunding ?? null;
+        const liveFunding = dRing?.funding_rate ?? dRing?.funding_pct ?? pRing?.funding ?? null;
+        let cascadeSkew = 0;
+        if (hlPredicted != null && liveFunding != null) {
+            cascadeSkew = (hlPredicted - liveFunding) * 10;
+        } else if (dRing?.cascade_skew != null) {
+            cascadeSkew = Number(dRing.cascade_skew);
+        }
+
+        const dComplexEnhanced = {
+            ...dRing,
+            predicted_funding: hlPredicted,
+            cascade_skew: cascadeSkew,
+        };
 
         const orbitals = {
             s_core:     latestSCore.data,
-            p_momentum: latestRingData(state, 'p'),
-            d_complex:  latestRingData(state, 'd'),
-            f_diffuse:  latestRingData(state, 'f'),
+            p_momentum: pRing,
+            d_complex:  dComplexEnhanced,
+            f_diffuse:  fRing,
         };
 
         const element = {
@@ -260,22 +317,20 @@ function runBarrier() {
             atomic_weight_class: determineWeightClass(asset),
             decayed_orbitals:  decayed.length > 0 ? decayed : undefined,
             orbitals,
-            quantum_states: extractQuantumStates(orbitals),
+            cascade_skew:      cascadeSkew,
+            quantum_states:    extractQuantumStates(orbitals),
         };
 
         // ── 4. Dispatch to TIDE ─────────────────────────────────────────────────
         try {
             OrbitalBroadcaster.pushMatrixElement(element);
-            console.log(`[OrbitalProcessor] [${asset}] Dispatched. Decayed: [${decayed.join(', ') || 'none'}]`);
+            console.log(`[OrbitalProcessor] [${asset}] Dispatched. Cascade Skew: ${cascadeSkew.toFixed(4)}. Decayed: [${decayed.join(', ') || 'none'}]`);
         } catch (err) {
             console.error(`[OrbitalProcessor] [${asset}] Dispatch failed:`, err.message);
         }
 
         // ── 5. Durable local log ────────────────────────────────────────────────
-        // Firestore write above has no reader upstream of the app process, and
-        // this pipeline runs as plain Node (not Electron), so the renderer's
-        // forensics-logger/MultiDriveCache can't be reused here. Cheap, durable,
-        // survives restart: one JSONL line per synthesized element.
+        // Cheap, durable, survives restart: one JSONL line per synthesized element.
         appendOrbitalLog(element);
     }
 }
