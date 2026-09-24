@@ -56,6 +56,7 @@
   function recordDiagnostics(url, res, latencyMs) {
     const host = urlHost(url) || 'unknown';
     DIAGNOSTICS.latency_ms[host] = latencyMs;
+    DIAGNOSTICS.venues[host] = { latencyMs, ts: Date.now() };
     const rl = {};
     const mbxWeight = res.headers?.get?.('x-mbx-used-weight-1m') || res.headers?.get?.('x-mbx-used-weight');
     if (mbxWeight) rl['x-mbx-used-weight'] = mbxWeight;
@@ -196,6 +197,21 @@
     } catch (_) { /* give up gracefully */ }
 
     return null;
+  }
+
+  // ── OKX SWAP: Dedicated funding & OI probe (avoids apex 301/308 redirects)
+  async function fetchOkxPerp(sym) {
+    try {
+      const instId = `${sym}-USDT-SWAP`;
+      const [oiRes, fundRes] = await Promise.allSettled([
+        getJson(`https://www.okx.com/api/v5/public/open-interest?instId=${instId}`),
+        getJson(`https://www.okx.com/api/v5/public/funding-rate?instId=${instId}`),
+      ]);
+      let oiUsd = 0, funding = null;
+      if (oiRes.status === 'fulfilled') oiUsd = parseFloat(oiRes.value?.data?.[0]?.oiCcy || 0);
+      if (fundRes.status === 'fulfilled') funding = parseFloat(fundRes.value?.data?.[0]?.fundingRate || 0) * 100;
+      return { venue: 'okx', oiUsd, funding };
+    } catch (_) { return null; }
   }
 
   // ── Binance /fapi/v1/fundingInfo (Burst Pressure clamp interval detection)
@@ -358,7 +374,11 @@
       scheduleLiqReconnect();
       return;
     }
-    _liqWs.onopen = () => { _liqBackoffMs = 1000; console.info('[DerivativesFeed] Liquidation stream connected'); };
+    _liqWs.onopen = () => {
+      _liqBackoffMs = 1000;
+      DIAGNOSTICS.liq_ws_connected = true;
+      console.info('[DerivativesFeed] Liquidation stream connected');
+    };
     _liqWs.onmessage = (ev) => {
       try {
         const msg = JSON.parse(ev.data);
@@ -375,8 +395,14 @@
         LIQ_BUFFER[sym].push({ ts: Date.now(), side, notional });
       } catch (_) { /* ignore malformed frame */ }
     };
-    _liqWs.onclose = () => { if (!_stopped) scheduleLiqReconnect(); };
-    _liqWs.onerror = () => { try { _liqWs.close(); } catch (_) {} };
+    _liqWs.onclose = () => {
+      DIAGNOSTICS.liq_ws_connected = false;
+      if (!_stopped) scheduleLiqReconnect();
+    };
+    _liqWs.onerror = () => {
+      DIAGNOSTICS.liq_ws_connected = false;
+      try { _liqWs.close(); } catch (_) {}
+    };
   }
   function scheduleLiqReconnect() {
     clearTimeout(_liqReconnectTimer);
@@ -400,12 +426,12 @@
   }
 
   // ── per-coin compute ──────────────────────────────────────────────
-  function computeState(sym, oi, bybit, dydx, deribit, hlData, binanceFundingInfo) {
+  function computeState(sym, oi, bybit, dydx, deribit, hlData, binanceFundingInfo, okx) {
     const ts = Date.now();
 
     // OI delta over the rolling history (%/window)
     const hist = OI_HISTORY[sym] || (OI_HISTORY[sym] = []);
-    const primaryOi = oi?.oiUsd || hlData?.oiUsd || bybit?.oiUsd || 0;
+    const primaryOi = oi?.oiUsd || hlData?.oiUsd || bybit?.oiUsd || okx?.oiUsd || 0;
     if (primaryOi > 0) pushBounded(hist, { ts, oiUsd: primaryOi }, OI_HISTORY_MAX);
     let oiDeltaPct = null, oiTrend = 'flat';
     if (hist.length >= 2) {
@@ -420,6 +446,7 @@
     const fundParts = [];
     if (oi && Number.isFinite(oi.funding)) fundParts.push({ f: oi.funding, w: VENUE_WEIGHT[oi.venue] ?? 0.35, oi: oi.oiUsd });
     if (bybit && Number.isFinite(bybit.funding)) fundParts.push({ f: bybit.funding, w: VENUE_WEIGHT.bybit, oi: bybit.oiUsd });
+    if (okx && Number.isFinite(okx.funding)) fundParts.push({ f: okx.funding, w: VENUE_WEIGHT.okx, oi: okx.oiUsd });
     if (hlData && Number.isFinite(hlData.funding)) fundParts.push({ f: hlData.funding, w: VENUE_WEIGHT.hyperliquid, oi: hlData.oiUsd });
     if (dydx && Number.isFinite(dydx.funding)) fundParts.push({ f: dydx.funding, w: VENUE_WEIGHT['dydx-v4'], oi: 0 });
     if (deribit && Number.isFinite(deribit.funding)) fundParts.push({ f: deribit.funding, w: 0.1, oi: 0 });
@@ -496,6 +523,7 @@
     const venues = [
       oi?.venue,
       bybit ? 'bybit' : null,
+      okx ? 'okx' : null,
       dydx ? 'dydx-v4' : null,
       deribit ? 'deribit' : null,
       hlData ? 'hyperliquid' : null,
@@ -561,20 +589,37 @@
     window.dispatchEvent(new CustomEvent('market-data-envelope', { detail: envelope }));
   }
 
+  function reportVenueHealth(venue, healthy, latencyMs, reason, extra = {}) {
+    if (typeof window === 'undefined' || !window.NetworkHealth?.update) return;
+    const status = healthy
+      ? (latencyMs > 500 ? 'degraded' : 'healthy')
+      : (extra.transient ? 'recovering' : 'degraded');
+    window.NetworkHealth.update(venue, {
+      status,
+      lastFetch: Date.now(),
+      fallback: extra.fallback || false,
+      transient: extra.transient || false,
+      reason: reason || (healthy ? `${latencyMs ? Math.round(latencyMs) + 'ms' : 'ok'}` : 'fetch error'),
+      bucket: healthy ? 'unknown' : (extra.bucket || 'provider/api'),
+      bucketReason: extra.bucketReason || '',
+    });
+  }
+
   // ── poll cycle ────────────────────────────────────────────────────
   async function fetchAll() {
     const detail = {};
     const hlMap = await fetchHyperliquidInfo().catch(() => ({}));
     for (const sym of COINS) {
       try {
-        const [oi, bybit, dydx, deribit, bInfo] = await Promise.all([
+        const [oi, bybit, dydx, deribit, bInfo, okx] = await Promise.all([
           fetchOpenInterest(sym),
           fetchBybitFunding(sym),
           fetchDydxV4(sym),
           fetchDeribitOrderbook(sym),
           fetchBinanceFundingInfo(sym),
+          fetchOkxPerp(sym),
         ]);
-        const state = computeState(sym, oi, bybit, dydx, deribit, hlMap[sym] || null, bInfo);
+        const state = computeState(sym, oi, bybit, dydx, deribit, hlMap[sym] || null, bInfo, okx);
         CACHE[sym] = state;
         detail[sym] = state;
         if (state.available) {
@@ -593,6 +638,41 @@
         // keep prior cache; never let one coin break the cycle
       }
     }
+
+    // ── Report real-time health for all 7 venues ────────────────────
+    try {
+      const lat = DIAGNOSTICS.latency_ms;
+      const hlCount = Object.keys(hlMap || {}).length;
+      if (hlCount > 0) {
+        reportVenueHealth('Hyperliquid', true, lat['api.hyperliquid.xyz'] || 0, `${hlCount} perps live (POST /info)`);
+      } else {
+        reportVenueHealth('Hyperliquid', false, lat['api.hyperliquid.xyz'] || 0, 'POST /info failed', { transient: true });
+      }
+
+      const hasBinance = Object.values(detail).some(s => s.venues?.includes('binance') || s.venues?.includes('binance-coinm'));
+      const binanceLat = lat['fapi.binance.com'] || lat['dapi.binance.com'] || 0;
+      reportVenueHealth('Binance', hasBinance, binanceLat, hasBinance ? 'fapi/dapi OI + funding live' : 'Binance feeds offline', { transient: !hasBinance });
+
+      const hasBybit = Object.values(detail).some(s => s.venues?.includes('bybit'));
+      const bybitLat = lat['api.bybit.com'] || 0;
+      reportVenueHealth('Bybit', hasBybit, bybitLat, hasBybit ? 'v5 linear tickers + book live' : 'Bybit feeds offline', { transient: !hasBybit });
+
+      const hasOkx = Object.values(detail).some(s => s.venues?.includes('okx'));
+      const okxLat = lat['www.okx.com'] || 0;
+      reportVenueHealth('OKX', hasOkx, okxLat, hasOkx ? 'v5 swap OI + funding live' : 'OKX feeds offline', { transient: !hasOkx });
+
+      const hasDydx = Object.values(detail).some(s => s.venues?.includes('dydx-v4'));
+      const dydxLat = lat['indexer.dydx.trade'] || 0;
+      reportVenueHealth('dYdX', hasDydx, dydxLat, hasDydx ? 'v4 indexer book + funding live' : 'dYdX indexer offline', { transient: !hasDydx });
+
+      const hasDeribit = Object.values(detail).some(s => s.venues?.includes('deribit'));
+      const deribitLat = lat['www.deribit.com'] || 0;
+      reportVenueHealth('Deribit', hasDeribit, deribitLat, hasDeribit ? 'v2 depth=20 book live' : 'Deribit orderbook offline', { transient: !hasDeribit });
+
+      const activeCoins = Object.values(detail).filter(s => s.available);
+      reportVenueHealth('DerivativesFeed', activeCoins.length > 0, 0, `${activeCoins.length}/${COINS.length} coins · quality: ${DIAGNOSTICS.data_quality}`);
+    } catch (_) {}
+
     window.dispatchEvent(new CustomEvent('derivatives-update', { detail }));
     return detail;
   }
@@ -610,6 +690,21 @@
       if (_timer) return;
       _stopped = false;
       connectLiquidationStream();
+      // Announce all 7 venues immediately so NetworkHealth immediately registers them
+      const VENUES = ['Binance', 'Bybit', 'OKX', 'Hyperliquid', 'dYdX', 'Deribit', 'DerivativesFeed'];
+      for (const v of VENUES) {
+        if (typeof window !== 'undefined' && window.NetworkHealth?.update) {
+          window.NetworkHealth.update(v, {
+            status: 'recovering',
+            lastFetch: Date.now(),
+            fallback: false,
+            transient: true,
+            reason: 'Connecting derivatives stream...',
+            bucket: 'unknown',
+            bucketReason: '',
+          });
+        }
+      }
       fetchAll();
       _timer = setInterval(() => { if (!document.hidden) fetchAll(); }, POLL_MS);
     },
@@ -623,4 +718,20 @@
   };
 
   window.DerivativesFeed = DerivativesFeed;
+
+  // Auto-start fallback in browser/electron environments
+  if (typeof document !== 'undefined') {
+    const autoBoot = () => {
+      setTimeout(() => {
+        if (!_timer && !_stopped && typeof DerivativesFeed.start === 'function') {
+          DerivativesFeed.start();
+        }
+      }, 3000);
+    };
+    if (document.readyState === 'complete' || document.readyState === 'interactive') {
+      autoBoot();
+    } else {
+      document.addEventListener('DOMContentLoaded', autoBoot);
+    }
+  }
 })();

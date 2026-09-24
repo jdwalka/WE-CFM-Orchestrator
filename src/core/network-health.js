@@ -10,6 +10,12 @@
         'Crypto.com',
         'Coinbase',
         'Binance',
+        'Bybit',
+        'OKX',
+        'Hyperliquid',
+        'dYdX',
+        'Deribit',
+        'DerivativesFeed',
         'Mempool.space',
         'Solana RPC',
         'Etherscan',
@@ -32,6 +38,12 @@
         'Pyth',
         'Coinbase',
         'Binance',
+        'Bybit',
+        'OKX',
+        'Hyperliquid',
+        'dYdX',
+        'Deribit',
+        'DerivativesFeed',
         'Crypto.com',
         'ProxyOrchestrator',
         'Mempool.space',
@@ -42,6 +54,9 @@
         COINBASE: 'Coinbase',
         BYBIT: 'Bybit',
         OKX: 'OKX',
+        HYPERLIQUID: 'Hyperliquid',
+        DYDX: 'dYdX',
+        DERIBIT: 'Deribit',
     };
 
     const recovery = {
@@ -127,6 +142,12 @@
         if (key.includes('timeapi') || key.includes('time.akamai')) return 'TimeAPI';
         if (key.includes('projectserum') || key.includes('solana') || key.includes('publicnode')) return 'Solana RPC';
         if (key.includes('alchemy')) return 'Alchemy RPC';
+        if (key.includes('hyperliquid')) return 'Hyperliquid';
+        if (key.includes('dydx')) return 'dYdX';
+        if (key.includes('deribit')) return 'Deribit';
+        if (key.includes('bybit')) return 'Bybit';
+        if (key.includes('okx')) return 'OKX';
+        if (key.includes('derivatives')) return 'DerivativesFeed';
         return raw;
     }
 
@@ -737,6 +758,67 @@
         });
     }
 
+    function refreshDerivativesFeedStatus(now) {
+        const feed = window.DerivativesFeed;
+        if (!feed) return;
+        try {
+            const diag = feed.getDiagnostics?.() || {};
+            const all = feed.getAll?.() || {};
+            const coins = Object.keys(all);
+            const quality = diag.data_quality || 'clean';
+            const latencyMap = diag.latency_ms || {};
+
+            const hasData = coins.length > 0;
+            bridgeUpdate('DerivativesFeed', {
+                status: hasData ? (quality === 'clean' ? 'healthy' : 'degraded') : 'recovering',
+                lastFetch: now,
+                fallback: false,
+                transient: !hasData,
+                reason: hasData
+                    ? `${coins.length} coins · quality: ${quality}`
+                    : 'Awaiting first derivatives poll',
+                bucket: BUCKETS.UNKNOWN,
+                bucketReason: '',
+            });
+
+            const venueHosts = {
+                'Hyperliquid': ['api.hyperliquid.xyz'],
+                'dYdX': ['indexer.dydx.trade'],
+                'Deribit': ['www.deribit.com', 'deribit.com'],
+                'Bybit': ['api.bybit.com'],
+                'OKX': ['www.okx.com', 'okx.com'],
+                'Binance': ['fapi.binance.com', 'dapi.binance.com', 'api.binance.com'],
+            };
+
+            for (const [venue, hosts] of Object.entries(venueHosts)) {
+                let venueLatency = null;
+                for (const h of hosts) {
+                    if (latencyMap[h] != null) {
+                        venueLatency = latencyMap[h];
+                        break;
+                    }
+                }
+                const activeInCoins = coins.some(c => all[c]?.venues?.some(v => v.toLowerCase().includes(venue.toLowerCase())));
+                if (venueLatency != null || activeInCoins) {
+                    const degraded = venueLatency != null && venueLatency > 500;
+                    bridgeUpdate(venue, {
+                        status: degraded ? 'degraded' : 'healthy',
+                        lastFetch: now,
+                        fallback: false,
+                        transient: degraded,
+                        reason: venueLatency != null
+                            ? `${Math.round(venueLatency)}ms latency · live`
+                            : 'Active perp venue',
+                        bucket: BUCKETS.UNKNOWN,
+                        bucketReason: '',
+                    });
+                }
+            }
+        } catch (err) {
+            console.warn('[NetworkHealth] refreshDerivativesFeedStatus failed:', err?.message || err);
+        }
+    }
+
     function refreshLocalProviderStatuses() {
         if (localStatusBridgeInFlight) return;
         localStatusBridgeInFlight = true;
@@ -746,6 +828,7 @@
                 refreshProxyOrchestratorStatus(now);
                 refreshPolymarketStatus(now);
                 await refreshPythStatus(now);
+                refreshDerivativesFeedStatus(now);
             })
             .catch((err) => {
                 console.warn('[NetworkHealth] Local status bridge failed:', err?.message || err);
@@ -967,10 +1050,17 @@
     const HOST_CANONICAL = {
         'api.binance.com': 'Binance',
         'fapi.binance.com': 'Binance',
+        'dapi.binance.com': 'Binance',
+        'fstream.binance.com': 'Binance',
         'api.coinbase.com': 'Coinbase',
         'api.crypto.com': 'Crypto.com',
         'api.bybit.com': 'Bybit',
         'www.okx.com': 'OKX',
+        'okx.com': 'OKX',
+        'api.hyperliquid.xyz': 'Hyperliquid',
+        'indexer.dydx.trade': 'dYdX',
+        'www.deribit.com': 'Deribit',
+        'deribit.com': 'Deribit',
         'mempool.space': 'Mempool.space',
         'api.etherscan.io': 'Etherscan',
         'api.mainnet-beta.solana.com': 'Solana RPC',
