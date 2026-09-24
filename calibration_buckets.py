@@ -1,4 +1,4 @@
-"""Expiry-bucketed probability correction for Truffle calibration."""
+"""Expiry-bucketed probability correction for Jdwalkaz calibration."""
 from __future__ import annotations
 
 from collections import defaultdict, deque

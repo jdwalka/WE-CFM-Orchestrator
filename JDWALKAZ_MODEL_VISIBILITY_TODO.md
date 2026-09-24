@@ -1,6 +1,6 @@
-# Truffle Model Visibility & Tail-Risk Upgrade — Master TODO
+# Jdwalkaz Model Visibility & Tail-Risk Upgrade — Master TODO
 
-Source: Truffle’s grounded model-internals review.
+Source: Jdwalkaz’s grounded model-internals review.
 
 Priority order is intentional: **P0 fixes blind spots that can lose money**,
 **P1 adds diagnostic visibility**, and **P2 improves execution-venue context**.
@@ -95,7 +95,7 @@ Priority order is intentional: **P0 fixes blind spots that can lose money**,
 
 **Acceptance**
 
-- Truffle can say: “This band is priced at 18¢ under Student-t versus 12¢ under normal; the extra 6¢ is tail premium.”
+- Jdwalkaz can say: “This band is priced at 18¢ under Student-t versus 12¢ under normal; the extra 6¢ is tail premium.”
 
 ---
 
@@ -169,7 +169,7 @@ Priority order is intentional: **P0 fixes blind spots that can lose money**,
 
 - [ ] **Make `aligned: true` a visible warning.**
   - Add `alt_alignment_warning` to the prediction snapshot.
-  - Truffle should explicitly explain whether the gate says pass or warning.
+  - Jdwalkaz should explicitly explain whether the gate says pass or warning.
 
 - [ ] **Tests**
   - Aligned up case: both ratios `> 0.55` for 10 minutes.
@@ -181,7 +181,7 @@ Priority order is intentional: **P0 fixes blind spots that can lose money**,
 
 **Acceptance**
 
-- Truffle can say: “SOL and ETH taker flow are both aligned upward for 12 minutes and SOL leads BTC by 2 minutes; this is an active tail-risk warning.”
+- Jdwalkaz can say: “SOL and ETH taker flow are both aligned upward for 12 minutes and SOL leads BTC by 2 minutes; this is an active tail-risk warning.”
 
 ---
 
@@ -240,7 +240,7 @@ Priority order is intentional: **P0 fixes blind spots that can lose money**,
     - realized frequency
     - calibration gap
 
-- [x] **Expose calibration to Truffle and the HUD.**
+- [x] **Expose calibration to Jdwalkaz and the HUD.**
   - Add `/calibration` endpoint.
   - Include a compact calibration block in the model snapshot.
   - Add an MCP tool:
@@ -255,7 +255,7 @@ Priority order is intentional: **P0 fixes blind spots that can lose money**,
 
 **Acceptance**
 
-- Truffle can say: “Over 200 predictions, late-window tail buckets have Brier 0.31 versus 0.18 overall; the model is underpricing late-window tails.”
+- Jdwalkaz can say: “Over 200 predictions, late-window tail buckets have Brier 0.31 versus 0.18 overall; the model is underpricing late-window tails.”
 
 ---
 
@@ -394,7 +394,7 @@ Priority order is intentional: **P0 fixes blind spots that can lose money**,
 
 ## P1-7. Coinbase CFM Contract Quotes
 
-**Goal:** Give Truffle visibility into the actual Coinbase execution venue.
+**Goal:** Give Jdwalkaz visibility into the actual Coinbase execution venue.
 
 - [ ] **Find or build the Coinbase event-contract quote source.**
   - Prefer a supported public API.
@@ -426,7 +426,7 @@ Priority order is intentional: **P0 fixes blind spots that can lose money**,
     - `edge_vs_reference`
     - `edge_vs_model`
 
-- [ ] **Expose to Truffle.**
+- [ ] **Expose to Jdwalkaz.**
   - Add MCP tool:
     `get_coinbase_cfm_ladder`.
   - Add `/cfm/ladder` endpoint if useful.
@@ -473,7 +473,7 @@ Priority order is intentional: **P0 fixes blind spots that can lose money**,
     - average basis between final print and 60s average
     - distribution of final-minute range
 
-- [ ] **Expose to Truffle.**
+- [ ] **Expose to Jdwalkaz.**
   - Add:
     - `/brti/settlement`
     - MCP tool `get_settlement_window_stats`
@@ -512,7 +512,7 @@ Priority order is intentional: **P0 fixes blind spots that can lose money**,
     - OI liquidation flush
   - Include confidence and data age.
 
-- [ ] **Expose to Truffle.**
+- [ ] **Expose to Jdwalkaz.**
   - Add:
     - `/positioning`
     - MCP tool `get_positioning_deltas`
@@ -527,7 +527,7 @@ Priority order is intentional: **P0 fixes blind spots that can lose money**,
 
 ## Model Visibility Layer
 
-These tasks make the model inspectable by both Truffle and the user.
+These tasks make the model inspectable by both Jdwalkaz and the user.
 
 - [ ] **Add `/model/snapshot`.**
   - Return one combined object:
@@ -565,8 +565,8 @@ These tasks make the model inspectable by both Truffle and the user.
   - `get_positioning_deltas`
   - `get_coinbase_cfm_ladder`
 
-- [ ] **Update Truffle’s prompt/tool description.**
-  - Truffle must know:
+- [ ] **Update Jdwalkaz’s prompt/tool description.**
+  - Jdwalkaz must know:
     - which tools are available,
     - when to call them,
     - how to explain tail risk,
@@ -625,7 +625,7 @@ These tasks make the model inspectable by both Truffle and the user.
   - Prediction ledger receives every priced strike.
   - Outcomes resolve after expiry.
   - `/model/snapshot` returns all required fields.
-  - Truffle MCP tool descriptions remain accurate.
+  - Jdwalkaz MCP tool descriptions remain accurate.
 
 - [ ] **Regression tests**
   - Existing hourly range output remains backward compatible.
@@ -649,7 +649,7 @@ These tasks make the model inspectable by both Truffle and the user.
 
 - [ ] **Phase 2 — Visibility**
   - Model snapshot/explain endpoints
-  - Truffle MCP tools
+  - Jdwalkaz MCP tools
   - HUD panels
   - Model metadata truth
 
@@ -664,13 +664,13 @@ These tasks make the model inspectable by both Truffle and the user.
 
 ## Definition of Done
 
-- Truffle prices strikes using the fitted fat-tail distribution.
-- Truffle sees and explains SOL/ETH lead-lag alignment.
+- Jdwalkaz prices strikes using the fitted fat-tail distribution.
+- Jdwalkaz sees and explains SOL/ETH lead-lag alignment.
 - Every prediction is logged and calibrated against its outcome.
 - Model metadata matches the actual implementation.
 - Tail adjustments are visible, bounded, and explained.
 - The HUD shows normal vs fat-tail pricing and live risk gates.
-- Truffle can explain, with data, whether a loss was:
+- Jdwalkaz can explain, with data, whether a loss was:
   - variance,
   - bad calibration,
   - or a priced-but-ignored tail event.

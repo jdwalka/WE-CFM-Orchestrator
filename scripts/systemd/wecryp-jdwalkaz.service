@@ -1,0 +1,17 @@
+[Unit]
+Description=WECRYP jdwalkaz local agent (uAgents :8002)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/mnt/g/dev/wecryp-oracle
+ExecStart=/mnt/g/dev/wecryp-oracle/.venv/bin/python agent.py
+Environment=AGENT_PORT=8002
+Environment=JDWALKAZ_REPO=/mnt/g/WECRYP
+Environment=JDWALKAZ_MEMORY_DB=/mnt/g/WECRYP/data/jdwalkaz_memory.sqlite3
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target

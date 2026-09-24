@@ -2,7 +2,7 @@
  * hypedog — Polymarket multi-asset up/down quoter with D1 calibration persistence.
  *
  * Exposes:
- *   GET /health                  → checks D1 truffle database readiness
+ *   GET /health                  → checks D1 jdwalkaz database readiness
  *   GET /quote?symbol=...        → live Polymarket 5m TWAP up/down quote (BTC/ETH/SOL/XRP)
  *   GET /robots.txt              → search engine crawl prevention
  *   GET /                        → service info
@@ -185,8 +185,9 @@ export default {
           let d1Ready = false;
           let d1Error = null;
           try {
-            if (env && env.truffle) {
-              await env.truffle.prepare("SELECT 1 AS reachable").first();
+            const d1db = env && (env.jdwalkaz || env.truffle);
+            if (d1db) {
+              await d1db.prepare("SELECT 1 AS reachable").first();
               d1Ready = true;
             }
           } catch (e) {
@@ -238,9 +239,11 @@ export default {
             });
           }
 
-          // Asynchronously log quote into D1 truffle database
-          if (env && env.truffle) {
-            const insertPromise = env.truffle
+          // Asynchronously log quote into D1 jdwalkaz database
+          // (falls back to the legacy truffle binding until redeployed)
+          const quoteDb = env && (env.jdwalkaz || env.truffle);
+          if (quoteDb) {
+            const insertPromise = quoteDb
               .prepare(
                 "INSERT INTO hypedog_quotes (timestamp_utc, symbol, slug, up_cents, down_cents, minutes_to_expiry) VALUES (?, ?, ?, ?, ?, ?)"
               )

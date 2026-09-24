@@ -1,7 +1,7 @@
 """
 AMM Cascade Exhaustion & Leverage Density Matrix — v2 (hardened)
 Module: amm_cascade_exhaustion.py
-Target Integration: Truffle (uAgents / ASI1.ai Agent Protocol @ 127.0.0.1:8002)
+Target Integration: Jdwalkaz (uAgents / ASI1.ai Agent Protocol @ 127.0.0.1:8002)
 
 v2 changes:
   - FIXED: absorption_ratio saturation (normalized vs total taker volume, clamped)
@@ -77,7 +77,7 @@ class FlowSnapshot:
 
 @dataclass
 class CascadeTelemetryPacket:
-    """Output contract transmitted to Truffle and ASI:One orchestrators."""
+    """Output contract transmitted to Jdwalkaz and ASI:One orchestrators."""
     timestamp_ms: int
     symbol: str
     spot_price: float

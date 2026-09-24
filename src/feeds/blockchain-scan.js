@@ -87,6 +87,8 @@
       'https://rpc.ankr.com/solana',
       'https://1rpc.io/solana',
     ];
+    const custom = _readEnvLike('SOLANA_CUSTOM_RPC') || _readEnvLike('SOLANA_RPC_URL') || 'http://localhost:8899';
+    if (custom && !nodes.includes(custom)) nodes.unshift(custom);
     let heliusKey = _readEnvLike('HELIUS_API_KEY');
     if (!heliusKey && window.electron && window.electron.readFile) {
       try {
@@ -129,15 +131,20 @@
     const signal = controller.signal;
 
     try {
-      // 🚀 FORCE ROUTE THROUGH TOR SOCKS5 IPC BRIDGE
+      // 🚀 ATTEMPT IPC FETCH (TOR SOCKS5 BRIDGE) WITH DIRECT FALLBACK
       if (window.electron && typeof window.electron.ipcFetch === 'function') {
-        const fetchOpts = { ...opts };
-        if (isPost && opts.body) {
-          fetchOpts.body = typeof opts.body === 'string' ? JSON.parse(opts.body) : opts.body;
-        }
-        const res = await window.electron.ipcFetch(url, fetchOpts);
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        return typeof res.text === 'string' ? JSON.parse(res.text) : res.text;
+        try {
+          const fetchOpts = { ...opts };
+          if (isPost && opts.body) {
+            fetchOpts.body = typeof opts.body === 'string' ? JSON.parse(opts.body) : opts.body;
+          }
+          const ipcPromise = window.electron.ipcFetch(url, fetchOpts);
+          const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('ipcFetch timeout')), 4000));
+          const res = await Promise.race([ipcPromise, timeoutPromise]);
+          if (res && res.ok) {
+            return typeof res.text === 'string' ? JSON.parse(res.text) : res.text;
+          }
+        } catch (_) { /* IPC bridge unavailable or timed out, fall back to direct fetch */ }
       }
 
       // Fallback for non-electron environments
@@ -396,6 +403,7 @@
         'https://s1.ripple.com:51234',
         'https://s2.ripple.com:51234',
         'https://xrplcluster.com',
+        'https://rpc.xrpl.org',
       ];
       let data = null;
       for (const node of XRP_NODES) {

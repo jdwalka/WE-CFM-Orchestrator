@@ -63,7 +63,7 @@ export default {
         return Response.json({ success: true, count: results.length, data: results }, { headers: corsHeaders });
       }
 
-      // 6. Endpoint: Ingest New Calibration Point (Trufflezzz / ASI:One)
+      // 6. Endpoint: Ingest New Calibration Point (Jdwalkaz / ASI:One)
       if (url.pathname === "/calibration/record" && request.method === "POST") {
         const payload = await request.json();
         const {

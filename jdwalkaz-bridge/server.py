@@ -1,5 +1,5 @@
 """
-Truffle Bridge — Primary pricing & Agent Chat Protocol endpoint for WeCryp.
+Jdwalkaz Bridge — Primary pricing & Agent Chat Protocol endpoint for WeCryp.
 Listens on port 8040, communicates with Redis & Redpanda, and serves https://truffle.leaksnipe.win/chat.
 """
 
@@ -28,9 +28,9 @@ ASI1_API_KEY = os.getenv("ASI1_API_KEY", "")
 try:
     redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
     redis_client.ping()
-    print(f"[TruffleBridge] Connected to Redis at {REDIS_URL}")
+    print(f"[JdwalkazBridge] Connected to Redis at {REDIS_URL}")
 except Exception as e:
-    print(f"[TruffleBridge] Warning: Redis connection failed: {e}")
+    print(f"[JdwalkazBridge] Warning: Redis connection failed: {e}")
     redis_client = None
 
 # Connect to Redpanda KafkaProducer
@@ -43,11 +43,11 @@ try:
         key_serializer=lambda k: k.encode("utf-8") if k else None,
         acks=1,
     )
-    print(f"[TruffleBridge] Connected KafkaProducer to {REDPANDA_BROKERS}")
+    print(f"[JdwalkazBridge] Connected KafkaProducer to {REDPANDA_BROKERS}")
 except Exception as e:
-    print(f"[TruffleBridge] Kafka producer init warning: {e}")
+    print(f"[JdwalkazBridge] Kafka producer init warning: {e}")
 
-app = FastAPI(title="Truffle Bridge", version="1.0.0")
+app = FastAPI(title="Jdwalkaz Bridge", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -69,7 +69,7 @@ class ChatParams(BaseModel):
 
 class ChatRequest(BaseModel):
     message: str
-    session_id: Optional[str] = "truffle-wecrypto"
+    session_id: Optional[str] = "jdwalkaz-wecrypto"
     params: Optional[ChatParams] = Field(default_factory=ChatParams)
 
 
@@ -115,7 +115,7 @@ def fetch_live_market_fallback(symbol: str) -> dict:
     ask = 0.0
     try:
         url = f"https://api.exchange.coinbase.com/products/{pair}/ticker"
-        req = urllib.request.Request(url, headers={"User-Agent": "truffle-bridge/1.0"})
+        req = urllib.request.Request(url, headers={"User-Agent": "jdwalkaz-bridge/1.0"})
         with urllib.request.urlopen(req, timeout=4) as r:
             tdata = json.loads(r.read().decode())
             spot = float(tdata.get("price", 0))
@@ -134,7 +134,7 @@ def fetch_live_market_fallback(symbol: str) -> dict:
     candles = []
     try:
         url = f"https://api.exchange.coinbase.com/products/{pair}/candles?granularity=3600"
-        req = urllib.request.Request(url, headers={"User-Agent": "truffle-bridge/1.0"})
+        req = urllib.request.Request(url, headers={"User-Agent": "jdwalkaz-bridge/1.0"})
         with urllib.request.urlopen(req, timeout=5) as r:
             raw_candles = json.loads(r.read().decode())
             # Format: [ [ time, low, high, open, close, volume ], ... ]
@@ -197,7 +197,7 @@ def fetch_live_market_fallback(symbol: str) -> dict:
             }
             redis_client.set(f"book:coinbase:{symbol_norm}", json.dumps(book_snap), ex=30)
         except Exception as e:
-            print(f"[TruffleBridge] Redis write error: {e}")
+            print(f"[JdwalkazBridge] Redis write error: {e}")
 
     return {
         "candles": candles,
@@ -237,7 +237,7 @@ def get_prices_from_redis(symbol: str) -> dict:
                     }
                     break
         except Exception as e:
-            print(f"[TruffleBridge] Redis read error: {e}")
+            print(f"[JdwalkazBridge] Redis read error: {e}")
 
     # Fallback if Redis is cold or empty
     if not candles:
@@ -269,7 +269,7 @@ def health():
 
     return {
         "status": "ok",
-        "service": "truffle-bridge",
+        "service": "jdwalkaz-bridge",
         "redis": redis_ok,
         "endpoint": "https://truffle.leaksnipe.win",
         "timestamp_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -319,7 +319,7 @@ async def cascade_endpoint(
             VenueSkew,
             FlowSnapshot,
         )
-        from truffle_cascade_bridge import format_asi1_context
+        from jdwalkaz_cascade_bridge import format_asi1_context
         from dataclasses import asdict
 
         px_data = get_prices_from_redis(sym)
@@ -387,7 +387,7 @@ async def cascade_endpoint(
         # Produce signal to Redpanda if state change / action warranted
         if kafka_producer and packet.verdict in ("FLUSH_EXHAUSTED_ABSORPTION_DETECTED", "VOID_SLIP_ACTIVE"):
             try:
-                kafka_producer.send("truffle.signals", key=sym, value={
+                kafka_producer.send("jdwalkaz.signals", key=sym, value={
                     "symbol": sym,
                     "signal_type": "cascade_exhaustion",
                     "verdict": packet.verdict,
@@ -397,7 +397,7 @@ async def cascade_endpoint(
                     "ts": packet.timestamp_ms,
                 })
             except Exception as k_err:
-                print(f"[TruffleBridge] Error streaming cascade signal: {k_err}")
+                print(f"[JdwalkazBridge] Error streaming cascade signal: {k_err}")
 
         return {
             "ok": True,
@@ -415,7 +415,7 @@ async def chat_endpoint(
     authorization: Optional[str] = Header(None, alias="Authorization"),
 ):
     """
-    Agent Chat Protocol endpoint for Truffle.
+    Agent Chat Protocol endpoint for Jdwalkaz.
     Enforces X-API-Key authentication and 10s hang-protection timeout.
     """
     if not verify_auth(x_api_key, authorization):
@@ -429,10 +429,10 @@ async def chat_endpoint(
         symbols = req.params.symbols if req.params and req.params.symbols else ["BTC"]
         interval = req.params.interval if req.params and req.params.interval else "1h"
 
-        # Record session state in Redis: truffle:session:{id} (TTL 3600s)
+        # Record session state in Redis: jdwalkaz:session:{id} (TTL 3600s)
         if redis_client and req.session_id:
             try:
-                session_key = f"truffle:session:{req.session_id}"
+                session_key = f"jdwalkaz:session:{req.session_id}"
                 session_data = {
                     "last_active": int(time.time()),
                     "symbols": symbols,
@@ -440,7 +440,7 @@ async def chat_endpoint(
                 }
                 redis_client.set(session_key, json.dumps(session_data), ex=3600)
             except Exception as e:
-                print(f"[TruffleBridge] Session write error: {e}")
+                print(f"[JdwalkazBridge] Session write error: {e}")
 
         all_prices = []
         primary_book = {}
@@ -455,9 +455,9 @@ async def chat_endpoint(
         if req.params and req.params.signals and kafka_producer:
             for sym, sig in req.params.signals.items():
                 try:
-                    kafka_producer.send("truffle.signals", key=sym.upper(), value={"symbol": sym.upper(), "data": sig, "ts": int(time.time())})
+                    kafka_producer.send("jdwalkaz.signals", key=sym.upper(), value={"symbol": sym.upper(), "data": sig, "ts": int(time.time())})
                 except Exception as e:
-                    print(f"[TruffleBridge] Error publishing signal from chat: {e}")
+                    print(f"[JdwalkazBridge] Error publishing signal from chat: {e}")
 
         return {
             "status": "success",
@@ -489,7 +489,7 @@ def post_signal(
     x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
     authorization: Optional[str] = Header(None, alias="Authorization"),
 ):
-    """Publish regime flags and probabilities to truffle.signals."""
+    """Publish regime flags and probabilities to jdwalkaz.signals."""
     if not verify_auth(x_api_key, authorization):
         raise HTTPException(
             status_code=401,
@@ -502,13 +502,13 @@ def post_signal(
 
     if kafka_producer:
         try:
-            kafka_producer.send("truffle.signals", key=signal.symbol.upper(), value=payload)
+            kafka_producer.send("jdwalkaz.signals", key=signal.symbol.upper(), value=payload)
             kafka_producer.flush()
         except Exception as e:
-            print(f"[TruffleBridge] Signal produce error: {e}")
+            print(f"[JdwalkazBridge] Signal produce error: {e}")
             return {"status": "error", "message": str(e)}
 
-    return {"status": "success", "message": f"Signal for {signal.symbol} published to truffle.signals", "data": payload}
+    return {"status": "success", "message": f"Signal for {signal.symbol} published to jdwalkaz.signals", "data": payload}
 
 
 UAGENT_PORT = int(os.getenv("UAGENT_PORT", "8002"))
@@ -520,9 +520,9 @@ async def submit_health_check():
     """Liveness probe for Agentverse and webhook pingers."""
     return {
         "status": "ok",
-        "agent": "Trufflezzz",
+        "agent": "Jdwalkaz",
         "address": "agent1qw7fvhx3x0nsjppcpz7e5a92rq8k7qzsl3rug9nryc0mvz0r4kve28xfzhm",
-        "handle": "truffz",
+        "handle": "jdwalkaz",
         "protocol": "proto:30a801ed3a83f9a0ff0a9f1e6fe958cb91da1fc2218b153df7b6cbf87bd33d62",
     }
 
@@ -552,7 +552,7 @@ async def submit_proxy(request: Request):
             media_type=resp.headers.get("content-type", "application/json"),
         )
     except Exception as e:
-        print(f"[TruffleBridge] /submit proxy error: {e}")
+        print(f"[JdwalkazBridge] /submit proxy error: {e}")
         raise HTTPException(status_code=502, detail=f"uAgent unreachable: {e}")
 
 
@@ -565,11 +565,11 @@ def _run_kafka_tick_consumer():
             bootstrap_servers=REDPANDA_BROKERS.split(","),
             auto_offset_reset="latest",
             enable_auto_commit=True,
-            group_id="truffle-bridge-roll",
+            group_id="jdwalkaz-bridge-roll",
             value_deserializer=lambda m: json.loads(m.decode("utf-8")),
             consumer_timeout_ms=2000,
         )
-        print(f"[TruffleBridge] Subscribed to wecrypto.prices.ticks on {REDPANDA_BROKERS}")
+        print(f"[JdwalkazBridge] Subscribed to wecrypto.prices.ticks on {REDPANDA_BROKERS}")
         while True:
             for message in consumer:
                 try:
@@ -596,10 +596,10 @@ def _run_kafka_tick_consumer():
                     if kafka_producer:
                         kafka_producer.send("wecrypto.prices.1m", key=symbol, value=candle)
                 except Exception as ex:
-                    print(f"[TruffleBridge] Consumer tick processing error: {ex}")
+                    print(f"[JdwalkazBridge] Consumer tick processing error: {ex}")
             time.sleep(0.1)
     except Exception as e:
-        print(f"[TruffleBridge] Kafka consumer thread exited: {e}")
+        print(f"[JdwalkazBridge] Kafka consumer thread exited: {e}")
 
 
 @app.on_event("startup")

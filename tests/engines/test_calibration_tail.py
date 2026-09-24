@@ -29,7 +29,7 @@ class CalibrationTailCorrectionTest(unittest.TestCase):
         self._temporary_directory = TemporaryDirectory()
         self.addCleanup(self._temporary_directory.cleanup)
         self._original_db_path = calibration_ledger.DB_PATH
-        calibration_ledger.DB_PATH = Path(self._temporary_directory.name) / "truffle_calibration.sqlite3"
+        calibration_ledger.DB_PATH = Path(self._temporary_directory.name) / "jdwalkaz_calibration.sqlite3"
 
     def tearDown(self):
         calibration_ledger.DB_PATH = self._original_db_path

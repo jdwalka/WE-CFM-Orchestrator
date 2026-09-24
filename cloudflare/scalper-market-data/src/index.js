@@ -90,7 +90,7 @@ async function getCoinbaseSpot(symbol = "BTC") {
 }
 
 async function getCalibrationHealth(env) {
-  const database = env && (env.CALIBRATION_DB || env.truffle);
+  const database = env && (env.CALIBRATION_DB || env.jdwalkaz || env.truffle);
   if (!database) {
     return {
       storage_reachable: false,
@@ -159,18 +159,18 @@ async function getLadderFeedStatus(source, loadFeed) {
   }
 }
 
-async function getLadderFeedHealth() {
+async function getLadderFeedHealth(env, ctx) {
   const [kalshi, polymarket] = await Promise.all([
-    getLadderFeedStatus("kalshi", () => getKalshiUpdown("KXBTC15M")),
+    getLadderFeedStatus("kalshi", () => getKalshiUpdownCached(env, ctx, "KXBTC15M")),
     getLadderFeedStatus("polymarket", () => getPolymarketHourlyUpdown()),
   ]);
   return [kalshi, polymarket];
 }
 
-async function buildHealthResponse(env, symbol = "BTC") {
+async function buildHealthResponse(env, symbol = "BTC", ctx) {
   const [calibration, ladderFeeds, spot] = await Promise.all([
     getCalibrationHealth(env),
-    getLadderFeedHealth(),
+    getLadderFeedHealth(env, ctx),
     getSpotSourceHealth(symbol),
   ]);
   const degraded = !calibration.calibration_available;
@@ -329,6 +329,41 @@ async function getKalshiUpdown(seriesTicker = "KXBTC15M") {
     settlement_window_seconds: 60,
     settlement_method: "kalshi_brti_60s_avg_vs_open",
   };
+}
+
+// KV read-through for the 15M check: the HUD + health poll this route every
+// few seconds, and uncached every poll is a direct Kalshi hit (429s when
+// markets are open). 45s TTL cuts upstream pressure ~10x; direct fetch
+// remains the fallback when KV is unbound.
+const KALSHI_UPDOWN_TTL_S = 45;
+const kalshiUpdownCacheKey = (seriesTicker) => `kalshi:updown:${seriesTicker}`;
+
+async function getKalshiUpdownCached(env, ctx, seriesTicker = "KXBTC15M") {
+  const key = kalshiUpdownCacheKey(seriesTicker);
+  if (env && env.MARKET_CACHE) {
+    try {
+      const raw = await env.MARKET_CACHE.get(key);
+      if (raw) {
+        const cached = JSON.parse(raw);
+        return { ...cached, _cache: "hit", cache: "hit" };
+      }
+    } catch (_) { /* fall through to live fetch */ }
+  }
+  const live = await getKalshiUpdown(seriesTicker);
+  const stamped = {
+    ...live,
+    computed_at: new Date().toISOString(),
+    _cache: "miss",
+    cache: "miss",
+  };
+  if (env && env.MARKET_CACHE) {
+    const put = env.MARKET_CACHE.put(key, JSON.stringify(stamped), {
+      expirationTtl: KALSHI_UPDOWN_TTL_S,
+    });
+    if (ctx && ctx.waitUntil) ctx.waitUntil(put);
+    else await put.catch(() => {});
+  }
+  return stamped;
 }
 
 async function getKalshiOrderbook(ticker) {
@@ -613,15 +648,15 @@ export default {
             },
           });
         case "/health":
-          return jsonResponse(await buildHealthResponse(env, symbol));
+          return jsonResponse(await buildHealthResponse(env, symbol, ctx));
         case "/calibration/status": {
-          const database = env && (env.CALIBRATION_DB || env.truffle);
+          const database = env && (env.CALIBRATION_DB || env.jdwalkaz || env.truffle);
           if (!database) {
             return jsonResponse({
               status: "degraded",
               storage_reachable: false,
               degraded: true,
-              error: "No CALIBRATION_DB or truffle binding found",
+              error: "No CALIBRATION_DB, jdwalkaz or truffle binding found",
             }, 503);
           }
           try {
@@ -863,7 +898,7 @@ export default {
           return jsonResponse(payload);
         }
         case "/kalshi/updown":
-          return jsonResponse(await getKalshiUpdown(url.searchParams.get("series") || "KXBTC15M"));
+          return jsonResponse(await getKalshiUpdownCached(env, ctx, url.searchParams.get("series") || "KXBTC15M"));
         case "/kalshi/orderbook": {
           const ticker = url.searchParams.get("ticker");
           if (!ticker) return jsonResponse({ error: "ticker query param required" }, 400);
