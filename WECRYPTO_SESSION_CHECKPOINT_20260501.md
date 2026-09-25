@@ -143,3 +143,8 @@
 - Days: 18  Train: 400  Test: 100  Step: 50
 - Coins: XRP
 - Log: /mnt/g/WECRYP/backtest-logs/wf-2026-09-22.log
+
+## Walk-Forward Backtest — 2026-09-25T15:56:16.217Z
+- Days: 14  Train: 400  Test: 100  Step: 50
+- Coins: BTC, ETH, SOL, XRP
+- Log: G:\WECRYP\backtest-logs\wf-2026-09-25.log
