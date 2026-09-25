@@ -46,10 +46,9 @@
     'api.bytick.com',
     'api.kraken.com',
     'www.kraken.com',
-    'api.hyperliquid.xyz',
-    // NOTE: bitstamp is deliberately NOT in this set. Its Imperva WAF 403s
-    // proxied (non-browser TLS) requests while direct browser-TLS requests
-    // return 200 — so on a tripped breaker the direct leg must be attempted.
+    // NOTE: bitstamp and hyperliquid are deliberately NOT in this set.
+    // Hyperliquid runs on AWS CloudFront with wide-open CORS (ACAO:*) and direct
+    // requests return 200 without geo-block, whereas local proxy injected spurious headers.
     'www.okx.com',
     'api.okx.com',
     'api-pub.bitfinex.com',
@@ -140,7 +139,8 @@
   // Bitstamp 2026-09: its Incapsula WAF 403s proxied (non-browser TLS)
   // requests while direct browser-TLS requests return 200 with ACAO:* —
   // so Bitstamp always goes direct, never through the proxy.
-  const IGNORE_DOMAINS = /localhost|127\.0\.0\.1|asi1\.ai|fetch-ai\.com|openai\.com|anthropic\.com|x\.ai|deepseek\.com|timeapi\.io|pyth|bitstamp\.net/i;
+  // Hyperliquid 2026-09: CloudFront edge with ACAO:*, open public market info.
+  const IGNORE_DOMAINS = /localhost|127\.0\.0\.1|asi1\.ai|fetch-ai\.com|openai\.com|anthropic\.com|x\.ai|deepseek\.com|timeapi\.io|pyth|bitstamp\.net|hyperliquid/i;
 
   function needsProxy(hostname) {
     if (IGNORE_DOMAINS.test(hostname)) return false;
@@ -321,7 +321,46 @@
 
     const urlToUse = IGNORE_DOMAINS.test(originalUrl) ? originalUrl : rewrite(originalUrl);
     let fetchPromise;
-    if (shouldUseNodeFetch(originalUrl, urlToUse)) {
+
+    let customAgent = undefined;
+    let directUrl = originalUrl;
+
+    if (hostname && /(binance|bybit)/i.test(hostname) && typeof process !== 'undefined' && process.env) {
+      const socksProxyUrl = process.env.BINANCE_SOCKS_PROXY || process.env.BYBIT_SOCKS_PROXY || process.env.WECRYPTO_SWEDEN_SOCKS;
+      if (socksProxyUrl && _nodeFetch && typeof require !== 'undefined') {
+        try {
+          const { SocksProxyAgent } = require('socks-proxy-agent');
+          customAgent = new SocksProxyAgent(socksProxyUrl);
+          
+          if (LOCAL_PROXY_HOST.test(safeHostname(originalUrl) || '')) {
+            try {
+              const u = new URL(originalUrl);
+              const p = u.pathname.split('/').filter(Boolean);
+              const slug = p[0];
+              const realHost = REVERSE_HOST_MAP[slug];
+              if (realHost) {
+                const rest = p.slice(1).join('/');
+                directUrl = `https://${realHost}/${rest}${u.search}`;
+              }
+            } catch(_) {}
+          }
+        } catch (e) {
+          console.warn('[WE] proxy-fetch — failed to init SocksProxyAgent', e);
+        }
+      }
+    }
+
+    if (customAgent) {
+      const opts = init || {};
+      opts.agent = customAgent;
+      if (requestInput instanceof Request) {
+        opts.method = opts.method || requestInput.method;
+        opts.headers = opts.headers || requestInput.headers;
+        if (requestInput.body && !opts.body) opts.body = requestInput.body;
+        opts.signal = opts.signal || requestInput.signal;
+      }
+      fetchPromise = _nodeFetch(directUrl, opts);
+    } else if (shouldUseNodeFetch(originalUrl, urlToUse)) {
       if (requestInput instanceof Request) {
         const opts = init || {};
         opts.method = opts.method || requestInput.method;

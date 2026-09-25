@@ -62,7 +62,7 @@
     BNB: 'BNB_USDC-PERPETUAL',
   };
 
-  const HEALTHY_LATENCY_THRESHOLD_MS = 1500;
+  const HEALTHY_LATENCY_THRESHOLD_MS = 3500;
 
   function recordDiagnostics(url, res, latencyMs) {
     const host = urlHost(url) || 'unknown';
@@ -322,6 +322,9 @@
 
   // ── Hyperliquid: Single POST /info multiplexing metaAndAssetCtxs & predictedFundings
   //    Hyperliquid rejects GET with 405 Method Not Allowed!
+  let _lastHlMap = {};
+  let _lastHlTs = 0;
+
   async function fetchHyperliquidInfo() {
     try {
       const t0 = Date.now();
@@ -368,8 +371,21 @@
         }
       }
 
-      return byCoin;
-    } catch (_) { return {}; }
+      if (Object.keys(byCoin).length > 0) {
+        _lastHlMap = byCoin;
+        _lastHlTs = Date.now();
+        return byCoin;
+      }
+      if (Date.now() - _lastHlTs < 180_000 && Object.keys(_lastHlMap).length > 0) {
+        return _lastHlMap;
+      }
+      return {};
+    } catch (_) {
+      if (Date.now() - _lastHlTs < 180_000 && Object.keys(_lastHlMap).length > 0) {
+        return _lastHlMap;
+      }
+      return {};
+    }
   }
 
   // ── Liquidation WS (Binance combined !forceOrder@arr) ─────────────
@@ -615,6 +631,7 @@
       status,
       lastFetch: Date.now(),
       fallback: extra.fallback || false,
+      optional: extra.optional || false,
       transient: extra.transient || false,
       reason: reason || (healthy ? `${latencyMs ? Math.round(latencyMs) + 'ms' : 'ok'}` : 'fetch error'),
       bucket: healthy ? 'unknown' : (extra.bucket || 'provider/api'),
@@ -702,11 +719,11 @@
 
       const hasBinance = Object.values(detail).some(s => s.venues?.includes('binance') || s.venues?.includes('binance-coinm'));
       const binanceLat = lat['fapi.binance.com'] || lat['dapi.binance.com'] || 0;
-      reportVenueHealth('Binance', hasBinance, binanceLat, hasBinance ? 'fapi/dapi OI + funding live' : 'Binance feeds offline', { transient: !hasBinance });
+      reportVenueHealth('Binance', hasBinance, binanceLat, hasBinance ? 'fapi/dapi OI + funding live' : 'Geo-restricted (US egress · proxy/VPN optional)', { transient: !hasBinance, optional: true });
 
       const hasBybit = Object.values(detail).some(s => s.venues?.includes('bybit'));
       const bybitLat = lat['api.bybit.com'] || 0;
-      reportVenueHealth('Bybit', hasBybit, bybitLat, hasBybit ? 'v5 linear tickers + book live' : 'Bybit feeds offline', { transient: !hasBybit });
+      reportVenueHealth('Bybit', hasBybit, bybitLat, hasBybit ? 'v5 linear tickers + book live' : 'Geo-restricted (US egress · proxy/VPN optional)', { transient: !hasBybit, optional: true });
 
       const hasOkx = Object.values(detail).some(s => s.venues?.includes('okx'));
       const okxLat = lat['www.okx.com'] || 0;

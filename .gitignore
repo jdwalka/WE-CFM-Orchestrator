@@ -35,6 +35,8 @@ credentials*.json
 service-account*.json
 .env
 .env.*
+claude-mem
+*.conf
 
 # OS
 .DS_Store

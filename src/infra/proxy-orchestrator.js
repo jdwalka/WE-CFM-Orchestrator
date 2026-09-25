@@ -1267,8 +1267,9 @@ if (
             let res;
             try {
               const isGecko = endpoint === 'coingecko' || /coingecko/i.test(String(url));
+              const isBinanceSpot = /api\.binance\.com|data-api\.binance\.vision/i.test(String(fetchUrl));
               const isFapi = /fapi\.binance\.com/i.test(String(fetchUrl));
-              const isBybit = endpoint === 'bybit' || /bybit\.com/i.test(String(fetchUrl));
+              const isBybit = endpoint === 'bybit' || /bybit\.com|bytick\.com/i.test(String(fetchUrl));
               const pPort = (typeof window !== 'undefined' && window.__PROXY_PORT__) || 3010;
 
               const headers = { Accept: 'application/json' };
@@ -1282,11 +1283,21 @@ if (
                 }
               }
 
-              // Enforce SOCKS5 / local proxy routing for fapi.binance.com to circumvent US geo-block (HTTP 451)
+              // Enforce SOCKS5 / local proxy routing to circumvent US geo-block (HTTP 451/403)
               if (isFapi && !fetchUrl.includes(`:${pPort}/`)) {
                 try {
-                  const parsedFapi = new URL(fetchUrl);
-                  fetchUrl = `http://127.0.0.1:${pPort}/binance-f${parsedFapi.pathname}${parsedFapi.search}`;
+                  const parsed = new URL(fetchUrl);
+                  fetchUrl = `http://127.0.0.1:${pPort}/binance-f${parsed.pathname}${parsed.search}`;
+                } catch (_) {}
+              } else if (isBinanceSpot && !fetchUrl.includes(`:${pPort}/`)) {
+                try {
+                  const parsed = new URL(fetchUrl);
+                  fetchUrl = `http://127.0.0.1:${pPort}/binance${parsed.pathname}${parsed.search}`;
+                } catch (_) {}
+              } else if (isBybit && !fetchUrl.includes(`:${pPort}/`)) {
+                try {
+                  const parsed = new URL(fetchUrl);
+                  fetchUrl = `http://127.0.0.1:${pPort}/bybit${parsed.pathname}${parsed.search}`;
                 } catch (_) {}
               }
 

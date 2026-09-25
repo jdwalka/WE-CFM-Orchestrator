@@ -443,9 +443,8 @@
     'xrplcluster.com':                 'xrpl',
   };
 
-  // Bitstamp: Incapsula 403s proxied TLS, direct returns 200 (ACAO:*) —
-  // always direct, in both shims.
-  const IGNORE_DOMAINS = /timeapi\.io|kalshi\.com|polymarket\.com|bitstamp\.net/i;
+  // Bitstamp & Hyperliquid: ACAO:* with direct connections; bypass local proxy
+  const IGNORE_DOMAINS = /timeapi\.io|kalshi\.com|polymarket\.com|bitstamp\.net|hyperliquid/i;
 
   // Mirror of proxy-fetch.js CF_PROTECTED: hosts that REQUIRE the proxy
   // (CF Bot Mgmt / geo-restricted). A 403/404 for these via proxy must NOT
@@ -462,7 +461,6 @@
     'api.bytick.com',
     'api.kraken.com',
     'www.kraken.com',
-    'api.hyperliquid.xyz',
     'www.okx.com',
     'api.okx.com',
     'api-pub.bitfinex.com',

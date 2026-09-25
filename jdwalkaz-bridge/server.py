@@ -1,6 +1,6 @@
 """
 Jdwalkaz Bridge — Primary pricing & Agent Chat Protocol endpoint for WeCryp.
-Listens on port 8040, communicates with Redis & Redpanda, and serves https://truffle.leaksnipe.win/chat.
+Listens on port 8040, communicates with Redis & Redpanda, and serves https://gemini.leaksnipe.win/chat.
 """
 
 import asyncio
@@ -271,7 +271,7 @@ def health():
         "status": "ok",
         "service": "jdwalkaz-bridge",
         "redis": redis_ok,
-        "endpoint": "https://truffle.leaksnipe.win",
+        "endpoint": "https://gemini.leaksnipe.win",
         "timestamp_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
 
