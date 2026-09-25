@@ -7,9 +7,9 @@
   'use strict';
 
   const REGIME_WEIGHT_MULTS = {
-       trending_smooth: { ema: 1.5, hma: 1.4, vwap: 1.3, obv: 1.2, bands: 0.7, williamsR: 0.7, momentum: 0.5 },
-       trending_volatile: { volume: 1.5, flow: 1.4, book: 1.3, macd: 1.2, ema: 1.1, bands: 0.8, momentum: 2 },
-       ranging: { bands: 1.6, williamsR: 1.5, cci: 1.4, rsi: 1.3, stochrsi: 1.3, ema: 0.7, hma: 0.6, momentum: 0.1 },
+       trending_smooth: { ema: 1.632, hma: 1.523, vwap: 1.3, obv: 1.306, bands: 0.7, williamsR: 0.7, momentum: 0.5 },
+       trending_volatile: { volume: 1.5, flow: 1.4, book: 1.3, macd: 1.306, ema: 1.197, bands: 0.8, momentum: 2 },
+       ranging: { bands: 1.6, williamsR: 1.5, cci: 1.4, rsi: 1.414, stochrsi: 1.3, ema: 0.7, hma: 0.6, momentum: 0.1 },
        choppy: { book: 0.4, flow: 0.4, macd: 0.5, ema: 0.6, bands: 0.6, momentum: 0.3 },
        neutral: {},
      };
