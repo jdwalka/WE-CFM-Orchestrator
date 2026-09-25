@@ -107,6 +107,8 @@
           <option value="asi1">asi1 (Standard)</option>
           <option value="asi1-ultra">asi1-ultra (Deep Reasoning)</option>
           <option value="asi1-fast">asi1-fast (Quick)</option>
+          <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
+          <option value="gemini-2.5-pro">Gemini 2.5 Pro</option>
         </select>
         <select id="adReasoningEffort">
           <option value="auto">Effort: Auto (Fast)</option>
@@ -114,6 +116,9 @@
           <option value="low">Reasoning: Low</option>
           <option value="medium">Reasoning: Medium</option>
           <option value="high">Reasoning: High</option>
+          <option value="gemini-thought-low">Gemini: Low Effort</option>
+          <option value="gemini-thought-medium">Gemini: Med Effort</option>
+          <option value="gemini-thought-high">Gemini: High Effort</option>
         </select>
       </div>
       <div style="display:flex;align-items:center;justify-content:space-between;margin:4px 0 8px 0">
@@ -1010,7 +1015,7 @@
 
       const options = {
         model: modelChoice !== 'auto' ? modelChoice : undefined,
-        reasoning_effort: (effortChoice === 'high' || effortChoice === 'medium' || effortChoice === 'low') ? effortChoice : 'low',
+        reasoning_effort: (effortChoice === 'high' || effortChoice === 'medium' || effortChoice === 'low' || effortChoice.startsWith('gemini-thought-')) ? effortChoice : 'low',
         enable_thinking: effortChoice === 'off' ? false : (effortChoice !== 'auto' ? true : undefined),
         web_search: webSearch ? true : undefined,
         timeoutMs: inferMode === 'planner' ? 25000 : 8000,
