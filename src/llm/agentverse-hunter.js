@@ -10,6 +10,7 @@
 
 const Asi1Client = require('../infra/asi1-client');
 const CoinPrecision = require('../shared/coin-precision');
+const { isAgentBlacklisted, filterAllowedAgents } = require('../shared/asi1-agent-blacklist');
 
 
 /**
@@ -236,7 +237,7 @@ async function runAutonomousHunt(marketContext = {}) {
   _isHunting = true;
   _hunterStatus = 'HUNTING';
 
-  const pinnedAgentAddresses = AUDITED_AGENTVERSE_ROSTER.map((a) => a.address);
+  const pinnedAgentAddresses = filterAllowedAgents(AUDITED_AGENTVERSE_ROSTER).map((a) => a.address);
   const prompt = buildHuntPrompt(marketContext);
   const sessionId = `wecrypto-hunt-${Date.now().toString(36)}`;
   const started = Date.now();

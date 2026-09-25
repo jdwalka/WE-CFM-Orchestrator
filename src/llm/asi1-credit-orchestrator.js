@@ -11,6 +11,7 @@
 const Asi1Client = require('../infra/asi1-client');
 const Desk = require('./asi1-desk-contract');
 const CoinPrecision = require('../shared/coin-precision');
+const { filterAllowedAgents, isAgentBlacklisted } = require('../shared/asi1-agent-blacklist');
 
 const ASI1_ALL_MODELS = Asi1Client.ASI1_ALL_MODELS || Object.freeze([
   'asi1-ultra',
@@ -418,7 +419,7 @@ async function deskInfer(packet, mode, options = {}) {
         model,
         candidateModels: rosterFor({ model }),
         plannerMode: plannerOn,
-        agents: plannerOn ? AGENTVERSE_PINNED_AGENTS.slice() : undefined,
+        agents: plannerOn ? filterAllowedAgents(AGENTVERSE_PINNED_AGENTS) : undefined,
         reasoning_effort,
         enable_thinking,
         web_search,
