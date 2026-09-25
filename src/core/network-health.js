@@ -997,6 +997,11 @@
         { provider: 'LocalProxy', url: null, fromBridge: true },
     ];
 
+    // Operator kill-switch: Etherscan dropped until egress/keys are re-verified.
+    // When false the probe is skipped and the row parks at unknown instead of
+    // flapping degraded. Re-enable by flipping to true (no other changes).
+    const ETHERSCAN_ENABLED = false;
+
     const ENDPOINT_PROBE_STALE_MS = 90_000;
     const ENDPOINT_PROBE_BATCH = 4;
     const ENDPOINT_PROBE_FAILURE_THRESHOLD = 3;
@@ -1041,7 +1046,20 @@
             endpointProbeCursor = (endpointProbeCursor + due.length) % ENDPOINT_HOST_PROBES.length;
 
             for (const cfg of due) {
-                // LocalProxy: source from bridge state (live port), never a
+                // Etherscan dropped by operator: never probe, park at unknown.
+                if (cfg.provider === 'Etherscan' && !ETHERSCAN_ENABLED) {
+                    update(cfg.provider, {
+                        status: 'unknown',
+                        lastFetch: now,
+                        fallback: false,
+                        optional: true,
+                        transient: false,
+                        reason: 'Etherscan disabled by operator',
+                        bucket: BUCKETS.UNKNOWN,
+                        bucketReason: '',
+                    });
+                    continue;
+                }                // LocalProxy: source from bridge state (live port), never a
                 // hardcoded :3010 HTTP probe. The bridge owns discovery across
                 // the full cascade; probing :3010 here would report DEGRADED
                 // whenever the proxy correctly bound :3011+.
