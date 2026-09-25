@@ -19,6 +19,7 @@ const CF_AIG_ACCOUNT_ID = process.env.CF_AIG_ACCOUNT_ID || process.env.CLOUDFLAR
 const CF_AIG_GATEWAY = process.env.CF_AIG_GATEWAY || process.env.CF_AIG_GATEWAY_ID || 'default';
 const CF_AIG_TOKEN = process.env.CF_AIG_TOKEN || process.env.CLOUDFLARE_API_TOKEN || '';
 const ASI1_USE_CF_AIG = process.env.ASI1_USE_CF_AIG === '1' || process.env.ASI1_AI_GATEWAY === '1';
+const { filterAllowedAgents, isAgentBlacklisted } = require('../shared/asi1-agent-blacklist');
 
 const ASI1_BASE_URL = (
   process.env.ASI1_BASE_URL
@@ -429,7 +430,7 @@ async function chatCompletion(messagesOrOptions, maybeOptions = {}) {
           || process.env.ASI1_PLANNER_MODE === '1';
         if (plannerOn) payload.planner_mode = true;
         if (Array.isArray(options.agents) && options.agents.length) {
-          payload.agents = options.agents.slice();
+          payload.agents = filterAllowedAgents(options.agents);
         }
         // Planner requires x-session-id for the whole run (docs.asi1.ai planner).
         const sessionId = options.sessionId || accountSession
