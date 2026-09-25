@@ -178,15 +178,16 @@
     } catch (_) {
       return false;
     }
+    // Abort/timeout is a caller/network condition, NOT proxy-down
+    if (err?.name === 'AbortError' || /abort|timeout/i.test(String(err?.message || ''))) {
+      return false;
+    }
     const msg = String(err?.message || err || '').toLowerCase();
     return (
-      msg.includes('failed to fetch') ||
       msg.includes('econnrefused') ||
       msg.includes('connection refused') ||
-      msg.includes('networkerror') ||
-      msg.includes('load failed') ||
       msg.includes('enetunreach') ||
-      msg.includes('econnreset') && msg.includes('127.0.0.1')
+      (msg.includes('econnreset') && msg.includes('127.0.0.1'))
     );
   }
 
@@ -254,10 +255,28 @@
   // XHR-based local probe: bypasses the window.fetch patch (no breaker /
   // rewrite re-entrancy) and fails silently without fetch-promise logging.
   function _xhrGetText(url, timeoutMs) {
+    if (typeof XMLHttpRequest === 'undefined') {
+      const fetchFn = typeof fetch === 'function' ? fetch : (typeof window !== 'undefined' ? window.fetch : null);
+      if (fetchFn) {
+        const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+        const timer = ctrl ? setTimeout(() => ctrl.abort(), timeoutMs || PROXY_HEALTH_TIMEOUT_MS) : null;
+        return fetchFn(url, { signal: ctrl?.signal })
+          .then(async (res) => {
+            if (timer) clearTimeout(timer);
+            const text = await res.text();
+            return { ok: res.ok, text };
+          })
+          .catch(() => {
+            if (timer) clearTimeout(timer);
+            return { ok: false, text: '' };
+          });
+      }
+      return Promise.resolve({ ok: false, text: '' });
+    }
     return new Promise((resolve) => {
       try {
         const xhr = new XMLHttpRequest();
-        xhr.timeout = timeoutMs;
+        xhr.timeout = timeoutMs || PROXY_HEALTH_TIMEOUT_MS;
         xhr.onload = () => resolve({ ok: xhr.status >= 200 && xhr.status < 300, text: xhr.responseText || '' });
         xhr.onerror = () => resolve({ ok: false, text: '' });
         xhr.ontimeout = () => resolve({ ok: false, text: '' });
@@ -343,6 +362,7 @@
           continue;
         }
         if (!bestPort || tryPort < bestPort) bestPort = tryPort;
+        if (tryPort === _cachedProxyPort || bestPort === 3010) break;
     }
     if (bestPort) {
         {
@@ -613,16 +633,26 @@
         lastDiag = diag;
         const proxyDown = useProxy && _isProxyConnectionError(err, proxied);
         if (proxyDown) {
-          // The proxy PROCESS is unreachable (ECONNREFUSED to 127.0.0.1).
-          // This is the ONLY case that earns a short global bypass (3s) so
-          // concurrent requests fail fast to direct instead of hanging.
+          // Verify with a rapid /health check before tripping global bypass
+          const healthCheck = await _xhrGetText(`http://127.0.0.1:${_proxyPort || 3010}/health`, 1500);
+          if (healthCheck.ok && healthCheck.text.trim() === 'OK') {
+            // The proxy process itself is up; this was just an upstream or connection blip.
+            if (attempt < maxAttempts) {
+              await _sleep(_jitter(60 * attempt));
+              continue;
+            }
+            throw err;
+          }
+          // The proxy PROCESS is unreachable (/health failed or ECONNREFUSED).
           _proxyFailures++;
-          _proxyBypassUntil = Date.now() + _jitter(PROXY_DOWN_BYPASS_MS);
-          _setProxyMode('bypass', 'proxy-down', {
-            attempt,
-            proxied,
-            error: String(err?.message || err || 'proxy unreachable'),
-          });
+          if (_proxyFailures >= 3) {
+            _proxyBypassUntil = Date.now() + _jitter(PROXY_DOWN_BYPASS_MS);
+            _setProxyMode('bypass', 'proxy-down', {
+              attempt,
+              proxied,
+              error: String(err?.message || err || 'proxy unreachable'),
+            });
+          }
           _emitRouteEvent('route-error', 'proxy-down', {
             attempt,
             proxied,

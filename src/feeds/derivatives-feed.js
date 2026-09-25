@@ -567,7 +567,7 @@
     }
 
     const venues = [
-      oi?.venue,
+      (oi?.venue === 'binance' || oi?.venue === 'binance-coinm') ? oi.venue : (binanceFundingInfo ? 'binance' : oi?.venue),
       bybit ? 'bybit' : null,
       okx ? 'okx' : null,
       dydx ? 'dydx-v4' : null,

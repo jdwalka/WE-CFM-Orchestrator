@@ -233,7 +233,7 @@
 
   function getHostBreaker(hostname) {
     if (!hostname || !window.ApiCircuitBreaker) return null;
-    return window.ApiCircuitBreaker.getBreaker(`proxy-fetch:${hostname}`, { threshold: 5, timeout: 60000 });
+    return window.ApiCircuitBreaker.getBreaker(`proxy-fetch:${hostname}`, { threshold: 20, timeout: 8000 });
   }
 
   function hostCircuitResponse(hostname, breaker) {
@@ -322,45 +322,7 @@
     const urlToUse = IGNORE_DOMAINS.test(originalUrl) ? originalUrl : rewrite(originalUrl);
     let fetchPromise;
 
-    let customAgent = undefined;
-    let directUrl = originalUrl;
-
-    if (hostname && /(binance|bybit)/i.test(hostname) && typeof process !== 'undefined' && process.env) {
-      const socksProxyUrl = process.env.BINANCE_SOCKS_PROXY || process.env.BYBIT_SOCKS_PROXY || process.env.WECRYPTO_SWEDEN_SOCKS;
-      if (socksProxyUrl && _nodeFetch && typeof require !== 'undefined') {
-        try {
-          const { SocksProxyAgent } = require('socks-proxy-agent');
-          customAgent = new SocksProxyAgent(socksProxyUrl);
-          
-          if (LOCAL_PROXY_HOST.test(safeHostname(originalUrl) || '')) {
-            try {
-              const u = new URL(originalUrl);
-              const p = u.pathname.split('/').filter(Boolean);
-              const slug = p[0];
-              const realHost = REVERSE_HOST_MAP[slug];
-              if (realHost) {
-                const rest = p.slice(1).join('/');
-                directUrl = `https://${realHost}/${rest}${u.search}`;
-              }
-            } catch(_) {}
-          }
-        } catch (e) {
-          console.warn('[WE] proxy-fetch — failed to init SocksProxyAgent', e);
-        }
-      }
-    }
-
-    if (customAgent) {
-      const opts = init || {};
-      opts.agent = customAgent;
-      if (requestInput instanceof Request) {
-        opts.method = opts.method || requestInput.method;
-        opts.headers = opts.headers || requestInput.headers;
-        if (requestInput.body && !opts.body) opts.body = requestInput.body;
-        opts.signal = opts.signal || requestInput.signal;
-      }
-      fetchPromise = _nodeFetch(directUrl, opts);
-    } else if (shouldUseNodeFetch(originalUrl, urlToUse)) {
+    if (shouldUseNodeFetch(originalUrl, urlToUse)) {
       if (requestInput instanceof Request) {
         const opts = init || {};
         opts.method = opts.method || requestInput.method;

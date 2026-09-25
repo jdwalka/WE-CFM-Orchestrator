@@ -798,9 +798,11 @@
                     }
                 }
                 const activeInCoins = coins.some(c => all[c]?.venues?.some(v => v.toLowerCase().includes(venue.toLowerCase())));
+                const hasLiveLatency = venueLatency != null && venueLatency > 0 && venueLatency <= 3500;
+                const isVenueLive = activeInCoins || hasLiveLatency;
                 if (venueLatency != null || activeInCoins || venue === 'Binance' || venue === 'Bybit') {
                     const isOptional = isOptionalProvider(venue);
-                    const degraded = !activeInCoins || (venueLatency != null && venueLatency > 3500);
+                    const degraded = !isVenueLive;
                     const isGeoRestrictedVenue = (venue === 'Binance' || venue === 'Bybit');
                     const offlineReason = isGeoRestrictedVenue
                         ? 'Geo-restricted (US egress · proxy/VPN optional)'
@@ -811,11 +813,11 @@
                         fallback: false,
                         optional: isOptional,
                         transient: degraded,
-                        reason: activeInCoins
+                        reason: isVenueLive
                             ? (venueLatency != null ? `${Math.round(venueLatency)}ms latency · live` : 'Active perp venue')
                             : offlineReason,
-                        bucket: (isGeoRestrictedVenue && !activeInCoins) ? BUCKETS.PROVIDER_API : BUCKETS.UNKNOWN,
-                        bucketReason: (isGeoRestrictedVenue && !activeInCoins) ? 'US residential geo-block (HTTP 451/403)' : '',
+                        bucket: (isGeoRestrictedVenue && !isVenueLive) ? BUCKETS.PROVIDER_API : BUCKETS.UNKNOWN,
+                        bucketReason: (isGeoRestrictedVenue && !isVenueLive) ? 'US residential geo-block (HTTP 451/403)' : '',
                     });
                 }
             }
