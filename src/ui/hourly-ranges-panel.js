@@ -474,7 +474,7 @@
   // ── Format helpers ─────────────────────────────────────────────
   function fmtPrice(low, high) {
     const dp = low >= 100 ? 0 : low >= 1 ? 2 : 4;
-    return `$${low.toFixed(dp)}–$${high.toFixed(dp)}`;
+    return `$${low.toFixed(dp)}`;
   }
 
   function fmtPct(p) {
@@ -519,7 +519,17 @@
       (price < gridLo || price > gridHi);
 
     if (isLive) {
-      sortedBands = [...realBands].sort((a, b) =>
+      const uniqueBands = [];
+      const seenLows = new Set();
+      // Kalshi sometimes has overlapping markets (e.g. 84000-84100, 84000-84500, >84000).
+      // To enforce strict single buckets, we take only the first (tightest) bucket for each floor.
+      for (const b of realBands) {
+        if (!seenLows.has(b.low)) {
+          seenLows.add(b.low);
+          uniqueBands.push(b);
+        }
+      }
+      sortedBands = uniqueBands.sort((a, b) =>
         Math.abs(a.low - (price ?? a.low)) - Math.abs(b.low - (price ?? b.low))
       );
     }
@@ -557,18 +567,9 @@
             : `<span class="hr-ptb-arrow hr-ptb-arrow--down" title="Yes bid fell since last poll">▼</span>`;
         }
 
-        const lowStr = window.CoinPrecision?.formatCoinStrike
+        const ptbStr = window.CoinPrecision?.formatCoinStrike
           ? window.CoinPrecision.formatCoinStrike(sym, b.low)
           : `$${b.low.toLocaleString()}`;
-        let ptbStr = lowStr;
-        if (b.high !== undefined && b.high !== null && b.high > b.low && b.high < Infinity) {
-          const highStr = window.CoinPrecision?.formatCoinStrike
-            ? window.CoinPrecision.formatCoinStrike(sym, b.high)
-            : `$${b.high.toLocaleString()}`;
-          ptbStr = `${lowStr}–${highStr}`;
-        } else if (!isFinite(b.high) || b.high === Infinity || b.high >= 9000000) {
-          ptbStr = `${lowStr}+`;
-        }
         // yes_bid_dollars/yes_ask_dollars are dollar units (0.25 = 25 cents)
         // — Kalshi contracts trade $0.01-$1.00, i.e. 1-100 cents.
         const bidStr = Number.isFinite(bid) ? `${(bid * 100).toFixed(0)}¢` : '—';
@@ -637,7 +638,7 @@
       body = `
         <div class="hr-ranges-scroll">
           <div class="hr-ranges-header">
-            <span class="hr-ranges-label hr-col-ptb">Bucket · live Kalshi</span>
+            <span class="hr-ranges-label hr-col-ptb">Hourly Buckets</span>
             <span class="hr-ranges-label hr-col-prob">Prob</span>
             <span class="hr-ranges-label hr-col-model" title="Model touch probability — engine, Kalshi-independent">Model</span>
             <span class="hr-ranges-label hr-col-odds">Bid / Ask</span>
@@ -725,10 +726,10 @@
 
         const bucket = g.preferredBucket || g.preferredRange || g.range;
         if (topBuckets.length) {
-          const top3Str = topBuckets.slice(0, 3).map((b, i) => `#${i+1} $${b.low}–$${b.high} (${b.pctLikely}%)`).join(' · ');
+          const top3Str = topBuckets.slice(0, 3).map((b, i) => `#${i+1} $${b.low} (${b.pctLikely}%)`).join(' · ');
           metaLine += ` · Top buckets: ${top3Str}`;
         } else if (bucket && Number.isFinite(Number(bucket.low))) {
-          metaLine += ` · fixed 60m interval $${Number(bucket.low).toLocaleString()}–$${Number(bucket.high).toLocaleString()}`;
+          metaLine += ` · fixed 60m bucket $${Number(bucket.low).toLocaleString()}`;
         }
         if (label === '15m contract') {
           const peg15 = g.polyPeg || g.poly15m;
@@ -747,7 +748,7 @@
           if (peg15 && peg15.yesProb != null) metaLine += ` · mkt Up ${(Number(peg15.yesProb) * 100).toFixed(0)}%`;
           if (peg15 && peg15.secondsToClose != null) metaLine += ` · ttc ${peg15.secondsToClose}s`;
         } else {
-          metaLine += ' · fixed 60m interval';
+          metaLine += ' · 60m interval';
         }
 
         if (/bucket\s+\$?\d+/i.test(notes)) {
@@ -769,7 +770,7 @@
 
       if (b60 || asi1Strip) {
         grokHtml = `<div class="hr-grok">
-          <div class="hr-grok-hdr">✨ ASI1 pre-contract · 🤖 range overlay · fixed 60m interval</div>
+          <div class="hr-grok-hdr">✨ ASI1 pre-contract · 🤖 range overlay · hourly buckets</div>
           ${asi1Strip}
           ${b60}
         </div>`;
@@ -778,7 +779,7 @@
           ? window.GrokAnalyticsMemory.getStats() : null;
         const n = stats && stats.byCoin && stats.byCoin[sym] ? stats.byCoin[sym].samples : 0;
         grokHtml = `<div class="hr-grok"><div class="hr-grok-hdr">✨ ASI1 · hourly bucket memory</div>
-          <div class="hr-grok-notes">Building hourly bucket briefs… ${n} samples · fixed 60m interval</div></div>`;
+          <div class="hr-grok-notes">Building hourly bucket briefs… ${n} samples · hourly buckets</div></div>`;
       }
     } catch (_) { grokHtml = ''; }
 
