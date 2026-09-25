@@ -21,7 +21,6 @@
         'Etherscan',
         'XRP Ledger',
         'Alchemy RPC',
-        'Whale Alert',
     ];
 
     const DEFAULT_STATUS = {
@@ -37,8 +36,6 @@
         'Polymarket',
         'Pyth',
         'Coinbase',
-        'Binance',
-        'Bybit',
         'OKX',
         'Hyperliquid',
         'dYdX',
@@ -76,13 +73,13 @@
         'Etherscan',
         'XRP Ledger',
         'Alchemy RPC',
-        'Whale Alert',
         'BSCScan',
         'Polygonscan',
         'Blockchair',
         'Blockcypher',
         'Blockscout',
         'LocalProxy',
+        'Binance',
         'Bybit',
         'OKX',
     ]);
@@ -91,13 +88,13 @@
         'etherscan',
         'xrp ledger',
         'alchemy rpc',
-        'whale alert',
         'bscscan',
         'polygonscan',
         'blockchair',
         'blockcypher',
         'blockscout',
         'localproxy',
+        'binance',
         'bybit',
         'okx',
     ]);
@@ -801,18 +798,24 @@
                     }
                 }
                 const activeInCoins = coins.some(c => all[c]?.venues?.some(v => v.toLowerCase().includes(venue.toLowerCase())));
-                if (venueLatency != null || activeInCoins) {
-                    const degraded = !activeInCoins || (venueLatency != null && venueLatency > 1500);
+                if (venueLatency != null || activeInCoins || venue === 'Binance' || venue === 'Bybit') {
+                    const isOptional = isOptionalProvider(venue);
+                    const degraded = !activeInCoins || (venueLatency != null && venueLatency > 3500);
+                    const isGeoRestrictedVenue = (venue === 'Binance' || venue === 'Bybit');
+                    const offlineReason = isGeoRestrictedVenue
+                        ? 'Geo-restricted (US egress · proxy/VPN optional)'
+                        : `${venue} feeds offline`;
                     bridgeUpdate(venue, {
                         status: degraded ? 'degraded' : 'healthy',
                         lastFetch: now,
                         fallback: false,
+                        optional: isOptional,
                         transient: degraded,
                         reason: activeInCoins
                             ? (venueLatency != null ? `${Math.round(venueLatency)}ms latency · live` : 'Active perp venue')
-                            : `${venue} feeds offline`,
-                        bucket: BUCKETS.UNKNOWN,
-                        bucketReason: '',
+                            : offlineReason,
+                        bucket: (isGeoRestrictedVenue && !activeInCoins) ? BUCKETS.PROVIDER_API : BUCKETS.UNKNOWN,
+                        bucketReason: (isGeoRestrictedVenue && !activeInCoins) ? 'US residential geo-block (HTTP 451/403)' : '',
                     });
                 }
             }
@@ -1068,7 +1071,6 @@
         'api.mainnet-beta.solana.com': 'Solana RPC',
         'eth-mainnet.g.alchemy.com': 'Alchemy RPC',
         'polygon-mainnet.g.alchemy.com': 'Alchemy RPC',
-        'api.whale-alert.io': 'Whale Alert',
         's1.ripple.com': 'XRP Ledger',
         'xrplcluster.com': 'XRP Ledger',
         'ethereum.publicnode.com': 'Alchemy RPC',
@@ -1078,7 +1080,7 @@
     const ENDPOINT_HOST_PROBES = [
         { provider: 'Crypto.com', url: 'https://api.crypto.com/v2/public/get-ticker?instrument_name=BTC_USDT', viaProxy: true },
         { provider: 'Mempool.space', url: 'https://mempool.space/api/blocks/tip/height', viaProxy: true },
-        { provider: 'Solana RPC', url: 'http://localhost:8899', fallbackUrl: 'https://solana-rpc.publicnode.com', method: 'POST', body: '{"jsonrpc":"2.0","id":1,"method":"getEpochInfo"}', viaProxy: true, validateJson: true },
+        { provider: 'Solana RPC', url: 'https://solana-rpc.publicnode.com', fallbackUrl: 'https://api.mainnet-beta.solana.com', method: 'POST', body: '{"jsonrpc":"2.0","id":1,"method":"getEpochInfo"}', viaProxy: true, validateJson: true },
         { provider: 'Etherscan', url: null, viaProxy: true, validateJson: true },
         { provider: 'XRP Ledger', url: 'https://xrplcluster.com', fallbackUrl: 'https://s1.ripple.com:51234', method: 'POST', body: '{"method":"server_info","params":[{}]}' , viaProxy: true, validateJson: true },
         { provider: 'Alchemy RPC', url: 'https://ethereum.publicnode.com', fallbackUrl: 'https://cloudflare-eth.com', method: 'POST', body: '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber"}', viaProxy: true, validateJson: true },
@@ -1416,6 +1418,7 @@
         syncLiveProbe,
         markSuccess,
         isCriticalProvider,
+        isOptionalProvider,
         classifyBucket,
         BUCKETS,
         HOST_CANONICAL,

@@ -51,7 +51,7 @@
   const CF_PROTECTED_HOSTS = new Set([
     'api.binance.com', 'fapi.binance.com', 'dapi.binance.com',
     'data-api.binance.vision', 'api.bybit.com', 'api.bytick.com',
-    'api.kraken.com', 'www.kraken.com', 'api.hyperliquid.xyz',
+    'api.kraken.com', 'www.kraken.com',
     'api.bitstamp.net', 'www.bitstamp.net', 'www.okx.com', 'api.okx.com',
     'api-pub.bitfinex.com', 'api.kucoin.com', 'api.mexc.com',
     'api.crypto.com', 'api.bitvavo.com', 'api.upbit.com',

@@ -28,6 +28,7 @@ timeout /t 2 /nobreak >nul
 
 REM Start the proxy backend
 echo Starting Proxy Orchestrator...
+set ALL_PROXY=socks5h://127.0.0.1:18090
 start /b "" "%~dp0proxy\target\release\we-crypto-proxy.exe"
 timeout /t 2 /nobreak >nul
 
