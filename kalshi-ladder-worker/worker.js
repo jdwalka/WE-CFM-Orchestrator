@@ -68,6 +68,58 @@ function minutesToExpiry(closeTime) {
   return Math.max(0, (new Date(closeTime).getTime() - Date.now()) / 60_000);
 }
 
+const FRESHNESS_THRESHOLD_S = 15 * 60; // 15 minutes max staleness for live strikes
+const FRESHNESS_THRESHOLD_MS = FRESHNESS_THRESHOLD_S * 1000;
+
+function isPayloadStaleOrExpired(payload) {
+  if (!payload) return true;
+  if (payload.status === "expired" || payload.expired === true) return true;
+  const ageMs = ageAtReadMs(payload.fetched_at);
+  if (ageMs == null || ageMs > FRESHNESS_THRESHOLD_MS) return true;
+
+  const bands = payload.bands || [];
+  if (!bands.length) return true;
+  const hasLiveBand = bands.some((b) => {
+    const mte = minutesToExpiry(b.close_time);
+    return mte != null && mte > 0;
+  });
+  if (!hasLiveBand) return true;
+
+  return false;
+}
+
+function attachLiveExpiry(payload) {
+  if (!payload || !Array.isArray(payload.bands)) return payload;
+  const bands = payload.bands.map((b) => ({
+    ...b,
+    minutes_to_expiry: minutesToExpiry(b.close_time),
+  }));
+  return {
+    ...payload,
+    bands,
+  };
+}
+
+function isUpDownStaleOrExpired(payload) {
+  if (!payload) return true;
+  if (payload.status === "expired" || payload.expired === true) return true;
+  const ageMs = ageAtReadMs(payload.fetched_at);
+  if (ageMs == null || ageMs > FRESHNESS_THRESHOLD_MS) return true;
+  if (payload.close_time) {
+    const mte = minutesToExpiry(payload.close_time);
+    if (mte != null && mte <= 0) return true;
+  }
+  return false;
+}
+
+function attachLiveExpiryUpDown(payload) {
+  if (!payload) return payload;
+  return {
+    ...payload,
+    minutes_to_expiry: minutesToExpiry(payload.close_time),
+  };
+}
+
 function resolveSymbol(url) {
   const raw = (url.searchParams.get("symbol") || "BTC").toUpperCase();
   return SERIES_BY_SYMBOL[raw] ? raw : null;
@@ -94,11 +146,12 @@ async function fetchUpDown(symbol) {
   // NOTE: Kalshi's per-market `status` reads "active" (not "open") for live
   // windows even when queried with ?status=open — exclude only finished ones.
   const markets = (data.markets || []).filter(
-    (m) => m.status !== "closed" && m.status !== "settled"
+    (m) => m.status !== "closed" && m.status !== "settled" && Date.parse(m.close_time) > Date.now()
   );
   if (!markets.length) {
     return {
-      status:        "ok",
+      status:        "expired",
+      expired:       true,
       source:        "kalshi-ladder-worker",
       fetched_at:    new Date().toISOString(),
       market_type:   "updown-15m",
@@ -108,6 +161,7 @@ async function fetchUpDown(symbol) {
       ticker:        null,
       floor_strike:  null,
       close_time:    null,
+      message:       "No active unexpired 15m window found on Kalshi",
     };
   }
   // Nearest-expiring open window (normally exactly one).
@@ -162,8 +216,9 @@ async function refreshUpDown(symbol, env) {
     MEMO_UPDOWN[symbol] = { fetched_ms: Date.now(), payload };
     delete LAST_FAILURE_UPDOWN[symbol];
     if (env.LADDER_CACHE) {
+      const ttl = (payload.status === "expired" || payload.open === false) ? 60 : KV_PERSIST_TTL_S;
       await env.LADDER_CACHE.put(updownCacheKey(symbol), JSON.stringify(payload), {
-        expirationTtl: KV_PERSIST_TTL_S,
+        expirationTtl: ttl,
       });
     }
     return payload;
@@ -182,21 +237,48 @@ async function refreshUpDown(symbol, env) {
 
 async function getOrFetchUpDown(symbol, env, ctx) {
   const memo = MEMO_UPDOWN[symbol];
-  if (memo?.payload && Date.now() - memo.fetched_ms < KV_TTL_S * 1000) {
-    return { ...memo.payload, cache: "memo" };
+  if (memo?.payload) {
+    if (isUpDownStaleOrExpired(memo.payload)) {
+      delete MEMO_UPDOWN[symbol];
+    } else if (Date.now() - memo.fetched_ms < KV_TTL_S * 1000) {
+      return { ...attachLiveExpiryUpDown(memo.payload), cache: "memo" };
+    }
   }
   if (env.LADDER_CACHE) {
     try {
       const raw = await env.LADDER_CACHE.get(updownCacheKey(symbol));
       if (raw) {
         const payload = JSON.parse(raw);
+        if (isUpDownStaleOrExpired(payload)) {
+          // Stale/expired in KV: try fresh fetch immediately
+          try {
+            const fresh = await refreshUpDown(symbol, env);
+            if (fresh && !isUpDownStaleOrExpired(fresh)) {
+              return { ...attachLiveExpiryUpDown(fresh), cache: "miss" };
+            }
+          } catch (_) {}
+          return {
+            status: "expired",
+            expired: true,
+            open: false,
+            source: "kalshi-ladder-worker",
+            market_type: "updown-15m",
+            symbol,
+            series: UPDOWN_SERIES_BY_SYMBOL[symbol],
+            message: "Cached updown market has expired and fresh data is currently unavailable",
+            fetched_at: payload.fetched_at,
+            close_time: payload.close_time,
+            minutes_to_expiry: 0,
+            cache: "expired",
+          };
+        }
         const ageS = (Date.now() - Date.parse(payload.fetched_at)) / 1000;
         MEMO_UPDOWN[symbol] = { fetched_ms: Date.now(), payload };
         if (ageS < KV_TTL_S) {
-          return { ...payload, cache: "kv" };
+          return { ...attachLiveExpiryUpDown(payload), cache: "kv" };
         }
         if (ctx) ctx.waitUntil(refreshUpDown(symbol, env));
-        return { ...payload, cache: "kv-stale" };
+        return { ...attachLiveExpiryUpDown(payload), cache: "kv-stale" };
       }
     } catch (e) {
       console.error(`[kalshi-ladder-worker] KV read failed for updown ${symbol}:`, e);
@@ -204,14 +286,40 @@ async function getOrFetchUpDown(symbol, env, ctx) {
   }
   try {
     const payload = await refreshUpDown(symbol, env);
-    if (payload) return { ...payload, cache: "miss" };
+    if (payload) {
+      if (isUpDownStaleOrExpired(payload)) {
+        return {
+          status: "expired",
+          expired: true,
+          open: false,
+          source: "kalshi-ladder-worker",
+          market_type: "updown-15m",
+          symbol,
+          series: UPDOWN_SERIES_BY_SYMBOL[symbol],
+          message: "No active unexpired 15m window found on Kalshi",
+          fetched_at: payload.fetched_at,
+          cache: "miss",
+        };
+      }
+      return { ...attachLiveExpiryUpDown(payload), cache: "miss" };
+    }
     const reason = LAST_FAILURE_UPDOWN[symbol]?.message || "refresh returned no payload (cooling down)";
     throw new Error(reason);
   } catch (e) {
-    if (memo?.payload) {
-      return { ...memo.payload, cache: "stale", error: String(e) };
+    if (memo?.payload && !isUpDownStaleOrExpired(memo.payload)) {
+      return { ...attachLiveExpiryUpDown(memo.payload), cache: "stale", error: String(e) };
     }
-    throw e;
+    return {
+      status: "expired",
+      expired: true,
+      open: false,
+      source: "kalshi-ladder-worker",
+      market_type: "updown-15m",
+      symbol,
+      series: UPDOWN_SERIES_BY_SYMBOL[symbol],
+      message: `Fresh updown market unavailable: ${String(e && e.message || e)}`,
+      cache: "expired-fallback",
+    };
   }
 }
 
@@ -270,13 +378,25 @@ async function fetchLadder(symbol) {
   bands.sort((a, b) => a.low - b.low);
 
   // Single-window guard: Kalshi keeps expired windows listed as "open" for
-  // hours — mixing them duplicates strikes on the panel (e.g. XRP showing
-  // two $1.48 rows from different windows). Keep only the nearest window
-  // that hasn't closed yet; fall back to the latest window if all expired.
+  // hours — mixing them duplicates strikes on the panel.
+  // Keep only the nearest window that hasn't closed yet.
   const closes = [...new Set(bands.map((b) => b.close_time))].sort();
-  const liveClose =
-    closes.find((ct) => Date.parse(ct) > Date.now() - 60_000) || closes[closes.length - 1];
-  const windowBands = liveClose ? bands.filter((b) => b.close_time === liveClose) : bands;
+  const liveClose = closes.find((ct) => Date.parse(ct) > Date.now());
+  const windowBands = liveClose ? bands.filter((b) => b.close_time === liveClose) : [];
+
+  if (!liveClose || windowBands.length === 0) {
+    return {
+      status:     "expired",
+      expired:    true,
+      source:     "kalshi-ladder-worker",
+      fetched_at: new Date().toISOString(),
+      band_count: 0,
+      symbol,
+      series,
+      bands:      [],
+      message:    "No active unexpired range window found on Kalshi",
+    };
+  }
 
   return {
     status:     "ok",
@@ -319,16 +439,26 @@ export default {
     // apart from a real bug, and so it always has CORS headers.
     try {
       // ── /health ────────────────────────────────────────────────────────────
-      if (url.pathname === "/health") {
+      if (url.pathname === "/health" || url.pathname === "/gemini/health") {
         const payload = await getOrFetch(symbol, env, ctx);
+        const expired = payload.status === "expired" || payload.expired === true || isPayloadStaleOrExpired(payload);
+        const cacheAgeMs = ageAtReadMs(payload.fetched_at);
+        const status = expired ? "expired" : (payload.error ? "degraded" : "ok");
         return new Response(
           JSON.stringify({
-            status:        "ok",
+            status,
+            healthy: status === "ok",
             worker:        "kalshi-ladder-worker",
             symbol,
-            cache_age_ms:  ageAtReadMs(payload.fetched_at),
-            cache_source:  payload.cache,
-            band_count:    payload.band_count ?? null,
+            cache_age_ms:  cacheAgeMs,
+            cache_age_s:   cacheAgeMs != null ? Math.round(cacheAgeMs / 1000) : null,
+            cache_source:  payload.cache || null,
+            band_count:    payload.band_count ?? (payload.bands?.length ?? null),
+            expired,
+            close_time:    payload.bands?.[0]?.close_time || payload.close_time || null,
+            minutes_to_expiry: payload.bands?.[0]?.close_time
+              ? minutesToExpiry(payload.bands[0].close_time)
+              : (payload.minutes_to_expiry ?? null),
             ts:            new Date().toISOString(),
           }),
           { headers: CORS }
@@ -336,11 +466,12 @@ export default {
       }
 
       // ── /edges — flat array of { low, high } for LME direct wiring ────────
-      if (url.pathname === "/edges") {
+      if (url.pathname === "/edges" || url.pathname === "/gemini/edges") {
         const payload = await getOrFetch(symbol, env, ctx);
-        const edges = payload.bands.map((b) => ({ low: b.low, high: b.high }));
+        const bands = payload.bands || [];
+        const edges = bands.map((b) => ({ low: b.low, high: b.high }));
         return new Response(
-          JSON.stringify({ edges, band_count: edges.length, fetched_at: payload.fetched_at }),
+          JSON.stringify({ status: payload.status || "ok", edges, band_count: edges.length, fetched_at: payload.fetched_at, cache: payload.cache }),
           { headers: CORS }
         );
       }
@@ -350,7 +481,7 @@ export default {
       // cache age, cache source, band_count, tightest-spread band, nearest
       // expiry. Served from the same KV/memo cache as /ladder — never calls
       // Kalshi directly beyond the normal getOrFetch path.
-      if (url.pathname === "/signals") {
+      if (url.pathname === "/signals" || url.pathname === "/gemini/signals") {
         const only = url.searchParams.get("symbol");
         const symbols = only
           ? (() => { const s = resolveSymbol(url); if (!s) return null; return [s]; })()
@@ -379,7 +510,7 @@ export default {
       // Single market per window (floor strike + yes bid/ask). This is the
       // endpoint the 15m panel cards must use. /ladder is the HOURLY range
       // series — a different instrument.
-      if (url.pathname === "/updown") {
+      if (url.pathname === "/updown" || url.pathname === "/gemini/updown") {
         const upsym = resolveUpDownSymbol(url) || symbol;
         if (!upsym || !UPDOWN_SERIES_BY_SYMBOL[upsym]) {
           return new Response(
@@ -393,19 +524,19 @@ export default {
         const payload = await getOrFetchUpDown(upsym, env, ctx);
         return new Response(JSON.stringify({
           ...payload,
-          status: payload.market_status || (payload.open ? "active" : "closed"),
+          status: payload.market_status || (payload.open ? "active" : (payload.status || "closed")),
         }), { headers: CORS });
       }
 
-      // ── /ladder (default) ──────────────────────────────────────────────────
-      if (url.pathname === "/ladder" || url.pathname === "/") {
+      // ── /ladder (default) and /gemini/ladder ────────────────────────────────
+      if (url.pathname === "/ladder" || url.pathname === "/gemini/ladder" || url.pathname === "/") {
         const force = url.searchParams.has("force") || url.searchParams.has("fresh");
         const payload = await getOrFetch(symbol, env, ctx, force);
         return new Response(JSON.stringify(payload), { headers: CORS });
       }
 
       return new Response(
-        JSON.stringify({ error: "not found", routes: ["/ladder", "/updown", "/edges", "/health", "/signals"] }),
+        JSON.stringify({ error: "not found", routes: ["/ladder", "/gemini/ladder", "/updown", "/edges", "/health", "/signals"] }),
         { status: 404, headers: CORS }
       );
     } catch (e) {
@@ -486,8 +617,9 @@ async function refreshCache(symbol, env, force = false) {
     MEMO[symbol] = { fetched_ms: Date.now(), payload };
     delete LAST_FAILURE[symbol];
     if (env.LADDER_CACHE) {
+      const ttl = (payload.status === "expired" || payload.band_count === 0) ? 60 : KV_PERSIST_TTL_S;
       await env.LADDER_CACHE.put(cacheKey(symbol), JSON.stringify(payload), {
-        expirationTtl: KV_PERSIST_TTL_S,
+        expirationTtl: ttl,
       });
     }
     return payload;
@@ -539,15 +671,17 @@ function summarizeSignal(symbol, payload) {
         tightest = { ticker: b.ticker, low: b.low, high: b.high, spread };
       }
     }
-    if (b.minutes_to_expiry != null) {
-      if (nearest_expiry == null || b.minutes_to_expiry < nearest_expiry) {
-        nearest_expiry = b.minutes_to_expiry;
+    const mte = minutesToExpiry(b.close_time);
+    if (mte != null) {
+      if (nearest_expiry == null || mte < nearest_expiry) {
+        nearest_expiry = mte;
       }
     }
   }
   return {
     symbol,
     series: SERIES_BY_SYMBOL[symbol],
+    status: payload.status || "ok",
     fetched_at: payload.fetched_at ?? null,
     cache_age_ms: ageAtReadMs(payload.fetched_at),
     cache_source: payload.cache ?? null,
@@ -562,8 +696,12 @@ async function getOrFetch(symbol, env, ctx, force = false) {
 
   if (!force) {
     // Fast path: same warm isolate served recently.
-    if (memo?.payload && Date.now() - memo.fetched_ms < KV_TTL_S * 1000) {
-      return { ...memo.payload, cache: "memo" };
+    if (memo?.payload) {
+      if (isPayloadStaleOrExpired(memo.payload)) {
+        delete MEMO[symbol];
+      } else if (Date.now() - memo.fetched_ms < KV_TTL_S * 1000) {
+        return { ...attachLiveExpiry(memo.payload), cache: "memo" };
+      }
     }
 
     // Cross-isolate path: KV, refreshed by the cron trigger.
@@ -572,15 +710,41 @@ async function getOrFetch(symbol, env, ctx, force = false) {
         const raw = await env.LADDER_CACHE.get(cacheKey(symbol));
         if (raw) {
           const payload = JSON.parse(raw);
+          if (isPayloadStaleOrExpired(payload)) {
+            // Cached ladder is expired or older than freshness window.
+            // Do NOT serve with kv-stale! Trigger a fresh fetch immediately.
+            try {
+              const fresh = await refreshCache(symbol, env, true);
+              if (fresh && !isPayloadStaleOrExpired(fresh)) {
+                return { ...attachLiveExpiry(fresh), cache: "miss" };
+              }
+            } catch (_) {}
+            // Fresh fetch failed or returned expired: return clear expired/refreshing status
+            return {
+              status: "expired",
+              expired: true,
+              refreshing: true,
+              source: "kalshi-ladder-worker",
+              symbol,
+              series: SERIES_BY_SYMBOL[symbol],
+              message: "Cached ladder window has expired and fresh strikes are currently unavailable from upstream",
+              fetched_at: payload.fetched_at,
+              expired_at: payload.bands?.[0]?.close_time || null,
+              cache_age_ms: ageAtReadMs(payload.fetched_at),
+              band_count: 0,
+              bands: [],
+              cache: "expired",
+            };
+          }
           const ageS = (Date.now() - Date.parse(payload.fetched_at)) / 1000;
           MEMO[symbol] = { fetched_ms: Date.now(), payload };
           if (ageS < KV_TTL_S) {
-            return { ...payload, cache: "kv" };
+            return { ...attachLiveExpiry(payload), cache: "kv" };
           }
-          // Stale KV entry: serve it immediately, refresh in the background
-          // so this request doesn't pay Kalshi's latency (or its 429s).
+          // Stale KV entry (within valid window and freshness threshold):
+          // serve it immediately, refresh in the background so this request doesn't pay Kalshi's latency
           if (ctx) ctx.waitUntil(refreshCache(symbol, env));
-          return { ...payload, cache: "kv-stale" };
+          return { ...attachLiveExpiry(payload), cache: "kv-stale" };
         }
       } catch (e) {
         console.error(`[kalshi-ladder-worker] KV read failed for ${symbol}:`, e);
@@ -588,21 +752,44 @@ async function getOrFetch(symbol, env, ctx, force = false) {
     }
   }
 
-  // No cache anywhere yet (cold start before the first cron tick) — fetch
-  // live, same fallback behavior as before.
+  // No cache anywhere yet (cold start before the first cron tick) — fetch live
   try {
     const payload = await refreshCache(symbol, env, force);
-    if (payload) return { ...payload, cache: force ? "forced" : "miss" };
-    // refreshCache swallows its own error into LAST_FAILURE and returns
-    // null (so callers can fall back to stale data); surface that real
-    // reason here instead of a generic message that hides what actually
-    // went wrong (Kalshi HTTP status, cooldown, etc).
+    if (payload) {
+      if (isPayloadStaleOrExpired(payload)) {
+        return {
+          status: "expired",
+          expired: true,
+          refreshing: true,
+          source: "kalshi-ladder-worker",
+          symbol,
+          series: SERIES_BY_SYMBOL[symbol],
+          message: "No active unexpired range window found on Kalshi",
+          fetched_at: payload.fetched_at,
+          band_count: 0,
+          bands: [],
+          cache: force ? "forced" : "miss",
+        };
+      }
+      return { ...attachLiveExpiry(payload), cache: force ? "forced" : "miss" };
+    }
     const reason = LAST_FAILURE[symbol]?.message || "refresh returned no payload (cooling down)";
     throw new Error(reason);
   } catch (e) {
-    if (memo?.payload) {
-      return { ...memo.payload, cache: "stale", error: String(e) };
+    if (memo?.payload && !isPayloadStaleOrExpired(memo.payload)) {
+      return { ...attachLiveExpiry(memo.payload), cache: "stale", error: String(e) };
     }
-    throw e;
+    return {
+      status: "expired",
+      expired: true,
+      refreshing: true,
+      source: "kalshi-ladder-worker",
+      symbol,
+      series: SERIES_BY_SYMBOL[symbol],
+      message: `Fresh strikes unavailable: ${String(e && e.message || e)}`,
+      band_count: 0,
+      bands: [],
+      cache: "expired-fallback",
+    };
   }
 }

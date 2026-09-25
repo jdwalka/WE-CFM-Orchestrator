@@ -2,7 +2,13 @@
 from datetime import datetime, timezone
 import time
 
-import httpx
+try:
+    import httpx
+except ImportError:
+    httpx = None
+import json
+import urllib.request
+import urllib.parse
 
 def enforce_freshness(payload: dict, source: str) -> None:
     if not payload: return
@@ -38,9 +44,15 @@ def get_spot() -> dict:
     """
     now_ts = time.time()
     try:
-        r = httpx.get(COINBASE_SPOT, headers=_HEADERS, timeout=10)
-        r.raise_for_status()
-        price = float(r.json()["data"]["amount"])
+        if httpx is not None:
+            r = httpx.get(COINBASE_SPOT, headers=_HEADERS, timeout=10)
+            r.raise_for_status()
+            data = r.json()
+        else:
+            req = urllib.request.Request(COINBASE_SPOT, headers=_HEADERS)
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read().decode())
+        price = float(data["data"]["amount"])
         return {
             "price": price,
             "source": "coinbase_spot_fallback",
@@ -49,7 +61,7 @@ def get_spot() -> dict:
             "pulled_at": now_ts,
             "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         }
-    except (httpx.HTTPError, KeyError, ValueError, TypeError) as e:
+    except Exception as e:
         return {
             "price": None,
             "source": "unavailable",
@@ -66,18 +78,26 @@ def get_hourly_candles(count: int = 24) -> list:
     Sorted oldest -> newest.
     """
     try:
-        r = httpx.get(
-            COINBASE_CANDLES,
-            params={"granularity": 3600},
-            headers=_HEADERS,
-            timeout=15,
-        )
-        r.raise_for_status()
+        if httpx is not None:
+            r = httpx.get(
+                COINBASE_CANDLES,
+                params={"granularity": 3600},
+                headers=_HEADERS,
+                timeout=15,
+            )
+            r.raise_for_status()
+            data = r.json()
+        else:
+            q = urllib.parse.urlencode({"granularity": 3600})
+            url = f"{COINBASE_CANDLES}?{q}"
+            req = urllib.request.Request(url, headers=_HEADERS)
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                data = json.loads(resp.read().decode())
         cols = ["time", "low", "high", "open", "close", "volume"]
-        candles = [dict(zip(cols, c)) for c in r.json()]
+        candles = [dict(zip(cols, c)) for c in data]
         candles.sort(key=lambda c: c["time"])
         return candles[-count:]
-    except (httpx.HTTPError, KeyError, ValueError, TypeError):
+    except Exception:
         return []
 
 def compute_stats(candles: list) -> dict:

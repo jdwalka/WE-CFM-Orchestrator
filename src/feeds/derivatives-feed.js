@@ -77,10 +77,9 @@
     const bybitLimit = res.headers?.get?.('x-bapi-limit-status') || res.headers?.get?.('x-bapi-limit');
     if (bybitLimit) rl['x-bapi-limit-status'] = bybitLimit;
     if (Object.keys(rl).length) DIAGNOSTICS.rate_limits[host] = rl;
-
-    if (latencyMs > HEALTHY_LATENCY_THRESHOLD_MS) {
-      DIAGNOSTICS.data_quality = 'partial';
-    }
+    // Latency on a secondary/fallback endpoint must never degrade data quality.
+    // Data quality is evaluated post-poll based on whether required market metrics
+    // (OI, funding, price) are populated for active coins.
   }
 
   const CACHE = {};               // sym → state
@@ -165,11 +164,11 @@
       ]);
       if (oiRes.status === 'fulfilled' && markRes.status === 'fulfilled') {
         const oiContracts = parseFloat(oiRes.value.openInterest || 0);
-        const mark = parseFloat(markRes.value.markPrice || 0);
-        const index = parseFloat(markRes.value.indexPrice || 0);
+        const mark = parseFloat(markRes.value.markPrice || 0) || null;
+        const index = parseFloat(markRes.value.indexPrice || 0) || null;
         const funding = parseFloat(markRes.value.lastFundingRate || 0) * 100; // %
-        const oiUsd = oiContracts * mark;
-        const basisPct = index > 0 ? ((mark - index) / index) * 100 : null;
+        const oiUsd = oiContracts * (mark || 0);
+        const basisPct = mark && index > 0 ? ((mark - index) / index) * 100 : null;
         if (oiUsd > 0) return { venue: 'binance', oiUsd, mark, funding, basisPct };
       }
     } catch (_) { /* fall through */ }
@@ -183,9 +182,9 @@
       ]);
       if (oiRes.status === 'fulfilled') {
         const oiUsd = parseFloat(oiRes.value?.sumOpenInterestValue || 0);
-        const mark = markRes.status === 'fulfilled' ? parseFloat(markRes.value?.markPrice || 0) : null;
-        const index = markRes.status === 'fulfilled' ? parseFloat(markRes.value?.indexPrice || 0) : null;
-        const funding = markRes.status === 'fulfilled' ? parseFloat(markRes.value?.lastFundingRate || 0) * 100 : null;
+        const mark = markRes.status === 'fulfilled' ? (parseFloat(markRes.value?.markPrice || 0) || null) : null;
+        const index = markRes.status === 'fulfilled' ? (parseFloat(markRes.value?.indexPrice || 0) || null) : null;
+        const funding = markRes.status === 'fulfilled' ? (parseFloat(markRes.value?.lastFundingRate || 0) * 100) : null;
         const basisPct = mark && index > 0 ? ((mark - index) / index) * 100 : null;
         if (oiUsd > 0) return { venue: 'binance-coinm', oiUsd, mark, funding, basisPct };
       }
@@ -200,7 +199,7 @@
         getJson(`https://www.okx.com/api/v5/public/funding-rate?instId=${instId}`),
       ]);
       let oiUsd = 0, funding = null;
-      if (oiRes.status === 'fulfilled') oiUsd = parseFloat(oiRes.value?.data?.[0]?.oiCcy || 0);
+      if (oiRes.status === 'fulfilled') oiUsd = parseFloat(oiRes.value?.data?.[0]?.oiUsd || oiRes.value?.data?.[0]?.oiCcy || 0);
       if (fundRes.status === 'fulfilled') funding = parseFloat(fundRes.value?.data?.[0]?.fundingRate || 0) * 100;
       if (oiUsd > 0) return { venue: 'okx', oiUsd, mark: null, funding, basisPct: null };
     } catch (_) { /* give up gracefully */ }
@@ -217,7 +216,7 @@
         getJson(`https://www.okx.com/api/v5/public/funding-rate?instId=${instId}`),
       ]);
       let oiUsd = 0, funding = null;
-      if (oiRes.status === 'fulfilled') oiUsd = parseFloat(oiRes.value?.data?.[0]?.oiCcy || 0);
+      if (oiRes.status === 'fulfilled') oiUsd = parseFloat(oiRes.value?.data?.[0]?.oiUsd || oiRes.value?.data?.[0]?.oiCcy || 0);
       if (fundRes.status === 'fulfilled') funding = parseFloat(fundRes.value?.data?.[0]?.fundingRate || 0) * 100;
       return { venue: 'okx', oiUsd, funding };
     } catch (_) { return null; }
@@ -539,9 +538,14 @@
       hlData ? 'hyperliquid' : null,
     ].filter(Boolean);
 
+    const primaryMark = [oi?.mark, hlData?.mark, bybit?.mark, deribit?.mark, dydx?.mark, CACHE[sym]?.mark]
+      .find(p => p != null && Number.isFinite(p) && p > 0) || null;
+
     return {
       sym,
       ts,
+      mark: primaryMark,
+      price: primaryMark,
       oiUsd: primaryOi || null,
       oiDeltaPct,
       oiTrend,
@@ -575,6 +579,8 @@
       raw: null,
       parsed: {
         symbol: state.sym,
+        price: state.mark,
+        mark_price: state.mark,
         open_interest_usd: state.oiUsd,
         oi_delta_pct: state.oiDeltaPct,
         oi_trend: state.oiTrend,
@@ -623,7 +629,7 @@
     const hlMap = await fetchHyperliquidInfo().catch(() => ({}));
     for (const sym of COINS) {
       try {
-        const [oi, bybit, dydx, deribit, bInfo, okx] = await Promise.all([
+        const results = await Promise.allSettled([
           fetchOpenInterest(sym),
           fetchBybitFunding(sym),
           fetchDydxV4(sym),
@@ -631,23 +637,56 @@
           fetchBinanceFundingInfo(sym),
           fetchOkxPerp(sym),
         ]);
+        const [oi, bybit, dydx, deribit, bInfo, okx] = results.map(r => r.status === 'fulfilled' ? r.value : null);
         const state = computeState(sym, oi, bybit, dydx, deribit, hlMap[sym] || null, bInfo, okx);
         CACHE[sym] = state;
         detail[sym] = state;
-        if (state.available) {
-          emitEnvelope(state);
-          try { window.DataLogger?.logDerivatives?.(sym, state.parsed || {
-            oiUsd: state.oiUsd, oiDeltaPct: state.oiDeltaPct, funding: state.funding,
-            fundingVelocity: state.fundingVelocity, basisPct: state.basisPct,
-            cascadeSkew: state.cascade_skew, burstPressure: state.burst_pressure,
-            futuresSpotDivergence: state.futures_spot_divergence,
-            liqImbalance: state.liquidations?.imbalance, liqTotalUsd: state.liquidations?.totalUsd,
-            pressure: state.pressure, label: state.label, ts: state.ts,
-            dataQuality: state.diagnostics?.data_quality,
-          }); } catch (_) {}
-        }
       } catch (e) {
-        // keep prior cache; never let one coin break the cycle
+        // preserve prior cache; never let one slow/failing call drop a coin
+        if (CACHE[sym]) {
+          detail[sym] = CACHE[sym];
+        }
+      }
+    }
+
+    // Determine data quality:
+    // Data quality should be 'clean' as long as required market metrics (OI, funding, price)
+    // are successfully obtained for the active coins. Only set 'partial' if required metrics
+    // are genuinely missing across all venues.
+    const coinEntries = Object.entries(detail);
+    const activeCoins = coinEntries.map(([_, s]) => s).filter(s => s && s.available);
+    const activeCount = activeCoins.length;
+
+    const coinsWithRequiredMetrics = activeCoins.filter(s =>
+      s.oiUsd > 0 &&
+      Number.isFinite(s.funding) &&
+      ((s.mark != null && s.mark > 0) || (s.price != null && s.price > 0))
+    );
+
+    if (activeCount > 0 && coinsWithRequiredMetrics.length === activeCount) {
+      DIAGNOSTICS.data_quality = 'clean';
+    } else if (coinsWithRequiredMetrics.length > 0) {
+      DIAGNOSTICS.data_quality = 'partial';
+    } else {
+      DIAGNOSTICS.data_quality = activeCount > 0 ? 'partial' : 'degraded';
+    }
+
+    // Update diagnostics in state and emit envelopes / loggers
+    for (const [sym, state] of Object.entries(detail)) {
+      state.diagnostics = { ...DIAGNOSTICS };
+      if (state.available) {
+        emitEnvelope(state);
+        try { window.DataLogger?.logDerivatives?.(sym, state.parsed || {
+          symbol: state.sym,
+          price: state.mark,
+          oiUsd: state.oiUsd, oiDeltaPct: state.oiDeltaPct, funding: state.funding,
+          fundingVelocity: state.fundingVelocity, basisPct: state.basisPct,
+          cascadeSkew: state.cascade_skew, burstPressure: state.burst_pressure,
+          futuresSpotDivergence: state.futures_spot_divergence,
+          liqImbalance: state.liquidations?.imbalance, liqTotalUsd: state.liquidations?.totalUsd,
+          pressure: state.pressure, label: state.label, ts: state.ts,
+          dataQuality: state.diagnostics?.data_quality,
+        }); } catch (_) {}
       }
     }
 

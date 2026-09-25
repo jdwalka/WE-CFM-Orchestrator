@@ -6,7 +6,13 @@ from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 
-import httpx
+try:
+    import httpx
+except ImportError:
+    httpx = None
+import json
+import urllib.request
+import urllib.parse
 from calibration_buckets import replay_resolved_outcomes
 
 LEDGER_PATH_ENV_VAR = "CALIBRATION_LEDGER_PATH"
@@ -62,6 +68,7 @@ def _connect() -> sqlite3.Connection:
     connection = sqlite3.connect(database_path, timeout=10)
     try:
         connection.execute("PRAGMA journal_mode=WAL")
+        connection.execute("PRAGMA synchronous=NORMAL")
     except sqlite3.OperationalError:
         pass
     try:
@@ -158,30 +165,33 @@ def _migrate(connection: sqlite3.Connection) -> None:
         "settlement_held": "ALTER TABLE predictions ADD COLUMN settlement_held INTEGER",
         "settle_brier": "ALTER TABLE predictions ADD COLUMN settle_brier REAL",
     }
+    migrated = False
     for column, statement in migrations.items():
         if column not in columns:
             connection.execute(statement)
-    connection.execute(
-        "UPDATE predictions SET p_base = COALESCE(p_base, p_student_t) "
-        "WHERE p_base IS NULL"
-    )
-    connection.execute(
-        "UPDATE predictions SET calibration_factor = COALESCE(calibration_factor, 1.0) "
-        "WHERE calibration_factor IS NULL"
-    )
-    connection.execute(
-        """
-        UPDATE predictions
-        SET time_to_expiry_bucket = CASE
-            WHEN minutes_to_expiry <= 5 THEN '0-5m'
-            WHEN minutes_to_expiry <= 15 THEN '6-15m'
-            WHEN minutes_to_expiry <= 30 THEN '16-30m'
-            ELSE '31-60m'
-        END
-        WHERE time_to_expiry_bucket IS NULL OR time_to_expiry_bucket = ''
-        """
-    )
-    connection.commit()
+            migrated = True
+    if migrated:
+        connection.execute(
+            "UPDATE predictions SET p_base = COALESCE(p_base, p_student_t) "
+            "WHERE p_base IS NULL"
+        )
+        connection.execute(
+            "UPDATE predictions SET calibration_factor = COALESCE(calibration_factor, 1.0) "
+            "WHERE calibration_factor IS NULL"
+        )
+        connection.execute(
+            """
+            UPDATE predictions
+            SET time_to_expiry_bucket = CASE
+                WHEN minutes_to_expiry <= 5 THEN '0-5m'
+                WHEN minutes_to_expiry <= 15 THEN '6-15m'
+                WHEN minutes_to_expiry <= 30 THEN '16-30m'
+                ELSE '31-60m'
+            END
+            WHERE time_to_expiry_bucket IS NULL OR time_to_expiry_bucket = ''
+            """
+        )
+        connection.commit()
 
 
 def _prediction_key(timestamp: datetime, band: str, expiry: datetime) -> str:
@@ -191,22 +201,30 @@ def _prediction_key(timestamp: datetime, band: str, expiry: datetime) -> str:
 def _fetch_minute_candles(start: datetime, end: datetime) -> list[dict]:
     """Fetch the 1-minute candles that cover [start, end)."""
     try:
-        response = httpx.get(
-            "https://api.exchange.coinbase.com/products/BTC-USD/candles",
-            params={"granularity": 60, "start": start.isoformat(), "end": end.isoformat()},
-            headers=_HEADERS,
-            timeout=15,
-        )
-        response.raise_for_status()
+        if httpx is not None:
+            response = httpx.get(
+                "https://api.exchange.coinbase.com/products/BTC-USD/candles",
+                params={"granularity": 60, "start": start.isoformat(), "end": end.isoformat()},
+                headers=_HEADERS,
+                timeout=15,
+            )
+            response.raise_for_status()
+            data = response.json()
+        else:
+            q = urllib.parse.urlencode({"granularity": 60, "start": start.isoformat(), "end": end.isoformat()})
+            url = f"https://api.exchange.coinbase.com/products/BTC-USD/candles?{q}"
+            req = urllib.request.Request(url, headers=_HEADERS)
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                data = json.loads(resp.read().decode())
         cols = ["time", "low", "high", "open", "close", "volume"]
-        candles = [dict(zip(cols, row)) for row in response.json()]
+        candles = [dict(zip(cols, row)) for row in data]
         start_epoch = int(start.timestamp())
         end_epoch = int(end.timestamp())
         return [
             candle for candle in candles
             if start_epoch < candle["time"] <= end_epoch
         ]
-    except (httpx.HTTPError, KeyError, ValueError, TypeError):
+    except Exception:
         return []
 
 
@@ -281,6 +299,68 @@ def record_prediction(
     finally:
         if connection is not None:
             connection.close()
+
+
+def record_predictions(rows: list[dict]) -> int:
+    """Batch append predictions; duplicate rows are ignored."""
+    if not rows:
+        return 0
+    connection = None
+    try:
+        connection = _connect()
+        _initialize(connection)
+        insert_sql = """
+        INSERT OR IGNORE INTO predictions (
+            prediction_key, timestamp_utc, band, low, high, expiry_utc,
+            p_touch, p_normal, p_student_t, p_base, p_calibrated,
+            calibration_factor, tail_adjustment, alt_aligned,
+            regime, minutes_to_expiry, time_to_expiry_bucket, model_version,
+            cascade_active, burst_pressure, cascade_skew,
+            settlement_hold_given_touch, p_settle
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        params_list = []
+        for r in rows:
+            ts = r["timestamp"]
+            band = r["band"]
+            exp = r["expiry"]
+            minutes = int(r["minutes_to_expiry"])
+            p_student_t = float(r["p_student_t"])
+            p_touch = float(r["p_touch"])
+            params_list.append((
+                _prediction_key(ts, band, exp),
+                ts.isoformat(),
+                band,
+                float(r["low"]),
+                float(r["high"]),
+                exp.isoformat(),
+                p_touch,
+                float(r["p_normal"]),
+                p_student_t,
+                float(r["p_base"] if r.get("p_base") is not None else p_student_t),
+                float(r["p_calibrated"] if r.get("p_calibrated") is not None else p_touch),
+                float(r.get("calibration_factor", 1.0)),
+                float(r.get("tail_adjustment", 0.0)),
+                int(r.get("alt_aligned", 0)),
+                str(r.get("regime", "UNKNOWN")),
+                minutes,
+                _time_to_expiry_bucket(minutes),
+                MODEL_VERSION,
+                int(r.get("cascade_active", 0)),
+                float(r.get("burst_pressure", 0.0)),
+                float(r.get("cascade_skew", 1.0)),
+                float(r["settlement_hold_given_touch"]) if r.get("settlement_hold_given_touch") is not None else None,
+                float(r["p_settle"]) if r.get("p_settle") is not None else None,
+            ))
+        cur = connection.executemany(insert_sql, params_list)
+        connection.commit()
+        return cur.rowcount
+    except Exception as e:
+        return 0
+    finally:
+        if connection is not None:
+            connection.close()
+
 
 
 def _bucket(p_touch: float, p_normal: float, touched: bool) -> str:

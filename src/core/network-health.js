@@ -765,17 +765,19 @@
             const diag = feed.getDiagnostics?.() || {};
             const all = feed.getAll?.() || {};
             const coins = Object.keys(all);
+            const activeCoins = Object.values(all).filter(s => s && s.available);
             const quality = diag.data_quality || 'clean';
             const latencyMap = diag.latency_ms || {};
 
-            const hasData = coins.length > 0;
+            const coinCount = activeCoins.length || coins.length;
+            const hasData = coinCount > 0;
             bridgeUpdate('DerivativesFeed', {
                 status: hasData ? (quality === 'clean' ? 'healthy' : 'degraded') : 'recovering',
                 lastFetch: now,
                 fallback: false,
                 transient: !hasData,
                 reason: hasData
-                    ? `${coins.length} coins · quality: ${quality}`
+                    ? `${coinCount} coins · quality: ${quality}`
                     : 'Awaiting first derivatives poll',
                 bucket: BUCKETS.UNKNOWN,
                 bucketReason: '',
@@ -800,15 +802,15 @@
                 }
                 const activeInCoins = coins.some(c => all[c]?.venues?.some(v => v.toLowerCase().includes(venue.toLowerCase())));
                 if (venueLatency != null || activeInCoins) {
-                    const degraded = venueLatency != null && venueLatency > 1500;
+                    const degraded = !activeInCoins || (venueLatency != null && venueLatency > 1500);
                     bridgeUpdate(venue, {
                         status: degraded ? 'degraded' : 'healthy',
                         lastFetch: now,
                         fallback: false,
                         transient: degraded,
-                        reason: venueLatency != null
-                            ? `${Math.round(venueLatency)}ms latency · live`
-                            : 'Active perp venue',
+                        reason: activeInCoins
+                            ? (venueLatency != null ? `${Math.round(venueLatency)}ms latency · live` : 'Active perp venue')
+                            : `${venue} feeds offline`,
                         bucket: BUCKETS.UNKNOWN,
                         bucketReason: '',
                     });
