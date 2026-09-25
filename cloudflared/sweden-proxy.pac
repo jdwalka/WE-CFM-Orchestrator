@@ -18,7 +18,7 @@ function FindProxyForURL(url, host) {
   ];
   for (var i = 0; i < needles.length; i++) {
     if (h.indexOf(needles[i]) !== -1) {
-      return 'SOCKS5 10.64.0.1:1080; SOCKS5 127.0.0.1:18090; DIRECT';
+      return 'SOCKS5 127.0.0.1:18090; DIRECT';
     }
   }
   return 'DIRECT';

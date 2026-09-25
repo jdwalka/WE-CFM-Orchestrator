@@ -6,6 +6,7 @@
 const { spawn } = require('child_process');
 const http = require('http');
 const https = require('https');
+const net = require('net');
 const path = require('path');
 const { SocksProxyAgent } = require('socks-proxy-agent');
 
@@ -13,29 +14,35 @@ const SOCKS_PORT = Number(process.env.MULLVAD_SOCKS_PORT || 18090);
 const HTTP_PORT = Number(process.env.WECRYPTO_PROXY_PORT || 3010);
 const TUNNEL_LOCAL_ADDR = process.env.MULLVAD_TUNNEL_LOCAL_ADDR || '';
 
-// 1. Start SOCKS5 Proxy Server (18090)
+// 1. Start SOCKS5 Proxy Server (18090) if not already listening
 const socksScript = path.join(__dirname, 'mullvad-standalone-socks.js');
 let socksProc = null;
 
 function startSocks() {
-  try {
-    socksProc = spawn(process.execPath, [socksScript], {
-      stdio: ['ignore', 'inherit', 'inherit'],
-      env: { ...process.env, MULLVAD_SOCKS_PORT: String(SOCKS_PORT), MULLVAD_TUNNEL_LOCAL_ADDR: TUNNEL_LOCAL_ADDR, ELECTRON_RUN_AS_NODE: '1' }
-    });
-    socksProc.on('error', (err) => {
-      console.warn('[ProxyRunner] SOCKS spawn error (non-fatal):', err.message);
+  const probe = net.connect({ port: SOCKS_PORT, host: '127.0.0.1', timeout: 500 }, () => {
+    probe.destroy();
+    console.log(`[ProxyRunner] SOCKS5 port ${SOCKS_PORT} is already active. Reusing existing tunnel bridge.`);
+  });
+  probe.on('error', () => {
+    probe.destroy();
+    try {
+      socksProc = spawn(process.execPath, [socksScript], {
+        stdio: ['ignore', 'inherit', 'inherit'],
+        env: { ...process.env, MULLVAD_SOCKS_PORT: String(SOCKS_PORT), MULLVAD_TUNNEL_LOCAL_ADDR: TUNNEL_LOCAL_ADDR, ELECTRON_RUN_AS_NODE: '1' }
+      });
+      socksProc.on('error', (err) => {
+        console.warn('[ProxyRunner] SOCKS spawn error (non-fatal):', err.message);
+        socksProc = null;
+      });
+      socksProc.on('exit', (code) => {
+        socksProc = null;
+        setTimeout(startSocks, 3000);
+      });
+    } catch (err) {
+      console.warn('[ProxyRunner] Failed to start SOCKS:', err.message);
       socksProc = null;
-    });
-    socksProc.on('exit', (code) => {
-      console.warn(`[ProxyRunner] SOCKS5 process exited with code ${code}. Restarting in 2s...`);
-      socksProc = null;
-      setTimeout(startSocks, 2000);
-    });
-  } catch (err) {
-    console.warn('[ProxyRunner] Failed to start SOCKS:', err.message);
-    socksProc = null;
-  }
+    }
+  });
 }
 startSocks();
 
