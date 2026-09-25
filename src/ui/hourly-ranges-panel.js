@@ -557,9 +557,18 @@
             : `<span class="hr-ptb-arrow hr-ptb-arrow--down" title="Yes bid fell since last poll">▼</span>`;
         }
 
-        const ptbStr = window.CoinPrecision?.formatCoinStrike
+        const lowStr = window.CoinPrecision?.formatCoinStrike
           ? window.CoinPrecision.formatCoinStrike(sym, b.low)
           : `$${b.low.toLocaleString()}`;
+        let ptbStr = lowStr;
+        if (b.high !== undefined && b.high !== null && b.high > b.low && b.high < Infinity) {
+          const highStr = window.CoinPrecision?.formatCoinStrike
+            ? window.CoinPrecision.formatCoinStrike(sym, b.high)
+            : `$${b.high.toLocaleString()}`;
+          ptbStr = `${lowStr}–${highStr}`;
+        } else if (!isFinite(b.high) || b.high === Infinity || b.high >= 9000000) {
+          ptbStr = `${lowStr}+`;
+        }
         // yes_bid_dollars/yes_ask_dollars are dollar units (0.25 = 25 cents)
         // — Kalshi contracts trade $0.01-$1.00, i.e. 1-100 cents.
         const bidStr = Number.isFinite(bid) ? `${(bid * 100).toFixed(0)}¢` : '—';
@@ -628,7 +637,7 @@
       body = `
         <div class="hr-ranges-scroll">
           <div class="hr-ranges-header">
-            <span class="hr-ranges-label hr-col-ptb">PTB · live Kalshi</span>
+            <span class="hr-ranges-label hr-col-ptb">Bucket · live Kalshi</span>
             <span class="hr-ranges-label hr-col-prob">Prob</span>
             <span class="hr-ranges-label hr-col-model" title="Model touch probability — engine, Kalshi-independent">Model</span>
             <span class="hr-ranges-label hr-col-odds">Bid / Ask</span>
