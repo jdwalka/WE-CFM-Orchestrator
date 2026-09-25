@@ -612,8 +612,8 @@
             const ms = lat[v.host] ?? (v.altHost ? lat[v.altHost] : null);
             const active = ms != null;
             const msText = active ? `${Math.round(ms)}ms` : '—';
-            const color = !active ? '#666' : (ms < 300 ? '#3ecf8e' : ms < 600 ? '#ffd166' : '#ff5e5e');
-            return `<div style="display:inline-block;margin-right:8px;margin-bottom:3px;font-size:11px;">
+            const color = !active ? '#666' : (ms < 400 ? '#3ecf8e' : ms < 1200 ? '#8ab4f8' : ms < 1800 ? '#ffd166' : '#ff5e5e');
+            return `<div style="display:inline-flex;align-items:center;gap:4px;font-size:11px;background:rgba(255,255,255,0.03);padding:2px 6px;border-radius:4px;border:1px solid #2a313d;">
                 <span style="color:#aaa;">${v.name}:</span>
                 <span style="color:${color};font-weight:600;">${msText}</span>
             </div>`;
@@ -638,7 +638,7 @@
             : '';
 
         el.innerHTML = `
-            <div>${venueBadges}</div>
+            <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px;">${venueBadges}</div>
             <div style="font-size:11px;color:#9aa6b2;margin-top:4px;">
                 Quality: <span style="color:${qualityColor};font-weight:600;">${quality.toUpperCase()}</span> ·
                 ${coins.length ? `${coins.length} pairs active` : 'polling'} ·

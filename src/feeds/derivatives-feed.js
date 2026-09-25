@@ -53,9 +53,21 @@
     XRP: 'XRP-USD', DOGE: 'DOGE-USD', BNB: 'BNB-USD',
   };
 
+  const DERIBIT_INSTRUMENT_MAP = {
+    BTC: 'BTC-PERPETUAL',
+    ETH: 'ETH-PERPETUAL',
+    SOL: 'SOL_USDC-PERPETUAL',
+    XRP: 'XRP_USDC-PERPETUAL',
+    DOGE: 'DOGE_USDC-PERPETUAL',
+    BNB: 'BNB_USDC-PERPETUAL',
+  };
+
+  const HEALTHY_LATENCY_THRESHOLD_MS = 1500;
+
   function recordDiagnostics(url, res, latencyMs) {
     const host = urlHost(url) || 'unknown';
-    DIAGNOSTICS.latency_ms[host] = latencyMs;
+    const prev = DIAGNOSTICS.latency_ms[host];
+    DIAGNOSTICS.latency_ms[host] = prev ? Math.round(prev * 0.5 + latencyMs * 0.5) : latencyMs;
     DIAGNOSTICS.venues[host] = { latencyMs, ts: Date.now() };
     const rl = {};
     const mbxWeight = res.headers?.get?.('x-mbx-used-weight-1m') || res.headers?.get?.('x-mbx-used-weight');
@@ -66,11 +78,8 @@
     if (bybitLimit) rl['x-bapi-limit-status'] = bybitLimit;
     if (Object.keys(rl).length) DIAGNOSTICS.rate_limits[host] = rl;
 
-    // Flag partial if latency > 500ms or rate-limit critical
-    if (latencyMs > 500) {
+    if (latencyMs > HEALTHY_LATENCY_THRESHOLD_MS) {
       DIAGNOSTICS.data_quality = 'partial';
-    } else if (DIAGNOSTICS.data_quality === 'clean') {
-      DIAGNOSTICS.data_quality = 'clean';
     }
   }
 
@@ -294,10 +303,11 @@
     } catch (_) { return null; }
   }
 
-  // ── Deribit: Explicit depth param (fixes invalid orderbookv5 defect)
+  // ── Deribit: Explicit depth param and accurate per-asset instrument naming
   async function fetchDeribitOrderbook(sym) {
+    const instrument = DERIBIT_INSTRUMENT_MAP[sym] || `${sym}-PERPETUAL`;
     try {
-      const j = await getJson(`https://www.deribit.com/api/v2/public/get_order_book?instrument_name=${sym}-PERPETUAL&depth=20`);
+      const j = await getJson(`https://www.deribit.com/api/v2/public/get_order_book?instrument_name=${instrument}&depth=20`);
       const res = j?.result;
       if (!res) return null;
       return {
@@ -591,8 +601,9 @@
 
   function reportVenueHealth(venue, healthy, latencyMs, reason, extra = {}) {
     if (typeof window === 'undefined' || !window.NetworkHealth?.update) return;
+    const isDegraded = !healthy || (latencyMs > HEALTHY_LATENCY_THRESHOLD_MS);
     const status = healthy
-      ? (latencyMs > 500 ? 'degraded' : 'healthy')
+      ? (isDegraded ? 'degraded' : 'healthy')
       : (extra.transient ? 'recovering' : 'degraded');
     window.NetworkHealth.update(venue, {
       status,
@@ -607,6 +618,7 @@
 
   // ── poll cycle ────────────────────────────────────────────────────
   async function fetchAll() {
+    DIAGNOSTICS.data_quality = 'clean';
     const detail = {};
     const hlMap = await fetchHyperliquidInfo().catch(() => ({}));
     for (const sym of COINS) {

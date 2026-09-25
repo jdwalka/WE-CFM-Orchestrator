@@ -800,7 +800,7 @@
                 }
                 const activeInCoins = coins.some(c => all[c]?.venues?.some(v => v.toLowerCase().includes(venue.toLowerCase())));
                 if (venueLatency != null || activeInCoins) {
-                    const degraded = venueLatency != null && venueLatency > 500;
+                    const degraded = venueLatency != null && venueLatency > 1500;
                     bridgeUpdate(venue, {
                         status: degraded ? 'degraded' : 'healthy',
                         lastFetch: now,
