@@ -518,20 +518,10 @@
     const offGrid = price != null && Number.isFinite(gridLo) && Number.isFinite(gridHi) &&
       (price < gridLo || price > gridHi);
 
-    if (isLive && !offGrid) {
+    if (isLive) {
       sortedBands = [...realBands].sort((a, b) =>
         Math.abs(a.low - (price ?? a.low)) - Math.abs(b.low - (price ?? b.low))
       );
-      // Distance sanity guard: if the closest band is > 3.5% away from spot,
-      // it means the real ladder is stale/truncated for this hour. Fall through to synthetic!
-      const minDistancePct = price && sortedBands.length > 0
-        ? Math.abs(sortedBands[0].low - price) / price
-        : 0;
-      if (minDistancePct > 0.035) {
-        isLive = false;
-      }
-    } else {
-      isLive = false;
     }
 
     if (isLive) {
