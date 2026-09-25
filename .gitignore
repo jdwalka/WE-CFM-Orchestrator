@@ -91,3 +91,6 @@ _consolidated-from-drive/
 # Local CodeQL/Semgrep scan artifacts
 .codeql-results/
 
+# Overnight Calibration Telemetry & Dumps
+CALIB_STATS/
+
