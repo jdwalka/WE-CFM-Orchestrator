@@ -95,6 +95,51 @@ const server = net.createServer((client) => {
       const connectOpts = { host, port, noDelay: true };
       if (TUNNEL_LOCAL_ADDR) connectOpts.localAddress = TUNNEL_LOCAL_ADDR;
 
+      if (!TUNNEL_LOCAL_ADDR) {
+        let handshakeStep = 0;
+        const upstream = net.connect({ host: '172.24.118.176', port: 18099, noDelay: true }, () => {
+          upstream.write(Buffer.from([0x05, 0x01, 0x00]));
+        });
+        upstream.on('data', (chunk) => {
+          if (handshakeStep === 0) {
+            if (chunk[0] === 0x05 && chunk[1] === 0x00) {
+              handshakeStep = 1;
+              const hostBuf = Buffer.from(host, 'utf8');
+              const req = Buffer.concat([
+                Buffer.from([0x05, 0x01, 0x00, 0x03, hostBuf.length]),
+                hostBuf,
+                Buffer.from([(port >> 8) & 0xff, port & 0xff])
+              ]);
+              upstream.write(req);
+            } else {
+              upstream.destroy();
+              client.destroy();
+            }
+            return;
+          }
+          if (handshakeStep === 1) {
+            if (chunk[0] === 0x05 && chunk[1] === 0x00) {
+              handshakeStep = 2;
+              replySocks(client, 0x00, port);
+              upstream.setKeepAlive(true, 15000);
+              client.setKeepAlive(true, 15000);
+              if (remaining.length > 0) upstream.write(remaining);
+              client.pipe(upstream);
+              upstream.pipe(client);
+              client.resume();
+            } else {
+              upstream.destroy();
+              client.destroy();
+            }
+          }
+        });
+        upstream.on('error', () => { client.destroy(); });
+        client.on('error', () => { upstream.destroy(); });
+        upstream.on('close', () => client.destroy());
+        client.on('close', () => upstream.destroy());
+        return;
+      }
+
       let connected = false;
       const dest = net.connect(connectOpts, () => {
         connected = true;
