@@ -881,8 +881,11 @@ class AdaptiveTuner {
       const sym = (raw.sym || raw.ticker || '').toUpperCase();
       if (!sym) continue;
 
-      const outcome = (raw.outcome || raw.settledOutcome || (raw.modelCorrect === true ? 'YES' : raw.modelCorrect === false ? 'NO' : '')).toUpperCase();
-      if (outcome !== 'YES' && outcome !== 'NO') continue;
+      const rawOutcome = (raw.outcome || raw.settledOutcome || (raw.modelCorrect === true ? 'YES' : raw.modelCorrect === false ? 'NO' : '')).toUpperCase();
+      let outcome = '';
+      if (rawOutcome === 'YES' || rawOutcome === 'UP') outcome = 'YES';
+      else if (rawOutcome === 'NO' || rawOutcome === 'DOWN') outcome = 'NO';
+      if (!outcome) continue;
 
       const strikeDir = raw.strikeDir || raw.dir || (raw.strikePrice && raw.settlePrice ? (raw.settlePrice >= raw.strikePrice ? 'above' : 'below') : 'above');
 
