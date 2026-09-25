@@ -1,7 +1,7 @@
 /**
- * kodak-collector — Truffle's cross-venue books, derivatives, and contracts.
+ * kodak-collector — Jdwalkaz's cross-venue books, derivatives, and contracts.
  *
- * Cloudflare Worker port of the local Truffle Kodak collector. It aggregates
+ * Cloudflare Worker port of the local Jdwalkaz Kodak collector. It aggregates
  * public market data for the hourly range engine:
  *   - Order-book midpoints across Binance, Bybit, OKX, MEXC, Coinbase,
  *     Kraken, Bitget, Gate

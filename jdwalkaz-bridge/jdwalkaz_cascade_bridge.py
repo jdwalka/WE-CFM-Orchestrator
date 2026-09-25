@@ -1,6 +1,6 @@
 """
-Truffle Agentverse / ASI1 Protocol Bridge — v2 (hardened)
-Module: truffle_cascade_bridge.py
+Jdwalkaz Agentverse / ASI1 Protocol Bridge — v2 (hardened)
+Module: jdwalkaz_cascade_bridge.py
 Port: 127.0.0.1:8002
 """
 
@@ -24,7 +24,7 @@ from amm_cascade_exhaustion import (
 )
 
 logging.basicConfig(level=logging.INFO)
-log = logging.getLogger("truffle-cascade")
+log = logging.getLogger("jdwalkaz-cascade")
 
 calculator = AmmCascadeExhaustionCalculator()
 MAX_BODY_BYTES = 1_000_000  # 1 MB — reject oversized payloads early
@@ -128,7 +128,7 @@ def _parse_flow(raw: Any) -> FlowSnapshot:
 
 async def handle_cascade_audit(request: web.Request) -> web.Response:
     """
-    Endpoint exposed to WECRYPTO / Truffle HUD: POST /truffle/cascade-audit
+    Endpoint exposed to WECRYPTO / Jdwalkaz HUD: POST /jdwalkaz/cascade-audit
     """
     try:
         if request.content_length and request.content_length > MAX_BODY_BYTES:
@@ -171,7 +171,7 @@ async def handle_cascade_audit(request: web.Request) -> web.Response:
             "ok": True,
             "telemetry": asdict(packet),
             "asi1_context_prompt": asi1_context,
-            "truffle_gate": {
+            "jdwalkaz_gate": {
                 "allow_reversion_entry":
                     packet.verdict == "FLUSH_EXHAUSTED_ABSORPTION_DETECTED",
                 "force_halt_knife_catch":
@@ -195,18 +195,18 @@ async def handle_cascade_audit(request: web.Request) -> web.Response:
 
 async def handle_health(_request: web.Request) -> web.Response:
     return web.json_response(
-        {"status": "healthy", "service": "truffle-cascade-engine", "version": "2.0"}
+        {"status": "healthy", "service": "jdwalkaz-cascade-engine", "version": "2.0"}
     )
 
 
-def create_truffle_app() -> web.Application:
+def create_jdwalkaz_app() -> web.Application:
     app = web.Application(client_max_size=MAX_BODY_BYTES)
-    app.router.add_post("/truffle/cascade-audit", handle_cascade_audit)
+    app.router.add_post("/jdwalkaz/cascade-audit", handle_cascade_audit)
     app.router.add_get("/health", handle_health)
     return app
 
 
 if __name__ == "__main__":
-    app = create_truffle_app()
-    print("Truffle AMM Cascade Bridge bound to http://127.0.0.1:8002")
+    app = create_jdwalkaz_app()
+    print("Jdwalkaz AMM Cascade Bridge bound to http://127.0.0.1:8002")
     web.run_app(app, host="127.0.0.1", port=8002)

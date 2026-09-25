@@ -114,7 +114,7 @@ KALSHI_SETTLEMENT_RULE = "60-second RTI average before expiry"
 KALSHI_MARKETS_URL = "https://api.elections.kalshi.com/trade-api/v2/markets"
 KALSHI_15M_SERIES = "KXBTC15M"
 
-_HEADERS = {"User-Agent": "wecryp-truffle/1.0 (+https://agentverse.ai)"}
+_HEADERS = {"User-Agent": "wecryp-jdwalkaz/1.0 (+https://agentverse.ai)"}
 COINBASE_CANDLES = "https://api.exchange.coinbase.com/products/BTC-USD/candles"
 BINANCE_SPOT_URL = "https://api.binance.com/api/v3/ticker/bookTicker"
 OKX_SPOT_URL = "https://www.okx.com/api/v5/market/ticker"
@@ -272,6 +272,27 @@ def _format_kalshi_strike(value) -> str:
 # ---------------------------------------------------------------------------
 # Data access
 # ---------------------------------------------------------------------------
+
+def _fetch_edge_calibration() -> dict:
+    """Fetch live calibration data from the edge worker."""
+    import os
+    import requests
+    edge_secret = os.environ.get("SCALPER_API_SECRET")
+    if edge_secret:
+        try:
+            r = requests.get(
+                "https://scalper.leaksnipe.win/calibration/latest", 
+                headers={"Authorization": f"Bearer {edge_secret}"}, 
+                timeout=2
+            )
+            if r.ok:
+                data = r.json().get("data")
+                if data:
+                    return data
+        except Exception:
+            pass
+    return {}
+
 def get_minute_candles(count: int = 360) -> list:
     """Fetch recent Coinbase 1-minute candles for wick analytics."""
     try:
@@ -1736,12 +1757,22 @@ def predict_hourly_range(force_refresh: bool = True, screen_spot: float | None =
         "floor": 0.0,
         "reason": "calibration report unavailable; correction disabled",
     })
-    tail_probability_correction = calibration_report.get("tail_probability_correction", {
-        "active": False,
-        "factor": 1.0,
-        "threshold": 0.20,
-        "reason": "calibration report unavailable; tail correction disabled",
-    })
+    edge_cal = _fetch_edge_calibration()
+    edge_tail = edge_cal.get("tail_risk_prob")
+    if edge_tail is not None:
+        tail_probability_correction = {
+            "active": True,
+            "factor": 2.0,
+            "threshold": float(edge_tail),
+            "reason": "edge calibration aggressive fat-tail active",
+        }
+    else:
+        tail_probability_correction = calibration_report.get("tail_probability_correction", {
+            "active": False,
+            "factor": 1.0,
+            "threshold": 0.20,
+            "reason": "calibration report unavailable; tail correction disabled",
+        })
     bucketed_correction = calibration_report.get("bucketed_correction", {
         "active": False,
         "current_factors": {},
@@ -1824,17 +1855,8 @@ def predict_hourly_range(force_refresh: bool = True, screen_spot: float | None =
     upper_bound = spot * (1 + upper_pct / 100)
     lower_bound = spot * (1 - lower_pct / 100)
 
-    # --- Fat-tailed distribution (Student-t on 200+ hourly log-returns) ---
-    hourly_candles_200 = get_hourly_candles(HOUR_SAMPLE_SIZE)
-    log_returns = []
-    for i in range(1, len(hourly_candles_200)):
-        if hourly_candles_200[i - 1]["close"] > 0 and hourly_candles_200[i]["close"] > 0:
-            log_returns.append(
-                math.log(
-                    hourly_candles_200[i]["close"] / hourly_candles_200[i - 1]["close"]
-                )
-            )
-    df = _fit_student_t(log_returns)
+    # --- Fat-tailed distribution (Edge Worker Calibration) ---
+    df = float(edge_cal.get("student_t_factor", STUDENT_T_DF_DEFAULT))
 
     cross_venue_divergence = get_cross_venue_divergence()
     positioning_skew = get_positioning_skew()

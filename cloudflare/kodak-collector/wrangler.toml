@@ -7,7 +7,7 @@ compatibility_flags = [
 ]
 
 [triggers]
-crons = ["* * * * *"]
+crons = ["*/5 * * * *"]
 
 [[kv_namespaces]]
 binding = "MARKET_CACHE"

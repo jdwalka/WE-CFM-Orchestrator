@@ -18,4 +18,4 @@ if (-not $wslIp) {
 & netsh.exe interface portproxy delete v4tov4 listenaddress=$listenAddress listenport=$listenPort 2>$null
 & netsh.exe interface portproxy add v4tov4 listenaddress=$listenAddress listenport=$listenPort connectaddress=$wslIp connectport=$listenPort | Out-Null
 
-Write-Host "WECRYP Truffle loopback bridge: $listenAddress`:$listenPort -> ${wslIp}:$listenPort"
+Write-Host "WECRYP Jdwalkaz loopback bridge: $listenAddress`:$listenPort -> ${wslIp}:$listenPort"

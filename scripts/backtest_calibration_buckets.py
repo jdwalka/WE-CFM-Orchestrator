@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Replay the resolved Truffle ledger with global and expiry-bucket corrections."""
+"""Replay the resolved Jdwalkaz ledger with global and expiry-bucket corrections."""
 from __future__ import annotations
 
 import argparse

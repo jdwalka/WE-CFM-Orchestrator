@@ -1,4 +1,4 @@
-# Truffle Back Online — TODO
+# Jdwalkaz Back Online — TODO
 
 ## Current state
 
@@ -7,7 +7,7 @@
   out all valid keys and reports “API key missing.”
 - **Valid ASI1 key exists:** `secrets/ASI1_LEAKSNIPE.txt` is readable and the
   resolver confirms `hasAsi1Credentials() === true`.
-- **Truffle HTTP service:** nothing is listening on `127.0.0.1:8002` from WSL
+- **Jdwalkaz HTTP service:** nothing is listening on `127.0.0.1:8002` from WSL
   or Windows, so the HUD cannot reach `POST /query`.
 
 ## Recovery checklist
@@ -30,14 +30,14 @@
    - If it still reports missing, confirm the app is loading one of the `.env`
      files above and that no stale process remains.
 
-4. **Start the Truffle local service**
+4. **Start the Jdwalkaz local service**
    - [x] Located the service at `/home/mauro/leaksnipe-mcp-agent`.
    - [x] Bound the uagents HTTP server explicitly to `127.0.0.1:8002`.
    - [x] Added `GET /health` for the HUD availability probe.
    - [x] Started the service and confirmed registration with Agentverse.
-   - Truffle must expose `POST http://127.0.0.1:8002/query`.
+   - Jdwalkaz must expose `POST http://127.0.0.1:8002/query`.
    - Start the service on the same host as the HUD.
-   - Confirm it is listening before opening the Truffle panel.
+   - Confirm it is listening before opening the Jdwalkaz panel.
 
 5. **Validate the service**
    - Send:
@@ -45,13 +45,13 @@
    - Expected response shape: `{ "ok": true, "content": "..." }`.
 
 6. **Retest from iPhone**
-   - Open the iPhone messaging flow, select Truffle, and send a short message.
+   - Open the iPhone messaging flow, select Jdwalkaz, and send a short message.
    - A stall should now surface as an explicit HUD error if the service is
      unreachable, rather than a silent hang.
 
 7. **Harden after recovery**
    - [x] Added a 5s availability probe for `127.0.0.1:8002`.
-   - [x] Added a red-bordered "Truffle offline" indicator on the Truffle button.
+   - [x] Added a red-bordered "Jdwalkaz offline" indicator on the Jdwalkaz button.
    - [x] Fail fast with an explicit message instead of a 30s stall when offline.
-   - [x] Added `wecryp-truffle.service` user unit with automatic restart.
+   - [x] Added `wecryp-jdwalkaz.service` user unit with automatic restart.
    - [x] Enabled the service so it starts automatically on WSL login.

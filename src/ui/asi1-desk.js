@@ -391,7 +391,7 @@
         setMode: 'asi1:desk-mode',
         infer: 'asi1:desk-infer',
         chat: 'asi1:desk-chat',
-        truffleQuery: 'truffle:query',
+        jdwalkazQuery: 'jdwalkaz:query',
         hunt: 'asi1:agentverse-hunt',
         auditAgents: 'asi1:agentverse-audit',
         agentverseStatus: 'asi1:agentverse-status',
@@ -927,14 +927,14 @@
         if (askedEl) askedEl.textContent = new Date().toLocaleTimeString();
         const query = `Give me your live read on ${coinNow} right now: current spot, the live Kalshi hourly range ladder (or the 15m/5m contracts if more relevant), and the best out-of-range scalp setup if there is one.`;
         // Full bid-wall + depth datapoints for this query — logged to
-        // logs/truffle-wall-stats.log by the truffle:query handler.
+        // logs/jdwalkaz-wall-stats.log by the jdwalkaz:query handler.
         const wallSnap = window.WallDepthSnapshot?.build?.(coinNow) || null;
         if (wallSnap) {
           window.WallDepthSnapshot.summarize(wallSnap).forEach((l) => console.info(l));
-          try { window.dispatchEvent(new CustomEvent('truffle:wallstats', { detail: wallSnap })); } catch (_) { /* */ }
+          try { window.dispatchEvent(new CustomEvent('jdwalkaz:wallstats', { detail: wallSnap })); } catch (_) { /* */ }
         }
         const t0 = Date.now();
-        const res = await invoke('truffleQuery', { query, wallStats: wallSnap, focus: coinNow, channel: 'truffle-horizon' });
+        const res = await invoke('jdwalkazQuery', { query, wallStats: wallSnap, focus: coinNow, channel: 'jdwalkaz-horizon' });
         const content = res?.ok
           ? (res.content || 'No response from jdwalkaz.')
           : `jdwalkaz error: ${res?.error || 'unknown — is the agent running on port 8002?'}`;

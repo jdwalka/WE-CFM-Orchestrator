@@ -8,8 +8,8 @@ in `.github/agents/` and listed in `.github/AGENTS.md`.
 
 ## Architecture correction (verified live)
 - **Ledger split-brain is resolved.** There is one authoritative runtime ledger:
-  `G:\WECRYP\data\truffle_calibration.sqlite3` — 2209 predictions / 2137 resolved.
-- `wecryp-truffle.service` now imports repo modules first, falls back to the WSL venv for
+  `G:\WECRYP\data\jdwalkaz_calibration.sqlite3` — 2209 predictions / 2137 resolved.
+- `wecryp-jdwalkaz.service` now imports repo modules first, falls back to the WSL venv for
   bridge modules, and points `CALIBRATION_LEDGER_PATH` at the consolidated ledger.
 - `scalper-market-data` is a data proxy Worker, not the prediction engine. It is deployed with
   the `CALIBRATION_DB` D1 binding and full observability.
@@ -20,13 +20,13 @@ in `.github/agents/` and listed in `.github/AGENTS.md`.
 - Live Worker version: `7eb4c2a0-0299-430a-a8d9-e731e6352968`.
 - D1 database: `scalper-calibration` — `48536b22-03b3-42dd-92fa-44feab144d84`.
 - `/health` is healthy and reports storage reachable, calibration available, and fresh spot/ladder feeds.
-- The prediction/calibration engine runs locally via Truffle
+- The prediction/calibration engine runs locally via Jdwalkaz
   (`prediction_engine.py` + `calibration_ledger.py`), not on Workers.
 
 ## Fixes
 
 ### A0. Ledger split-brain — CRITICAL (Calibration Storage Agent)
-- [x] Repoint the Truffle service to import repo modules from `G:\WECRYP`
+- [x] Repoint the Jdwalkaz service to import repo modules from `G:\WECRYP`
 - [x] Back up and merge the 2173-row WSL ledger into the authoritative repo ledger
 - [x] Keep WSL only for the venv; no persistent data under WSL (AGENTS.md routing rule)
 
@@ -96,5 +96,5 @@ in `.github/agents/` and listed in `.github/AGENTS.md`.
 5. A5 + A6 + B5–B8 (hygiene)
 
 Live actions completed with user approval on 2026-09-14: ledger merge, D1
-creation/schema, `scalper-market-data` deployment, and `wecryp-truffle.service`
+creation/schema, `scalper-market-data` deployment, and `wecryp-jdwalkaz.service`
 restart.

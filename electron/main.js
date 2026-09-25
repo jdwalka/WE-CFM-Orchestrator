@@ -760,14 +760,14 @@ try {
   console.warn('[OrbitalRedpandaBridge] Module unavailable:', e.message);
 }
 
-// ── Truffle Candle Publisher (Redpanda wecrypto.prices.ticks) ────────────────
-let TruffleCandlePublisher = null;
+// ── Jdwalkaz Candle Publisher (Redpanda wecrypto.prices.ticks) ────────────────
+let JdwalkazCandlePublisher = null;
 try {
-  TruffleCandlePublisher = require('../src/infra/truffle-candle-publisher');
-  TruffleCandlePublisher.init().catch(e => console.warn('[TruffleCandlePublisher] init warning:', e.message));
-  console.log('[TruffleCandlePublisher] Loaded — aggregates and publishes 1m candles to wecrypto.prices.ticks');
+  JdwalkazCandlePublisher = require('../src/infra/jdwalkaz-candle-publisher');
+  JdwalkazCandlePublisher.init().catch(e => console.warn('[JdwalkazCandlePublisher] init warning:', e.message));
+  console.log('[JdwalkazCandlePublisher] Loaded — aggregates and publishes 1m candles to wecrypto.prices.ticks');
 } catch (e) {
-  console.warn('[TruffleCandlePublisher] Module unavailable:', e.message);
+  console.warn('[JdwalkazCandlePublisher] Module unavailable:', e.message);
 }
 
 // ── Orbital Redis Subscriber (real-time ticks, sub-second vs. the Kafka -> ──
@@ -902,11 +902,11 @@ let _pendingPythPush = null;
 let _pythPushScheduled = false;
 function pushPythTickersCoalesced(targetWin, payload) {
   _pendingPythPush = payload;
-  if (TruffleCandlePublisher && payload) {
+  if (JdwalkazCandlePublisher && payload) {
     try {
       for (const [key, val] of Object.entries(payload)) {
         if (val && val.last != null) {
-          TruffleCandlePublisher.onTick(key, val.last, 0, val.timestamp || Date.now());
+          JdwalkazCandlePublisher.onTick(key, val.last, 0, val.timestamp || Date.now());
         }
       }
     } catch (_) {}
@@ -2514,9 +2514,9 @@ ipcMain.handle('pyth:getCandles', async (_, { symbol, resolution, from, to }) =>
   }
 });
 
-ipcMain.handle('truffle:publishCandle', async (_, { symbol, candle }) => {
-  if (TruffleCandlePublisher) {
-    return await TruffleCandlePublisher.publishCandle(symbol, candle);
+ipcMain.handle('jdwalkaz:publishCandle', async (_, { symbol, candle }) => {
+  if (JdwalkazCandlePublisher) {
+    return await JdwalkazCandlePublisher.publishCandle(symbol, candle);
   }
   return false;
 });
@@ -3012,33 +3012,33 @@ ${ladderLines ? `- Active Hourly Range Ladder:\n${ladderLines}` : ''}`;
   }
 });
 
-// Truffle -- the Hourly Range Scalper uAgent (Python/uagents, port 8002),
+// Jdwalkaz -- the Hourly Range Scalper uAgent (Python/uagents, port 8002),
 // registered on Agentverse as agent1q253g9agfp66f2nvkmgxmtn2ewzv50a9uvna2p9x360qxpfawl6yjv303m6.
 // Unlike the asi1:desk-* handlers above, this does not build an ASI1-desk
-// packet -- truffle pulls its own live Kalshi/Polymarket contract data and
+// packet -- jdwalkaz pulls its own live Kalshi/Polymarket contract data and
 // Coinbase spot via its own tool-calling loop, and answers free-text.
-ipcMain.handle('truffle:query', async (_event, args = {}) => {
+ipcMain.handle('jdwalkaz:query', async (_event, args = {}) => {
   try {
     const query = String(args.query || args.prompt || '').trim();
     if (!query) return { ok: false, error: 'empty query' };
-    const truffleUrl = process.env.TRUFFLE_URL || 'http://127.0.0.1:8002/query';
-    const resp = await fetch(truffleUrl, {
+    const jdwalkazUrl = process.env.JDWALKAZ_URL || process.env.TRUFFLE_URL || 'http://127.0.0.1:8002/query';
+    const resp = await fetch(jdwalkazUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ query }),
       signal: AbortSignal.timeout(30000),
     });
     if (!resp.ok) {
-      return { ok: false, error: `truffle HTTP ${resp.status}` };
+      return { ok: false, error: `jdwalkaz HTTP ${resp.status}` };
     }
     const data = await resp.json();
-    return { ok: !!data.ok, content: data.content || '', error: data.ok ? undefined : (data.content || 'truffle returned an error') };
+    return { ok: !!data.ok, content: data.content || '', error: data.ok ? undefined : (data.content || 'jdwalkaz returned an error') };
   } catch (err) {
     return {
       ok: false,
       error: err?.message
-        ? `truffle unreachable: ${err.message}`
-        : 'truffle unreachable -- is the agent running on port 8002?',
+        ? `jdwalkaz unreachable: ${err.message}`
+        : 'jdwalkaz unreachable -- is the agent running on port 8002?',
     };
   }
 });
