@@ -2300,29 +2300,31 @@ def predict_hourly_range(force_refresh: bool = True, screen_spot: float | None =
     raw_alt_signal = get_alt_signal()
     alt_signal, lead_lag_filter = _filter_alt_signal(raw_alt_signal)
 
-    from calibration_ledger import record_prediction
+    from calibration_ledger import record_predictions
+    batch_records = []
     for strike in strike_probs:
         if strike["fair_status"] == "invalid_band":
             continue
-        record_prediction(
-            timestamp=now,
-            band=strike["band"],
-            low=strike["low"],
-            high=strike["high"],
-            expiry=now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1),
-            p_touch=strike["p_touch_adjusted"],
-            p_normal=strike["p_normal"],
-            p_student_t=strike["p_student_t"],
-            tail_adjustment=strike["tail_adjustment"],
-            alt_aligned=alt_signal.get("aligned", False) if alt_signal else False,
-            minutes_to_expiry=minutes_to_expiry,
-            p_base=strike["p_base"],
-            p_calibrated=strike["p_calibrated"],
-            calibration_factor=strike["calibration_factor"],
-            regime=regime.get("regime", "UNKNOWN"),
-            settlement_hold_given_touch=strike.get("settlement_hold_given_touch"),
-            p_settle=strike.get("p_settle"),
-        )
+        batch_records.append({
+            "timestamp": now,
+            "band": strike["band"],
+            "low": strike["low"],
+            "high": strike["high"],
+            "expiry": now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1),
+            "p_touch": strike["p_touch_adjusted"],
+            "p_normal": strike["p_normal"],
+            "p_student_t": strike["p_student_t"],
+            "tail_adjustment": strike["tail_adjustment"],
+            "alt_aligned": alt_signal.get("aligned", False) if alt_signal else False,
+            "minutes_to_expiry": minutes_to_expiry,
+            "p_base": strike["p_base"],
+            "p_calibrated": strike["p_calibrated"],
+            "calibration_factor": strike["calibration_factor"],
+            "regime": regime.get("regime", "UNKNOWN"),
+            "settlement_hold_given_touch": strike.get("settlement_hold_given_touch"),
+            "p_settle": strike.get("p_settle"),
+        })
+    record_predictions(batch_records)
     calibration_report = get_calibration_report()
 
     full_hour_probs = _probs_from_sigma(
