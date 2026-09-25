@@ -56,10 +56,10 @@ MCP_SERVER_TOKEN = os.getenv("MCP_SERVER_TOKEN", "")
 asyncio.set_event_loop(asyncio.new_event_loop())
 uagents_asgi.HOST = "0.0.0.0"
 
-TRUFFLE_ENDPOINT = os.getenv("TRUFFLE_ENDPOINT", "https://truffle.leaksnipe.win")
+JDWALKAZ_ENDPOINT = os.getenv("JDWALKAZ_ENDPOINT", os.getenv("TRUFFLE_ENDPOINT", "https://truffle.leaksnipe.win"))
 
 agent = Agent(
-    name="Trufflezzz",
+    name="Jdwalkaz",
     seed=AGENT_SEED,
     port=8002,
     mailbox=True,
@@ -330,7 +330,7 @@ def get_live_cascade_audit(symbol: str = "BTC") -> dict:
             VenueSkew,
             FlowSnapshot,
         )
-        from truffle_cascade_bridge import format_asi1_context
+        from jdwalkaz_cascade_bridge import format_asi1_context
         from prediction_engine import get_spot, get_positioning_skew
         from dataclasses import asdict
 
@@ -379,20 +379,22 @@ def get_live_cascade_audit(symbol: str = "BTC") -> dict:
         return {"ok": False, "error": str(exc)}
 
 
-# --- Truffle inference policy ----------------------------------------------
-# Full-live, unconditionally: every channel (HUD, mailbox, periodic, aux
-# endpoints) gets live ASI1 inference. Cost is not a constraint.
-# NOTE (2026-09-21): the old TRUFFLE_HUD_ONLY / HUD_ONLY_INFERENCE
-# deterministic-only policy was removed permanently — silent deterministic
-# fallbacks confused the HUD. The only deterministic output left is the
-# last-resort fallback when ASI1 itself fails, and it says so explicitly.
+# --- Jdwalkaz inference policy ----------------------------------------------
+# Full-live mode: every channel (HUD, mailbox, periodic, aux endpoints) gets
+# live ASI1 inference. Cost is not a constraint. Set JDWALKAZ_HUD_ONLY=1 to
+# re-enable HUD-only gating.
+JDWALKAZ_INFERENCE_INTERVAL_SEC = int(
+    os.getenv("JDWALKAZ_INFERENCE_INTERVAL_SEC", os.getenv("TRUFFLE_INFERENCE_INTERVAL_SEC", os.getenv("ASI1_INFERENCE_COOLDOWN_SEC", "900")))
+)
+HUD_ONLY_INFERENCE = os.getenv("JDWALKAZ_HUD_ONLY", os.getenv("TRUFFLE_HUD_ONLY", "0")) == "1"
+HUD_ONLY_NOTE = "[HUD-only inference mode: this channel answers deterministically.]"
 
 _snapshot_cache = None
 _snapshot_time = 0.0
 _last_asi1_call_time = 0.0
-_cached_truffle_summary = None
-_cached_truffle_summary_time = 0.0
-_cached_truffle_source = "none"
+_cached_jdwalkaz_summary = None
+_cached_jdwalkaz_summary_time = 0.0
+_cached_jdwalkaz_source = "none"
 
 def _get_or_compute_snapshot():
     global _snapshot_cache, _snapshot_time
@@ -420,8 +422,8 @@ def _get_or_compute_snapshot():
         return ({}, "")
 
 
-def generate_deterministic_truffle_summary(prediction: dict, cascade_overlay: str = "") -> str:
-    """Pure deterministic model summary tailored specifically for @truffz.
+def generate_deterministic_jdwalkaz_summary(prediction: dict, cascade_overlay: str = "") -> str:
+    """Pure deterministic model summary tailored specifically for @jdwalkaz.
     
     Synthesizes the quantitative prediction engine, Kalshi 15m model,
     and AMM cascade exhaustion telemetry into an actionable briefing
@@ -452,13 +454,13 @@ def generate_deterministic_truffle_summary(prediction: dict, cascade_overlay: st
     wall_density = cascade.get("sub_orbital_wall_density") or 0.0
     action = cascade.get("recommended_action") or "HOLD_FLAT_OBSERVE"
 
-    # Truffle Gate logic
+    # Jdwalkaz Gate logic
     if verdict == "VOID_SLIP_ACTIVE" or (isinstance(wall_density, (int, float)) and wall_density > 0.65):
-        truffle_gate = "🛑 FORCE HALT: VOID_SLIP / HIGH WALL DENSITY — DO NOT CATCH FALLING KNIVES"
+        jdwalkaz_gate = "🛑 FORCE HALT: VOID_SLIP / HIGH WALL DENSITY — DO NOT CATCH FALLING KNIVES"
     elif verdict == "FLUSH_EXHAUSTED_ABSORPTION_DETECTED":
-        truffle_gate = "✅ REVERSION ENTRY PERMITTED: Cascade flush absorption confirmed"
+        jdwalkaz_gate = "✅ REVERSION ENTRY PERMITTED: Cascade flush absorption confirmed"
     else:
-        truffle_gate = f"ℹ️ GATE OPEN: Normal scalping flow ({action})"
+        jdwalkaz_gate = f"ℹ️ GATE OPEN: Normal scalping flow ({action})"
 
     # Kalshi 15m
     k15 = prediction.get("kalshi_15m_model") or {}
@@ -470,11 +472,11 @@ def generate_deterministic_truffle_summary(prediction: dict, cascade_overlay: st
     spot_str = f"${spot:,.2f}" if spot > 0 else "—"
 
     return (
-        f"🍄 @truffz MODEL SUMMARY [DETERMINISTIC ENGINE]\n"
+        f"🍄 @jdwalkaz MODEL SUMMARY [DETERMINISTIC ENGINE]\n"
         f"Strategy: Hourly Range Scalper & AMM Cascade Bridge\n"
         f"----------------------------------------------------\n"
-        f"1. TRUFFLE GATE DIRECTIVE:\n"
-        f"   Status: {truffle_gate}\n"
+        f"1. JDWALKAZ GATE DIRECTIVE:\n"
+        f"   Status: {jdwalkaz_gate}\n"
         f"   Cascade Verdict: {verdict} (Coherence: {coherence})\n"
         f"   Action: {action}\n\n"
         f"2. HOURLY RANGE TARGETS & BIAS:\n"
@@ -492,15 +494,15 @@ def generate_deterministic_truffle_summary(prediction: dict, cascade_overlay: st
     )
 
 
-def get_or_refresh_truffle_model_summary(force_refresh: bool = False) -> tuple[str, str, float]:
-    """Get or refresh the Truffle model summary.
+def get_or_refresh_jdwalkaz_model_summary(force_refresh: bool = False, live: bool = True) -> tuple[str, str, float]:
+    """Get or refresh the Jdwalkaz model summary.
 
     Always attempts a fresh live ASI1 inference when a key is present.
     Returns: (summary_content, source, cooldown_remaining_sec)
     source is either 'asi1' or 'deterministic' (deterministic = ASI1 failed
     or no key configured — last resort only, never a policy choice).
     """
-    global _last_asi1_call_time, _cached_truffle_summary, _cached_truffle_summary_time, _cached_truffle_source
+    global _last_asi1_call_time, _cached_jdwalkaz_summary, _cached_jdwalkaz_summary_time, _cached_jdwalkaz_source
     now = time.time()
 
     prediction, cascade_overlay = _get_or_compute_snapshot()
@@ -513,14 +515,14 @@ def get_or_refresh_truffle_model_summary(force_refresh: bool = False) -> tuple[s
                 "Content-Type": "application/json",
             }
             asi1_system_prompt = (
-                "You are @truffz, the dedicated Truffle trading agent in WeCrypto specializing in Kalshi and Polymarket "
+                "You are @jdwalkaz, the dedicated Jdwalkaz trading agent in WeCrypto specializing in Kalshi and Polymarket "
                 "hourly range binary scalping and AMM cascade exhaustion mechanics. "
                 "The user enters out-of-range strikes 15-20 min before expiry, settling on Coinbase BRTI average (single-wick settlement). "
                 "Synthesize the quantitative prediction and cascade telemetry below into a concise (under 250 words), high-conviction "
-                "Truffle Model Summary. "
+                "Jdwalkaz Model Summary. "
                 "Ground all numbers strictly in the provided data. "
                 "Structure into: "
-                "1) Truffle Gate Directive (verdict & knife-catch check), "
+                "1) Jdwalkaz Gate Directive (verdict & knife-catch check), "
                 "2) Expected Range & Key Strikes (Coinbase BRTI anchor), "
                 "3) AMM Cascade & Liquidity (Wall Density & V_flush), "
                 "4) Scalp Entry Timing & Settlement Risk."
@@ -529,7 +531,7 @@ def get_or_refresh_truffle_model_summary(force_refresh: bool = False) -> tuple[s
             asi1_user_prompt = (
                 f"QUANTITATIVE PREDICTION & TELEMETRY:\n{_json.dumps(prediction, indent=2)}\n\n"
                 f"{cascade_overlay}\n\n"
-                "Generate the operational Truffle Model Summary for @truffz now."
+                "Generate the operational Jdwalkaz Model Summary for @jdwalkaz now."
             )
             payload = {
                 "model": "asi1",
@@ -546,26 +548,29 @@ def get_or_refresh_truffle_model_summary(force_refresh: bool = False) -> tuple[s
                 content = data["choices"][0]["message"].get("content") or ""
                 if content:
                     _last_asi1_call_time = time.time()
-                    _cached_truffle_summary = content.strip()
-                    _cached_truffle_summary_time = time.time()
-                    _cached_truffle_source = "asi1"
-                    return (_cached_truffle_summary, "asi1", 0.0)
+                    _cached_jdwalkaz_summary = content.strip()
+                    _cached_jdwalkaz_summary_time = time.time()
+                    _cached_jdwalkaz_source = "asi1"
+                    return (_cached_jdwalkaz_summary, "asi1", 0.0)
                 else:
                     ch0 = data.get("choices", [{}])[0]
-                    print(f"[truffle] model-summary ASI1 200 but empty content "
+                    print(f"[jdwalkaz] model-summary ASI1 200 but empty content "
                           f"(finish={ch0.get('finish_reason')} refusal={ch0.get('message', {}).get('refusal')})", flush=True)
             else:
-                print(f"[truffle] model-summary ASI1 HTTP {resp.status_code}: {resp.text[:200]}", flush=True)
+                print(f"[jdwalkaz] model-summary ASI1 HTTP {resp.status_code}: {resp.text[:200]}", flush=True)
         except Exception as ex:
             # Fall back to deterministic summary on any failure
             print(f"[truffle] model-summary ASI1 exception: {type(ex).__name__}: {ex}", flush=True)
 
     # 3. Deterministic summary fallback (ASI1 failed or no key — instantaneous)
-    det_summary = generate_deterministic_truffle_summary(prediction, cascade_overlay)
-    _cached_truffle_summary = det_summary
-    _cached_truffle_summary_time = time.time()
-    _cached_truffle_source = "deterministic"
+    det_summary = generate_deterministic_jdwalkaz_summary(prediction, cascade_overlay)
+    _cached_jdwalkaz_summary = det_summary
+    _cached_jdwalkaz_summary_time = time.time()
+    _cached_jdwalkaz_source = "deterministic"
     return (det_summary, "deterministic", 0.0)
+
+
+get_or_refresh_truffle_model_summary = get_or_refresh_jdwalkaz_model_summary
 
 
 def process_query(query: str, sender: str = "local") -> str:
@@ -596,12 +601,12 @@ def process_query(query: str, sender: str = "local") -> str:
         data_block = format_for_llm(get_live_cascade_audit("BTC"))
 
     # If asking for summary, live read, setup, advice, or general read:
-    summary, source, cd_left = get_or_refresh_truffle_model_summary()
-    print(f"[truffle] process_query sender={sender} summary_source={source} data_block={bool(data_block)} q={q_clean[:60]!r}", flush=True)
+    summary, source, cd_left = get_or_refresh_jdwalkaz_model_summary(live=True)
+    print(f"[jdwalkaz] process_query sender={sender} summary_source={source} data_block={bool(data_block)} q={q_clean[:60]!r}", flush=True)
 
     is_summary_request = (
         not q_clean
-        or any(k in q_lower for k in ["summary", "live read", "read on", "setup", "brief", "status", "truffle", "update"])
+        or any(k in q_lower for k in ["summary", "live read", "read on", "setup", "brief", "status", "jdwalkaz", "update"])
     )
 
     if is_summary_request and not data_block:
@@ -623,7 +628,7 @@ def process_query(query: str, sender: str = "local") -> str:
             import json as _json
             sys_prompt = (
                 SYSTEM_PROMPT
-                + f"\n\nLATEST TRUFFLE MODEL SUMMARY:\n{summary}\n\n"
+                + f"\n\nLATEST JDWALKAZ MODEL SUMMARY:\n{summary}\n\n"
                 + f"QUANTITATIVE PREDICTION:\n{_json.dumps(prediction, indent=2)}\n"
                 + cascade_overlay
             )
@@ -662,7 +667,7 @@ def process_query(query: str, sender: str = "local") -> str:
 
     # Last-resort fallback: ASI1 itself failed or no key is configured.
     # (There is no cooldown and no policy gate here — just retry.)
-    print(f"[truffle] process_query sender={sender} source=deterministic-fallback q={q_clean[:60]!r}", flush=True)
+    print(f"[jdwalkaz] process_query sender={sender} source=deterministic-fallback q={q_clean[:60]!r}", flush=True)
     if data_block:
         ans = (
             f"{data_block}\n\n"
@@ -670,7 +675,7 @@ def process_query(query: str, sender: str = "local") -> str:
         )
     else:
         ans = (
-            f"🍄 @truffz (Deterministic Engine — ASI1 unavailable):\n\n"
+            f"🍄 @jdwalkaz (Deterministic Engine — ASI1 unavailable):\n\n"
             f"{summary}\n\n"
             f"Regarding: '{q_clean[:80]}'\n"
             f"Deterministic models are aligned to the current hourly expiry bracket. "
@@ -755,7 +760,7 @@ async def handle_health_get(_ctx: Context) -> HUDResponse:
 
 @agent.on_rest_post("/query", HUDQuery, HUDResponse)
 async def handle_query(ctx: Context, msg: HUDQuery) -> HUDResponse:
-    # /query is the HUD channel (asi1-desk + truffle:query IPC) — live inference.
+    # /query is the HUD channel (asi1-desk + jdwalkaz:query IPC) — live inference.
     try:
         loop = asyncio.get_event_loop()
         answer = await loop.run_in_executor(None, lambda: process_query(msg.query))
@@ -833,7 +838,7 @@ async def handle_cascade_post(_ctx: Context, msg: HUDQuery) -> HUDResponse:
         return HUDResponse(ok=False, content=str(e))
 
 
-@agent.on_rest_post("/truffle/cascade-audit", HUDQuery, HUDResponse)
+@agent.on_rest_post("/jdwalkaz/cascade-audit", HUDQuery, HUDResponse)
 async def handle_cascade_audit_rest(_ctx: Context, msg: HUDQuery) -> HUDResponse:
     try:
         loop = asyncio.get_event_loop()
@@ -843,25 +848,27 @@ async def handle_cascade_audit_rest(_ctx: Context, msg: HUDQuery) -> HUDResponse
         return HUDResponse(ok=False, content=str(e))
 
 
+@agent.on_rest_post("/jdwalkaz/model-summary", HUDQuery, HUDResponse)
 @agent.on_rest_post("/truffle/model-summary", HUDQuery, HUDResponse)
-async def handle_truffle_summary_post(_ctx: Context, msg: HUDQuery) -> HUDResponse:
+async def handle_jdwalkaz_summary_post(_ctx: Context, msg: HUDQuery) -> HUDResponse:
     try:
         force = (msg.query or "").strip().lower() == "force"
         loop = asyncio.get_event_loop()
         summary, source, cd_left = await loop.run_in_executor(
-            None, lambda: get_or_refresh_truffle_model_summary(force_refresh=force)
+            None, lambda: get_or_refresh_jdwalkaz_model_summary(force_refresh=force)
         )
         return HUDResponse(ok=True, content=summary)
     except Exception as e:
         return HUDResponse(ok=False, content=str(e))
 
 
+@agent.on_rest_get("/jdwalkaz/model-summary", HUDResponse)
 @agent.on_rest_get("/truffle/model-summary", HUDResponse)
-async def handle_truffle_summary_get(_ctx: Context) -> HUDResponse:
+async def handle_jdwalkaz_summary_get(_ctx: Context) -> HUDResponse:
     try:
         loop = asyncio.get_event_loop()
         summary, source, cd_left = await loop.run_in_executor(
-            None, lambda: get_or_refresh_truffle_model_summary(force_refresh=False)
+            None, lambda: get_or_refresh_jdwalkaz_model_summary(force_refresh=False)
         )
         return HUDResponse(ok=True, content=summary)
     except Exception as e:
@@ -870,26 +877,26 @@ async def handle_truffle_summary_get(_ctx: Context) -> HUDResponse:
 
 @agent.on_rest_get("/summary", HUDResponse)
 async def handle_summary_get(ctx: Context) -> HUDResponse:
-    return await handle_truffle_summary_get(ctx)
+    return await handle_jdwalkaz_summary_get(ctx)
 
 
 @agent.on_rest_post("/summary", HUDQuery, HUDResponse)
 async def handle_summary_post(ctx: Context, msg: HUDQuery) -> HUDResponse:
-    return await handle_truffle_summary_post(ctx, msg)
+    return await handle_jdwalkaz_summary_post(ctx, msg)
 
 
 @agent.on_interval(period=900.0)
-async def periodic_truffle_refresh(ctx: Context):
-    """Every 15 minutes, refresh the Truffle summary cache with live inference.
+async def periodic_jdwalkaz_refresh(ctx: Context):
+    """Every 15 minutes, refresh the Jdwalkaz summary cache with live inference.
     """
     try:
         loop = asyncio.get_running_loop()
         summary, source, _ = await loop.run_in_executor(
-            None, lambda: get_or_refresh_truffle_model_summary(force_refresh=False)
+            None, lambda: get_or_refresh_jdwalkaz_model_summary(force_refresh=False)
         )
-        ctx.logger.info(f"Periodic Truffle Model Summary check [{source}]")
+        ctx.logger.info(f"Periodic Jdwalkaz Model Summary check [{source}]")
     except Exception as e:
-        ctx.logger.warning(f"Periodic Truffle summary refresh failed: {e}")
+        ctx.logger.warning(f"Periodic Jdwalkaz summary refresh failed: {e}")
 
 
 @agent.on_event("startup")
@@ -913,7 +920,7 @@ async def startup(ctx: Context):
             reg_data = RegistrationRequest(
                 address=agent.address,
                 name=agent.name,
-                handle="truffz",
+                handle="jdwalkaz",
                 url=None,
                 profile=profile,
                 endpoints=agent._endpoints,

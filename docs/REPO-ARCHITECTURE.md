@@ -1,7 +1,7 @@
 # WE-CRYPTO / WE-CFM-Orchestrator — Repository Architecture
 
 > Living doc. Covers the whole repo start to finish: runtime, boot, transports,
-> feeds, prediction markets, LLM/ASI1, Truffle agent, workers, data, secrets,
+> feeds, prediction markets, LLM/ASI1, Jdwalkaz agent, workers, data, secrets,
 > tests, network ops, and known issues. Date: 2026-09-20. Branch: `dev`.
 
 ---
@@ -18,7 +18,7 @@ prediction markets. Tracked coins: **BTC, ETH, SOL, XRP, DOGE, BNB, HYPE**.
   Blockchair / Solana RPC / XRPL / Pyth Hermes + Douro Lazer.
 - **Inference:** ASI1-only (`api.asi1.ai`: `asi1-mini` fast, `asi1` standard,
   `asi1-ultra` deep). OpenAI / TokenMix / Anthropic paths are cut or stubbed.
-- **Local agent:** Truffle (`mcp_agent.py`, uAgents, `127.0.0.1:8002`), full-live
+- **Local agent:** Jdwalkaz (`mcp_agent.py`, uAgents, `127.0.0.1:8002`), full-live
   ASI1 inference with MCP tool-calling (LeakSnipe suite).
 
 ---
@@ -33,7 +33,7 @@ prediction markets. Tracked coins: **BTC, ETH, SOL, XRP, DOGE, BNB, HYPE**.
   poll loops.
 - **Electron main** (`electron/main.js`) spawns the Rust proxy, writes its
   `config.toml` at spawn from `PROXY_EXCHANGE_BASES`, owns all IPC
-  (`asi1:*`, `llm:*`, `truffle:query`, `data:*`, proxy port discovery).
+  (`asi1:*`, `llm:*`, `jdwalkaz:query`, `data:*`, proxy port discovery).
   Renderer reaches main via `electron/preload.js`
   (`window.electron.invoke`, `window.dataStore.appendLine`, …).
 - There is a parallel **Tauri** path (`tauri-bridge.js` sidecar discovery,
@@ -110,8 +110,8 @@ Discovery + routing, in load order:
 - **`rti-feed.js`** — CME CF RTI composite from Coinbase/Kraken/Bitstamp/
   Gemini books (throttled, outlier filtering, rolling buffer).
 - **`wall-depth-snapshot.js`** (`window.WallDepthSnapshot`) — builds the full
-  bid-wall + depth datapoint set per Truffle query; logged as JSONL to
-  `logs/truffle-wall-stats.log`.
+  bid-wall + depth datapoint set per Jdwalkaz query; logged as JSONL to
+  `logs/jdwalkaz-wall-stats.log`.
 - Polling REST: `exchange-ws.js`, `candle-ws.js`, `polymarket-client.js`,
   `polymarket-perps-client.js` (`api.perpetuals.polymarket.com` + WS),
   `coinmarketcap-pro-feed.js` (Pro key; 3-strike kill switch → fallbacks),
@@ -186,7 +186,7 @@ Discovery + routing, in load order:
 
 ## 9. UI (`src/ui/`, `src/core/app/`)
 
-`asi1-desk.js` (Ask ASI1 / Truffle / custom prompt / AgentVerse hunt),
+`asi1-desk.js` (Ask ASI1 / Jdwalkaz / custom prompt / AgentVerse hunt),
 `hourly-ranges-panel.js`, `polymarket-terminal.js`, `network-health-dashboard.js`,
 `orderbook-hud.js` + `microstructure-hud.js`, `render-layer.js` (coin icons,
 predictions, overlays), `floating-orchestrator.js` (MCTS-gated execution),
@@ -195,19 +195,19 @@ engines, Pyth validator 60s loop, ChainRouter, feeds).
 
 ---
 
-## 10. Truffle agent (`mcp_agent.py`, `truffle-bridge/`)
+## 10. Jdwalkaz agent (`mcp_agent.py`, `jdwalkaz-bridge/`)
 
 - uAgents-based, ASI1 LLM + MCP tool-calling (LeakSnipe suite at
-  `leaksnipe-suite.gitgoin87.workers.dev`). `TRUFFLE_HUD_ONLY` defaults off:
+  `leaksnipe-suite.gitgoin87.workers.dev`). `JDWALKAZ_HUD_ONLY` defaults off:
   full-live inference everywhere, `max_tokens` 1000, cost no object.
-- REST: `/query` (HUD channel: asi1-desk + `truffle:query` IPC, `live=True`),
+- REST: `/query` (HUD channel: asi1-desk + `jdwalkaz:query` IPC, `live=True`),
   `/health`, `/weights`, `/trees`, `/kodak`, `/alt-signal`, `/calibration`,
   `/tail-diagnostics`, `/kalshi-15m-model`, `/cascade`,
-  `/truffle/cascade-audit`, `/truffle/model-summary`, `/summary`.
-- Runs in WSL (`/mnt/g/WECRYP/mcp_agent.py`); `truffle-bridge/` is the
+  `/jdwalkaz/cascade-audit`, `/jdwalkaz/model-summary`, `/summary`.
+- Runs in WSL (`/mnt/g/WECRYP/mcp_agent.py`); `jdwalkaz-bridge/` is the
   FastAPI/AMM sidecar (requirements + server).
-- Renderer query paths: horizon-mode Ask → `truffle:query` IPC (attaches
-  wall-stats, main appends JSONL to `logs/truffle-wall-stats.log`) and
+- Renderer query paths: horizon-mode Ask → `jdwalkaz:query` IPC (attaches
+  wall-stats, main appends JSONL to `logs/jdwalkaz-wall-stats.log`) and
   custom-prompt direct `POST 127.0.0.1:8002/query` fallback.
 
 ---
@@ -227,8 +227,8 @@ engines, Pyth validator 60s loop, ChainRouter, feeds).
 
 ## 12. Data, logs, secrets, tests
 
-- **Logs:** `logs/` (app, cex monitors, hedge, kalshi), `logs/truffle-wall-stats.log`
-  (JSONL wall/depth per Truffle query), `backtest-logs/`, per-feed caches
+- **Logs:** `logs/` (app, cex monitors, hedge, kalshi), `logs/jdwalkaz-wall-stats.log`
+  (JSONL wall/depth per Jdwalkaz query), `backtest-logs/`, per-feed caches
   (`WE-CRYPTO-CACHE/`, `WECRYP0-data/`, runtime `*.db` for Pyth Lazer/Coinbase L2).
 - **Secrets:** never in code. Env (`.env`: ASI1/OpenAI/CMC/Etherscan/Alchemy/
   Helius keys, primary-provider switches) + `secrets/*.txt` (role-tagged ASI1

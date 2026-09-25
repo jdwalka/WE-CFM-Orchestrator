@@ -1,5 +1,5 @@
 /**
- * truffle-candle-publisher.js
+ * jdwalkaz-candle-publisher.js
  * Bridges live WECRYPTO market ticks / candles into Redpanda topic `wecrypto.prices.ticks`.
  * Aggregates incoming sub-second ticks into 1-minute OHLCV candles and publishes them upon minute close.
  */
@@ -29,7 +29,7 @@ async function init() {
 
   try {
     kafka = new Kafka({
-      clientId: 'wecrypto-truffle-publisher',
+      clientId: 'wecrypto-jdwalkaz-publisher',
       brokers: REDPANDA_BROKERS,
       connectionTimeout: 5000,
       requestTimeout: 15000,
@@ -45,9 +45,9 @@ async function init() {
 
     await producer.connect();
     isConnected = true;
-    console.log(`[TruffleCandlePublisher] Connected to Redpanda at ${REDPANDA_BROKERS.join(',')}`);
+    console.log(`[JdwalkazCandlePublisher] Connected to Redpanda at ${REDPANDA_BROKERS.join(',')}`);
   } catch (err) {
-    console.warn(`[TruffleCandlePublisher] Redpanda connection warning: ${err.message}`);
+    console.warn(`[JdwalkazCandlePublisher] Redpanda connection warning: ${err.message}`);
     isConnected = false;
   } finally {
     isConnecting = false;
@@ -86,7 +86,7 @@ async function publishCandle(symbol, candle) {
     });
     return true;
   } catch (err) {
-    console.warn(`[TruffleCandlePublisher] Send error for ${symbol}:`, err.message);
+    console.warn(`[JdwalkazCandlePublisher] Send error for ${symbol}:`, err.message);
     return false;
   }
 }
@@ -159,7 +159,7 @@ module.exports = {
 if (require.main === module) {
   (async () => {
     await init();
-    console.log('[TruffleCandlePublisher] Test emitting 1m candle...');
+    console.log('[JdwalkazCandlePublisher] Test emitting 1m candle...');
     const ok = await publishCandle('BTC', {
       ts: Date.now(),
       o: 76500.0,
@@ -168,7 +168,7 @@ if (require.main === module) {
       c: 76520.0,
       v: 12.5,
     });
-    console.log(`[TruffleCandlePublisher] Published test candle: ${ok ? 'SUCCESS' : 'FAILED'}`);
+    console.log(`[JdwalkazCandlePublisher] Published test candle: ${ok ? 'SUCCESS' : 'FAILED'}`);
     if (producer) await producer.disconnect();
   })();
 }

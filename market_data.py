@@ -27,7 +27,7 @@ COINBASE_CANDLES = "https://api.exchange.coinbase.com/products/BTC-USD/candles"
 # where fetch() sends none by default). python-requests sends a default UA
 # so this hasn't bitten this code yet, but setting it explicitly costs
 # nothing and removes the risk if that default ever gets stricter.
-_HEADERS = {"User-Agent": "wecryp-truffle/1.0 (+https://agentverse.ai)"}
+_HEADERS = {"User-Agent": "wecryp-jdwalkaz/1.0 (+https://agentverse.ai)"}
 
 def get_spot() -> dict:
     """Current BTC spot with an explicit source stamp.

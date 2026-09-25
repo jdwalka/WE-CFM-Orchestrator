@@ -433,7 +433,7 @@
       const conf = pack?.confidence ?? (pack?.score != null ? Math.min(0.88, Math.max(0.5, 0.5 + Math.abs(pack.score) * 0.4)) : 0.6);
       const deltaStr = ctx.deltaVsPtb != null ? ((ctx.deltaVsPtb > 0 ? '+' : '') + ctx.deltaVsPtb) : '0';
       const cdMins = Math.ceil((MIN_INFERENCE_COOLDOWN_MS - (now - _lastLlmCallTs)) / 60000);
-      const deterministicNotes = `[Deterministic Truffle Read] ${sym} ${ctx.horizon}: Signal=${pack?.signal || call || 'NEUTRAL'} ` +
+      const deterministicNotes = `[Deterministic Jdwalkaz Read] ${sym} ${ctx.horizon}: Signal=${pack?.signal || call || 'NEUTRAL'} ` +
         `(score=${pack?.score != null ? pack.score.toFixed(3) : '—'}, regime=${pack?.regime || 'NORMAL'}). ` +
         `PTB=${ctx.priceToBeatNum || '—'}, Spot=${ctx.spot || '—'}, Delta=${deltaStr}. ` +
         `(ASI1 15m credit guard active: next LLM window in ~${cdMins}m).`;
@@ -451,8 +451,8 @@
         marketPatterns: null,
         preContract: null,
         polyPeg: null,
-        provider: 'deterministic-truffle',
-        model: 'truffle-deterministic',
+        provider: 'deterministic-jdwalkaz',
+        model: 'jdwalkaz-deterministic',
         market: ctx,
         degraded: false,
       };

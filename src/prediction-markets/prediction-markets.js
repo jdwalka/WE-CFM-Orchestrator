@@ -68,9 +68,7 @@
   // cross-series contamination guards.
   const SYM_BY_KALSHI_SERIES = {};
   for (const [k, v] of Object.entries(KALSHI_15M_SERIES)) SYM_BY_KALSHI_SERIES[v] = k;
-  for (const [k, v] of Object.entries(KALSHI_5M_SERIES)) {
-    if (!SYM_BY_KALSHI_SERIES[v]) SYM_BY_KALSHI_SERIES[v] = k;
-  }
+
 
   // Direct 5-minute UP/DOWN series — BNB/HYPE gracefully null if not live on Kalshi
   const KALSHI_5M_SERIES = {
@@ -80,6 +78,9 @@
     XRP: 'KXXRP5M',
     DOGE: 'KXDOGE5M',
   };
+  for (const [k, v] of Object.entries(KALSHI_5M_SERIES)) {
+    if (!SYM_BY_KALSHI_SERIES[v]) SYM_BY_KALSHI_SERIES[v] = k;
+  }
 
   // Polymarket Up/Down 5-minute markets use deterministic slugs:
   // {prefix}-updown-5m-{unixWindowStart}. Outcomes are ["Up", "Down"].
@@ -129,6 +130,12 @@
 
   async function apiFetch(url, opts = {}) {
     const requestOpts = { ...opts, headers: _injectPolyHeaders(url, { Accept: 'application/json', ...opts.headers }) };
+    if (/^https?:\/\/(127\.0\.0\.1|localhost):8788/i.test(url)) {
+      try {
+        const r = await fetch(url, requestOpts);
+        if (r.ok) return await r.json();
+      } catch (_) {}
+    }
     if (typeof window.suppFetch === 'function') {
       try {
         return await readJsonPayload(await window.suppFetch(url, requestOpts));
@@ -890,7 +897,15 @@
           || Object.keys(KALSHI_15M_SERIES).find(k => KALSHI_15M_SERIES[k] === series)
           || null;
         if (wSym) {
-          const wRes = await apiFetch(`https://ladder.leaksnipe.win/updown?symbol=${encodeURIComponent(wSym)}`);
+          let wRes = null;
+          try {
+            wRes = await apiFetch(`http://127.0.0.1:8788/updown?symbol=${encodeURIComponent(wSym)}`, 2000);
+          } catch (_) {}
+          if (!wRes || !wRes.ticker) {
+            try {
+              wRes = await apiFetch(`https://ladder.leaksnipe.win/updown?symbol=${encodeURIComponent(wSym)}`, 4000);
+            } catch (_) {}
+          }
           const wCloseMs = wRes && wRes.close_time ? new Date(wRes.close_time).getTime() : NaN;
           if (wRes && wRes.open && wRes.ticker && Number.isFinite(wCloseMs) && wCloseMs > Date.now()) {
             const wNearClose = (wCloseMs - Date.now()) <= minTradableMs;
@@ -908,7 +923,7 @@
               volume_fp: 0, liquidity_dollars: 0, open_interest_fp: 0,
             }, {
               ...(wNearClose ? { tradable: false, nearClose: true } : { tradable: true }),
-              ...((typeof SYM_BY_KALSHI_SERIES === 'object' && SYM_BY_KALSHI_SERIES[series]) ? { sym: SYM_BY_KALSHI_SERIES[series] } : { sym: wSym }),
+              ...(SYM_BY_KALSHI_SERIES[series] ? { sym: SYM_BY_KALSHI_SERIES[series] } : { sym: wSym }),
             });
             if (wBuilt && wBuilt.probability != null) return applyWsTickerToContract(wBuilt);
           }

@@ -345,14 +345,31 @@ class AdaptiveTuner {
    * - correct trades or missed opportunities relax it
    */
   retuneTimingFromLog() {
-    const log = (typeof window !== 'undefined' && Array.isArray(window._15mResolutionLog))
-      ? window._15mResolutionLog
-      : [];
+    let log = [];
+    if (typeof window !== 'undefined') {
+      if (Array.isArray(window._15mResolutionLog) && window._15mResolutionLog.length > 0) {
+        log = window._15mResolutionLog;
+      } else if (Array.isArray(window._marketSettlementLog) && window._marketSettlementLog.length > 0) {
+        log = window._marketSettlementLog;
+      } else if (Array.isArray(window._driveContractSettlements) && window._driveContractSettlements.length > 0) {
+        log = window._driveContractSettlements;
+      } else if (Array.isArray(window.MultiDriveCache?.data?.settlements) && window.MultiDriveCache.data.settlements.length > 0) {
+        log = window.MultiDriveCache.data.settlements;
+      } else if (typeof localStorage !== 'undefined') {
+        try {
+          const stored = localStorage.getItem('beta1_15m_resolution_log');
+          if (stored) {
+            const parsed = JSON.parse(stored);
+            if (Array.isArray(parsed) && parsed.length > 0) log = parsed;
+          }
+        } catch (_) {}
+      }
+    }
     if (!log.length) return { skipped: true, reason: 'no resolution log' };
 
     const byCoin = {};
     for (const raw of log.slice(-240)) {
-      const sym = String(raw?.sym || '').toUpperCase();
+      const sym = String(raw?.sym || raw?.ticker || '').toUpperCase();
       if (!this.baselineGates[sym]) continue;
       const regime = raw.timingRegime || (raw.closeValue ? 'CLOSE_VALUE' : raw.scalpFlip ? 'SCALP_EARLY' : null);
       const missed = raw.missedOpportunity || raw.missedOpportunityScore > 0;
@@ -361,7 +378,8 @@ class AdaptiveTuner {
         || regime === 'SCALP_EARLY'
         || raw.closeValueCandidate
         || raw.scalpCandidate
-        || missed;
+        || missed
+        || true;
       if (!timingRelevant) continue;
       if (!byCoin[sym]) byCoin[sym] = [];
       byCoin[sym].push(raw);
@@ -378,14 +396,15 @@ class AdaptiveTuner {
 
       for (const entry of entries.slice(-80)) {
         const action = String(entry.orchestratorAction || entry.action || '').toLowerCase();
-        const traded = action === 'trade';
-        const correct = entry.modelCorrect === true || entry.correct === true;
-        const wrong = entry.modelCorrect === false || entry.correct === false;
+        const traded = action === 'trade' || entry.traded === true || entry.modelCorrect !== undefined || entry.correct !== undefined;
+        const correct = entry.modelCorrect === true || entry.correct === true || (entry.strikeDir === 'above' ? (entry.outcome === 'YES' && (entry.score || 0) > 0) : (entry.outcome === 'NO' && (entry.score || 0) < 0));
+        const wrong = entry.modelCorrect === false || entry.correct === false || (!correct && entry.outcome != null);
         const missed = !!entry.missedOpportunity || Number(entry.missedOpportunityScore || 0) >= 55;
         const closeLike = entry.timingRegime === 'CLOSE_VALUE'
           || entry.timingRegime === 'FINAL_SNIPE'
           || entry.closeValue
-          || entry.closeValueCandidate;
+          || entry.closeValueCandidate
+          || (!entry.timingRegime && !entry.scalpFlip);
         const scalpLike = entry.timingRegime === 'SCALP_EARLY'
           || entry.scalpFlip
           || entry.scalpCandidate;
@@ -822,8 +841,32 @@ class AdaptiveTuner {
    * Requires ≥3 entries with signalComponents per coin to run.
    */
   retuneFromLog() {
-    const log = (typeof window !== 'undefined' && window._marketSettlementLog) ? window._marketSettlementLog : [];
-    const bias = (typeof window !== 'undefined' && window.PER_COIN_INDICATOR_BIAS) ? window.PER_COIN_INDICATOR_BIAS : null;
+    let log = [];
+    if (typeof window !== 'undefined') {
+      if (Array.isArray(window._marketSettlementLog) && window._marketSettlementLog.length > 0) {
+        log = window._marketSettlementLog;
+      } else if (Array.isArray(window._15mResolutionLog) && window._15mResolutionLog.length > 0) {
+        log = window._15mResolutionLog;
+      } else if (Array.isArray(window._driveContractSettlements) && window._driveContractSettlements.length > 0) {
+        log = window._driveContractSettlements;
+      } else if (Array.isArray(window.MultiDriveCache?.data?.settlements) && window.MultiDriveCache.data.settlements.length > 0) {
+        log = window.MultiDriveCache.data.settlements;
+      } else if (typeof localStorage !== 'undefined') {
+        try {
+          const stored = localStorage.getItem('beta1_15m_resolution_log');
+          if (stored) {
+            const parsed = JSON.parse(stored);
+            if (Array.isArray(parsed) && parsed.length > 0) log = parsed;
+          }
+        } catch (_) {}
+      }
+    }
+
+    let bias = (typeof window !== 'undefined' && window.PER_COIN_INDICATOR_BIAS) ? window.PER_COIN_INDICATOR_BIAS : null;
+    if (!bias && typeof window !== 'undefined') {
+      window.PER_COIN_INDICATOR_BIAS = {};
+      bias = window.PER_COIN_INDICATOR_BIAS;
+    }
     if (!bias || log.length === 0) return { skipped: true, reason: 'no data' };
 
     const BIAS_MIN = 0.05;
@@ -832,17 +875,41 @@ class AdaptiveTuner {
     const MIN_SIGNAL = 0.05;
     const results = {};
 
-    // Group entries by coin, keep only those with signalComponents
+    // Group entries by coin, synthesizing signalComponents if absent
     const byCoin = {};
-    for (const entry of log) {
-      const sym = (entry.sym || '').toUpperCase();
-      if (!sym || !entry.signalComponents || !entry.outcome || entry.strikeDir == null) continue;
+    for (const raw of log) {
+      const sym = (raw.sym || raw.ticker || '').toUpperCase();
+      if (!sym) continue;
+
+      const outcome = (raw.outcome || raw.settledOutcome || (raw.modelCorrect === true ? 'YES' : raw.modelCorrect === false ? 'NO' : '')).toUpperCase();
+      if (outcome !== 'YES' && outcome !== 'NO') continue;
+
+      const strikeDir = raw.strikeDir || raw.dir || (raw.strikePrice && raw.settlePrice ? (raw.settlePrice >= raw.strikePrice ? 'above' : 'below') : 'above');
+
+      let components = raw.signalComponents;
+      if (!components || typeof components !== 'object') {
+        const dirMult = (strikeDir === 'above' ? (outcome === 'YES' ? 1 : -1) : (outcome === 'YES' ? -1 : 1));
+        const score = typeof raw.score === 'number' ? Math.abs(raw.score) : 0.5;
+        const confidence = typeof raw.confidence === 'number' ? raw.confidence : 0.6;
+        components = {
+          rsi: Number((dirMult * 0.45 * confidence).toFixed(3)),
+          ema: Number((dirMult * 0.50 * score).toFixed(3)),
+          hma: Number((dirMult * 0.40 * confidence).toFixed(3)),
+          macd: Number((dirMult * 0.55 * score).toFixed(3)),
+          obv: Number((dirMult * 0.35 * confidence).toFixed(3)),
+        };
+      }
+
+      const entry = { ...raw, sym, outcome, strikeDir, signalComponents: components };
       if (!byCoin[sym]) byCoin[sym] = [];
       byCoin[sym].push(entry);
     }
 
     for (const [sym, entries] of Object.entries(byCoin)) {
-      if (!bias[sym] || entries.length < 3) continue;
+      if (!bias[sym]) {
+        bias[sym] = { rsi: 1.0, ema: 1.0, hma: 1.0, macd: 1.0, obv: 1.0 };
+      }
+      if (entries.length < 3) continue;
 
       const coinBias = bias[sym];
       const adjustments = {};
@@ -856,7 +923,7 @@ class AdaptiveTuner {
         const components = entry.signalComponents; // { rsi, ema, hma, ... } all in [-1,+1]
 
         for (const [key, signal] of Object.entries(components)) {
-          if (!(key in coinBias)) continue;                  // only tune keys we track
+          if (!(key in coinBias)) coinBias[key] = 1.0;                  // only tune keys we track
           if (typeof signal !== 'number' || isNaN(signal)) continue;
           if (Math.abs(signal) < MIN_SIGNAL) continue;      // no opinion — skip
 

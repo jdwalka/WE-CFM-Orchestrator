@@ -90,7 +90,7 @@ async function getCoinbaseSpot(symbol = "BTC") {
 }
 
 async function getCalibrationHealth(env) {
-  const database = env && (env.CALIBRATION_DB || env.truffle);
+  const database = env && (env.CALIBRATION_DB || env.jdwalkaz || env.truffle);
   if (!database) {
     return {
       storage_reachable: false,
@@ -159,18 +159,18 @@ async function getLadderFeedStatus(source, loadFeed) {
   }
 }
 
-async function getLadderFeedHealth() {
+async function getLadderFeedHealth(env, ctx) {
   const [kalshi, polymarket] = await Promise.all([
-    getLadderFeedStatus("kalshi", () => getKalshiUpdown("KXBTC15M")),
+    getLadderFeedStatus("kalshi", () => getKalshiUpdownCached(env, ctx, "KXBTC15M")),
     getLadderFeedStatus("polymarket", () => getPolymarketHourlyUpdown()),
   ]);
   return [kalshi, polymarket];
 }
 
-async function buildHealthResponse(env, symbol = "BTC") {
+async function buildHealthResponse(env, symbol = "BTC", ctx) {
   const [calibration, ladderFeeds, spot] = await Promise.all([
     getCalibrationHealth(env),
-    getLadderFeedHealth(),
+    getLadderFeedHealth(env, ctx),
     getSpotSourceHealth(symbol),
   ]);
   const degraded = !calibration.calibration_available;
@@ -329,6 +329,41 @@ async function getKalshiUpdown(seriesTicker = "KXBTC15M") {
     settlement_window_seconds: 60,
     settlement_method: "kalshi_brti_60s_avg_vs_open",
   };
+}
+
+// KV read-through for the 15M check: the HUD + health poll this route every
+// few seconds, and uncached every poll is a direct Kalshi hit (429s when
+// markets are open). 45s TTL cuts upstream pressure ~10x; direct fetch
+// remains the fallback when KV is unbound.
+const KALSHI_UPDOWN_TTL_S = 45;
+const kalshiUpdownCacheKey = (seriesTicker) => `kalshi:updown:${seriesTicker}`;
+
+async function getKalshiUpdownCached(env, ctx, seriesTicker = "KXBTC15M") {
+  const key = kalshiUpdownCacheKey(seriesTicker);
+  if (env && env.MARKET_CACHE) {
+    try {
+      const raw = await env.MARKET_CACHE.get(key);
+      if (raw) {
+        const cached = JSON.parse(raw);
+        return { ...cached, _cache: "hit", cache: "hit" };
+      }
+    } catch (_) { /* fall through to live fetch */ }
+  }
+  const live = await getKalshiUpdown(seriesTicker);
+  const stamped = {
+    ...live,
+    computed_at: new Date().toISOString(),
+    _cache: "miss",
+    cache: "miss",
+  };
+  if (env && env.MARKET_CACHE) {
+    const put = env.MARKET_CACHE.put(key, JSON.stringify(stamped), {
+      expirationTtl: KALSHI_UPDOWN_TTL_S,
+    });
+    if (ctx && ctx.waitUntil) ctx.waitUntil(put);
+    else await put.catch(() => {});
+  }
+  return stamped;
 }
 
 async function getKalshiOrderbook(ticker) {
@@ -561,6 +596,9 @@ const ROUTES = [
   "GET /polymarket/hourly-updown",
   "GET /snapshot/kalshi?symbol=BTC",
   "GET /snapshot/polymarket?symbol=BTC",
+  "GET /dydx/orderbook?ticker=<ticker>",
+  "GET /dydx/funding?ticker=<ticker>",
+  "POST /hyperliquid/info",
 ];
 
 export default {
@@ -588,7 +626,8 @@ export default {
       return new Response(null, {
         headers: {
           "Access-Control-Allow-Origin": "*",
-          "Access-Control-Allow-Methods": "GET, OPTIONS",
+          "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+          "Access-Control-Allow-Headers": "Content-Type, Authorization",
           "Cache-Control": "no-store, max-age=0",
         },
       });
@@ -613,15 +652,15 @@ export default {
             },
           });
         case "/health":
-          return jsonResponse(await buildHealthResponse(env, symbol));
+          return jsonResponse(await buildHealthResponse(env, symbol, ctx));
         case "/calibration/status": {
-          const database = env && (env.CALIBRATION_DB || env.truffle);
+          const database = env && (env.CALIBRATION_DB || env.jdwalkaz || env.truffle);
           if (!database) {
             return jsonResponse({
               status: "degraded",
               storage_reachable: false,
               degraded: true,
-              error: "No CALIBRATION_DB or truffle binding found",
+              error: "No CALIBRATION_DB, jdwalkaz or truffle binding found",
             }, 503);
           }
           try {
@@ -657,6 +696,92 @@ export default {
               error: String(e?.message || e),
             }, 500);
           }
+        }
+        case "/calibration/latest": {
+          const authHeader = request.headers.get("Authorization");
+          const token = authHeader?.startsWith("Bearer ") ? authHeader.substring(7) : null;
+          if (!env.API_SECRET || token !== env.API_SECRET) {
+            return jsonResponse({ error: "Unauthorized: Invalid or missing API secret" }, 401);
+          }
+          const db = env.CALIBRATION_DB || env.DB || env.GOOGLE_DB;
+          if (!db) return jsonResponse({ error: "Database binding not configured on Worker" }, 500);
+          const result = await db.prepare("SELECT * FROM calibration_ledger ORDER BY timestamp DESC LIMIT 1").first();
+          return jsonResponse({ success: true, data: result });
+        }
+        case "/calibration/ledger": {
+          const authHeader = request.headers.get("Authorization");
+          const token = authHeader?.startsWith("Bearer ") ? authHeader.substring(7) : null;
+          if (!env.API_SECRET || token !== env.API_SECRET) {
+            return jsonResponse({ error: "Unauthorized: Invalid or missing API secret" }, 401);
+          }
+          const db = env.CALIBRATION_DB || env.DB || env.GOOGLE_DB;
+          if (!db) return jsonResponse({ error: "Database binding not configured on Worker" }, 500);
+          const limit = Math.min(parseInt(url.searchParams.get("limit") || "50", 10), 200);
+          const { results } = await db.prepare("SELECT * FROM calibration_ledger ORDER BY timestamp DESC LIMIT ?").bind(limit).all();
+          return jsonResponse({ success: true, count: results.length, data: results });
+        }
+        case "/calibration/record": {
+          if (request.method !== "POST") return jsonResponse({ error: "Method not allowed" }, 405);
+          const authHeader = request.headers.get("Authorization");
+          const token = authHeader?.startsWith("Bearer ") ? authHeader.substring(7) : null;
+          if (!env.API_SECRET || token !== env.API_SECRET) {
+            return jsonResponse({ error: "Unauthorized: Invalid or missing API secret" }, 401);
+          }
+          const db = env.CALIBRATION_DB || env.DB || env.GOOGLE_DB;
+          if (!db) return jsonResponse({ error: "Database binding not configured on Worker" }, 500);
+          const payload = await request.json();
+          const {
+            market_id,
+            strike_price,
+            brti_divergence,
+            student_t_factor,
+            tail_risk_prob,
+            predicted_side,
+            confidence,
+          } = payload;
+          const insertQuery = `
+            INSERT INTO calibration_ledger (
+              timestamp, market_id, strike_price, brti_divergence, 
+              student_t_factor, tail_risk_prob, predicted_side, confidence
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          `;
+          await db.prepare(insertQuery).bind(
+            new Date().toISOString(),
+            market_id || "UNKNOWN",
+            strike_price || 0,
+            brti_divergence || 0,
+            student_t_factor || 1.0,
+            tail_risk_prob || 0.0,
+            predicted_side || null,
+            confidence || 0.0
+          ).run();
+          return jsonResponse({ success: true, message: "Calibration recorded" }, 201);
+        }
+        case "/query": {
+          if (request.method !== "POST") return jsonResponse({ error: "Method not allowed" }, 405);
+          const authHeader = request.headers.get("Authorization");
+          const token = authHeader?.startsWith("Bearer ") ? authHeader.substring(7) : null;
+          if (!env.API_SECRET || token !== env.API_SECRET) {
+            return jsonResponse({ error: "Unauthorized: Invalid or missing API secret" }, 401);
+          }
+          const db = env.CALIBRATION_DB || env.DB || env.GOOGLE_DB;
+          if (!db) return jsonResponse({ error: "Database binding not configured on Worker" }, 500);
+          const body = await request.json();
+          const sql = body.sql?.trim();
+          if (!sql) return jsonResponse({ error: "Missing SQL statement in body" }, 400);
+          const normalized = sql.toUpperCase();
+          if (
+            normalized.startsWith("INSERT") ||
+            normalized.startsWith("UPDATE") ||
+            normalized.startsWith("DELETE") ||
+            normalized.startsWith("DROP") ||
+            normalized.startsWith("ALTER")
+          ) {
+            return jsonResponse({ error: "Mutation statements blocked on /query endpoint" }, 403);
+          }
+          const params = body.params || [];
+          const { results } = await db.prepare(sql).bind(...params).all();
+          return jsonResponse({ success: true, results });
         }
         case "/spot":
           return jsonResponse(await getCoinbaseSpot(symbol));
@@ -777,7 +902,7 @@ export default {
           return jsonResponse(payload);
         }
         case "/kalshi/updown":
-          return jsonResponse(await getKalshiUpdown(url.searchParams.get("series") || "KXBTC15M"));
+          return jsonResponse(await getKalshiUpdownCached(env, ctx, url.searchParams.get("series") || "KXBTC15M"));
         case "/kalshi/orderbook": {
           const ticker = url.searchParams.get("ticker");
           if (!ticker) return jsonResponse({ error: "ticker query param required" }, 400);
@@ -795,6 +920,27 @@ export default {
           return jsonResponse(await buildKalshiSnapshot(symbol));
         case "/snapshot/polymarket":
           return jsonResponse(await buildPolymarketSnapshot(symbol));
+        case "/dydx/orderbook": {
+          const ticker = url.searchParams.get("ticker") || `${symbol}-USD`;
+          const r = await fetchMarketData(`https://indexer.dydx.trade/v4/orderbooks/perpetualMarket/${ticker}`);
+          return jsonResponse(await r.json());
+        }
+        case "/dydx/funding": {
+          const ticker = url.searchParams.get("ticker") || `${symbol}-USD`;
+          const limit = url.searchParams.get("limit") || "1";
+          const r = await fetchMarketData(`https://indexer.dydx.trade/v4/historicalFunding/${ticker}?limit=${limit}`);
+          return jsonResponse(await r.json());
+        }
+        case "/hyperliquid/info": {
+          if (request.method !== "POST") return jsonResponse({ error: "Hyperliquid requires POST" }, 405);
+          const body = await request.text();
+          const r = await fetchMarketData("https://api.hyperliquid.xyz/info", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: body || JSON.stringify({ type: "metaAndAssetCtxs" }),
+          });
+          return jsonResponse(await r.json());
+        }
         default:
           return jsonResponse({ error: "not found", routes: ROUTES }, 404);
       }

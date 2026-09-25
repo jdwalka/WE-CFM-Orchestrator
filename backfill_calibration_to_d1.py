@@ -1,6 +1,6 @@
 """
 backfill_calibration_to_d1.py — migrate the resolved prediction ledger from the
-Tauri / local SQLite (data/truffle_calibration.sqlite3) into D1 (predictions table)
+Tauri / local SQLite (data/jdwalkaz_calibration.sqlite3) into D1 (predictions table)
 before cutting over engine writes.
 
 Gates (all must pass or the script aborts BEFORE writing):
@@ -26,7 +26,7 @@ import urllib.error
 DEFAULT_ACCOUNT_ID = "f226035af09775dbffd7e6350adc8a12"
 DEFAULT_DB_ID = "48536b22-03b3-42dd-92fa-44feab144d84"
 DEFAULT_D1_API = f"https://api.cloudflare.com/client/v4/accounts/{DEFAULT_ACCOUNT_ID}/d1/database/{DEFAULT_DB_ID}/query"
-DEFAULT_SQLITE_PATH = "/mnt/g/WECRYP/data/truffle_calibration.sqlite3"
+DEFAULT_SQLITE_PATH = "/mnt/g/WECRYP/data/jdwalkaz_calibration.sqlite3"
 
 BATCH_SIZE = 100          # Cloudflare D1 batch limit is typically 100 statements
 SOURCE_CANDIDATES = ["predictions", "prediction_ledger", "calibration_predictions"]

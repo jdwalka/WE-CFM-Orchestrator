@@ -4751,7 +4751,31 @@ function renderContractLog() {
       }
     });
 
-    // Add localStorage cache
+    // Add drive contract settlements (Electron storage:readContractCache)
+    const driveSettlements = (window._driveContractSettlements || window._INITIAL_CONTRACT_LOG || [])
+      .map(e => normalizeContractEntry(e, 'drive'))
+      .slice().reverse();
+    driveSettlements.forEach(e => {
+      const id = contractId(e);
+      if (!seenIds.has(id)) {
+        allContracts.push(e);
+        seenIds.add(id);
+      }
+    });
+
+    // Add calculator historical contracts
+    const calcContracts = (typeof window.getHistoricalContracts === 'function' ? window.getHistoricalContracts() : (window.__WinRateCalculatorInstance?.contracts || []))
+      .map(e => normalizeContractEntry(e, 'calculator'))
+      .slice().reverse();
+    calcContracts.forEach(e => {
+      const id = contractId(e);
+      if (!seenIds.has(id)) {
+        allContracts.push(e);
+        seenIds.add(id);
+      }
+    });
+
+    // Add localStorage cache (both wc_contract_log and beta1_15m_resolution_log)
     lsLog.forEach(e => {
       const id = contractId(e);
       if (!seenIds.has(id)) {
@@ -4759,6 +4783,16 @@ function renderContractLog() {
         seenIds.add(id);
       }
     });
+    try {
+      const beta1Log = JSON.parse(localStorage.getItem('beta1_15m_resolution_log') || '[]');
+      beta1Log.forEach(e => {
+        const id = contractId(e);
+        if (!seenIds.has(id)) {
+          allContracts.push(normalizeContractEntry(e, 'localStorage'));
+          seenIds.add(id);
+        }
+      });
+    } catch (_) {}
 
     const log = allContracts.sort((a, b) => {
       const aTs = a.settledTs || a.resolved_at || a.ts || 0;

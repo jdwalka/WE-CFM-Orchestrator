@@ -215,20 +215,20 @@ services:
     networks:
       - wecrypto-net
 
-  # Truffle Bridge pricing & ACP endpoint (port 8040)
-  truffle-bridge:
+  # Jdwalkaz Bridge pricing & ACP endpoint (port 8040)
+  jdwalkaz-bridge:
     build:
-      context: ./truffle-bridge
+      context: ./jdwalkaz-bridge
       dockerfile: Dockerfile
-    container_name: truffle-bridge
+    container_name: jdwalkaz-bridge
     ports:
       - "8040:8040"
     environment:
       - ASI1_API_KEY=${ASI1_API_KEY}
-      - TRUFFLE_ENDPOINT=https://truffle.leaksnipe.win
+      - JDWALKAZ_ENDPOINT=https://truffle.leaksnipe.win
       - REDPANDA_BROKERS=redpanda:29092
       - REDIS_URL=redis://redis:6379/0
-      - TRUFFLE_ORIGIN=https://wecrypto.leaksnipe.win
+      - JDWALKAZ_ORIGIN=https://wecrypto.leaksnipe.win
     depends_on:
       redis:
         condition: service_healthy

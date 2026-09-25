@@ -18,7 +18,7 @@ const SERVICES = {
   },
   scalper: {
     url: "https://scalper.leaksnipe.win/health",
-    desc: "Scalper market data (truffle D1)",
+    desc: "Scalper market data (jdwalkaz D1)",
   },
   price: {
     url: "https://price.leaksnipe.win/",

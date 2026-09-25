@@ -217,17 +217,32 @@ async function getOrFetchUpDown(symbol, env, ctx) {
 
 async function fetchLadder(symbol) {
   const series = SERIES_BY_SYMBOL[symbol];
-  const kalshiUrl =
-    "https://api.elections.kalshi.com/trade-api/v2/markets" +
-    `?series_ticker=${series}&status=open&limit=100`;
-  const res = await fetch(kalshiUrl, {
-    headers: { Accept: "application/json", "User-Agent": "kalshi-ladder-worker/3.0" },
-  });
-  if (!res.ok) throw new Error(`Kalshi API ${res.status}: ${await res.text()}`);
-  const data = await res.json();
+  let cursor = "";
+  const allMarkets = [];
+
+  // Paginate through open markets (Kalshi caps at 100/page; BTC/ETH have 300+ open strikes)
+  for (let page = 0; page < 6; page++) {
+    const kalshiUrl =
+      "https://api.elections.kalshi.com/trade-api/v2/markets" +
+      `?series_ticker=${series}&status=open&limit=100` +
+      (cursor ? `&cursor=${encodeURIComponent(cursor)}` : "");
+    const res = await fetch(kalshiUrl, {
+      headers: { Accept: "application/json", "User-Agent": "kalshi-ladder-worker/3.0" },
+    });
+    if (!res.ok) {
+      if (allMarkets.length > 0) break;
+      throw new Error(`Kalshi API ${res.status}: ${await res.text()}`);
+    }
+    const data = await res.json();
+    if (Array.isArray(data.markets)) {
+      allMarkets.push(...data.markets);
+    }
+    cursor = data.cursor || "";
+    if (!cursor) break;
+  }
 
   const bands = [];
-  for (const m of data.markets || []) {
+  for (const m of allMarkets) {
     // Only take "between" bands (skip "above" / "below" boundary markets)
     if (m.strike_type !== "between") continue;
     if (m.floor_strike == null || m.cap_strike == null) continue;
@@ -365,8 +380,8 @@ export default {
       // endpoint the 15m panel cards must use. /ladder is the HOURLY range
       // series — a different instrument.
       if (url.pathname === "/updown") {
-        const upsym = resolveUpDownSymbol(url);
-        if (!upsym) {
+        const upsym = resolveUpDownSymbol(url) || symbol;
+        if (!upsym || !UPDOWN_SERIES_BY_SYMBOL[upsym]) {
           return new Response(
             JSON.stringify({
               error: "unsupported symbol",
@@ -376,12 +391,16 @@ export default {
           );
         }
         const payload = await getOrFetchUpDown(upsym, env, ctx);
-        return new Response(JSON.stringify(payload), { headers: CORS });
+        return new Response(JSON.stringify({
+          ...payload,
+          status: payload.market_status || (payload.open ? "active" : "closed"),
+        }), { headers: CORS });
       }
 
       // ── /ladder (default) ──────────────────────────────────────────────────
       if (url.pathname === "/ladder" || url.pathname === "/") {
-        const payload = await getOrFetch(symbol, env, ctx);
+        const force = url.searchParams.has("force") || url.searchParams.has("fresh");
+        const payload = await getOrFetch(symbol, env, ctx, force);
         return new Response(JSON.stringify(payload), { headers: CORS });
       }
 
@@ -449,16 +468,18 @@ function cooldownKey(symbol) {
   return `kalshi-cooldown:${symbol}`;
 }
 
-async function refreshCache(symbol, env) {
-  const local = LAST_FAILURE[symbol];
-  if (local && Date.now() - local.at_ms < FAILURE_COOLDOWN_S * 1000) {
-    return null; // this isolate just failed — same cooldown window as the KV key below
-  }
-  if (env.LADDER_CACHE) {
-    try {
-      const cooling = await env.LADDER_CACHE.get(cooldownKey(symbol));
-      if (cooling) return null; // some isolate failed recently — global cooldown, don't add to the pressure
-    } catch (_) { /* KV read failure shouldn't block a live attempt */ }
+async function refreshCache(symbol, env, force = false) {
+  if (!force) {
+    const local = LAST_FAILURE[symbol];
+    if (local && Date.now() - local.at_ms < FAILURE_COOLDOWN_S * 1000) {
+      return null; // this isolate just failed — same cooldown window as the KV key below
+    }
+    if (env.LADDER_CACHE) {
+      try {
+        const cooling = await env.LADDER_CACHE.get(cooldownKey(symbol));
+        if (cooling) return null; // some isolate failed recently — global cooldown, don't add to the pressure
+      } catch (_) { /* KV read failure shouldn't block a live attempt */ }
+    }
   }
   try {
     const payload = await fetchLadder(symbol);
@@ -479,7 +500,7 @@ async function refreshCache(symbol, env) {
       } catch (_) { /* best-effort */ }
     }
     console.error(`[kalshi-ladder-worker] refresh failed for ${symbol}:`, e);
-    return null;
+    throw e;
   }
 }
 
@@ -536,40 +557,42 @@ function summarizeSignal(symbol, payload) {
   };
 }
 
-async function getOrFetch(symbol, env, ctx) {
+async function getOrFetch(symbol, env, ctx, force = false) {
   const memo = MEMO[symbol];
 
-  // Fast path: same warm isolate served recently.
-  if (memo?.payload && Date.now() - memo.fetched_ms < KV_TTL_S * 1000) {
-    return { ...memo.payload, cache: "memo" };
-  }
+  if (!force) {
+    // Fast path: same warm isolate served recently.
+    if (memo?.payload && Date.now() - memo.fetched_ms < KV_TTL_S * 1000) {
+      return { ...memo.payload, cache: "memo" };
+    }
 
-  // Cross-isolate path: KV, refreshed by the cron trigger.
-  if (env.LADDER_CACHE) {
-    try {
-      const raw = await env.LADDER_CACHE.get(cacheKey(symbol));
-      if (raw) {
-        const payload = JSON.parse(raw);
-        const ageS = (Date.now() - Date.parse(payload.fetched_at)) / 1000;
-        MEMO[symbol] = { fetched_ms: Date.now(), payload };
-        if (ageS < KV_TTL_S) {
-          return { ...payload, cache: "kv" };
+    // Cross-isolate path: KV, refreshed by the cron trigger.
+    if (env.LADDER_CACHE) {
+      try {
+        const raw = await env.LADDER_CACHE.get(cacheKey(symbol));
+        if (raw) {
+          const payload = JSON.parse(raw);
+          const ageS = (Date.now() - Date.parse(payload.fetched_at)) / 1000;
+          MEMO[symbol] = { fetched_ms: Date.now(), payload };
+          if (ageS < KV_TTL_S) {
+            return { ...payload, cache: "kv" };
+          }
+          // Stale KV entry: serve it immediately, refresh in the background
+          // so this request doesn't pay Kalshi's latency (or its 429s).
+          if (ctx) ctx.waitUntil(refreshCache(symbol, env));
+          return { ...payload, cache: "kv-stale" };
         }
-        // Stale KV entry: serve it immediately, refresh in the background
-        // so this request doesn't pay Kalshi's latency (or its 429s).
-        if (ctx) ctx.waitUntil(refreshCache(symbol, env));
-        return { ...payload, cache: "kv-stale" };
+      } catch (e) {
+        console.error(`[kalshi-ladder-worker] KV read failed for ${symbol}:`, e);
       }
-    } catch (e) {
-      console.error(`[kalshi-ladder-worker] KV read failed for ${symbol}:`, e);
     }
   }
 
   // No cache anywhere yet (cold start before the first cron tick) — fetch
   // live, same fallback behavior as before.
   try {
-    const payload = await refreshCache(symbol, env);
-    if (payload) return { ...payload, cache: "miss" };
+    const payload = await refreshCache(symbol, env, force);
+    if (payload) return { ...payload, cache: force ? "forced" : "miss" };
     // refreshCache swallows its own error into LAST_FAILURE and returns
     // null (so callers can fall back to stale data); surface that real
     // reason here instead of a generic message that hides what actually

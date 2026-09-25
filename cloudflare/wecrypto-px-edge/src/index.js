@@ -23,9 +23,9 @@ export default {
       }
     }
 
-    // 2. Fall through to Truffle tunnel origin (proxies /px, /cascade, etc.)
+    // 2. Fall through to Jdwalkaz tunnel origin (proxies /px, /cascade, etc.)
     try {
-      const targetUrl = `${env.TRUFFLE_ORIGIN}${url.pathname}${url.search}`;
+      const targetUrl = `${env.JDWALKAZ_ORIGIN || env.TRUFFLE_ORIGIN}${url.pathname}${url.search}`;
       const fetchOpts = {
         method: req.method,
         headers: req.headers,

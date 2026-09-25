@@ -594,9 +594,13 @@
           const loaded = JSON.parse(res.content);
           const now = Date.now();
           const maxAge = 2 * 60 * 60 * 1000;
+          const settlementMaxAge = 7 * 24 * 60 * 60 * 1000; // 7 days historical cache for settlements
 
           this.data.predictions = (loaded.predictions || []).filter(p => now - p.timestamp < maxAge);
-          this.data.settlements = (loaded.settlements || []).filter(s => now - s.timestamp < maxAge);
+          this.data.settlements = (loaded.settlements || []).filter(s => {
+            const ts = s.timestamp || s.ts || s.settledTs || 0;
+            return ts > 0 ? (now - ts < settlementMaxAge) : true;
+          }).slice(-1000);
           this.data.candles = (loaded.candles || []).filter(c => now - c.timestamp < maxAge);
           this.data.orders = (loaded.orders || []).filter(o => now - o.timestamp < maxAge);
           this.data.errors = (loaded.errors || []).slice(-500);
@@ -604,7 +608,7 @@
           this.data.marketContexts = (loaded.marketContexts || loaded.contexts || []).filter(c => now - c.timestamp < maxAge);
           this.data.inferences = (loaded.inferences || loaded.inference || []).filter(i => now - i.timestamp < maxAge);
 
-          console.log(`[MultiDriveCache] Loaded from ${dirPath}: ${this.data.predictions.length} predictions`);
+          console.log(`[MultiDriveCache] Loaded from ${dirPath}: ${this.data.predictions.length} predictions, ${this.data.settlements.length} settlements`);
           return; // First successful drive wins
         } catch (e) {
           console.warn(`[MultiDriveCache] Load from ${dirPath} failed:`, e.message);
@@ -620,13 +624,17 @@
     _trim(key, maxCount = null) {
       const now = Date.now();
       const maxAge = 2 * 60 * 60 * 1000;  // 2 hours
+      const settlementMaxAge = 7 * 24 * 60 * 60 * 1000;
 
       if (key === 'errors') {
         this.data.errors = this.data.errors.filter(e => now - e.timestamp < maxAge).slice(-500);
       } else if (key === 'predictions') {
         this.data.predictions = this.data.predictions.filter(p => now - p.timestamp < maxAge).slice(-1000);
       } else if (key === 'settlements') {
-        this.data.settlements = this.data.settlements.filter(s => now - s.timestamp < maxAge).slice(-1000);
+        this.data.settlements = this.data.settlements.filter(s => {
+          const ts = s.timestamp || s.ts || s.settledTs || 0;
+          return ts > 0 ? (now - ts < settlementMaxAge) : true;
+        }).slice(-1000);
       } else if (key === 'candles') {
         this.data.candles = this.data.candles.filter(c => now - c.timestamp < maxAge).slice(-1000);
       } else if (key === 'orders') {

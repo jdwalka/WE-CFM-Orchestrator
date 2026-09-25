@@ -1,5 +1,5 @@
 ---
-description: "Use when: fixing calibration storage errors, migrating Truffle prediction ledger storage to Cloudflare D1, designing D1 schemas, consolidating split ledger databases, or hardening SQLite fallback paths"
+description: "Use when: fixing calibration storage errors, migrating Jdwalkaz prediction ledger storage to Cloudflare D1, designing D1 schemas, consolidating split ledger databases, or hardening SQLite fallback paths"
 name: "Calibration Storage Agent"
 tools: [read/readFile, search/codebase, search/fileSearch, search/listDirectory, search/textSearch, search/usages, edit/createFile, edit/editFiles, execute/runInTerminal, execute/getTerminalOutput, web/fetch, agent/runSubagent, todo]
 argument-hint: "Describe the calibration storage failure, D1 migration, schema change, or ledger consolidation needed"

@@ -8,7 +8,7 @@
   ],
   "triggers": {
     "crons": [
-      "* * * * *"
+      "*/5 * * * *"
     ]
   },
   "kv_namespaces": [
@@ -22,6 +22,11 @@
       "binding": "CALIBRATION_DB",
       "database_name": "scalper-calibration",
       "database_id": "48536b22-03b3-42dd-92fa-44feab144d84"
+    },
+    {
+      "binding": "DB",
+      "database_name": "google",
+      "database_id": "001e31f4-52ad-4514-8d64-1bd7f0ab3e20"
     }
   ],
   "routes": [

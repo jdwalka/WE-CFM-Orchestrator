@@ -67,7 +67,7 @@ HOUR_SAMPLE_SIZE = 4380               # hours of candles for distribution fittin
 SPIKE_THRESHOLD_PCT = 0.3            # 1-minute move classified as a "spike"
 FINAL_MINUTES_WINDOW = 15            # final minutes of hour for wick stats
 REGIME_LOOKBACK_HOURS = 4380      # 30 days of hourly candles
-DECAY_TABLE_MINUTES = [20, 15, 10, 5]
+DECAY_TABLE_MINUTES = [30, 20, 15, 10, 5, 1]
 RESIDUAL_FLAG_THRESHOLD_CENTS = 5.0  # flag ladder bands >5¢ above model
 ARTIFACT_RESIDUAL_THRESHOLD_CENTS = 30.0
 STUDENT_T_DF_DEFAULT = 4.0           # fallback if empirical fit is unstable
@@ -114,7 +114,7 @@ KALSHI_SETTLEMENT_RULE = "60-second RTI average before expiry"
 KALSHI_MARKETS_URL = "https://api.elections.kalshi.com/trade-api/v2/markets"
 KALSHI_15M_SERIES = "KXBTC15M"
 
-_HEADERS = {"User-Agent": "wecryp-truffle/1.0 (+https://agentverse.ai)"}
+_HEADERS = {"User-Agent": "wecryp-jdwalkaz/1.0 (+https://agentverse.ai)"}
 COINBASE_CANDLES = "https://api.exchange.coinbase.com/products/BTC-USD/candles"
 BINANCE_SPOT_URL = "https://api.binance.com/api/v3/ticker/bookTicker"
 OKX_SPOT_URL = "https://www.okx.com/api/v5/market/ticker"
@@ -272,6 +272,27 @@ def _format_kalshi_strike(value) -> str:
 # ---------------------------------------------------------------------------
 # Data access
 # ---------------------------------------------------------------------------
+
+def _fetch_edge_calibration() -> dict:
+    """Fetch live calibration data from the edge worker."""
+    import os
+    import requests
+    edge_secret = os.environ.get("SCALPER_API_SECRET")
+    if edge_secret:
+        try:
+            r = requests.get(
+                "https://scalper.leaksnipe.win/calibration/latest", 
+                headers={"Authorization": f"Bearer {edge_secret}"}, 
+                timeout=2
+            )
+            if r.ok:
+                data = r.json().get("data")
+                if data:
+                    return data
+        except Exception:
+            pass
+    return {}
+
 def get_minute_candles(count: int = 360) -> list:
     """Fetch recent Coinbase 1-minute candles for wick analytics."""
     try:
@@ -546,6 +567,18 @@ def get_kalshi_ladder(force_refresh: bool = True) -> dict:
         last_primary_error = "ladder_worker: empty band list"
     except Exception as e:
         last_primary_error = f"ladder_worker: {e}"
+
+    # When force_refresh=True, never fall back to snapshot — API must succeed or return FEED_DOWN
+    if force_refresh:
+        # Lanes 1-3 already attempted; no more retries, no snapshot fallback.
+        return {
+            "status": "FEED_DOWN",
+            "error": "force_refresh=true: Kalshi ladder API unreachable after retries; refusing stale fallback",
+            "candidate_bands": [],
+            "_primary_error": last_primary_error,
+            "_cache": "stale_refused",
+            "_ts": time.time(),
+        }
 
     try:
         ladder = _fetch_bands_from_snapshot()
@@ -1797,12 +1830,22 @@ def predict_hourly_range(force_refresh: bool = True, screen_spot: float | None =
         "floor": 0.0,
         "reason": "calibration report unavailable; correction disabled",
     })
-    tail_probability_correction = calibration_report.get("tail_probability_correction", {
-        "active": False,
-        "factor": 1.0,
-        "threshold": 0.20,
-        "reason": "calibration report unavailable; tail correction disabled",
-    })
+    edge_cal = _fetch_edge_calibration()
+    edge_tail = edge_cal.get("tail_risk_prob")
+    if edge_tail is not None:
+        tail_probability_correction = {
+            "active": True,
+            "factor": 2.0,
+            "threshold": float(edge_tail),
+            "reason": "edge calibration aggressive fat-tail active",
+        }
+    else:
+        tail_probability_correction = calibration_report.get("tail_probability_correction", {
+            "active": False,
+            "factor": 1.0,
+            "threshold": 0.20,
+            "reason": "calibration report unavailable; tail correction disabled",
+        })
     bucketed_correction = calibration_report.get("bucketed_correction", {
         "active": False,
         "current_factors": {},
@@ -1885,17 +1928,14 @@ def predict_hourly_range(force_refresh: bool = True, screen_spot: float | None =
     upper_bound = spot * (1 + upper_pct / 100)
     lower_bound = spot * (1 - lower_pct / 100)
 
-    # --- Fat-tailed distribution (Student-t on 200+ hourly log-returns) ---
+    # --- Fat-tailed distribution (Student-t on 200+ hourly log-returns + Edge override) ---
     hourly_candles_200 = get_hourly_candles(HOUR_SAMPLE_SIZE)
     log_returns = []
     for i in range(1, len(hourly_candles_200)):
         if hourly_candles_200[i - 1]["close"] > 0 and hourly_candles_200[i]["close"] > 0:
-            log_returns.append(
-                math.log(
-                    hourly_candles_200[i]["close"] / hourly_candles_200[i - 1]["close"]
-                )
-            )
-    df = _fit_student_t(log_returns)
+            log_returns.append(math.log(hourly_candles_200[i]["close"] / hourly_candles_200[i - 1]["close"]))
+    df_fitted = _fit_student_t(log_returns)
+    df = float(edge_cal.get("student_t_factor", df_fitted))
 
     cross_venue_divergence = get_cross_venue_divergence()
     positioning_skew = get_positioning_skew()

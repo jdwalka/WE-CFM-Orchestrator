@@ -1,4 +1,4 @@
-"""Persistent prediction/outcome ledger for Truffle calibration."""
+"""Persistent prediction/outcome ledger for Jdwalkaz calibration."""
 import math
 import os
 import sqlite3
@@ -10,10 +10,25 @@ import httpx
 from calibration_buckets import replay_resolved_outcomes
 
 LEDGER_PATH_ENV_VAR = "CALIBRATION_LEDGER_PATH"
-DEFAULT_DB_PATH = Path(__file__).with_name("data") / "truffle_calibration.sqlite3"
-DB_PATH = DEFAULT_DB_PATH
+# Canonical name is jdwalkaz_calibration.sqlite3; the legacy
+# truffle_calibration.sqlite3 path is honored as a fallback so existing
+# databases (thousands of resolved predictions) are never orphaned.
+DEFAULT_DB_PATH = Path(__file__).with_name("data") / "jdwalkaz_calibration.sqlite3"
+LEGACY_DB_PATH = Path(__file__).with_name("data") / "truffle_calibration.sqlite3"
+
+
+def _resolve_db_path():
+    override = os.environ.get(LEDGER_PATH_ENV_VAR)
+    if override:
+        return Path(override)
+    if DEFAULT_DB_PATH.exists():
+        return DEFAULT_DB_PATH
+    return LEGACY_DB_PATH
+
+
+DB_PATH = _resolve_db_path()
 MODEL_VERSION = "truffle-tail-v2"
-_HEADERS = {"User-Agent": "wecryp-truffle/1.0 (+https://agentverse.ai)"}
+_HEADERS = {"User-Agent": "wecryp-jdwalkaz/1.0 (+https://agentverse.ai)"}
 _TAIL_EVENT_NORMAL_P = 0.20
 DISTRIBUTION_FALLBACK_MIN_SAMPLE = 500
 DISTRIBUTION_FALLBACK_BRIER_IMPROVEMENT = 0.05

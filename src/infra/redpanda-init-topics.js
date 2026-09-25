@@ -85,8 +85,8 @@ const GROK_TOPICS = [
     }
 ];
 
-// Truffle pricing & signal streams (WECRYPTO ticks -> 1m -> hourly -> signals)
-const TRUFFLE_TOPICS = [
+// Jdwalkaz pricing & signal streams (WECRYPTO ticks -> 1m -> hourly -> signals)
+const JDWALKAZ_TOPICS = [
     {
         topic:             'wecrypto.prices.ticks',
         numPartitions:     3,
@@ -118,7 +118,7 @@ const TRUFFLE_TOPICS = [
         ]
     },
     {
-        topic:             'truffle.signals',
+        topic:             'jdwalkaz.signals',
         numPartitions:     3,
         replicationFactor: 1,
         configEntries: [
@@ -131,7 +131,7 @@ const TRUFFLE_TOPICS = [
 
 /**
  * Create (or verify) a list of Kafka topics. Skips topics that already exist
- * without throwing. Shared by createOrbitalTopics()/createGrokTopics()/createTruffleTopics().
+ * without throwing. Shared by createOrbitalTopics()/createGrokTopics()/createJdwalkazTopics().
  */
 async function _createTopics(topicList, label) {
     const kafka = new Kafka({
@@ -197,10 +197,10 @@ async function createGrokTopics() {
 }
 
 /**
- * Create (or verify) the Truffle pricing and signal topics.
+ * Create (or verify) the Jdwalkaz pricing and signal topics.
  */
-async function createTruffleTopics() {
-    return _createTopics(TRUFFLE_TOPICS, 'truffle');
+async function createJdwalkazTopics() {
+    return _createTopics(JDWALKAZ_TOPICS, 'jdwalkaz');
 }
 
 /**
@@ -209,10 +209,10 @@ async function createTruffleTopics() {
 async function createAllTopics() {
     await createOrbitalTopics();
     await createGrokTopics();
-    await createTruffleTopics();
+    await createJdwalkazTopics();
 }
 
-module.exports = { createOrbitalTopics, createGrokTopics, createTruffleTopics, createAllTopics };
+module.exports = { createOrbitalTopics, createGrokTopics, createJdwalkazTopics, createAllTopics };
 
 // Allow standalone execution
 if (require.main === module) {

@@ -43,6 +43,8 @@
             <div id="network-health-list"></div>
             <div style="font-size:12px;color:#8ab4f8;margin-top:10px;font-weight:600;">Transports (WSS → gRPC → RPC → HTTP)</div>
             <div id="network-transport-stats" style="margin-top:4px;padding-top:6px;border-top:1px solid #333;font-size:12px;"></div>
+            <div style="font-size:12px;color:#8ab4f8;margin-top:10px;font-weight:600;">Derivatives Microstructure (7 Venues)</div>
+            <div id="derivatives-venues-stats" style="margin-top:4px;padding-top:6px;border-top:1px solid #333;font-size:12px;"></div>
             <div style="font-size:12px;color:#8ab4f8;margin-top:10px;font-weight:600;">Orbital Matrix (Redpanda)</div>
             <div id="orbital-matrix-stats" style="margin-top:4px;padding-top:6px;border-top:1px solid #333;font-size:12px;"></div>
             <div style="font-size:12px;color:#8ab4f8;margin-top:10px;font-weight:600;">AI Inference (5m PTB)</div>
@@ -579,6 +581,73 @@
         }
     }
 
+    function renderDerivativesVenues() {
+        const el = document.getElementById('derivatives-venues-stats');
+        if (!el) return;
+
+        const feed = window.DerivativesFeed;
+        if (!feed) {
+            el.innerHTML = '<span style="color:#888;">Derivatives feed initializing...</span>';
+            return;
+        }
+
+        const diag = feed.getDiagnostics?.() || {};
+        const all = feed.getAll?.() || {};
+        const coins = Object.keys(all);
+        const lat = diag.latency_ms || {};
+        const rl = diag.rate_limits || {};
+        const quality = diag.data_quality || 'clean';
+        const qualityColor = quality === 'clean' ? '#3ecf8e' : (quality === 'partial' ? '#ffd166' : '#ff5e5e');
+
+        const VENUE_HOSTS = [
+            { name: 'Binance', host: 'fapi.binance.com', altHost: 'dapi.binance.com' },
+            { name: 'Bybit', host: 'api.bybit.com' },
+            { name: 'OKX', host: 'www.okx.com' },
+            { name: 'Hyperliquid', host: 'api.hyperliquid.xyz' },
+            { name: 'dYdX v4', host: 'indexer.dydx.trade' },
+            { name: 'Deribit', host: 'www.deribit.com' },
+        ];
+
+        const venueBadges = VENUE_HOSTS.map(v => {
+            const ms = lat[v.host] ?? (v.altHost ? lat[v.altHost] : null);
+            const active = ms != null;
+            const msText = active ? `${Math.round(ms)}ms` : '—';
+            const color = !active ? '#666' : (ms < 400 ? '#3ecf8e' : ms < 1200 ? '#8ab4f8' : ms < 1800 ? '#ffd166' : '#ff5e5e');
+            return `<div style="display:inline-flex;align-items:center;gap:4px;font-size:11px;background:rgba(255,255,255,0.03);padding:2px 6px;border-radius:4px;border:1px solid #2a313d;">
+                <span style="color:#aaa;">${v.name}:</span>
+                <span style="color:${color};font-weight:600;">${msText}</span>
+            </div>`;
+        }).join('');
+
+        const liqWsStatus = diag.liq_ws_connected !== false
+            ? '<span style="color:#3ecf8e;">WS live (!forceOrder)</span>'
+            : '<span style="color:#ffd166;">WS connecting</span>';
+
+        const rateLimitHints = [];
+        if (rl['fapi.binance.com']?.['x-mbx-used-weight']) {
+            rateLimitHints.push(`Binance: ${rl['fapi.binance.com']['x-mbx-used-weight']}`);
+        }
+        if (rl['api.bybit.com']?.['x-bapi-limit-status']) {
+            rateLimitHints.push(`Bybit: ${rl['api.bybit.com']['x-bapi-limit-status']}`);
+        }
+        if (rl['www.okx.com']?.['x-okx-limit-remaining']) {
+            rateLimitHints.push(`OKX: ${rl['www.okx.com']['x-okx-limit-remaining']}`);
+        }
+        const rlLine = rateLimitHints.length
+            ? `<div style="font-size:10px;color:#888;margin-top:2px;">Rate limits: ${escapeHtml(rateLimitHints.join(' · '))}</div>`
+            : '';
+
+        el.innerHTML = `
+            <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px;">${venueBadges}</div>
+            <div style="font-size:11px;color:#9aa6b2;margin-top:4px;">
+                Quality: <span style="color:${qualityColor};font-weight:600;">${quality.toUpperCase()}</span> ·
+                ${coins.length ? `${coins.length} pairs active` : 'polling'} ·
+                ${liqWsStatus}
+            </div>
+            ${rlLine}
+        `;
+    }
+
     let renderQueued = false;
     function scheduleRender(forceOrbital = false) {
         if (renderQueued) return;
@@ -587,6 +656,7 @@
             renderQueued = false;
             try {
                 renderCore();
+                renderDerivativesVenues();
             } catch (err) {
                 console.warn('[NetworkHealthDashboard] render failed:', err?.message || err);
             }
@@ -610,6 +680,7 @@
     window.addEventListener('network-health-update', render);
     window.addEventListener('network-health-alert', render);
     window.addEventListener('network-transport-update', render);
+    window.addEventListener('derivatives-update', render);
     window.addEventListener('network-recovery-start', render);
     window.addEventListener('network-recovery-phase', render);
     window.addEventListener('network-recovery-end', render);

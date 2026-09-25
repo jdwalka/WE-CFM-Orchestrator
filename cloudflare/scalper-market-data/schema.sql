@@ -1,5 +1,5 @@
 -- Calibration schema for the scalper prediction pipeline.
--- Local runtime uses SQLite (data/truffle_calibration.sqlite3); this schema is the D1-compatible equivalent.
+-- Local runtime uses SQLite (data/jdwalkaz_calibration.sqlite3); this schema is the D1-compatible equivalent.
 
 CREATE TABLE IF NOT EXISTS calibration_reports (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

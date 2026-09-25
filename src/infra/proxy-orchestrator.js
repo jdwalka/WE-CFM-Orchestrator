@@ -1267,6 +1267,10 @@ if (
             let res;
             try {
               const isGecko = endpoint === 'coingecko' || /coingecko/i.test(String(url));
+              const isFapi = /fapi\.binance\.com/i.test(String(fetchUrl));
+              const isBybit = endpoint === 'bybit' || /bybit\.com/i.test(String(fetchUrl));
+              const pPort = (typeof window !== 'undefined' && window.__PROXY_PORT__) || 3010;
+
               const headers = { Accept: 'application/json' };
               if (requestOptions.headers) {
                 if (typeof Headers !== 'undefined' && requestOptions.headers instanceof Headers) {
@@ -1277,6 +1281,24 @@ if (
                   Object.assign(headers, requestOptions.headers);
                 }
               }
+
+              // Enforce SOCKS5 / local proxy routing for fapi.binance.com to circumvent US geo-block (HTTP 451)
+              if (isFapi && !fetchUrl.includes(`:${pPort}/`)) {
+                try {
+                  const parsedFapi = new URL(fetchUrl);
+                  fetchUrl = `http://127.0.0.1:${pPort}/binance-f${parsedFapi.pathname}${parsedFapi.search}`;
+                } catch (_) {}
+              }
+
+              // Enforce browser TLS headers on Bybit to prevent Cloudflare WAF 403 bot detection
+              if (isBybit) {
+                headers['User-Agent'] = headers['User-Agent'] || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
+                headers['Accept-Language'] = headers['Accept-Language'] || 'en-US,en;q=0.9';
+                headers['sec-ch-ua'] = headers['sec-ch-ua'] || '"Not/A)Brand";v="8", "Chromium";v="126", "Google Chrome";v="126"';
+                headers['sec-ch-ua-mobile'] = '?0';
+                headers['sec-ch-ua-platform'] = '"Windows"';
+              }
+
               if (endpoint === 'binance' || /binance/i.test(String(url))) {
                 const binanceKey = window.resolveRuntimeKey('BINANCE_API_KEY');
                 if (binanceKey) headers['X-MBX-APIKEY'] = binanceKey;
@@ -1297,6 +1319,28 @@ if (
               });
             } finally {
               clearTimeout(timer);
+            }
+
+            // Fallback for Binance HTTP 451 (Geo-block) -> fallback to api.binance.us
+            if (res.status === 451 || (isFapi && res.status === 403)) {
+              console.warn(`[ProxyOrchestrator] fapi.binance.com geo-blocked (HTTP ${res.status}). Attempting fallback to api.binance.us...`);
+              try {
+                const usUrl = String(url).replace('fapi.binance.com', 'api.binance.us').replace('/fapi/v1/', '/api/v3/');
+                const usRes = await fetch(usUrl, { headers: { Accept: 'application/json' } });
+                if (usRes.ok) return await usRes.json();
+              } catch (_) {}
+              if (limiter) limiter.recordAuthFailure(15 * 60_000, res.status);
+              return Promise.reject(new Error(`HTTP 451: Binance US geo-block (proxy and US fallback exhausted)`));
+            }
+
+            // Fallback for Bybit HTTP 403 (Cloudflare WAF) -> route through proxy server
+            if (isBybit && res.status === 403 && !fetchUrl.includes(`:${pPort}/bybit`)) {
+              console.warn(`[ProxyOrchestrator] bybit HTTP 403 WAF trip. Routing via Rust proxy server...`);
+              try {
+                const bybitProxyUrl = `http://127.0.0.1:${pPort}/bybit` + new URL(url).pathname + new URL(url).search;
+                const proxyRes = await fetch(bybitProxyUrl, { headers: { Accept: 'application/json' } });
+                if (proxyRes.ok) return await proxyRes.json();
+              } catch (_) {}
             }
 
             if (res.status === 429 || res.status === 503) {

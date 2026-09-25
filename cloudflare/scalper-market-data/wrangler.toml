@@ -11,20 +11,25 @@ routes = [
 workers_dev = true
 preview_urls = true
 
-# Proactive 1-minute cron refresh for ladder cache
+# Proactive 5-minute cron refresh for ladder cache (eased from 1m: Kalshi 429s)
 [triggers]
-crons = ["* * * * *"]
+crons = ["*/5 * * * *"]
 
 # State that survives isolate eviction and is shared across isolates
 [[kv_namespaces]]
 binding = "MARKET_CACHE"
 id = "11089b487b4048729f3a49e6a302c3fb"
 
-# D1 binding for calibration persistence and health checks.
+# D1 bindings — scalper-calibration (CALIBRATION_DB) + google (DB)
 [[d1_databases]]
 binding = "CALIBRATION_DB"
 database_name = "scalper-calibration"
 database_id = "48536b22-03b3-42dd-92fa-44feab144d84"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "google"
+database_id = "001e31f4-52ad-4514-8d64-1bd7f0ab3e20"
 
 [observability]
 enabled = true

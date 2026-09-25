@@ -79,14 +79,14 @@ async function runAll() {
   await probe("Coinbase L2 /dwell", "http://127.0.0.1:8793/dwell");
   await probe("Coinbase L2 /404 route (Edge)", "http://127.0.0.1:8793/badpath");
 
-  // 3. LOCAL Truffle uAgent (Port 8002)
-  console.log("\n--- Section 3: WeCryp Truffle uAgent (8002) ---");
-  await probe("Truffle /health", "http://127.0.0.1:8002/health");
-  await probe("Truffle /calibration", "http://127.0.0.1:8002/calibration");
-  await probe("Truffle /weights", "http://127.0.0.1:8002/weights");
-  await probe("Truffle /tail-diagnostics", "http://127.0.0.1:8002/tail-diagnostics");
-  await probe("Truffle /kalshi-15m-model", "http://127.0.0.1:8002/kalshi-15m-model");
-  await probe("Truffle /404 route (Edge)", "http://127.0.0.1:8002/not-a-route");
+  // 3. LOCAL Jdwalkaz uAgent (Port 8002)
+  console.log("\n--- Section 3: WeCryp Jdwalkaz uAgent (8002) ---");
+  await probe("Jdwalkaz /health", "http://127.0.0.1:8002/health");
+  await probe("Jdwalkaz /calibration", "http://127.0.0.1:8002/calibration");
+  await probe("Jdwalkaz /weights", "http://127.0.0.1:8002/weights");
+  await probe("Jdwalkaz /tail-diagnostics", "http://127.0.0.1:8002/tail-diagnostics");
+  await probe("Jdwalkaz /kalshi-15m-model", "http://127.0.0.1:8002/kalshi-15m-model");
+  await probe("Jdwalkaz /404 route (Edge)", "http://127.0.0.1:8002/not-a-route");
 
   // 4. SCALPER MARKET DATA WORKER (Direct & Route)
   console.log("\n--- Section 4: Scalper Market Data Worker ---");

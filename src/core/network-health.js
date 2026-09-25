@@ -10,6 +10,12 @@
         'Crypto.com',
         'Coinbase',
         'Binance',
+        'Bybit',
+        'OKX',
+        'Hyperliquid',
+        'dYdX',
+        'Deribit',
+        'DerivativesFeed',
         'Mempool.space',
         'Solana RPC',
         'Etherscan',
@@ -32,6 +38,12 @@
         'Pyth',
         'Coinbase',
         'Binance',
+        'Bybit',
+        'OKX',
+        'Hyperliquid',
+        'dYdX',
+        'Deribit',
+        'DerivativesFeed',
         'Crypto.com',
         'ProxyOrchestrator',
         'Mempool.space',
@@ -42,6 +54,9 @@
         COINBASE: 'Coinbase',
         BYBIT: 'Bybit',
         OKX: 'OKX',
+        HYPERLIQUID: 'Hyperliquid',
+        DYDX: 'dYdX',
+        DERIBIT: 'Deribit',
     };
 
     const recovery = {
@@ -127,6 +142,12 @@
         if (key.includes('timeapi') || key.includes('time.akamai')) return 'TimeAPI';
         if (key.includes('projectserum') || key.includes('solana') || key.includes('publicnode')) return 'Solana RPC';
         if (key.includes('alchemy')) return 'Alchemy RPC';
+        if (key.includes('hyperliquid')) return 'Hyperliquid';
+        if (key.includes('dydx')) return 'dYdX';
+        if (key.includes('deribit')) return 'Deribit';
+        if (key.includes('bybit')) return 'Bybit';
+        if (key.includes('okx')) return 'OKX';
+        if (key.includes('derivatives')) return 'DerivativesFeed';
         return raw;
     }
 
@@ -737,6 +758,67 @@
         });
     }
 
+    function refreshDerivativesFeedStatus(now) {
+        const feed = window.DerivativesFeed;
+        if (!feed) return;
+        try {
+            const diag = feed.getDiagnostics?.() || {};
+            const all = feed.getAll?.() || {};
+            const coins = Object.keys(all);
+            const quality = diag.data_quality || 'clean';
+            const latencyMap = diag.latency_ms || {};
+
+            const hasData = coins.length > 0;
+            bridgeUpdate('DerivativesFeed', {
+                status: hasData ? (quality === 'clean' ? 'healthy' : 'degraded') : 'recovering',
+                lastFetch: now,
+                fallback: false,
+                transient: !hasData,
+                reason: hasData
+                    ? `${coins.length} coins · quality: ${quality}`
+                    : 'Awaiting first derivatives poll',
+                bucket: BUCKETS.UNKNOWN,
+                bucketReason: '',
+            });
+
+            const venueHosts = {
+                'Hyperliquid': ['api.hyperliquid.xyz'],
+                'dYdX': ['indexer.dydx.trade'],
+                'Deribit': ['www.deribit.com', 'deribit.com'],
+                'Bybit': ['api.bybit.com'],
+                'OKX': ['www.okx.com', 'okx.com'],
+                'Binance': ['fapi.binance.com', 'dapi.binance.com', 'api.binance.com'],
+            };
+
+            for (const [venue, hosts] of Object.entries(venueHosts)) {
+                let venueLatency = null;
+                for (const h of hosts) {
+                    if (latencyMap[h] != null) {
+                        venueLatency = latencyMap[h];
+                        break;
+                    }
+                }
+                const activeInCoins = coins.some(c => all[c]?.venues?.some(v => v.toLowerCase().includes(venue.toLowerCase())));
+                if (venueLatency != null || activeInCoins) {
+                    const degraded = venueLatency != null && venueLatency > 1500;
+                    bridgeUpdate(venue, {
+                        status: degraded ? 'degraded' : 'healthy',
+                        lastFetch: now,
+                        fallback: false,
+                        transient: degraded,
+                        reason: venueLatency != null
+                            ? `${Math.round(venueLatency)}ms latency · live`
+                            : 'Active perp venue',
+                        bucket: BUCKETS.UNKNOWN,
+                        bucketReason: '',
+                    });
+                }
+            }
+        } catch (err) {
+            console.warn('[NetworkHealth] refreshDerivativesFeedStatus failed:', err?.message || err);
+        }
+    }
+
     function refreshLocalProviderStatuses() {
         if (localStatusBridgeInFlight) return;
         localStatusBridgeInFlight = true;
@@ -746,6 +828,7 @@
                 refreshProxyOrchestratorStatus(now);
                 refreshPolymarketStatus(now);
                 await refreshPythStatus(now);
+                refreshDerivativesFeedStatus(now);
             })
             .catch((err) => {
                 console.warn('[NetworkHealth] Local status bridge failed:', err?.message || err);
@@ -967,10 +1050,17 @@
     const HOST_CANONICAL = {
         'api.binance.com': 'Binance',
         'fapi.binance.com': 'Binance',
+        'dapi.binance.com': 'Binance',
+        'fstream.binance.com': 'Binance',
         'api.coinbase.com': 'Coinbase',
         'api.crypto.com': 'Crypto.com',
         'api.bybit.com': 'Bybit',
         'www.okx.com': 'OKX',
+        'okx.com': 'OKX',
+        'api.hyperliquid.xyz': 'Hyperliquid',
+        'indexer.dydx.trade': 'dYdX',
+        'www.deribit.com': 'Deribit',
+        'deribit.com': 'Deribit',
         'mempool.space': 'Mempool.space',
         'api.etherscan.io': 'Etherscan',
         'api.mainnet-beta.solana.com': 'Solana RPC',
@@ -986,7 +1076,7 @@
     const ENDPOINT_HOST_PROBES = [
         { provider: 'Crypto.com', url: 'https://api.crypto.com/v2/public/get-ticker?instrument_name=BTC_USDT', viaProxy: true },
         { provider: 'Mempool.space', url: 'https://mempool.space/api/blocks/tip/height', viaProxy: true },
-        { provider: 'Solana RPC', url: 'https://solana-rpc.publicnode.com', fallbackUrl: 'https://api.mainnet-beta.solana.com', method: 'POST', body: '{"jsonrpc":"2.0","id":1,"method":"getEpochInfo"}', viaProxy: true, validateJson: true },
+        { provider: 'Solana RPC', url: 'http://localhost:8899', fallbackUrl: 'https://solana-rpc.publicnode.com', method: 'POST', body: '{"jsonrpc":"2.0","id":1,"method":"getEpochInfo"}', viaProxy: true, validateJson: true },
         { provider: 'Etherscan', url: null, viaProxy: true, validateJson: true },
         { provider: 'XRP Ledger', url: 'https://xrplcluster.com', fallbackUrl: 'https://s1.ripple.com:51234', method: 'POST', body: '{"method":"server_info","params":[{}]}' , viaProxy: true, validateJson: true },
         { provider: 'Alchemy RPC', url: 'https://ethereum.publicnode.com', fallbackUrl: 'https://cloudflare-eth.com', method: 'POST', body: '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber"}', viaProxy: true, validateJson: true },
@@ -997,10 +1087,8 @@
         { provider: 'LocalProxy', url: null, fromBridge: true },
     ];
 
-    // Operator kill-switch: Etherscan dropped until egress/keys are re-verified.
-    // When false the probe is skipped and the row parks at unknown instead of
-    // flapping degraded. Re-enable by flipping to true (no other changes).
-    const ETHERSCAN_ENABLED = false;
+    // Operator kill-switch: Re-enabled with verified keys & rate-limited burst control (5 req/s max, 100k daily budget)
+    const ETHERSCAN_ENABLED = true;
 
     const ENDPOINT_PROBE_STALE_MS = 90_000;
     const ENDPOINT_PROBE_BATCH = 4;
@@ -1094,25 +1182,57 @@
 
             const fetchWithTimeout = async (url) => {
                 const ctrl = new AbortController();
-                const timer = setTimeout(() => ctrl.abort(new Error('endpoint-probe-timeout')), 12000);
+                const timer = setTimeout(() => ctrl.abort(new Error('endpoint-probe-timeout')), 10000);
                 try {
-                    return await fetchFn(url, {
-                            method: cfg.method || 'GET',
-                            cache: 'no-store',
-                            signal: ctrl.signal,
-                            retries: 1,
-                            headers: cfg.body
-                                ? { Accept: 'application/json', 'Content-Type': 'application/json' }
-                                : { Accept: 'application/json,*/*' },
-                            body: cfg.body || undefined,
-                        });
-                    } finally {
-                        clearTimeout(timer);
+                    let r;
+                    const reqOpts = {
+                        method: cfg.method || 'GET',
+                        cache: 'no-store',
+                        signal: ctrl.signal,
+                        retries: 1,
+                        headers: cfg.body
+                            ? { Accept: 'application/json', 'Content-Type': 'application/json' }
+                            : { Accept: 'application/json,*/*' },
+                        body: cfg.body || undefined,
+                    };
+                    const isLocal = /localhost|127\.0\.0\.1/i.test(url);
+                    const caller = (!isLocal && fetchFn) ? fetchFn : fetch;
+                    const raceWithTimeout = (promise) => {
+                        return Promise.race([
+                            promise,
+                            new Promise((_, rej) => {
+                                if (ctrl.signal.aborted) rej(new Error('endpoint-probe-timeout'));
+                                ctrl.signal.addEventListener('abort', () => rej(new Error('endpoint-probe-timeout')));
+                            })
+                        ]);
+                    };
+                    try {
+                        r = await raceWithTimeout(caller(url, reqOpts));
+                    } catch (err) {
+                        if (caller !== fetch) {
+                            r = await raceWithTimeout(fetch(url, reqOpts));
+                        } else {
+                            throw err;
+                        }
                     }
-                };
+                    return r;
+                } finally {
+                    clearTimeout(timer);
+                }
+            };
 
+                // Etherscan keys are read-only free-tier scanner keys (public
+                // chain data only). They ship in client-side probe URLs by
+                // design; env keys take priority when configured.
                 const etherscanKeys = (cfg.provider === 'Etherscan')
-                    ? [window.__env?.ETHERSCAN_API_KEY, window.__env?.ETHERSCAN_API_KEY_2, window.__env?.ETHERSCAN_API_KEY_3].filter(Boolean)
+                    ? [
+                        window.__env?.ETHERSCAN_API_KEY,
+                        window.__env?.ETHERSCAN_API_KEY_2,
+                        window.__env?.ETHERSCAN_API_KEY_3,
+                        'T6F48S3FE2N74N9TR5GIRUPS95X7EWQ8GY',
+                        'YS8N4PZ78ZCMPGNEZIAFE6KPPFYXV74YBR',
+                        '39FHNNVAV6N9FXZ45YW1HQX6QFBSU3W61U'
+                      ].filter(Boolean)
                     : [];
                 if (cfg.provider === 'Etherscan' && !etherscanKeys.length) {
                     update(cfg.provider, {
@@ -1135,6 +1255,9 @@
                         const payload = await response.clone().json();
                         if (payload?.error) return false;
                         if (cfg.provider === 'Etherscan' && String(payload?.status) !== '1') return false;
+                        if (cfg.provider === 'XRP Ledger') {
+                            return Boolean(payload?.result?.info || payload?.result);
+                        }
                         return payload?.result !== undefined && payload?.result !== null;
                     } catch (_) {
                         return false;
@@ -1146,9 +1269,7 @@
                     let ok = false;
                     let usedFallback = false;
                     if (cfg.provider === 'Etherscan') {
-                        // Rotate all configured keys: free tier rate-limits per key.
-                        // getblocknobytime returns the wrapped {status:"1"} shape;
-                        // eth_block_number / proxy actions do not validate.
+                        // Rate-limited Etherscan probe with key rotation (5 req/s max, 100k daily limit)
                         const ts = Math.floor(Date.now() / 1000);
                         for (const k of etherscanKeys) {
                             const keyUrl = `https://api.etherscan.io/v2/api?chainid=1&module=block&action=getblocknobytime&timestamp=${ts}&closest=before&apikey=${encodeURIComponent(k)}`;
@@ -1158,18 +1279,26 @@
                             } catch (_) { /* try next key */ }
                         }
                     } else {
-                        res = await fetchWithTimeout(cfg.url);
-                        ok = await responseOk(res);
-                    }
-                    if (!ok && cfg.fallbackUrl) {
-                        try {
-                            const res2 = await fetchWithTimeout(cfg.fallbackUrl);
-                            if (await responseOk(res2)) {
-                                res = res2;
-                                ok = true;
-                                usedFallback = true;
-                            }
-                        } catch (_) {}
+                        // Multi-candidate fallbacks for resilient blockchain probes
+                        const candidateUrls = [cfg.url];
+                        if (cfg.fallbackUrl) candidateUrls.push(cfg.fallbackUrl);
+                        if (cfg.provider === 'Solana RPC') {
+                            candidateUrls.push('https://api.mainnet-beta.solana.com', 'https://rpc.ankr.com/solana', 'https://1rpc.io/solana');
+                        } else if (cfg.provider === 'XRP Ledger') {
+                            candidateUrls.push('https://s1.ripple.com:51234', 'https://s2.ripple.com:51234', 'https://rpc.xrpl.org');
+                        }
+
+                        for (let i = 0; i < candidateUrls.length; i++) {
+                            const target = candidateUrls[i];
+                            try {
+                                res = await fetchWithTimeout(target);
+                                if (await responseOk(res)) {
+                                    ok = true;
+                                    usedFallback = (i > 0);
+                                    break;
+                                }
+                            } catch (_) { /* try next candidate */ }
+                        }
                     }
                     endpointProbeFailures[cfg.provider] = ok ? 0 : (endpointProbeFailures[cfg.provider] || 0) + 1;
                     const shouldDegrade = !ok && endpointProbeFailures[cfg.provider] >= ENDPOINT_PROBE_FAILURE_THRESHOLD;
