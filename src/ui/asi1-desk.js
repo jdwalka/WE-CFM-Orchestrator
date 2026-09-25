@@ -232,7 +232,7 @@
           <textarea id="adCustomPrompt" placeholder="Ask ASI1 anything with live market context..." rows="2" style="flex:1;background:#06080a;color:#e6e8eb;border:1px solid #1f2a38;border-radius:6px;padding:6px;font-size:11px;resize:none;outline:none;font-family:inherit"></textarea>
           <button id="adSendPrompt" type="button" style="background:#00d4ff;color:#06080a;font-weight:700;border:0;border-radius:6px;padding:0 10px;font-size:11px;cursor:pointer">Send</button>
           <button id="adGeminiToggle" type="button" title="Route query to Gemini" style="background:#111318;border:1px solid #2a2f38;color:#8b929a;font-weight:700;border-radius:6px;padding:0 8px;font-size:11px;cursor:pointer">Gemini</button>
-          <button id="adJdwalkazToggle" type="button" title="Route query to local jdwalkaz agent (port 8002)" style="background:#111318;border:1px solid #2a2f38;color:#8b929a;font-weight:700;border-radius:6px;padding:0 8px;font-size:11px;cursor:pointer">jdwalkaz</button>
+          <button id="adJdwalkazToggle" type="button" title="Route query to local jdwalkaz agent (port 8004)" style="background:#111318;border:1px solid #2a2f38;color:#8b929a;font-weight:700;border-radius:6px;padding:0 8px;font-size:11px;cursor:pointer">jdwalkaz</button>
           <button id="adResetMemory" type="button" title="Clear conversation memory and start a new session" style="background:#1c2530;color:#ff8a80;font-weight:700;border:1px solid #ff5252;border-radius:6px;padding:0 8px;font-size:11px;cursor:pointer">Reset</button>
         </div>
         <div id="adCustomAnswer" style="display:none;background:#06080a;border:1px solid #1f2a38;border-radius:6px;padding:8px;font-size:11px;line-height:1.45;color:#e6e8eb;max-height:160px;overflow-y:auto"></div>
@@ -943,7 +943,7 @@
         const res = await invoke('jdwalkazQuery', { query, wallStats: wallSnap, focus: coinNow, channel: 'jdwalkaz-horizon' });
         const content = res?.ok
           ? (res.content || 'No response from jdwalkaz.')
-          : `jdwalkaz error: ${res?.error || 'unknown — is the agent running on port 8002?'}`;
+          : `jdwalkaz error: ${res?.error || 'unknown — is the agent running on port 8004?'}`;
         const jdwalkazContract = {
           call: '—',
           action: 'HOLD_FLAT',
@@ -1064,7 +1064,7 @@
     try {
       const ctrl = new AbortController();
       const timer = setTimeout(() => ctrl.abort(new Error('probe-timeout')), 1500);
-      const res = await fetch('http://127.0.0.1:8002/health', { signal: ctrl.signal, cache: 'no-store' });
+      const res = await fetch('http://127.0.0.1:8004/health', { signal: ctrl.signal, cache: 'no-store' });
       jdwalkazAvailable = res.ok;
     } catch (_) {
       jdwalkazAvailable = false;
@@ -1072,10 +1072,10 @@
     const btn = document.getElementById('adJdwalkazToggle');
     if (btn) {
       if (!jdwalkazAvailable) {
-        btn.title = 'jdwalkaz offline — no service on 127.0.0.1:8002';
+        btn.title = 'jdwalkaz offline — no service on 127.0.0.1:8004';
         btn.style.borderColor = '#ff5252';
       } else {
-        btn.title = 'Route query to local jdwalkaz agent (port 8002)';
+        btn.title = 'Route query to local jdwalkaz agent (port 8004)';
         btn.style.borderColor = jdwalkazActive ? '#00d4ff' : '#2a2f38';
       }
     }
@@ -1094,7 +1094,7 @@
   }
 
   async function askJdwalkaz(query) {
-    const r = await fetch('http://127.0.0.1:8002/query', {
+    const r = await fetch('http://127.0.0.1:8004/query', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ query }),
@@ -1174,7 +1174,7 @@
       if (jdwalkazActive) {
         if (!jdwalkazAvailable) {
           if (answerEl) {
-            answerEl.textContent = 'jdwalkaz offline — start the agent on 127.0.0.1:8002, then retry. This prompt was not sent to ASI1.';
+            answerEl.textContent = 'jdwalkaz offline — start the agent on 127.0.0.1:8004, then retry. This prompt was not sent to ASI1.';
           }
           return;
         }
