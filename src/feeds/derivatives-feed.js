@@ -31,7 +31,7 @@
   // 401/403/451 are hard policy/geo blocks — retrying them every poll only
   // floods the console and the local proxy. Cool the host down instead.
   const BLOCKED_STATUS = new Set([401, 403, 451]);
-  const HOST_BLOCK_MS = 10 * 60_000;
+  const HOST_BLOCK_MS = 5000;
   const BLOCKED_HOSTS = new Map();
   const RETRY_DELAY_MS = 250;
   const OI_HISTORY_MAX = 30;      // ~10 min of 20s samples
@@ -115,13 +115,34 @@
     if (host) BLOCKED_HOSTS.set(host, Date.now() + HOST_BLOCK_MS);
   }
 
+  function resolveFetchUrl(url) {
+    const pPort = (typeof window !== 'undefined' && window.__PROXY_PORT__) || 3010;
+    try {
+      const u = new URL(url);
+      if (u.hostname === 'fapi.binance.com') {
+        return `http://127.0.0.1:${pPort}/binance-f${u.pathname}${u.search}`;
+      }
+      if (u.hostname === 'dapi.binance.com') {
+        return `http://127.0.0.1:${pPort}/binance-d${u.pathname}${u.search}`;
+      }
+      if (u.hostname === 'api.binance.com') {
+        return `http://127.0.0.1:${pPort}/binance${u.pathname}${u.search}`;
+      }
+      if (u.hostname === 'api.bybit.com') {
+        return `http://127.0.0.1:${pPort}/bybit${u.pathname}${u.search}`;
+      }
+    } catch (_) {}
+    return url;
+  }
+
   async function getJson(url, opts = {}) {
     if (isHostBlocked(url)) throw new Error('host blocked (geo/policy cooldown)');
+    const targetUrl = resolveFetchUrl(url);
     let lastError = null;
     const t0 = Date.now();
     for (let attempt = 1; attempt <= FETCH_ATTEMPTS; attempt++) {
       try {
-        const res = await timedFetch(url, opts);
+        const res = await timedFetch(targetUrl, opts);
         const latencyMs = Date.now() - t0;
         recordDiagnostics(url, res, latencyMs);
         if (!res.ok) {
