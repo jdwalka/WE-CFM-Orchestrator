@@ -585,8 +585,49 @@
         };
     }
 
+    /**
+     * Exact Student-t density for nu=4 degrees of freedom
+     */
+    function student_t_pdf(x, nu = 4) {
+        if (!Number.isFinite(x)) return 0;
+        if (nu === 4) {
+            return (3 / 8) * Math.pow(1 + (x * x) / 4, -2.5);
+        }
+        const num = Math.pow(1 + (x * x) / nu, -(nu + 1) / 2);
+        return num / (Math.sqrt(nu) * 0.5);
+    }
+
+    /**
+     * Exact closed-form Student-t CDF for nu=4 degrees of freedom:
+     * F(t) = 0.5 + (t / (2 * sqrt(t^2 + 4))) * (1 + 2 / (t^2 + 4))
+     */
+    function student_t_cdf(t, nu = 4) {
+        if (!Number.isFinite(t)) return t > 0 ? 1 : 0;
+        const denom = t * t + 4;
+        return 0.5 + (t / (2 * Math.sqrt(denom))) * (1 + 2 / denom);
+    }
+
+    /**
+     * Regularized Tail Boost Multiplier based on regime and burst pressure
+     */
+    function getTailBoostMultiplier(regimeName, burstPressure = 0) {
+        if (burstPressure <= 0.35) return 1.0;
+        const r = String(regimeName || '').toUpperCase();
+        if (r.includes('HIGH') || r.includes('EXPLOSIVE') || r.includes('VOLATILE')) {
+            return 1.58; // Regularized from 2.172x
+        }
+        if (r.includes('MID') || r.includes('ACCELERATING') || r.includes('TRENDING')) {
+            return 1.21; // Regularized from 1.417x
+        }
+        if (r.includes('LOW') || r.includes('COMPRESSED') || r.includes('RANGING')) {
+            return 1.05; // Anchored at 1.05x
+        }
+        return 1.85; // UNKNOWN regularized from 2.788x
+    }
+
     // ── Expose API ──────────────────────────────────────────────────
-    window.QuantStatUtils = {
+    const targetScope = typeof window !== 'undefined' ? window : (typeof global !== 'undefined' ? global : this);
+    targetScope.QuantStatUtils = {
         isotonicRegression,
         calibrationError,
         populationStabilityIndex,
@@ -602,7 +643,13 @@
         qqStats,
         norm_ppf,
         calculateBinaryIV,
+        student_t_pdf,
+        student_t_cdf,
+        getTailBoostMultiplier,
     };
+    if (typeof module !== 'undefined' && module.exports) {
+        module.exports = targetScope.QuantStatUtils;
+    }
 
-    console.log('[QuantStatUtils] Loaded: 14 utility functions');
+    console.log('[QuantStatUtils] Loaded: 17 utility functions');
 })();

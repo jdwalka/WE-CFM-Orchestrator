@@ -1,20 +1,20 @@
 {
   "COMPOSITE_WEIGHTS": {
     "supertrend": 0.1,
-    "hma": 0.07,
+    "hma": 0.076,
     "vwma": 0.06,
-    "ema": 0.05,
+    "ema": 0.054,
     "sma": 0.03,
-    "macd": 0.07,
+    "macd": 0.076,
     "persistence": 0.07,
     "bands": 0.05,
     "keltner": 0.05,
     "williamsR": 0.07,
-    "rsi": 0.06,
+    "rsi": 0.065,
     "cci": 0.05,
     "stochrsi": 0.04,
     "volume": 0.12,
-    "obv": 0.07,
+    "obv": 0.076,
     "cmf": 0.07,
     "mfi": 0.07,
     "structure": 0.1,
@@ -37,10 +37,10 @@
   },
   "REGIME_WEIGHT_MULTS": {
     "trending_smooth": {
-      "ema": 1.5,
-      "hma": 1.4,
+      "ema": 1.632,
+      "hma": 1.523,
       "vwap": 1.3,
-      "obv": 1.2,
+      "obv": 1.306,
       "bands": 0.7,
       "williamsR": 0.7,
       "momentum": 0.5
@@ -49,8 +49,8 @@
       "volume": 1.5,
       "flow": 1.4,
       "book": 1.3,
-      "macd": 1.2,
-      "ema": 1.1,
+      "macd": 1.306,
+      "ema": 1.197,
       "bands": 0.8,
       "momentum": 2
     },
@@ -58,7 +58,7 @@
       "bands": 1.6,
       "williamsR": 1.5,
       "cci": 1.4,
-      "rsi": 1.3,
+      "rsi": 1.414,
       "stochrsi": 1.3,
       "ema": 0.7,
       "hma": 0.6,
@@ -78,66 +78,66 @@
     "BTC": {
       "bands": 1.017,
       "williamsR": 1.018,
-      "obv": 0.985,
+      "obv": 1.072,
       "vwap": 1,
-      "hma": 0.9,
+      "hma": 0.979,
       "momentum": 0.6,
       "stochrsi": 1.013,
       "sma": 0.937,
       "adx": 1,
       "mfi": 1.1,
       "supertrend": 0.986,
-      "ema": 0.889,
-      "macd": 0.899,
-      "rsi": 0.708
+      "ema": 0.967,
+      "macd": 0.978,
+      "rsi": 0.77
     },
     "ETH": {
       "bands": 1.019,
       "williamsR": 1.018,
-      "obv": 0.983,
+      "obv": 1.069,
       "vwap": 1,
-      "hma": 0.9,
+      "hma": 0.979,
       "momentum": 0.6,
       "stochrsi": 1.015,
       "sma": 0.934,
       "adx": 1,
       "mfi": 1.1,
       "supertrend": 0.987,
-      "ema": 0.884,
-      "macd": 0.887,
-      "rsi": 0.709
+      "ema": 0.962,
+      "macd": 0.965,
+      "rsi": 0.771
     },
     "SOL": {
       "bands": 1.019,
       "williamsR": 1.023,
-      "obv": 0.987,
+      "obv": 1.074,
       "vwap": 1,
-      "hma": 0.9,
+      "hma": 0.979,
       "momentum": 0.599,
       "stochrsi": 1.016,
       "sma": 0.931,
       "adx": 1,
       "mfi": 1.1,
       "supertrend": 0.986,
-      "ema": 0.881,
-      "macd": 0.886,
-      "rsi": 0.709
+      "ema": 0.959,
+      "macd": 0.964,
+      "rsi": 0.771
     },
     "XRP": {
       "bands": 1.018,
       "williamsR": 1.017,
-      "obv": 0.985,
+      "obv": 1.072,
       "vwap": 1,
-      "hma": 0.9,
+      "hma": 0.979,
       "momentum": 0.6,
       "stochrsi": 1.013,
       "sma": 0.93,
       "adx": 1,
       "mfi": 1.1,
       "supertrend": 0.987,
-      "ema": 0.88,
-      "macd": 0.898,
-      "rsi": 0.709
+      "ema": 0.957,
+      "macd": 0.977,
+      "rsi": 0.771
     }
   },
   "SHORT_HORIZON_FILTERS": {
@@ -156,6 +156,14 @@
     "h15": {
       "entryThreshold": 0.1,
       "minAgreement": 0.65
+    },
+    "h30": {
+      "entryThreshold": 0.14,
+      "minAgreement": 0.6
+    },
+    "h60": {
+      "entryThreshold": 0.1,
+      "minAgreement": 0.56
     }
   }
 }
