@@ -370,10 +370,15 @@ async function fetchLadder(symbol, env) {
   let cursor = "";
   const allMarkets = [];
 
-  // Paginate through open markets (Kalshi caps at 100/page; BTC/ETH have 300+ open strikes)
-  for (let page = 0; page < 6; page++) {
+  // Paginate through open markets. Kalshi sorts nearest-window-first, so a
+  // single limit=1000 page normally returns the ENTIRE live window (no
+  // cursor = complete). The old 6x100-page sweep pulled far-future windows
+  // the single-window guard throws away anyway — 6x the requests for
+  // nothing, and every extra page was another 429 dice roll that ended in
+  // truncated 18-band caches and a synthetic panel.
+  for (let page = 0; page < 3; page++) {
     const reqPath =
-      `/trade-api/v2/markets?series_ticker=${series}&status=open&limit=100` +
+      `/trade-api/v2/markets?series_ticker=${series}&status=open&limit=1000` +
       (cursor ? `&cursor=${encodeURIComponent(cursor)}` : "");
     const kalshiUrl = "https://api.elections.kalshi.com" + reqPath;
     const res = await fetch(kalshiUrl, {
