@@ -1627,6 +1627,155 @@ def _conditional_settlement_hold(low: float, high: float, settlement_history: di
     }
 
 
+def _expiry_dynamics_overlay(strike_probs, spot, minutes_to_expiry, sigma_hourly_pct):
+    """End-of-hour microstructure overlay: pin vs cascade.
+
+    In the final ~20 minutes the uniform-diffusion picture breaks: price
+    either compresses onto a strike (dealer pinning into expiry) or rips
+    through stops (cascade / V-reversal). This reads the last 15 one-minute
+    candles and reweights p_settle accordingly, preserving total mass.
+
+    Scores (0..1):
+      pin     = strike proximity x velocity decay. High when spot sits near
+                a band center AND recent 3-minute velocity collapsed vs the
+                prior 12 minutes (the compression signature).
+      cascade = wick extremes + directional persistence. High when single-
+                minute wicks dwarf typical bodies (stop runs) or the last
+                six 1m returns all agree in sign (trend-into-expiry).
+
+    Factors: containing band *= 1+0.6*pin*(1-cascade); bands farther than
+    2.5x expected remaining move *= 1+0.8*cascade; neighbors shaved mildly
+    under pin. Then renormalized so total settle mass is unchanged.
+    Inactive (all factors 1.0) outside the window or without 1m data.
+    Mutates rows in place; returns diagnostics dict.
+    """
+    diag = {
+        "active": False,
+        "reason": None,
+        "pin_score": 0.0,
+        "cascade_score": 0.0,
+        "minutes_to_expiry": minutes_to_expiry,
+    }
+
+    def _off(reason):
+        diag["reason"] = reason
+        return diag
+
+    try:
+        mte = float(minutes_to_expiry)
+    except (TypeError, ValueError):
+        return _off("no_expiry")
+    if not (0 < mte <= 20):
+        return _off("outside_window")
+    if not isinstance(spot, (int, float)) or not math.isfinite(spot) or spot <= 0:
+        return _off("bad_spot")
+    try:
+        candles = get_minute_candles(30)
+    except Exception:
+        candles = []
+    if len(candles) < 15:
+        return _off("no_1m_data")
+    try:
+        rets = []
+        for c in candles[-15:]:
+            o, cl = c.get("open"), c.get("close")
+            if isinstance(o, (int, float)) and isinstance(cl, (int, float)) and o > 0:
+                rets.append((cl - o) / o)
+        if len(rets) < 12:
+            return _off("thin_1m_data")
+        bodies = [abs(r) for r in rets]
+        vel_now = sum(bodies[-3:]) / 3.0
+        vel_base = sum(bodies[:-3]) / max(len(bodies) - 3, 1)
+        decel = max(0.0, min(1.0, 1.0 - vel_now / (vel_base + 1e-12)))
+        max_wick = 0.0
+        for c in candles[-15:]:
+            o, h, l, cl = (c.get("open"), c.get("high"), c.get("low"), c.get("close"))
+            if all(isinstance(v, (int, float)) for v in (o, h, l, cl)) and o > 0:
+                wick = (h - max(o, cl)) + (min(o, cl) - l)
+                max_wick = max(max_wick, wick / o * 100.0)
+        med_body = sorted(bodies)[len(bodies) // 2]
+        # Floor the body scale: on a dead-flat tape both wicks and bodies
+        # are dust — without the floor, ~zero denominators fake a cascade.
+        wick_norm = max_wick / max(med_body * 100.0, 0.005)
+        last_sign = 1.0 if rets[-1] >= 0 else -1.0
+        if all(r == 0.0 for r in rets[-6:]):
+            persist = 0.5
+        else:
+            persist = sum(1 for r in rets[-6:] if (r >= 0) == (last_sign >= 0)) / 6.0
+        cascade = max(0.0, min(1.0,
+                               0.5 * min(wick_norm / 3.0, 1.0) + 0.5 * (persist - 0.5) * 2.0))
+        containing = None
+        for i, row in enumerate(strike_probs):
+            lo, hi = row.get("low"), row.get("high")
+            if isinstance(lo, (int, float)) and isinstance(hi, (int, float)) \
+                    and lo <= spot <= hi:
+                containing = i
+                break
+        exp_move = abs(spot) * abs(float(sigma_hourly_pct or 0)) / 100.0 \
+            * math.sqrt(max(mte, 1.0) / 60.0)
+        pin = 0.0
+        if containing is not None:
+            center = (strike_probs[containing]["low"] + strike_probs[containing]["high"]) / 2.0
+            prox = max(0.0, 1.0 - abs(spot - center) / 50.0)
+            pin = max(0.0, min(1.0, prox * (0.35 + 0.65 * decel)))
+        factors = {}
+        for i, row in enumerate(strike_probs):
+            if row.get("fair_status") == "invalid_band":
+                continue
+            lo, hi = row.get("low"), row.get("high")
+            if not (isinstance(lo, (int, float)) and isinstance(hi, (int, float))):
+                continue
+            center = (lo + hi) / 2.0
+            if i == containing:
+                f = 1.0 + 0.6 * pin * (1.0 - cascade)
+            elif exp_move > 0 and abs(center - spot) > exp_move:
+                # Graded tail fattening: the further beyond one expected
+                # move, the more cascade risk matters (V-rip insurance).
+                reach = min((abs(center - spot) / exp_move - 1.0) / 1.5, 1.0)
+                f = 1.0 + 0.8 * cascade * reach
+            else:
+                f = max(0.3, 1.0 - 0.2 * pin * (1.0 - cascade))
+            factors[i] = f
+        old_total = sum(float(r.get("p_settle") or 0) for r in strike_probs)
+        for i, f in factors.items():
+            r = strike_probs[i]
+            r["p_settle_pre_expiry"] = r.get("p_settle")
+            r["p_settle"] = round(float(r.get("p_settle") or 0) * f, 4)
+            r["expiry_factor"] = round(f, 3)
+        new_total = sum(float(r.get("p_settle") or 0) for r in strike_probs)
+        if new_total > 0 and old_total > 0:
+            scale = old_total / new_total
+            for r in strike_probs:
+                if isinstance(r.get("p_settle"), (int, float)):
+                    r["p_settle"] = round(r["p_settle"] * scale, 4)
+        diag.update({
+            "active": True,
+            "reason": "applied",
+            "pin_score": round(pin, 3),
+            "cascade_score": round(cascade, 3),
+            "expected_move_pts": round(exp_move, 2),
+            "containing_band": strike_probs[containing]["band"]
+            if containing is not None else None,
+        })
+        return diag
+    except Exception as e:
+        return _off("error:%s" % type(e).__name__)
+    return {
+        "hold_given_touch": round(hold_given_touch, 4),
+        "touched_samples": touched_count,
+        "held_samples": held_count,
+        "estimated": touched_count > 0,
+        "estimator": (
+            "empirical"
+            if touched_count >= SETTLEMENT_HOLD_MIN_SAMPLES
+            else "empirical_bayes_shrinkage"
+        ),
+        "prior": SETTLEMENT_HOLD_PRIOR,
+        "prior_strength": SETTLEMENT_HOLD_PRIOR_STRENGTH,
+        "source": settlement_history.get("source", "unavailable"),
+    }
+
+
 def _ranked_entry_scores(decay_table: list, bands: list, horizon_minutes: int = 15) -> list:
     """Rank projected T-15m fair values against current YES asks."""
     bands_by_label = {}
@@ -1940,8 +2089,9 @@ def predict_hourly_range(force_refresh: bool = True, screen_spot: float | None =
     cross_venue_divergence = get_cross_venue_divergence()
     positioning_skew = get_positioning_skew()
 
-    # Drift for remaining window
-    drift_pct = bias * sigma_hourly_pct * DRIFT_FACTOR * math.sqrt(minutes_to_expiry / 60)
+    # Drift for remaining window: Exponentially decay momentum to prevent mean-reversion traps at T-30
+    decay_factor = math.exp(-0.1 * max(0, minutes_to_expiry - 5))
+    drift_pct = bias * sigma_hourly_pct * DRIFT_FACTOR * decay_factor
     drift_pct += positioning_skew["skew_pct"]
 
     # --- Per-strike probabilities from live Kalshi ladder ---
@@ -2111,9 +2261,9 @@ def predict_hourly_range(force_refresh: bool = True, screen_spot: float | None =
             band_tail_adjustment = total_tail_adjustment(p_base)
             p_touch = _apply_tail_adjustment(p_calibrated, band_tail_adjustment)
             
-            # Interim live rule: in HIGH regime, model fair values are floors.
+            # Empirical tail boost: Student-t multiplier of 2.172x in HIGH regimes
             if stats.get("regime", "") == "HIGH":
-                p_touch = max(p_touch, 0.76)
+                p_touch = min(0.99, p_touch * 2.172)
                 
             settlement_hold = _conditional_settlement_hold(low, high, settlement_history)
             p_settle = p_touch * settlement_hold["hold_given_touch"]
@@ -2297,6 +2447,20 @@ def predict_hourly_range(force_refresh: bool = True, screen_spot: float | None =
             strike["residual_cents"] = None
             strike["staleness_block_reasons"] = staleness_verdict.reasons
 
+    # Expiry microstructure overlay (pin vs cascade). Runs after all
+    # per-band computation incl. the spot-move recompute above, so adjusted
+    # p_settle flows into calibration records + result. Respects the stale
+    # gate: never adjusts blocked boards.
+    expiry_dynamics = {"active": False, "reason": "stale_blocked"}
+    if staleness_verdict.allowed:
+        expiry_dynamics = _expiry_dynamics_overlay(
+            strike_probs,
+            staleness_verdict.effective_spot
+            if staleness_verdict.effective_spot is not None else spot,
+            minutes_to_expiry,
+            sigma_hourly_pct,
+        )
+
     raw_alt_signal = get_alt_signal()
     alt_signal, lead_lag_filter = _filter_alt_signal(raw_alt_signal)
 
@@ -2395,6 +2559,7 @@ def predict_hourly_range(force_refresh: bool = True, screen_spot: float | None =
         "distribution_selection": distribution_selection,
         "probability_correction": probability_correction,
         "tail_probability_correction": tail_probability_correction,
+        "expiry_dynamics": expiry_dynamics,
         "ladder_feed_status": ladder_feed_status,
         "regime": regime,
         "strike_probs": strike_probs,
