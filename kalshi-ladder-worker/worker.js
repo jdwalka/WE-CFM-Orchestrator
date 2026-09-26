@@ -475,6 +475,16 @@ async function fetchLadder(symbol, env) {
   // vs the last good cache (partial pagination that survived retries).
   // Caching 18 bands as "ok" is what drops the panel to synthetic for a
   // full day; throwing keeps last-good + cooldown and retries in 3 min.
+  // Absolute floors backstop the relative check against staircase decline
+  // (186 -> 90 -> 45 -> 22 -> 12 passes every halving step): a real BTC
+  // hourly book holds 70+ bands; anything under the floor is never a
+  // complete book, no matter what the cache says.
+  const MIN_BANDS = { BTC: 40, ETH: 15, SOL: 8, XRP: 8, DOGE: 8, BNB: 8 };
+  const bandFloor = MIN_BANDS[symbol] ?? 8;
+  if (windowBands.length < bandFloor) {
+    throw new Error(
+      `Truncated ladder rejected for ${symbol}: only ${windowBands.length} bands (floor ${bandFloor})`);
+  }
   if (env && env.LADDER_CACHE) {
     try {
       const rawOld = await env.LADDER_CACHE.get(`kalshi-ladder:${symbol}`);
