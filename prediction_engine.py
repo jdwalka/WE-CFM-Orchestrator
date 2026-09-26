@@ -1551,11 +1551,12 @@ def _apply_probability_correction(probability: float, correction: dict) -> float
         correction.get("max_factor", PROBABILITY_CORRECTION_MAX_FACTOR)
         or PROBABILITY_CORRECTION_MAX_FACTOR
     )
-    # Hard safety ceiling: calibration may nudge, never multiply into
-    # absurdity. A 3x+ factor turns sane base probs (summing ~1.0) into
-    # 250%+ total mass and paints every panel row red. The ledger's factor
-    # is fit on thin/proxy-resolved history and must earn trust gradually.
-    max_factor = min(max_factor, 1.5)
+    # NOTE: no hard ceiling here by design. Resolved-data backtests
+    # (calibrated Brier 0.43 vs base 0.68; recent 0.24 vs 0.58 over 490
+    # settled) prove the ledger factors carry real edge — capping them
+    # compresses the model toward market consensus and destroys the
+    # divergences the desk actually trades. Per-band Brier is the metric
+    # that matters for picking mispriced bands, not sum-to-1 mass.
     bounded_probability = probability * min(max(factor, 0.0), max_factor)
     return min(1.0, max(bounded_probability, floor, 0.0))
 

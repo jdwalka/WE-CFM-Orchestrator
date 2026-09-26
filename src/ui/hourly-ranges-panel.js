@@ -68,7 +68,9 @@
   let _prevYesBid = {}; // sym → Map(low -> previous yes_bid_dollars), for the momentum arrow
   let _closeTimes = {}; // sym → ISO string of active bucket
   let _timer   = null;
+  let _hourRollScheduleTimer = null;
   let _mounted = false;
+  let _lastHourBucket = Math.floor(Date.now() / 3600000);
 
   // Zero Cold-Start LocalStorage Persistence
   try {
@@ -88,6 +90,91 @@
       }
     } catch (_) {}
   }
+
+  // ── Top-of-Hour Flush & Re-pull ────────────────────────────────
+  function flushHourlies(reason = 'manual') {
+    console.log(`[HR] ⚡ Flushing hourlies (${reason}) at ${new Date().toISOString()}`);
+    // IMPORTANT: do NOT wipe _realBands / _prevYesBid here. The old hour's
+    // PTB bands are the last-known-good Kalshi contracts; buildCoinCard
+    // filters by close_time window anyway, and the next successful poll
+    // replaces them with the new hour's bands. Wiping them here used to
+    // blank the ladder at every top-of-hour and the panel flipped to the
+    // synthetic "Ranges" view until the next fetch landed — the exact
+    // PTB↔Ranges flapping bug. Synthetic caches (_ranges/_closeTimes) ARE
+    // hour-tied and get cleared.
+    _ranges = {};
+    _closeTimes = {};
+    _emptyRealStreak = {};
+    try {
+      if (typeof localStorage !== 'undefined') {
+        localStorage.removeItem('__we_hr_ranges_cache');
+      }
+    } catch (_) {}
+  }
+
+  function checkHourRoll() {
+    const currentHour = Math.floor(Date.now() / 3600000);
+    if (currentHour !== _lastHourBucket) {
+      _lastHourBucket = currentHour;
+      flushHourlies('top-of-hour-roll');
+      if (typeof window !== 'undefined' && window.electron?.kalshi?.flushLadder) {
+        window.electron.kalshi.flushLadder().catch(() => {});
+      }
+      loadAll().then(() => render());
+      return true;
+    }
+    return false;
+  }
+
+  function scheduleHourRoll() {
+    if (_hourRollScheduleTimer) {
+      clearTimeout(_hourRollScheduleTimer);
+      _hourRollScheduleTimer = null;
+    }
+    const now = Date.now();
+    const nextHourMs = (Math.floor(now / 3600000) + 1) * 3600000;
+    const msUntil = Math.max(250, nextHourMs - now);
+    _hourRollScheduleTimer = setTimeout(() => {
+      checkHourRoll();
+      scheduleHourRoll();
+    }, msUntil + 250);
+  }
+
+  // Listen for real-time WebSocket ladder updates from Electron IPC Worker
+  try {
+    if (typeof window !== 'undefined' && window.electron?.kalshi) {
+      window.electron.kalshi.onLadderUpdate((payload) => {
+        if (!payload || !payload.symbol || !Array.isArray(payload.bands)) return;
+        const sym = payload.symbol;
+        const now = Date.now();
+        // Same guards as the HTTP poll path: pushed bands must be in-window
+        // (not expired, not 13h+ daily far-futures) and must pass the width
+        // caps, or they'd fight the bridge poll and flip the view between
+        // two grids (the PTB↔Ranges flap).
+        const activeBands = payload.bands.filter(b => {
+          if (!b.close_time || new Date(b.close_time).getTime() <= now - 2 * 60000) return false;
+          const diffMins = (new Date(b.close_time).getTime() - now) / 60000;
+          if (diffMins > 75) return false;
+          const w = Number(b.high ?? b.low) - Number(b.low);
+          if (sym === 'BTC' && w > 105) return false;
+          if (sym === 'ETH' && w > 6) return false;
+          if (sym === 'SOL' && w > 1.5) return false;
+          if (sym === 'XRP' && w > 0.05) return false;
+          return true;
+        });
+        if (activeBands.length > 0) {
+          _realBands[sym] = activeBands;
+          _emptyRealStreak[sym] = 0;
+          if (isActive()) render();
+        }
+      });
+
+      window.electron.kalshi.onHourlyFlushed(() => {
+        flushHourlies('ipc-worker-hourly-flushed');
+        loadAll().then(() => render());
+      });
+    }
+  } catch (_) {}
 
   // ── View detection ─────────────────────────────────────────────
   function isActive() {
@@ -259,6 +346,11 @@
       try {
         data = await apiFetch(`${KALSHI_LOCAL_BRIDGE}/ladder?symbol=${sym}`, 3000);
       } catch (_) {}
+      if (!data || data.status !== 'ok' || !Array.isArray(data.bands) || !data.bands.length) {
+        try {
+          data = await apiFetch(`http://172.24.118.176:8788/ladder?symbol=${sym}`, 3000);
+        } catch (_) {}
+      }
 
       // 2. Fallback to remote worker if local bridge was unavailable
       if (!data || data.status !== 'ok' || !Array.isArray(data.bands) || !data.bands.length) {
@@ -275,13 +367,31 @@
 
       const bands = (data && data.status === 'ok' && Array.isArray(data.bands)) ? data.bands : [];
 
+      // Off-grid eviction guard: the remote worker fallback can return a
+      // partial page (e.g. 100 markets stuck above $91k while spot sits at
+      // $84k). If we already hold real bands for this symbol, data that
+      // doesn't bracket spot must never replace them — treat it as a miss
+      // so the streak path keeps the last-known-good ladder instead of
+      // painting the wrong hour or dropping the panel to synthetic.
+      if (bands.length && (safeGet(_realBands, sym) || []).length) {
+        const livePrice = safeGet(_prices, sym) || readLivePrice(sym);
+        if (livePrice != null && Number.isFinite(livePrice)) {
+          const lo = Math.min(...bands.map(b => Number(b.low)));
+          const hi = Math.max(...bands.map(b => Number(b.high ?? b.low)));
+          if (livePrice < lo || livePrice > hi) {
+            _emptyRealStreak[sym] = (_emptyRealStreak[sym] || 0) + 1;
+            return;
+          }
+        }
+      }
+
       if (!bands.length) {
         const streak = (_emptyRealStreak[sym] || 0) + 1;
         _emptyRealStreak[sym] = streak;
-        if (streak < EMPTY_STREAK_TO_FALL_BACK && (safeGet(_realBands, sym) || []).length) {
-          return; // trust the last known-good bands through a brief rollover gap
-        }
-        _realBands[sym] = [];
+        // NEVER wipe last-known-good bands here — not even after many empty
+        // polls. The old hour's PTB rows are real, tradeable contracts and
+        // beat a synthetic flip every time; buildCoinCard filters by
+        // close_time window and the next good poll replaces them.
         return;
       }
       _emptyRealStreak[sym] = 0;
@@ -339,7 +449,8 @@
           byKey.set(`${s.low}-${s.high}`, s.p_touch);
         }
       }
-      _modelStrikes = { BTC: { ts: now, byKey } };
+      const regimeVal = doc.regime?.regime || (typeof doc.regime === 'string' ? doc.regime : null);
+      _modelStrikes = { BTC: { ts: now, byKey, regime: regimeVal } };
       // Engine predicted range + remaining-window probabilities for
       // spot-centered synthetic buckets. strike_probs only covers Kalshi's
       // listed bands, so synthetic rows would otherwise show no model odds.
@@ -509,7 +620,46 @@
 
     let body;
     let topBuckets = [];
-    const realBands = safeGet(_realBands, sym) || [];
+    const rawRealBands = safeGet(_realBands, sym) || [];
+    let realBands = rawRealBands;
+    if (rawRealBands.length > 0) {
+      const now = Date.now();
+      let targetCloseTime = null;
+      let minCloseMs = Infinity;
+      for (const b of rawRealBands) {
+        if (!b.close_time) continue;
+        const ms = new Date(b.close_time).getTime();
+        const diffMins = (ms - now) / 60000;
+        if (diffMins >= -2 && diffMins <= 75 && ms < minCloseMs) {
+          minCloseMs = ms;
+          targetCloseTime = b.close_time;
+        }
+      }
+      if (!targetCloseTime) {
+        // Rollover gap: every band is expired (or none in-window). Render the
+        // NEWEST close_time set we hold — the upcoming hour if Kalshi listed
+        // it early, else the just-closed hour — never a mixed-hours ladder,
+        // and never a flip to synthetic while we hold real contracts.
+        let newestMs = -Infinity;
+        for (const b of rawRealBands) {
+          if (!b.close_time) continue;
+          const ms = new Date(b.close_time).getTime();
+          if (ms > newestMs) { newestMs = ms; targetCloseTime = b.close_time; }
+        }
+      }
+      if (targetCloseTime) {
+        realBands = rawRealBands.filter(b => b.close_time === targetCloseTime);
+      }
+      // Ensure daily range contracts ($250+ width) are excluded from the hourly bucket ladder
+      realBands = realBands.filter(b => {
+        const w = Number(b.high ?? b.low) - Number(b.low);
+        if (sym === 'BTC' && w > 105) return false;
+        if (sym === 'ETH' && w > 6) return false;
+        if (sym === 'SOL' && w > 1.5) return false;
+        if (sym === 'XRP' && w > 0.05) return false;
+        return true;
+      });
+    }
     let isLive = realBands.length > 0;
     let sortedBands = [];
 
@@ -541,13 +691,54 @@
       // corresponds to an actual open, tradeable Kalshi contract right now.
       const nearest = sortedBands.slice(0, VISIBLE_PTB_ROWS).sort((a, b) => a.low - b.low);
 
-      // Depth can sit on either side of the book — a band with a big resting
-      // ask and nothing on the bid is still a real wall (BTC's own rows were
-      // showing transparent for every bucket because this only ever checked
-      // yes_bid_size/open_interest while the actual size was on yes_ask_size).
+      const pred = safeGet(window._predictions, sym) || window.PredictionEngine?.get?.(sym);
+      const modelEntry = safeGet(_modelStrikes, sym);
+      const regimeStr = String(pred?.regime?.regime || pred?.regime || modelEntry?.regime || 'MID').toUpperCase();
+      const rLower = Number(modelEntry?.range?.lower ?? pred?.range?.lower);
+      const rUpper = Number(modelEntry?.range?.upper ?? pred?.range?.upper);
+      const hasRegime = Number.isFinite(rLower) && Number.isFinite(rUpper) && rUpper > rLower;
+
+      // Regime colors: Blue for LOW, Yellow for MID, Red for HIGH
+      const regimeBorder = regimeStr === 'LOW' ? '#3b82f6' : regimeStr === 'HIGH' ? '#ef4444' : '#eab308';
+      const regimeBg = regimeStr === 'LOW' ? 'rgba(59, 130, 246, 0.12)' : regimeStr === 'HIGH' ? 'rgba(239, 68, 68, 0.14)' : 'rgba(234, 179, 8, 0.12)';
+
+      // Depth can sit on either side of the book
       const wallDepth = (b) => Math.max(0, b.yes_bid_size || 0, b.yes_ask_size || 0, b.open_interest || 0);
       const wallSizes = nearest.map(wallDepth);
       const maxWall = Math.max(1, ...wallSizes);
+
+      // Pre-scan for model's estimated hourly close (peak model probability)
+      let maxModelTouch = -1;
+      let modelTargetStrike = null;
+      for (const b of nearest) {
+        const m = modelTouchPct(sym, b.low, b.high);
+        if (m !== null && m > maxModelTouch) {
+          maxModelTouch = m;
+          modelTargetStrike = b.low;
+        }
+      }
+
+      // Rank-based HOT: with a calibrated model that runs hotter than
+      // market, an absolute residual threshold flags the whole board.
+      // Rank the board by |market - model| and tag only the top 2
+      // divergences — the edge shows as a short list, never a sea of red.
+      // Engine-flagged rows keep their tag only if also top-2.
+      const residRank = nearest.map(b => {
+        const bid = Number(b.yes_bid_dollars);
+        const askVal = Number(b.yes_ask_dollars);
+        let probPct = null;
+        if (Number.isFinite(bid) && bid > 0 && Number.isFinite(askVal) && askVal > 0) {
+          probPct = Math.round(((bid + askVal) / 2) * 100);
+        } else if (Number.isFinite(askVal) && askVal > 0) {
+          probPct = Math.round(askVal * 100);
+        } else if (Number.isFinite(bid) && bid > 0) {
+          probPct = Math.round(bid * 100);
+        }
+        const mPct = modelTouchPct(sym, b.low, b.high);
+        const r = (probPct !== null && mPct !== null) ? probPct - mPct : null;
+        return { low: b.low, resid: r, mag: r !== null ? Math.abs(r) : -1 };
+      }).filter(x => x.mag >= 0).sort((a, b) => b.mag - a.mag).slice(0, 2);
+      const hotLows = new Set(residRank.map(x => x.low));
 
       const rows = nearest.map(b => {
         const isCurrent = price !== null && price >= b.low && price <= b.high;
@@ -570,22 +761,14 @@
         const ptbStr = window.CoinPrecision?.formatCoinStrike
           ? window.CoinPrecision.formatCoinStrike(sym, b.low)
           : `$${b.low.toLocaleString()}`;
-        // yes_bid_dollars/yes_ask_dollars are dollar units (0.25 = 25 cents)
-        // — Kalshi contracts trade $0.01-$1.00, i.e. 1-100 cents.
         const bidStr = Number.isFinite(bid) ? `${(bid * 100).toFixed(0)}¢` : '—';
         const askVal = Number(b.yes_ask_dollars);
         const askStr = Number.isFinite(askVal) ? `${(askVal * 100).toFixed(0)}¢` : '—';
 
-        // A Kalshi YES price already IS the market-implied probability that
-        // this band gets hit — no separate model needed, just read it off
-        // the book. Mid of bid/ask when both quote; whichever side is
-        // actually quoted otherwise (thin books often have only one side).
         let probPct = null;
         if (Number.isFinite(bid) && bid > 0 && Number.isFinite(askVal) && askVal > 0) {
           probPct = Math.round(((bid + askVal) / 2) * 100);
         } else if (Number.isFinite(askVal) && askVal > 0) {
-          // No resting bid (common on thin/far-OTM strikes) — averaging with
-          // $0 would understate it; the ask alone is the honest read.
           probPct = Math.round(askVal * 100);
         } else if (Number.isFinite(bid) && bid > 0) {
           probPct = Math.round(bid * 100);
@@ -595,7 +778,6 @@
         const modelPct = modelTouchPct(sym, b.low, b.high);
         let modelStr = modelPct !== null ? `${modelPct}%` : null;
         if (!modelStr && price && price > 0 && Number.isFinite(b.low) && Number.isFinite(b.high) && b.high > b.low) {
-          const pred = safeGet(window._predictions, sym) || window.PredictionEngine?.get?.(sym);
           const atrPctRaw = Number(pred?.volatility?.atrPct);
           const atrPct = Number.isFinite(atrPctRaw) && atrPctRaw > 0 ? atrPctRaw / 100 : 0.0055;
           const minsLeft = ttcMs != null ? Math.max(1, ttcMs / 60000) : 30;
@@ -618,16 +800,44 @@
         const effectiveModelPct = modelPct ?? (modelStr !== '—' ? parseInt(modelStr, 10) : null);
         const resid = (probPct !== null && effectiveModelPct !== null) ? probPct - effectiveModelPct : null;
         const residStr = resid !== null ? `${resid > 0 ? '+' : ''}${resid}` : '—';
-        const hot = resid !== null && Math.abs(resid) >= 10;
+        const hot = resid !== null && hotLows.has(b.low);
+        const isModelClose = (modelTargetStrike !== null && b.low === modelTargetStrike) || (effectiveModelPct !== null && effectiveModelPct >= 50 && !isCurrent);
+        const inRegime = hasRegime && (b.low <= rUpper && b.high >= rLower);
+
+        // Compute vibrant, living bucket hues
+        let rowBg = `${wallColor}18`;
+        let rowBorder = wallColor;
+        let rowTag = '';
+
+        if (isCurrent) {
+          // Spot Price Bucket: Bright Cyan / Electric Blue
+          rowBg = 'rgba(56, 189, 248, 0.22)';
+          rowBorder = '#38bdf8';
+          rowTag = `<span class="hr-ptb-here" style="color:#38bdf8;font-weight:700;margin-left:4px;">● HERE</span>`;
+        } else if (hot) {
+          // Hot bands priced with AMMs: Intense Red Mispricing Alert
+          rowBg = 'rgba(239, 68, 68, 0.24)';
+          rowBorder = '#ef4444';
+          rowTag = `<span class="hr-ptb-tag hr-tag--hot" style="color:#ef4444;font-weight:700;font-size:10px;margin-left:4px;border:1px solid #ef4444;border-radius:3px;padding:1px 3px;" title="AMM Mispricing: ${residStr}¢">⚡ HOT AMM</span>`;
+        } else if (isModelClose) {
+          // Model's Estimated Hourly Close Target: Emerald Green
+          rowBg = 'rgba(16, 185, 129, 0.22)';
+          rowBorder = '#10b981';
+          rowTag = `<span class="hr-ptb-tag hr-tag--close" style="color:#10b981;font-weight:700;font-size:10px;margin-left:4px;border:1px solid #10b981;border-radius:3px;padding:1px 3px;">★ MODEL CLOSE</span>`;
+        } else if (inRegime) {
+          // Where Regime lies: Blue (LOW), Yellow (MID), or Red (HIGH)
+          rowBg = regimeBg;
+          rowBorder = regimeBorder;
+        }
 
         return `
-          <div class="hr-ptb-row${isCurrent ? ' hr-ptb-row--current' : ''}" style="background:${escapeHTML(wallColor)}22;border-left-color:${escapeHTML(wallColor)}">
+          <div class="hr-ptb-row${isCurrent ? ' hr-ptb-row--current' : ''}" style="background:${escapeHTML(rowBg)};border-left:3px solid ${escapeHTML(rowBorder)}">
             <span class="hr-ptb-price">${escapeHTML(ptbStr)}</span>
-            <span class="hr-ptb-prob"${isCurrent ? ` style="color:${escapeHTML(color)}"` : ''}>${escapeHTML(probStr)}</span>
-            <span class="hr-ptb-model hr-col-model" title="Model touch probability (engine)${resid !== null ? ` — market-model residual ${residStr}¢` : ''}"${hot ? ' style="font-weight:700;text-decoration:underline"' : ''}>${escapeHTML(modelStr)}</span>
+            <span class="hr-ptb-prob"${isCurrent ? ` style="color:#38bdf8;font-weight:700"` : ''}>${escapeHTML(probStr)}</span>
+            <span class="hr-ptb-model hr-col-model" title="Model touch probability (engine)${resid !== null ? ` — market-model residual ${residStr}¢` : ''}"${hot ? ' style="font-weight:700;text-decoration:underline;color:#ef4444"' : (isModelClose ? ' style="color:#10b981;font-weight:700"' : '')}>${escapeHTML(modelStr)}</span>
             <span class="hr-ptb-odds">${escapeHTML(bidStr)} / ${escapeHTML(askStr)}</span>
             ${arrow}
-            ${isCurrent ? `<span class="hr-ptb-here" style="color:${escapeHTML(color)}">● HERE</span>` : ''}
+            ${rowTag}
           </div>`;
       });
 
