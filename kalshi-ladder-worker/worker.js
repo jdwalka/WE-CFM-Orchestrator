@@ -380,7 +380,33 @@ async function fetchLadder(symbol, env) {
       headers: kalshiFetchHeaders(env, 'GET', reqPath),
     });
     if (!res.ok) {
-      if (allMarkets.length > 0) break;
+      // Transient mid-pagination failure (usually a 429): retry the SAME
+      // page instead of caching a truncated ladder. A partial cache poisons
+      // KV for a full day and drops the panel to synthetic — a thrown error
+      // keeps last-good data + cooldown instead. Never salvage partials.
+      let recovered = false;
+      for (let retry = 0; retry < 2 && !recovered; retry++) {
+        await new Promise((r) => setTimeout(r, 800 * (retry + 1)));
+        try {
+          const r2 = await fetch(kalshiUrl, {
+            headers: kalshiFetchHeaders(env, 'GET', reqPath),
+          });
+          if (r2.ok) {
+            const d2 = await r2.json();
+            if (Array.isArray(d2.markets)) allMarkets.push(...d2.markets);
+            cursor = d2.cursor || "";
+            recovered = true;
+          }
+        } catch (_) { /* retry again */ }
+      }
+      if (recovered) {
+        if (!cursor) break;
+        continue;
+      }
+      if (allMarkets.length > 0) {
+        throw new Error(
+          `Kalshi API partial pagination rejected (pages done: ${page}, markets: ${allMarkets.length})`);
+      }
       throw new Error(`Kalshi API ${res.status}: ${await res.text()}`);
     }
     const data = await res.json();
@@ -438,6 +464,26 @@ async function fetchLadder(symbol, env) {
       bands:      [],
       message:    "No active unexpired range window found on Kalshi",
     };
+  }
+
+  // Truncation guard: refuse to cache a ladder with suspiciously few bands
+  // vs the last good cache (partial pagination that survived retries).
+  // Caching 18 bands as "ok" is what drops the panel to synthetic for a
+  // full day; throwing keeps last-good + cooldown and retries in 3 min.
+  if (env && env.LADDER_CACHE) {
+    try {
+      const rawOld = await env.LADDER_CACHE.get(`kalshi-ladder:${symbol}`);
+      if (rawOld) {
+        const oldCount = (JSON.parse(rawOld).bands || []).length;
+        if (oldCount > 50 && windowBands.length < oldCount / 2) {
+          throw new Error(
+            `Truncated ladder rejected for ${symbol}: ${windowBands.length} bands vs cached ${oldCount}`);
+        }
+      }
+    } catch (e) {
+      if (String(e && e.message || e).startsWith("Truncated ladder rejected")) throw e;
+      // KV read failure must never block a live fetch
+    }
   }
 
   return {
