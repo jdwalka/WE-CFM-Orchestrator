@@ -1551,6 +1551,11 @@ def _apply_probability_correction(probability: float, correction: dict) -> float
         correction.get("max_factor", PROBABILITY_CORRECTION_MAX_FACTOR)
         or PROBABILITY_CORRECTION_MAX_FACTOR
     )
+    # Hard safety ceiling: calibration may nudge, never multiply into
+    # absurdity. A 3x+ factor turns sane base probs (summing ~1.0) into
+    # 250%+ total mass and paints every panel row red. The ledger's factor
+    # is fit on thin/proxy-resolved history and must earn trust gradually.
+    max_factor = min(max_factor, 1.5)
     bounded_probability = probability * min(max(factor, 0.0), max_factor)
     return min(1.0, max(bounded_probability, floor, 0.0))
 
@@ -1760,6 +1765,70 @@ def _expiry_dynamics_overlay(strike_probs, spot, minutes_to_expiry, sigma_hourly
         return diag
     except Exception as e:
         return _off("error:%s" % type(e).__name__)
+
+
+def _self_audit(ctx):
+    """Sanity audit: cross-check the inputs the board stands on.
+
+    Returns {passed, flags[], checks{}} for the health panel. Flags ONLY
+    on explicit-bad states — missing/unknown inputs are reported as
+    info, never alarmed (a blind auditor that cries wolf is worse than
+    none). ctx carries the already-computed diagnostics dicts.
+    """
+    flags = []
+    checks = {}
+
+    div = ctx.get("cross_venue_divergence") or {}
+    div_regime = div.get("regime")
+    checks["divergence_regime"] = div_regime
+    if div.get("active") is True or (div_regime not in (None, "normal", "unavailable")):
+        flags.append(
+            "cross-venue divergence %s: venues disagree %s%% (90th-pct %s%%)" % (
+                div_regime, div.get("current_pct"), div.get("rolling_90th_pct_pct")))
+
+    skew = ctx.get("positioning_skew") or {}
+    try:
+        skew_pct = abs(float(skew.get("skew_pct", 0) or 0))
+        skew_max = abs(float(skew.get("max_skew_pct", 0) or 0))
+    except (TypeError, ValueError):
+        skew_pct, skew_max = 0.0, 0.0
+    checks["positioning_skew_pct"] = skew.get("skew_pct")
+    if skew_max > 0 and skew_pct >= 0.8 * skew_max:
+        flags.append("positioning lopsided: L-ratio skew %s%% of %s%% max (%s)" % (
+            skew.get("skew_pct"), skew.get("max_skew_pct"), skew.get("source")))
+
+    llf = ctx.get("lead_lag_filter") or {}
+    checks["lead_lag"] = llf.get("status")
+    if llf.get("status") not in (None, "stable", "excluded", "unavailable"):
+        flags.append("lead-lag filter: %s" % llf.get("status"))
+
+    tail = ctx.get("tail_diagnostics") or {}
+    checks["tail_pressure"] = tail.get("tail_pressure_status")
+    if tail.get("tail_pressure_status") == "elevated":
+        flags.append("tail pressure elevated: stop-run conditions (adj %sc)" % (
+            tail.get("tail_adjustment_cents")))
+
+    sv = ctx.get("staleness_verdict")
+    allowed = bool(getattr(sv, "allowed", True))
+    checks["stale_blocked"] = not allowed
+    if not allowed:
+        reasons = getattr(sv, "reasons", []) or []
+        flags.append("board STALE-BLOCKED: %s" % "; ".join(map(str, reasons)))
+
+    cal = ctx.get("calibration_report") or {}
+    checks["calibration"] = cal.get("status")
+    if cal.get("status") not in (None, "ok"):
+        flags.append("calibration unavailable: %s" % (cal.get("error") or cal.get("status")))
+
+    lad = ctx.get("ladder_feed_status") or {}
+    checks["ladder_usable_bands"] = lad.get("usable_band_count")
+    if lad.get("usable_band_count") == 0:
+        flags.append("ladder dark: zero usable bands")
+
+    exp = ctx.get("expiry_dynamics") or {}
+    checks["expiry_overlay"] = exp.get("reason") if isinstance(exp, dict) else None
+
+    return {"passed": not flags, "flag_count": len(flags), "flags": flags, "checks": checks}
     return {
         "hold_given_touch": round(hold_given_touch, 4),
         "touched_samples": touched_count,
@@ -2500,6 +2569,20 @@ def predict_hourly_range(force_refresh: bool = True, screen_spot: float | None =
         minutes_to_expiry, active_distribution
     )
 
+    # Self-audit: sanity-check every input the board stands on so the
+    # health panel can say, in plain words, whether the numbers are
+    # trustworthy — or exactly which feed went blind.
+    self_audit = _self_audit({
+        "cross_venue_divergence": cross_venue_divergence,
+        "positioning_skew": positioning_skew,
+        "lead_lag_filter": lead_lag_filter,
+        "tail_diagnostics": tail_diagnostics,
+        "staleness_verdict": staleness_verdict,
+        "calibration_report": calibration_report,
+        "ladder_feed_status": ladder_feed_status,
+        "expiry_dynamics": expiry_dynamics,
+    })
+
     result = {
         "status": "STALE_DATA_BLOCKED" if not staleness_verdict.allowed else "ok",
         "blocked": not staleness_verdict.allowed,
@@ -2560,6 +2643,7 @@ def predict_hourly_range(force_refresh: bool = True, screen_spot: float | None =
         "probability_correction": probability_correction,
         "tail_probability_correction": tail_probability_correction,
         "expiry_dynamics": expiry_dynamics,
+        "self_audit": self_audit,
         "ladder_feed_status": ladder_feed_status,
         "regime": regime,
         "strike_probs": strike_probs,
