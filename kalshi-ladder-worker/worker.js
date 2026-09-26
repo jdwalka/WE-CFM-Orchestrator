@@ -1,3 +1,5 @@
+import { createSign, constants as cryptoConstants } from 'node:crypto';
+
 /**
  * kalshi-ladder-worker — read-only, never places orders.
  * Serves hourly "between" band ladders (low/high strike + bid/ask + size +
@@ -62,6 +64,46 @@ const CORS = {
   "Access-Control-Allow-Origin": "*",
   "Content-Type": "application/json",
 };
+
+// ── Kalshi authenticated fetch (RSA-PSS SHA-256) ─────────────────────────────
+// Unauthenticated market-data calls get throttled for Worker egress IPs
+// (sustained HTTP 429 too_many_requests — 129 hits / 6h on 2026-09-26, which
+// is what starved the ladder/updown refresh and left every symbol on stale
+// KV). Same signing scheme as electron/kalshi-ws-worker.js:
+//   message = timestamp + method + reqPath (path+query, exactly as sent)
+// Secrets KALSHI_KEY_ID / KALSHI_PRIVATE_KEY_PEM are set via
+// `wrangler secret put`; when absent we fall back to the public fetch.
+function kalshiAuthHeaders(env, method, reqPath) {
+  const keyId = env?.KALSHI_KEY_ID;
+  const pem = env?.KALSHI_PRIVATE_KEY_PEM;
+  if (!keyId || !pem) return null;
+  try {
+    const timestamp = Date.now().toString();
+    const message = timestamp + method + reqPath;
+    const sign = createSign('SHA256');
+    sign.update(message);
+    sign.end();
+    const signature = sign.sign({
+      key: pem,
+      padding: cryptoConstants.RSA_PKCS1_PSS_PADDING,
+      saltLength: cryptoConstants.RSA_PSS_SALTLEN_DIGEST,
+    }, 'base64');
+    return {
+      'KALSHI-ACCESS-KEY': keyId,
+      'KALSHI-ACCESS-SIGNATURE': signature,
+      'KALSHI-ACCESS-TIMESTAMP': timestamp,
+    };
+  } catch (e) {
+    console.warn('[kalshi-ladder-worker] RSA sign failed, public fetch fallback:', e?.message || e);
+    return null;
+  }
+}
+
+function kalshiFetchHeaders(env, method, reqPath) {
+  const base = { Accept: 'application/json', 'User-Agent': 'kalshi-ladder-worker/3.0' };
+  const auth = kalshiAuthHeaders(env, method, reqPath);
+  return auth ? { ...base, ...auth } : base;
+}
 
 function minutesToExpiry(closeTime) {
   if (!closeTime) return null;
@@ -133,13 +175,13 @@ function resolveUpDownSymbol(url) {
 // 15-minute Up/Down binary snapshot. One open market per window: yes/no
 // vs floor_strike. Returns nulls (never throws on thin books) when Kalshi
 // has no bid/ask yet — callers must handle empty quotes.
-async function fetchUpDown(symbol) {
+async function fetchUpDown(symbol, env) {
   const series = UPDOWN_SERIES_BY_SYMBOL[symbol];
-  const kalshiUrl =
-    "https://api.elections.kalshi.com/trade-api/v2/markets" +
-    `?series_ticker=${series}&status=open&limit=10`;
+  const reqPath =
+    `/trade-api/v2/markets?series_ticker=${series}&status=open&limit=10`;
+  const kalshiUrl = "https://api.elections.kalshi.com" + reqPath;
   const res = await fetch(kalshiUrl, {
-    headers: { Accept: "application/json", "User-Agent": "kalshi-ladder-worker/3.0" },
+    headers: kalshiFetchHeaders(env, 'GET', reqPath),
   });
   if (!res.ok) throw new Error(`Kalshi API ${res.status}: ${await res.text()}`);
   const data = await res.json();
@@ -212,7 +254,7 @@ async function refreshUpDown(symbol, env) {
     } catch (_) { /* KV read failure shouldn't block a live attempt */ }
   }
   try {
-    const payload = await fetchUpDown(symbol);
+    const payload = await fetchUpDown(symbol, env);
     MEMO_UPDOWN[symbol] = { fetched_ms: Date.now(), payload };
     delete LAST_FAILURE_UPDOWN[symbol];
     if (env.LADDER_CACHE) {
@@ -323,19 +365,19 @@ async function getOrFetchUpDown(symbol, env, ctx) {
   }
 }
 
-async function fetchLadder(symbol) {
+async function fetchLadder(symbol, env) {
   const series = SERIES_BY_SYMBOL[symbol];
   let cursor = "";
   const allMarkets = [];
 
   // Paginate through open markets (Kalshi caps at 100/page; BTC/ETH have 300+ open strikes)
   for (let page = 0; page < 6; page++) {
-    const kalshiUrl =
-      "https://api.elections.kalshi.com/trade-api/v2/markets" +
-      `?series_ticker=${series}&status=open&limit=100` +
+    const reqPath =
+      `/trade-api/v2/markets?series_ticker=${series}&status=open&limit=100` +
       (cursor ? `&cursor=${encodeURIComponent(cursor)}` : "");
+    const kalshiUrl = "https://api.elections.kalshi.com" + reqPath;
     const res = await fetch(kalshiUrl, {
-      headers: { Accept: "application/json", "User-Agent": "kalshi-ladder-worker/3.0" },
+      headers: kalshiFetchHeaders(env, 'GET', reqPath),
     });
     if (!res.ok) {
       if (allMarkets.length > 0) break;
@@ -613,7 +655,7 @@ async function refreshCache(symbol, env, force = false) {
     }
   }
   try {
-    const payload = await fetchLadder(symbol);
+    const payload = await fetchLadder(symbol, env);
     MEMO[symbol] = { fetched_ms: Date.now(), payload };
     delete LAST_FAILURE[symbol];
     if (env.LADDER_CACHE) {
@@ -663,12 +705,21 @@ function ageAtReadMs(fetched_at) {
 function summarizeSignal(symbol, payload) {
   const bands = payload.bands || [];
   let tightest = null;
+  let contested = null;
   let nearest_expiry = null;
   for (const b of bands) {
     if (b.yes_bid != null && b.yes_ask != null) {
       const spread = b.yes_ask - b.yes_bid;
+      const entry = { ticker: b.ticker, low: b.low, high: b.high, spread };
       if (!tightest || spread < tightest.spread) {
-        tightest = { ticker: b.ticker, low: b.low, high: b.high, spread };
+        tightest = entry;
+      }
+      // A "tightest spread" on a pinned 1c/99c deep-OTM band is noise — it
+      // masquerades as data (e.g. a $74.7k band on an $84k board). Prefer the
+      // tightest spread among bands with genuine two-sided action.
+      if (b.yes_bid >= 0.05 && b.yes_ask <= 0.95 &&
+          (!contested || spread < contested.spread)) {
+        contested = entry;
       }
     }
     const mte = minutesToExpiry(b.close_time);
