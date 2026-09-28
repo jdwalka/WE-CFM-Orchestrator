@@ -923,6 +923,7 @@
               volume_fp: 0, liquidity_dollars: 0, open_interest_fp: 0,
             }, {
               ...(wNearClose ? { tradable: false, nearClose: true } : { tradable: true }),
+              ...((typeof SYM_BY_KALSHI_SERIES === 'object' && SYM_BY_KALSHI_SERIES[series]) ? { sym: SYM_BY_KALSHI_SERIES[series] } : { sym: wSym }),
               ...(SYM_BY_KALSHI_SERIES[series] ? { sym: SYM_BY_KALSHI_SERIES[series] } : { sym: wSym }),
             });
             if (wBuilt && wBuilt.probability != null) return applyWsTickerToContract(wBuilt);
