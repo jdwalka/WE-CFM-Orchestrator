@@ -30,8 +30,12 @@
   const RETRYABLE_HTTP_STATUS = new Set([408, 425, 429, 500, 502, 503, 504]);
   // 401/403/451 are hard policy/geo blocks — retrying them every poll only
   // floods the console and the local proxy. Cool the host down instead.
+  // Geo-blocks (451/403) rest 5min between attempts — the egress path only
+  // changes on tunnel/proxy events, never within a poll cycle. Auth blocks
+  // (401) stay short so credential problems stay visible.
   const BLOCKED_STATUS = new Set([401, 403, 451]);
   const HOST_BLOCK_MS = 5000;
+  const GEO_BLOCK_MS = 5 * 60 * 1000;
   const BLOCKED_HOSTS = new Map();
   const RETRY_DELAY_MS = 250;
   const OI_HISTORY_MAX = 30;      // ~10 min of 20s samples
@@ -110,9 +114,9 @@
     const until = host ? BLOCKED_HOSTS.get(host) : 0;
     return Boolean(host && until > Date.now());
   }
-  function markHostBlocked(url) {
+  function markHostBlocked(url, ms = HOST_BLOCK_MS) {
     const host = urlHost(url);
-    if (host) BLOCKED_HOSTS.set(host, Date.now() + HOST_BLOCK_MS);
+    if (host) BLOCKED_HOSTS.set(host, Date.now() + ms);
   }
 
   function resolveFetchUrl(url) {
@@ -152,7 +156,7 @@
         recordDiagnostics(url, res, latencyMs);
         if (!res.ok) {
           if (BLOCKED_STATUS.has(res.status)) {
-            markHostBlocked(url);
+            markHostBlocked(url, (res.status === 451 || res.status === 403) ? GEO_BLOCK_MS : HOST_BLOCK_MS);
             throw new Error(`HTTP ${res.status} (blocked host cooldown)`);
           }
           const error = new Error(`HTTP ${res.status}`);
