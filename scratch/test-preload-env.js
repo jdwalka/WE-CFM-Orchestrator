@@ -73,7 +73,7 @@ function readEnvValue(names) {
 
 function decodeJsonStringFragment(value) {
   try {
-    return JSON.parse(`"${String(value).replace(/"/g, '\\"')}"`);
+    return JSON.parse(`"${String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`);
   } catch (_) {
     return String(value || '').replace(/\\"/g, '"').replace(/\\r\\n/g, '\n').replace(/\\n/g, '\n');
   }
