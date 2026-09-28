@@ -199,9 +199,47 @@ async def handle_health(_request: web.Request) -> web.Response:
     )
 
 
+async def handle_query(request: web.Request) -> web.Response:
+    """POST /query — ASI1-desk contract: {query} -> {ok, content}."""
+    try:
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({"ok": False, "error": "invalid JSON"},
+                                     status=400)
+        query = str((data or {}).get("query", "")).strip()
+        if not query:
+            return web.json_response({"ok": False, "error": "empty query"},
+                                     status=400)
+        from datetime import datetime, timezone
+        lines = [f"jdwalkaz snapshot {datetime.now(timezone.utc).isoformat()}"]
+        try:
+            from market_data import get_spot as _get_spot
+            snap = _get_spot() or {}
+            price = snap.get("price") or snap.get("amount") or snap.get("spot")
+            if price:
+                lines.append(
+                    f"BTC SPOT: ${float(price):,.2f} "
+                    f"src={snap.get('source', 'coinbase')}")
+            else:
+                lines.append(f"BTC SPOT unavailable: {snap}")
+        except Exception as e:
+            lines.append(f"spot error: {e}")
+        lines.append("Full cascade verdict needs bands: POST "
+                     "/jdwalkaz/cascade-audit {symbol, spot, amm_bands[], "
+                     "liquidation_queue[], flow{}}.")
+        lines.append(f"QUERY: {query[:500]}")
+        return web.json_response({"ok": True, "content": "\n".join(lines)})
+    except Exception:
+        log.exception("unhandled error in query")
+        return web.json_response({"ok": False, "error": "internal error"},
+                                 status=500)
+
+
 def create_jdwalkaz_app() -> web.Application:
     app = web.Application(client_max_size=MAX_BODY_BYTES)
     app.router.add_post("/jdwalkaz/cascade-audit", handle_cascade_audit)
+    app.router.add_post("/query", handle_query)
     app.router.add_get("/health", handle_health)
     return app
 
