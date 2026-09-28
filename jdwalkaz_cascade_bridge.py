@@ -208,5 +208,5 @@ def create_jdwalkaz_app() -> web.Application:
 
 if __name__ == "__main__":
     app = create_jdwalkaz_app()
-    print("Jdwalkaz AMM Cascade Bridge bound to http://127.0.0.1:8002")
-    web.run_app(app, host="127.0.0.1", port=8002)
+    print("Jdwalkaz AMM Cascade Bridge bound to http://127.0.0.1:8004")
+    web.run_app(app, host="127.0.0.1", port=8004)

@@ -148,3 +148,43 @@
 - Days: 14  Train: 400  Test: 100  Step: 50
 - Coins: BTC, ETH, SOL, XRP
 - Log: G:\WECRYP\backtest-logs\wf-2026-09-25.log
+
+## Advanced Backtest — 2026-09-25T16:29:27.763Z
+- Days: 30  Candles: 8640
+- Coins analyzed: BTC
+- Log: G:\WECRYP\backtest-logs\advanced-2026-09-25.log
+
+## Advanced Backtest — 2026-09-25T16:29:43.485Z
+- Days: 30  Candles: 8640
+- Coins analyzed: ETH
+- Log: G:\WECRYP\backtest-logs\advanced-2026-09-25.log
+
+## Advanced Backtest — 2026-09-25T16:29:58.138Z
+- Days: 30  Candles: 8640
+- Coins analyzed: SOL
+- Log: G:\WECRYP\backtest-logs\advanced-2026-09-25.log
+
+## Advanced Backtest — 2026-09-25T16:30:14.497Z
+- Days: 30  Candles: 8640
+- Coins analyzed: XRP
+- Log: G:\WECRYP\backtest-logs\advanced-2026-09-25.log
+
+## Walk-Forward Backtest — 2026-09-25T16:30:29.607Z
+- Days: 30  Train: 400  Test: 100  Step: 50
+- Coins: BTC
+- Log: G:\WECRYP\backtest-logs\wf-2026-09-25.log
+
+## Walk-Forward Backtest — 2026-09-25T16:31:17.682Z
+- Days: 30  Train: 400  Test: 100  Step: 50
+- Coins: ETH
+- Log: G:\WECRYP\backtest-logs\wf-2026-09-25.log
+
+## Walk-Forward Backtest — 2026-09-25T16:32:03.586Z
+- Days: 30  Train: 400  Test: 100  Step: 50
+- Coins: SOL
+- Log: G:\WECRYP\backtest-logs\wf-2026-09-25.log
+
+## Walk-Forward Backtest — 2026-09-25T16:32:49.133Z
+- Days: 30  Train: 400  Test: 100  Step: 50
+- Coins: XRP
+- Log: G:\WECRYP\backtest-logs\wf-2026-09-25.log

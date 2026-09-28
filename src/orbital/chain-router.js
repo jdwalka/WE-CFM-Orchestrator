@@ -963,7 +963,7 @@
         () => xrpLedger('https://xrplcluster.com/'),
         () => xrpLedger('https://s1.ripple.com:51234/'),
         () => xrpLedger('https://s2.ripple.com:51234/'),
-        () => xrpLedger('https://rpc.xrpl.org/'),
+        () => xrpLedger('https://xrpl.link/'),
       ]
     },
     { sym: 'BNB',  handlers: [bnbPublicRpc, bnbAlchemy, bnbAnkrRpc, bnbBscscan, bnbBlockscout] },

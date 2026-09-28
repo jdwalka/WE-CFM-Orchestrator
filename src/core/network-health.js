@@ -826,6 +826,111 @@
         }
     }
 
+    // ── DATA FAULTS: data-freshness truth row ─────────────────────────────
+    // Answers "is what I'm looking at real?" for px candles, the Kalshi
+    // ladder cache, the model board, and the calibration mirror. A source
+    // only faults on CONFIRMED-stale data — unreachable checks are noted
+    // as skipped, never alarmed (no false reds during sleep/offline).
+    async function fetchJsonTimeout(url, ms) {
+        const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+        const timer = ctrl ? setTimeout(() => { try { ctrl.abort(); } catch (_) {} }, ms) : null;
+        try {
+            const res = await fetch(url, ctrl ? { signal: ctrl.signal } : undefined);
+            if (!res || !res.ok) return null;
+            return await res.json();
+        } catch (_) {
+            return null;
+        } finally {
+            if (timer) clearTimeout(timer);
+        }
+    }
+
+    async function refreshDataFaultsStatus(now) {
+        const faults = [];
+        const notes = [];
+        try {
+            // 1. px candles (the feed that once served 22h-stale hours as live)
+            const px = await fetchJsonTimeout('http://127.0.0.1:8040/px?symbol=BTC&interval=1h&limit=2', 8000);
+            const newestTs = (px && Array.isArray(px.prices) ? px.prices : [])
+                .map(p => p && p.ts).filter(Number.isFinite).sort((a, b) => a - b).pop();
+            if (newestTs) {
+                const ageMin = (now / 1000 - newestTs) / 60;
+                if (ageMin > 120) faults.push(`px candles ${Math.round(ageMin / 60)}h stale`);
+                else if (ageMin > 15) faults.push(`px candles ${Math.round(ageMin)}m old`);
+                else notes.push(`px ${Math.max(Math.round(ageMin), 0)}m`);
+            } else {
+                notes.push('px unreadable (skipped)');
+            }
+            // 2. ladder KV (kv-stale = Kalshi 429 storm; expired = dark symbols)
+            const sig = await fetchJsonTimeout('https://ladder.leaksnipe.win/signals', 10000);
+            const arr = (sig && Array.isArray(sig.signals)) ? sig.signals : [];
+            if (arr.length) {
+                const expired = arr.filter(s => /expired/.test(String(s.cache_source || ''))).map(s => s.symbol);
+                const stale = arr.filter(s => s.cache_source === 'kv-stale').map(s => s.symbol);
+                if (expired.length >= 4) faults.push(`ladder dark: ${expired.join(',')}`);
+                else if (expired.length) faults.push(`ladder expired: ${expired.join(',')}`);
+                else if (stale.length > 2) faults.push(`ladder stale: ${stale.join(',')}`);
+                else notes.push(`ladder fresh (${arr.length})`);
+            } else {
+                notes.push('ladder unreadable (skipped)');
+            }
+            // 3. model board (engine_latest.json via the same IPC the panel uses)
+            let board = null;
+            try {
+                let res = null;
+                if (window.electron && typeof window.electron.invoke === 'function') {
+                    try { res = await window.electron.invoke('data:engineLatest'); } catch (_) { res = null; }
+                }
+                if ((!res || !res.ok) && window.electron && typeof window.electron.readFile === 'function') {
+                    const content = await window.electron.readFile('data/engine_latest.json');
+                    res = content ? { ok: true, content } : null;
+                }
+                if (res && res.ok && res.content) board = JSON.parse(typeof res.content === 'string' ? res.content : res.content);
+            } catch (_) { board = null; }
+            if (board && board.timestamp_utc) {
+                const ageMs = now - Date.parse(board.timestamp_utc);
+                if (!Number.isFinite(ageMs)) {
+                    notes.push('board unreadable (skipped)');
+                } else if (ageMs > 3600000) {
+                    faults.push(`model board ${Math.round(ageMs / 60000)}m old`);
+                } else if (ageMs > 600000) {
+                    faults.push(`model board ${Math.round(ageMs / 60000)}m old`);
+                } else {
+                    notes.push(`board ${Math.max(Math.round(ageMs / 60000), 0)}m`);
+                }
+            } else {
+                notes.push('board unreadable (skipped)');
+            }
+            // 4. calibration mirror (bridge D1 read; WSL-side records land here via sync)
+            const cal = await fetchJsonTimeout('http://127.0.0.1:8788/d1/query?sql=' + encodeURIComponent('SELECT MAX(timestamp_utc) AS m FROM predictions'), 10000);
+            const calTs = Array.isArray(cal) ? (cal[0] && cal[0].m) : (cal && cal.m);
+            if (calTs) {
+                const ageMin = (now - Date.parse(calTs)) / 60000;
+                if (Number.isFinite(ageMin)) {
+                    if (ageMin > 180) faults.push(`calibration mirror ${Math.round(ageMin / 60)}h old`);
+                    else notes.push(`mirror ${Math.max(Math.round(ageMin), 0)}m`);
+                } else {
+                    notes.push('mirror unreadable (skipped)');
+                }
+            } else {
+                notes.push('mirror unreadable (skipped)');
+            }
+        } catch (err) {
+            console.warn('[NetworkHealth] refreshDataFaultsStatus failed:', err && err.message || err);
+            return;
+        }
+        const status = faults.length >= 2 ? 'down' : (faults.length ? 'degraded' : 'healthy');
+        bridgeUpdate('DataFaults', {
+            status,
+            lastFetch: now,
+            fallback: false,
+            transient: status !== 'healthy',
+            reason: faults.length ? faults.join(' · ') : `data fresh: ${notes.join(', ')}`,
+            bucket: BUCKETS.UNKNOWN,
+            bucketReason: '',
+        });
+    }
+
     function refreshLocalProviderStatuses() {
         if (localStatusBridgeInFlight) return;
         localStatusBridgeInFlight = true;
@@ -836,6 +941,7 @@
                 refreshPolymarketStatus(now);
                 await refreshPythStatus(now);
                 refreshDerivativesFeedStatus(now);
+                refreshDataFaultsStatus(now);
             })
             .catch((err) => {
                 console.warn('[NetworkHealth] Local status bridge failed:', err?.message || err);
