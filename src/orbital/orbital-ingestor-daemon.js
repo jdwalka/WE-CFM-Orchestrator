@@ -510,9 +510,16 @@ class OrbitalIngestor {
         this.connections.set('pyth_lazer', ws);
 
         const pythIds = {
-            1: 'BTC', 2: 'ETH', 6: 'SOL', 10: 'DOGE', 14: 'XRP', 15: 'BNB'
+            1: 'BTC', 2: 'ETH', 6: 'SOL', 10: 'DOGE', 14: 'XRP', 15: 'BNB',
+            // Funding-rate feeds (new discovery - may require separate entitlement)
+            113: 'funding-rate', 207: 'funding-rate', 208: 'funding-rate', 209: 'funding-rate',
+            210: 'funding-rate', 211: 'funding-rate', 213: 'funding-rate', 212: 'funding-rate',
+            664: 'crypto-redemption-rate', 678: 'crypto-redemption-rate'
         };
 
+        // Live subscription: entitled price feeds only. Funding-rate IDs
+        // (113, 207-213, 664, 678) need separate API grants — kept in the
+        // pythIds map above for reference, never subscribed here.
         ws.on('open', () => {
             console.log('[OrbitalIngestor] Pyth Lazer connected.');
             try {
@@ -520,7 +527,7 @@ class OrbitalIngestor {
                     type: 'subscribe',
                     subscriptionId: 1,
                     priceFeedIds: [1, 2, 6, 10, 14, 15],
-                    properties: ["price", "bestBidPrice", "bestAskPrice", "confidence", "exponent"],
+                    properties: ["price", "bestBidPrice", "bestAskPrice", "confidence", "exponent", "fundingRate", "fundingRateInterval", "fundingTimestamp", "marketSession", "publisherCount", "feedUpdateTimestamp"],
                     channel: 'fixed_rate@200ms',
                     deliveryFormat: 'json',
                     parsed: true,
@@ -542,9 +549,19 @@ class OrbitalIngestor {
                         const price = Number(feed.price) * Math.pow(10, exp);
                         
                         if (Number.isFinite(price) && price > 0) {
+                            const toNum = (v) => { const n = Number(v) * Math.pow(10, exp); return Number.isFinite(n) ? n : null; };
                             publishOrbitalTick('s', asset, {
                                 source: 'pyth_lazer',
                                 price_usd: price,
+                                best_bid: feed.bestBidPrice != null ? toNum(feed.bestBidPrice) : null,
+                                best_ask: feed.bestAskPrice != null ? toNum(feed.bestAskPrice) : null,
+                                confidence: feed.confidence ?? null,
+                                funding_rate: feed.fundingRate ?? null,
+                                funding_rate_interval: feed.fundingRateInterval ?? null,
+                                funding_timestamp: feed.fundingTimestamp ?? null,
+                                market_session: feed.marketSession ?? null,
+                                publisher_count: feed.publisherCount ?? null,
+                                feed_update_timestamp: feed.feedUpdateTimestamp ?? null,
                                 ts
                             });
 

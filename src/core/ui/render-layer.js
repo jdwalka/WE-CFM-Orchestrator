@@ -3541,7 +3541,7 @@ async function renderCFM() {
       _cfmStarting = true;
       // start() is now non-blocking (fire-and-forget first cycle).
       // Mark cfmStarted immediately so the loading banner clears on the next render.
-      CFMEngine.start()
+      (window.CFMEngine?.start?.() ?? Promise.resolve())
         .then(() => { cfmStarted = true; _cfmStarting = false; })
         .catch(e => { _cfmStarting = false; console.error('[CFM] engine start failed:', e); });
       // Clear the banner after a short delay to allow first cycle data to land
@@ -3563,9 +3563,9 @@ async function renderCFM() {
     }
 
     // Render immediately with whatever data we have (may be empty on first call)
-    const cfmAll = CFMEngine.getAll();
-    const predAll = PredictionEngine.getAll ? PredictionEngine.getAll() : {};
-    const status = CFMEngine.getStatus ? CFMEngine.getStatus() : {};
+    const cfmAll = window.CFMEngine?.getAll ? window.CFMEngine.getAll() : {};
+    const predAll = window.PredictionEngine?.getAll ? window.PredictionEngine.getAll() : {};
+    const status = window.CFMEngine?.getStatus ? window.CFMEngine.getStatus() : {};
 
     // Add a loading banner at the top if still loading
     const loadingBanner = (!cfmStarted)

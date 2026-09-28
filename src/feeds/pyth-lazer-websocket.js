@@ -76,6 +76,15 @@ const SUBSCRIPTION_PRICE_FEED_IDS = Array.from(new Set([
   ...EXTRA_PRICE_FEED_IDS,
 ]));
 
+// New Pyth feed IDs discovered — funding-rate channels (not standard price feeds)
+// These require different API grants/entitlements than price feeds.
+// Reference-only: live subscription below uses SUBSCRIPTION_PRICE_FEED_IDS.
+const NEW_FUNDING_RATE_FEED_IDS = [113, 207, 208, 209, 210, 211, 213, 212, 664, 678];
+const ALL_PRICE_FEED_IDS = Array.from(new Set([
+  ...SUBSCRIPTION_PRICE_FEED_IDS,
+  ...NEW_FUNDING_RATE_FEED_IDS,
+]));
+
 class PythLazerWebSocketHandler {
   constructor() {
     this.client = null;
@@ -185,10 +194,10 @@ class PythLazerWebSocketHandler {
       }
 
       feeds.forEach((feed) => {
-        // Convert feed ID back to symbol
+        // Convert feed ID back to symbol (EXTRA feeds 13:MATIC, 110:DOGE included)
         const symbol = Object.entries(PRICE_FEED_IDS).find(
           ([_, id]) => id === feed.priceFeedId
-        )?.[0];
+        )?.[0] || ({ 13: 'MATIC', 110: 'DOGE' })[feed.priceFeedId];
 
         if (!symbol) return;
         const exponent = feed.exponent ?? feed.price?.expo ?? -8;

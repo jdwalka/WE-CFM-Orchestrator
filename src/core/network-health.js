@@ -1199,11 +1199,9 @@
         { provider: 'LocalProxy', url: null, fromBridge: true },
     ];
 
-    // Operator kill-switch: Etherscan dropped until egress/keys are re-verified.
-    // When false the probe is skipped and the row parks at unknown instead of
-    // flapping degraded. Re-enable by flipping to true (no other changes).
-    const ETHERSCAN_ENABLED = false;
-    // Operator kill-switch: Re-enabled with verified keys & rate-limited burst control (5 req/s max, 100k daily budget)
+    // Operator kill-switch: Etherscan probe gate. Re-enabled with verified keys
+    // & rate-limited burst control (5 req/s max, 100k daily budget). Flip to
+    // false to park the row at unknown instead of flapping degraded.
     const ETHERSCAN_ENABLED = true;
 
     const ENDPOINT_PROBE_STALE_MS = 90_000;
