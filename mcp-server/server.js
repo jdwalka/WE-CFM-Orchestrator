@@ -19,9 +19,6 @@ const WECRYPTO_FALLBACK_HTTP = 'http://127.0.0.1:3450';
 const WECRYPTO_PUBLIC_ORIGIN = 'https://wecrypto.leaksnipe.win';
 const PROXY_ORIGIN = process.env.PROXY_ORIGIN || 'http://127.0.0.1:3010';
 
-// HTTPS agent ignoring self-signed local certs
-const httpsAgent = new https.Agent({ rejectUnauthorized: false });
-
 /**
  * Fetch helper across local or public fallbacks
  */
@@ -58,7 +55,7 @@ function requestPromise(urlStr, options = {}) {
         ...(options.headers || {})
       },
       timeout: options.timeout || 8000,
-      agent: isHttps ? httpsAgent : undefined
+      agent: undefined
     };
 
     const req = client.request(parsed, reqOptions, (res) => {
