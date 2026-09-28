@@ -220,6 +220,7 @@ document.getElementById('masterResetBtn')?.addEventListener('click', async (even
   const btn = event.currentTarget;
   if (btn) btn.disabled = true;
   try { window.ApiCircuitBreaker?.resetAll?.(); } catch (_) { /* noop */ }
+  try { window.DerivativesFeed?.resetHostBlocks?.(); } catch (_) { /* noop */ }
   try { await window.NetworkRecovery?.run?.('master-reset'); } catch (_) { /* noop */ }
   try { window.NetworkHealth?.syncLiveProbe?.(); } catch (_) { /* noop */ }
   try { window.NetworkHealthDashboard?.render?.(); } catch (_) { /* noop */ }

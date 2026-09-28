@@ -794,6 +794,7 @@
     // Convenience: liquidation pressure for the squeeze detector to consume.
     getLiquidationPressure(sym) { return CACHE[sym]?.liquidations || null; },
     getDiagnostics() { return { ...DIAGNOSTICS }; },
+    resetHostBlocks() { BLOCKED_HOSTS.clear(); },
     fetchAll,
     start() {
       if (_timer) return;
