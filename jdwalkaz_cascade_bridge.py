@@ -6,6 +6,7 @@ Port: 127.0.0.1:8002
 
 import json
 import logging
+import os
 from dataclasses import asdict
 from typing import Any, Dict
 
@@ -245,6 +246,9 @@ def create_jdwalkaz_app() -> web.Application:
 
 
 if __name__ == "__main__":
+    # Bind 0.0.0.0 (not loopback): the Windows portproxy + WSL relay reach
+    # us via the WSL eth0 address, which loopback-bound sockets reject.
+    _host = os.environ.get("JDWALKAZ_BIND", "0.0.0.0")
     app = create_jdwalkaz_app()
-    print("Jdwalkaz AMM Cascade Bridge bound to http://127.0.0.1:8004")
-    web.run_app(app, host="127.0.0.1", port=8004)
+    print(f"Jdwalkaz AMM Cascade Bridge bound to http://{_host}:8004")
+    web.run_app(app, host=_host, port=8004)
