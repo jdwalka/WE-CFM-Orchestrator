@@ -121,7 +121,7 @@ function readSecretScalar(raw, keyPattern = /coingecko|coin.?gecko|gecko|^cg_|^x
     }
   }
 
-  const jsonKey = String(raw).match(/"(?:COINGECKO_API_KEY|COINGECKO_PRO_API_KEY|COINGECKO_DEMO_API_KEY|CMC_PRO_API_KEY|COINMARKETCAP_API_KEY|CMC_API_KEY|apiKey|key)"\s*:\s*"((?:\\.|[^"])*)"/i);
+  const jsonKey = String(raw).match(/"(?:COINGECKO_API_KEY|COINGECKO_PRO_API_KEY|COINGECKO_DEMO_API_KEY|CMC_PRO_API_KEY|COINMARKETCAP_API_KEY|CMC_API_KEY|apiKey|key)"\s*:\s*"((?:[^"\\]|\\.)*)"/i);
   if (jsonKey) return stripEnvValue(decodeJsonStringFragment(jsonKey[1]));
 
   return stripEnvValue(lines.reduce((longest, line) => line.length > longest.length ? line : longest, ''));
