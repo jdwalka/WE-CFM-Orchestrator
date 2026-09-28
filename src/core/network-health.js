@@ -855,8 +855,11 @@
                 .map(p => p && p.ts).filter(Number.isFinite).sort((a, b) => a - b).pop();
             if (newestTs) {
                 const ageMin = (now / 1000 - newestTs) / 60;
-                if (ageMin > 120) faults.push(`px candles ${Math.round(ageMin / 60)}h stale`);
-                else if (ageMin > 15) faults.push(`px candles ${Math.round(ageMin)}m old`);
+                // Hourly candles are timestamped at hour-start by construction,
+                // so age always reads 0-60m past the hour. 15m here false-alarmed
+                // 45min of every hour; 75m means the publisher actually missed one.
+                if (ageMin > 150) faults.push(`px candles ${Math.round(ageMin / 60)}h stale`);
+                else if (ageMin > 75) faults.push(`px candles ${Math.round(ageMin)}m old`);
                 else notes.push(`px ${Math.max(Math.round(ageMin), 0)}m`);
             } else {
                 notes.push('px unreadable (skipped)');

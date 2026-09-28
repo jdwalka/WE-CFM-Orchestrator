@@ -45,6 +45,37 @@ from calibration_buckets import bucket_key
 from market_data import compute_stats, get_hourly_candles, get_spot
 from staleness_guard import MarketData, StalenessGuard, Verdict
 
+
+def _load_wecrypto_env():
+    """Load /mnt/g/WECRYP/.env for cron runs (no dotenv dependency)."""
+    try:
+        with open("/mnt/g/WECRYP/.env") as _f:
+            for _line in _f:
+                _line = _line.strip()
+                if not _line or _line.startswith("#") or "=" not in _line:
+                    continue
+                _k, _v = _line.split("=", 1)
+                _k, _v = _k.strip(), _v.strip().strip("\"'")
+                if _k and _k not in os.environ:
+                    os.environ[_k] = _v
+    except OSError:
+        pass
+
+
+_load_wecrypto_env()
+
+
+def _cf_access_headers(extra=None):
+    """Cloudflare Access service-token headers for leaksnipe.win worker calls."""
+    _headers = dict(extra or {})
+    _cid = os.getenv("CF_ACCESS_CLIENT_ID", "")
+    _csec = os.getenv("CF_ACCESS_CLIENT_SECRET", "")
+    if _cid:
+        _headers["CF-Access-Client-Id"] = _cid
+    if _csec:
+        _headers["CF-Access-Client-Secret"] = _csec
+    return _headers
+
 # ---------------------------------------------------------------------------
 # Model parameters (single source of truth; exposed via /weights)
 # ---------------------------------------------------------------------------
@@ -120,7 +151,7 @@ BINANCE_SPOT_URL = "https://api.binance.com/api/v3/ticker/bookTicker"
 OKX_SPOT_URL = "https://www.okx.com/api/v5/market/ticker"
 BINANCE_FUTURES_URL = "https://fapi.binance.com/fapi/v1"
 MARKET_DATA_WORKER_URL = os.getenv(
-    "MARKET_DATA_WORKER_URL", "https://scalper-market-data.gitgoin87.workers.dev"
+    "MARKET_DATA_WORKER_URL", "https://scalper.leaksnipe.win"
 )
 KODAK_ARCHIVER_URL = os.getenv(
     "KODAK_ARCHIVER_URL", "https://kodak-market-archiver.gitgoin87.workers.dev"
@@ -442,7 +473,7 @@ def get_kalshi_ladder(force_refresh: bool = True) -> dict:
             response = requests.get(
                 f"{MARKET_DATA_WORKER_URL}/kalshi/bands",
                 params=params,
-                headers={"Cache-Control": "no-cache", "Pragma": "no-cache"},
+                headers=_cf_access_headers({"Cache-Control": "no-cache", "Pragma": "no-cache"}),
                 timeout=15,
             )
             response.raise_for_status()
@@ -522,7 +553,7 @@ def get_kalshi_ladder(force_refresh: bool = True) -> dict:
         lres = requests.get(
             f"{ladder_base}/ladder",
             params={"symbol": "BTC"},
-            headers={"User-Agent": "wecrypto-engine/1.0"},
+            headers=_cf_access_headers({"User-Agent": "wecrypto-engine/1.0"}),
             timeout=15,
         )
         lres.raise_for_status()
