@@ -131,6 +131,11 @@
       if (u.hostname === 'api.bybit.com') {
         return `http://127.0.0.1:${pPort}/bybit${u.pathname}${u.search}`;
       }
+      if (u.hostname === 'www.deribit.com') {
+        // Deribit geo-blocks US egress: route via local proxy generic forwarder
+        // (Sweden path), same mechanism as the /proxy?url= fallback.
+        return `http://127.0.0.1:${pPort}/proxy?url=${encodeURIComponent(url)}`;
+      }
     } catch (_) {}
     return url;
   }

@@ -4452,6 +4452,17 @@ ipcMain.handle('orbital:restart', async () => {
   }
 });
 
+ipcMain.handle('docker:restart', async () => {
+  try {
+    const workspacePath = process.env.WECRYP_ROOT || path.join(__dirname, '..');
+    await shutdownOrbitalSystem(false, { stopDocker: true });
+    await startOrbitalSystem(workspacePath);
+    return { success: true, status: await getOrbitalStatus() };
+  } catch (error) {
+    return { success: false, error: error?.message || String(error) };
+  }
+});
+
 ipcMain.handle('firebase:startupCheck', async (_event, options = {}) => {
   if (!FirebaseAdminFirestore || typeof FirebaseAdminFirestore.startupCheck !== 'function') {
     return { success: false, error: 'Firebase Admin module unavailable' };

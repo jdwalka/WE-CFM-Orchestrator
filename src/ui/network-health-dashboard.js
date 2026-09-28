@@ -748,7 +748,7 @@
                     <span style="margin-left:auto;color:#aaa;">${nodeCount} Nodes</span>
                 </div>
                 <div style="color:#9aa6b2;margin-left:18px;">
-                    <div>Status: <span style="color:${dotColor};">${status.redpanda?.toUpperCase() || 'OFFLINE'}</span> &middot; ${dockerStatus}</div>
+                    <div>Status: <span style="color:${dotColor};">${status.redpanda?.toUpperCase() || 'OFFLINE'}</span> &middot; ${dockerStatus} <button id="docker-restart-btn" type="button" title="Restart Docker compose stack (Redpanda + Redis)" style="margin-left:6px;padding:2px 7px;border:1px solid #e0a458;background:#171c24;color:#e0a458;font-size:10px;cursor:pointer;">Restart Docker</button></div>
                     ${nodesDown.length ? `<div style="color:#ffd166;">Nodes down: ${nodesDown.map(escapeHtml).join(', ')}</div>` : ''}
                     <div>Active Topics: <span style="color:#8ab4f8;">${topicsCount}</span></div>
                     <div style="font-size:10px;color:#666;margin-top:2px;">${(status.topics || []).map(escapeHtml).join(', ') || 'no active topics'}</div>
@@ -777,6 +777,22 @@
                         return;
                     }
                     setTimeout(() => scheduleRender(true), 500);
+                });
+            }
+
+            const dockerRestartButton = document.getElementById('docker-restart-btn');
+            if (dockerRestartButton) {
+                dockerRestartButton.addEventListener('click', async () => {
+                    dockerRestartButton.disabled = true;
+                    dockerRestartButton.textContent = 'Restarting...';
+                    const result = await window.electron?.invoke?.('docker:restart');
+                    if (!result?.success) {
+                        dockerRestartButton.disabled = false;
+                        dockerRestartButton.textContent = 'Retry Docker';
+                        dockerRestartButton.title = result?.error || 'Docker restart unavailable (no Electron IPC)';
+                        return;
+                    }
+                    setTimeout(() => scheduleRender(true), 5000);
                 });
             }
         } catch (err) {

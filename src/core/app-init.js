@@ -214,6 +214,18 @@ document.querySelectorAll('.nav-btn').forEach(btn => {
   });
 });
 
+// Master Reset (sidebar): clear breaker/geo cooldowns, re-run recovery,
+// re-probe transports and re-render the health panel. No view change, no reload.
+document.getElementById('masterResetBtn')?.addEventListener('click', async (event) => {
+  const btn = event.currentTarget;
+  if (btn) btn.disabled = true;
+  try { window.ApiCircuitBreaker?.resetAll?.(); } catch (_) { /* noop */ }
+  try { await window.NetworkRecovery?.run?.('master-reset'); } catch (_) { /* noop */ }
+  try { window.NetworkHealth?.syncLiveProbe?.(); } catch (_) { /* noop */ }
+  try { window.NetworkHealthDashboard?.render?.(); } catch (_) { /* noop */ }
+  if (btn) btn.disabled = false;
+});
+
   window.addEventListener('pageshow', () => {
     window._marketsHorizon = '5m';
     window._markets5mLastFingerprint = null;
