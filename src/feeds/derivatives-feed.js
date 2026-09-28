@@ -328,11 +328,12 @@
     } catch (_) { return null; }
   }
 
-  // ── Deribit: Explicit depth param and accurate per-asset instrument naming
+  // ── Deribit: Explicit depth param and accurate per-asset instrument naming.
+  // Proxied first (Sweden egress beats the US geo-block); direct fallback
+  // because public market-data usually answers from US egress anyway.
   async function fetchDeribitOrderbook(sym) {
     const instrument = DERIBIT_INSTRUMENT_MAP[sym] || `${sym}-PERPETUAL`;
-    try {
-      const j = await getJson(`https://www.deribit.com/api/v2/public/get_order_book?instrument_name=${instrument}&depth=20`);
+    const parseBook = (j) => {
       const res = j?.result;
       if (!res) return null;
       return {
@@ -343,6 +344,16 @@
         bids: res.bids || [],
         asks: res.asks || [],
       };
+    };
+    const url = `https://www.deribit.com/api/v2/public/get_order_book?instrument_name=${instrument}&depth=20`;
+    try {
+      const parsed = parseBook(await getJson(url));
+      if (parsed) return parsed;
+    } catch (_) { /* fall through to direct */ }
+    try {
+      const r = await timedFetch(url);
+      if (!r.ok) return null;
+      return parseBook(await r.json());
     } catch (_) { return null; }
   }
 

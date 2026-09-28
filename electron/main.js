@@ -4463,6 +4463,16 @@ ipcMain.handle('docker:restart', async () => {
   }
 });
 
+ipcMain.handle('proxy:restart', async () => {
+  try {
+    stopProxyProcessOnly();
+    await startProxy();
+    return { success: true, port: proxyPort };
+  } catch (error) {
+    return { success: false, error: error?.message || String(error) };
+  }
+});
+
 ipcMain.handle('firebase:startupCheck', async (_event, options = {}) => {
   if (!FirebaseAdminFirestore || typeof FirebaseAdminFirestore.startupCheck !== 'function') {
     return { success: false, error: 'Firebase Admin module unavailable' };

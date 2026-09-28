@@ -31,6 +31,8 @@
             <div style="display:flex;align-items:center;gap:6px;">
                 <button id="network-health-reconnect-btn" class="hud-icon-btn" type="button" title="Reconnect all feeds"
                     style="padding:2px 8px;border-radius:6px;font-size:11px;color:#8ab4f8;background:transparent;border:1px solid #334;cursor:pointer;">↻</button>
+                <button id="network-health-proxy-btn" class="hud-icon-btn" type="button" title="Restart local proxy (:3010 cascade)"
+                    style="padding:2px 8px;border-radius:6px;font-size:11px;color:#e0a458;background:transparent;border:1px solid #534334;cursor:pointer;">⇄</button>
                 <button id="network-health-min-btn" class="hud-icon-btn" type="button" title="Minimize"
                     style="padding:2px 6px;border-radius:6px;font-size:12px;color:#aab2c0;background:transparent;border:1px solid #333;cursor:pointer;">▼</button>
             </div>
@@ -111,6 +113,31 @@
         const run = window.NetworkRecovery?.run?.('dashboard-reconnect');
         if (run && typeof run.then === 'function') run.finally(done);
         else done();
+    });
+
+    document.getElementById('network-health-proxy-btn')?.addEventListener('click', async () => {
+        const btn = document.getElementById('network-health-proxy-btn');
+        if (btn) {
+            btn.disabled = true;
+            btn.textContent = '…';
+        }
+        const done = () => {
+            if (btn) {
+                btn.disabled = false;
+                btn.textContent = '⇄';
+            }
+        };
+        try {
+            const result = await window.electron?.invoke?.('proxy:restart');
+            if (!result?.success) {
+                if (btn) btn.title = result?.error || 'Proxy restart unavailable (no Electron IPC)';
+                setTimeout(() => scheduleRender(true), 1000);
+                return;
+            }
+            setTimeout(() => scheduleRender(true), 3000);
+        } finally {
+            done();
+        }
     });
     applyMinimizedState();
 
