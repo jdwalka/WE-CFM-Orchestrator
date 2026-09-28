@@ -200,6 +200,25 @@ async def handle_health(_request: web.Request) -> web.Response:
     )
 
 
+def _read_board():
+    """Model board artifact + age in minutes (None when unreadable)."""
+    try:
+        import json as _j
+        import time as _t
+        from datetime import datetime as _dt
+        from pathlib import Path as _Pl
+        d = _j.loads((_Pl(__file__).with_name("data") / "engine_latest.json").read_text())
+        age_m = None
+        try:
+            age_m = (_t.time() - _dt.fromisoformat(
+                str(d.get("timestamp_utc")).replace("Z", "+00:00")).timestamp()) / 60
+        except Exception:
+            age_m = None
+        return d, age_m
+    except Exception:
+        return {}, None
+
+
 async def handle_query(request: web.Request) -> web.Response:
     """POST /query — ASI1-desk contract: {query} -> {ok, content}."""
     try:
@@ -212,25 +231,67 @@ async def handle_query(request: web.Request) -> web.Response:
         if not query:
             return web.json_response({"ok": False, "error": "empty query"},
                                      status=400)
-        from datetime import datetime, timezone
-        lines = [f"jdwalkaz snapshot {datetime.now(timezone.utc).isoformat()}"]
+        ql = query.lower()
+        wants_15m = any(k in ql for k in ("15m", "15 min", "fifteen", "quarter"))
+        board, age_m = _read_board()
         try:
             from market_data import get_spot as _get_spot
             snap = _get_spot() or {}
-            price = snap.get("price") or snap.get("amount") or snap.get("spot")
-            if price:
-                lines.append(
-                    f"BTC SPOT: ${float(price):,.2f} "
-                    f"src={snap.get('source', 'coinbase')}")
-            else:
-                lines.append(f"BTC SPOT unavailable: {snap}")
-        except Exception as e:
-            lines.append(f"spot error: {e}")
-        lines.append("Full cascade verdict needs bands: POST "
-                     "/jdwalkaz/cascade-audit {symbol, spot, amm_bands[], "
-                     "liquidation_queue[], flow{}}.")
-        lines.append(f"QUERY: {query[:500]}")
-        return web.json_response({"ok": True, "content": "\n".join(lines)})
+            live = snap.get("price") or snap.get("amount") or snap.get("spot")
+        except Exception:
+            live = None
+        spot = None
+        for cand in (live, board.get("spot")):
+            try:
+                spot = float(cand)
+                break
+            except (TypeError, ValueError):
+                continue
+        if spot is None:
+            return web.json_response({"ok": True, "content": (
+                "Live data is unavailable right now — no spot from Coinbase "
+                "or the model board. Try again in a minute.")})
+        stale_note = (f" (model read {age_m:.0f}m old)"
+                      if age_m is not None and age_m > 20 else "")
+        probs = board.get("probabilities_remaining") or {}
+        rng = board.get("range") or {}
+        mins = board.get("minutes_to_hourly_expiry")
+        out = []
+        if wants_15m:
+            out.append(f"BTC ${spot:,.2f} — 15-minute model read isn't on the "
+                       f"board, here is the live hourly window{stale_note}:")
+        else:
+            scope = "5pm ET close" if any(
+                k in ql for k in ("5 est", "5est", "5pm", "5 pm", "17:00")) \
+                else "current hourly window"
+            out.append(f"BTC ${spot:,.2f} — {scope}{stale_note}:")
+        if probs and rng.get("lower") and rng.get("upper"):
+            try:
+                out.append(
+                    f"Model: {probs.get('in_range', 0) * 100:.0f}% holds "
+                    f"${rng['lower']:,.0f}–${rng['upper']:,.0f}, "
+                    f"{probs.get('above_upper', 0) * 100:.0f}% breaks above, "
+                    f"{probs.get('below_lower', 0) * 100:.0f}% breaks below"
+                    + (f" ({mins:.0f}m to close)" if isinstance(mins, (int, float)) else ""))
+            except (TypeError, ValueError, KeyError):
+                pass
+        bands = [b for b in (board.get("strike_probs") or [])
+                 if isinstance(b, dict) and b.get("band")]
+        best = None
+        for b in bands:
+            try:
+                gap = abs(float(b.get("model_fair_cents")) - float(b.get("yes_ask")))
+            except (TypeError, ValueError):
+                continue
+            if best is None or gap < best[0]:
+                best = (gap, b)
+        if best is not None:
+            b0 = best[1]
+            out.append(f"Closest-priced band {b0.get('band')}: venue {b0.get('yes_ask')}¢ ask vs "
+                       f"{b0.get('model_fair_cents')}¢ model fair.")
+        if len(out) == 1:
+            out.append("Model probabilities are not on the board right now.")
+        return web.json_response({"ok": True, "content": " ".join(out)})
     except Exception:
         log.exception("unhandled error in query")
         return web.json_response({"ok": False, "error": "internal error"},
