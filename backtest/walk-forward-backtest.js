@@ -10,6 +10,23 @@
 // ================================================================
 'use strict';
 
+// MOCK BROWSER ENVIRONMENT FOR QUANTCORE
+global.window = global;
+try {
+    require('../src/quant/statistical-utils.js');
+    require('../src/quant/kalman-filter.js');
+    require('../src/quant/hurst-exponent.js');
+    require('../src/quant/hmm-regime-classifier.js');
+    window.QuantCore = {
+        kalman: new window.KalmanFilter(),
+        hurst: new window.HurstExponent(),
+        hmm: new window.HMMRegimeClassifier()
+    };
+    console.log('[Backtest] Mocked window.QuantCore successfully');
+} catch (e) {
+    console.error('[Backtest] Failed to load QuantCore:', e.message);
+}
+
 const https = require('https');
 const fs    = require('fs');
 const path  = require('path');
@@ -25,8 +42,9 @@ const STEP_BARS    = parseInt(getArg('--step')  || '50',  10);       // fold ste
 const CANDLES_WANT = DAYS_BACK * 288;   // 288 × 5m = 1 day
 
 // ── Log directory ─────────────────────────────────────────────────
-const LOG_DIR = 'F:\\WECRYP\\backtest-logs';
-const CHECKPOINT = 'F:\\WECRYP\\WECRYPTO_SESSION_CHECKPOINT_20260501.md';
+const ROOT = path.resolve(__dirname, '..');
+const LOG_DIR = path.join(ROOT, 'backtest-logs');
+const CHECKPOINT = path.join(ROOT, 'WECRYPTO_SESSION_CHECKPOINT_20260501.md');
 try { fs.mkdirSync(LOG_DIR, { recursive: true }); } catch (_) {}
 
 // ── Coins (4 core Kalshi coins) ──────────────────────────────────
@@ -39,34 +57,116 @@ const PREDICTION_COINS = [
 
 // ── Weights (updated 2026-05-01) ─────────────────────────────────
 const COMPOSITE_WEIGHTS = {
-  supertrend:0.10, hma:0.07, vwma:0.06, ema:0.05, sma:0.03, macd:0.07, persistence:0.07,
-  bands:0.08, keltner:0.05, williamsR:0.07, rsi:0.06, cci:0.05, stochrsi:0.04,
-  volume:0.10, obv:0.07, cmf:0.07, mfi:0.07,
-  structure:0.10, ichimoku:0.05, adx:0.04, fisher:0.04,
-};
+   supertrend: 0.1,
+   hma: 0.07,
+   vwma: 0.06,
+   ema: 0.05,
+   sma: 0.03,
+   macd: 0.07,
+   persistence: 0.07,
+   bands: 0.05,
+   keltner: 0.05,
+   williamsR: 0.07,
+   rsi: 0.06,
+   cci: 0.05,
+   stochrsi: 0.04,
+   volume: 0.12,
+   obv: 0.07,
+   cmf: 0.07,
+   mfi: 0.07,
+   structure: 0.1,
+   ichimoku: 0.05,
+   adx: 0.04,
+   fisher: 0.04,
+   book: 0.25,
+   flow: 0.22,
+   toxicity: 0.06,
+   spoof: 0.07,
+   iceberg: 0.08,
+   orderBookImbalance: 0.18,
+   imbalanceVelocity: 0.12,
+   liquidityDepth: 0.08,
+   liquidityVacuum: 0.12,
+   fundingRate: 0.1,
+   mktSentiment: 0.18,
+   fearGreed: 0.12,
+   cmcMacro: 0.08,
+ };
 const OUTER_ORBITAL_WEIGHTS = { momentum: 0.05, vwap: 0.05 };
 
 const PER_COIN_INDICATOR_BIAS = {
-  BTC: { stochrsi:1.8, vwma:1.2, volume:1.4, bands:2.5, williamsR:2.0, structure:1.4, fisher:1.3,
-         keltner:1.6, cci:1.2, cmf:1.0, rsi:0.8, macd:0.6, persistence:0.8, ema:0.5,
-         ichimoku:0.3, adx:0.3, vwap:0.2, sma:0.2, momentum:0.25, obv:0.1, hma:0.1, mfi:0.5, supertrend:0.4 },
-  ETH: { rsi:0.5, stochrsi:1.0, williamsR:1.4, bands:2.5, structure:1.4, keltner:1.2, cci:0.9,
-         fisher:0.8, cmf:0.6, volume:0.9, persistence:0.8, obv:0.5, macd:0.4, ema:0.35, sma:0.1,
-         adx:0.25, ichimoku:0.2, vwap:0.15, vwma:0.5, supertrend:0.3, mfi:0.05, momentum:0.20, hma:0.05 },
-  SOL: { bands:2.0, fisher:1.5, williamsR:4.0, hma:0.1, structure:1.2, cci:3.5, keltner:0.8,
-         obv:0.8, macd:0.3, ichimoku:0.2, adx:0.2, vwma:0.1, volume:0.2, sma:0.0, vwap:0.05,
-         rsi:0.05, persistence:0.05, ema:0.05, cmf:0.05, supertrend:0.05, momentum:0.50, mfi:0.05, stochrsi:0.05 },
-  XRP: { structure:1.0, volume:1.5, vwap:4.0, fisher:2.5, rsi:3.5, obv:1.5, williamsR:1.2,
-         bands:0.8, supertrend:0.5, cci:0.5, cmf:0.6, keltner:0.4, macd:0.3, stochrsi:0.8,
-         persistence:0.2, ema:0.2, adx:0.2, ichimoku:0.2, sma:0.0, mfi:0.1, momentum:0.01, vwma:0.05, hma:0.05 },
-};
+     BTC: {
+       bands: 1.001,
+       williamsR: 1.001,
+       obv: 1,
+       vwap: 1,
+       hma: 0.9,
+       momentum: 0.6,
+       stochrsi: 1,
+       sma: 0.95,
+       adx: 1,
+       mfi: 1.1,
+       supertrend: 1,
+       ema: 0.899,
+       macd: 0.899,
+       rsi: 0.7,
+     },
+     ETH: {
+       bands: 1.001,
+       williamsR: 1.002,
+       obv: 1,
+       vwap: 1,
+       hma: 0.9,
+       momentum: 0.6,
+       stochrsi: 1,
+       sma: 0.95,
+       adx: 1,
+       mfi: 1.1,
+       supertrend: 1,
+       ema: 0.899,
+       macd: 0.897,
+       rsi: 0.7,
+     },
+     SOL: {
+       bands: 1.001,
+       williamsR: 1.003,
+       obv: 1,
+       vwap: 1,
+       hma: 0.9,
+       momentum: 0.599,
+       stochrsi: 1,
+       sma: 0.95,
+       adx: 1,
+       mfi: 1.1,
+       supertrend: 1,
+       ema: 0.899,
+       macd: 0.897,
+       rsi: 0.7,
+     },
+     XRP: {
+       bands: 1,
+       williamsR: 1.001,
+       obv: 1,
+       vwap: 1,
+       hma: 0.9,
+       momentum: 0.6,
+       stochrsi: 1,
+       sma: 0.95,
+       adx: 1,
+       mfi: 1.1,
+       supertrend: 1,
+       ema: 0.899,
+       macd: 0.898,
+       rsi: 0.7,
+     },
+   };
 
 // Filter overrides (baseline reference — calibrated per fold in this script)
 const BACKTEST_FILTER_OVERRIDES = {
-  BTC:  { h1:{entryThreshold:0.36,minAgreement:0.56}, h5:{entryThreshold:0.36,minAgreement:0.56}, h10:{entryThreshold:0.36,minAgreement:0.57}, h15:{entryThreshold:0.36,minAgreement:0.58} },
-  ETH:  { h1:{entryThreshold:0.42,minAgreement:0.56}, h5:{entryThreshold:0.42,minAgreement:0.56}, h10:{entryThreshold:0.40,minAgreement:0.57}, h15:{entryThreshold:0.38,minAgreement:0.58} },
-  XRP:  { h1:{entryThreshold:0.40,minAgreement:0.54}, h5:{entryThreshold:0.40,minAgreement:0.54}, h10:{entryThreshold:0.36,minAgreement:0.56}, h15:{entryThreshold:0.32,minAgreement:0.58} },
-  SOL:  { h1:{entryThreshold:0.45,minAgreement:0.66}, h5:{entryThreshold:0.45,minAgreement:0.66}, h10:{entryThreshold:0.40,minAgreement:0.62}, h15:{entryThreshold:0.41,minAgreement:0.64,maxThreshold:0.55} },
+  BTC:  { h1:{entryThreshold:0.30,minAgreement:0.54}, h5:{entryThreshold:0.30,minAgreement:0.54}, h10:{entryThreshold:0.25,minAgreement:0.58}, h15:{entryThreshold:0.25,minAgreement:0.58} },
+  ETH:  { h1:{entryThreshold:0.25,minAgreement:0.50}, h5:{entryThreshold:0.25,minAgreement:0.50}, h10:{entryThreshold:0.25,minAgreement:0.50}, h15:{entryThreshold:0.25,minAgreement:0.54} },
+  XRP:  { h1:{entryThreshold:0.30,minAgreement:0.58}, h5:{entryThreshold:0.30,minAgreement:0.58}, h10:{entryThreshold:0.30,minAgreement:0.58}, h15:{entryThreshold:0.30,minAgreement:0.54} },
+  SOL:  { h1:{entryThreshold:0.35,minAgreement:0.50}, h5:{entryThreshold:0.35,minAgreement:0.50}, h10:{entryThreshold:0.28,minAgreement:0.54}, h15:{entryThreshold:0.30,minAgreement:0.54,maxThreshold:0.55} },
 };
 
 const SCORE_AMPLIFIER       = 1.6;
@@ -320,7 +420,8 @@ function calcCCI(candles, period) {
   const tps = slice.map(c => (c.h + c.l + c.c) / 3);
   const mean = tps.reduce((s, v) => s + v, 0) / period;
   const meanDev = tps.reduce((s, v) => s + Math.abs(v - mean), 0) / period;
-  return meanDev > 0 ? (tps[tps.length - 1] - mean) / (0.015 * meanDev) : 0;
+  // Clamped to +/-500, matching src/core/predictions.js's live calcCCI.
+  return meanDev > 0.00001 ? Math.max(-500, Math.min(500, (tps[tps.length - 1] - mean) / (0.015 * meanDev))) : 0;
 }
 
 function calcCMF(candles, period) {
@@ -411,8 +512,15 @@ function summarizeAgreement(signalMap) {
 function scoreBucket(absScore) {
   if (absScore >= 0.4) return 'strong';
   if (absScore >= 0.25) return 'moderate';
-  if (absScore >= 0.1) return 'light';
   return 'neutral';
+}
+
+function normalCDF(z) {
+  const t = 1 / (1 + 0.2316419 * Math.abs(z));
+  const poly = t * (0.319381530 + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429))));
+  const pdf = Math.exp(-0.5 * z * z) / Math.sqrt(2 * Math.PI);
+  const p = 1 - pdf * poly;
+  return z >= 0 ? p : 1 - p;
 }
 
 // ── Main signal model (verbatim from backtest-runner.js) ─────────
@@ -485,7 +593,7 @@ function buildSignalModel(candles, sym = null) {
   const hmaSlope = (hmaCurr - hmaPrev2) / (Math.abs(hmaPrev2) || 1) * 100;
   const hmaDevPct = (lastPrice - hmaCurr) / (Math.abs(hmaCurr) || 1) * 100;
   let hmaSig = clamp(hmaSlope * 8, -0.7, 0.7);
-  if (Math.abs(hmaDevPct) > 0.4) hmaSig += clamp(-hmaDevPct * 0.28, -0.3, 0.3);
+  if (Math.abs(hmaDevPct) > 0.4) hmaSig += clamp(hmaDevPct * 0.28, -0.3, 0.3); // FIX: was negated (see predictions.js live logic)
   hmaSig = clamp(hmaSig, -1, 1);
 
   const vwmaLine = calcVWMA(candles, 20);
@@ -503,11 +611,11 @@ function buildSignalModel(candles, sym = null) {
   const stR = calcSupertrend(candles, 10, 3.0), supertrendSig = stR.signal;
 
   const cciVal = calcCCI(candles, 14);
-  let cciSig = cciVal > 150 ? -clamp((cciVal - 100) / 150, 0, 1) : cciVal < -150 ? clamp((-100 - cciVal) / 150, 0, 1) : clamp(-cciVal / 200, -0.3, 0.3);
+  let cciSig = cciVal > 150 ? -clamp((cciVal - 100) / 150, 0, 1) : cciVal < -150 ? clamp((-100 - cciVal) / 150, 0, 1) : clamp(cciVal / 200, -0.3, 0.3); // FIX: was negated in neutral zone
   cciSig = clamp(cciSig, -1, 1);
 
   const cmfSig    = clamp(calcCMF(candles, 20) * 2.5, -1, 1);
-  const fisherSig = clamp(-calcFisher(candles, 10) / 2.5, -1, 1);
+  const fisherSig = clamp(calcFisher(candles, 10) / 2.5, -1, 1); // FIX: was negated (see predictions.js 2026-05-04 CRITICAL fix)
   const kelt      = calcKeltner(candles, 20, 2.0);
   let keltSig = kelt.position >= 0.88 ? -clamp((kelt.position - 0.88) / 0.12, 0, 1) : kelt.position <= 0.12 ? clamp((0.12 - kelt.position) / 0.12, 0, 1) : clamp(-(kelt.position - 0.5) * 0.45, -0.22, 0.22);
 
@@ -536,6 +644,47 @@ function buildSignalModel(candles, sym = null) {
   };
 
   const coinBias = (sym && PER_COIN_INDICATOR_BIAS[sym]) ? PER_COIN_INDICATOR_BIAS[sym] : {};
+
+  // --- QUANT CORE INTEGRATION ---
+  let hurstRegime = 'mean_reversion';
+  let hmmPath = [];
+  if (global.window && global.window.QuantCore) {
+    if (global.window.QuantCore.kalman) {
+        const kalmanResult = global.window.QuantCore.kalman.process(closes);
+        const kVel = kalmanResult.velocities[kalmanResult.velocities.length - 1] || 0;
+        sv.momentum = clamp(sv.momentum + kVel * 5, -1, 1);
+    }
+    if (global.window.QuantCore.hurst) {
+        const h_exp = global.window.QuantCore.hurst.rolling(closes, 50);
+        hurstRegime = global.window.QuantCore.hurst.classify(h_exp).signal_gate;
+    }
+    if (global.window.QuantCore.hmm && sym) {
+        const obsSeq = closes.map((c, i) => {
+            const h = candles[i].h;
+            const l = candles[i].l;
+            return {
+                returns: i > 0 ? (c - closes[i-1])/(closes[i-1]||1) : 0,
+                volatility: (h - l)/(l||1)
+            };
+        });
+        global.window.QuantCore.hmm.classify(obsSeq);
+        hmmPath = global.window.QuantCore.hmm.lastViterbiPath || [];
+    }
+  }
+
+  let hmmState = hmmPath.length > 0 ? hmmPath[hmmPath.length - 1] : 0;
+  if (hmmState === 3 || hurstRegime === 'mean_reversion') {
+      sv.supertrend *= 0.5;
+      sv.ema *= 0.5;
+      sv.macd *= 0.5;
+      sv.vwma *= 0.5;
+  }
+  if (hmmState === 0 || hurstRegime === 'trending') {
+      sv.rsi *= 0.5;
+      sv.stochrsi *= 0.5;
+      sv.williamsR *= 0.5;
+  }
+  // --- END QUANT CORE INTEGRATION ---
   const keys = Object.keys(sv);
   const effW = k => (COMPOSITE_WEIGHTS[k] ?? OUTER_ORBITAL_WEIGHTS[k] ?? 0) * (coinBias[k] ?? 1.0);
   const totalWeight = keys.reduce((s, k) => s + effW(k), 0) || 1;
@@ -634,20 +783,45 @@ function precomputeAllSignals(candles, sym, horizonMin) {
   const horizonBars = Math.max(1, Math.round(horizonMin / BARMIN));
   const startIdx    = Math.max(52, BACKTEST_MIN_TRAIN_OBS);
   const signals     = [];
-  for (let idx = startIdx; idx < candles.length - horizonBars; idx++) {
-    const windowCandles = candles.slice(Math.max(0, idx - LIVE_WINDOW + 1), idx + 1);
+  for (let idx = startIdx; idx <= candles.length - horizonBars; idx++) {
+    // Model indicators built strictly on completed candles prior to this contract window
+    const windowCandles = candles.slice(Math.max(0, idx - LIVE_WINDOW), idx);
+    if (windowCandles.length < 26) continue;
     const model = buildSignalModel(windowCandles, sym);
     if (!model) continue;
-    const entry = candles[idx].c, exit = candles[idx + horizonBars].c;
-    const returnPct = entry > 0 ? ((exit - entry) / entry) * 100 : 0;
+
+    // Polymarket contract window:
+    // Strike (Price To Beat) = Open of contract window at idx
+    const ptb   = candles[idx].o;
+    const entry = candles[idx].o;
+    // Settlement TWAP = Close of contract window at idx + horizonBars - 1
+    const exit  = candles[idx + horizonBars - 1].c;
+
+    const atrDollar = entry * (model.atrPct ? (model.atrPct / 100) : 0.0035);
+    const remainingFrac = 0.80; // Trade entered near contract open
+    const expectedMove = model.score * atrDollar * 0.40 * remainingFrac;
+    const meanFinal = entry + expectedMove;
+    const sigma = Math.max(entry * 0.0015, atrDollar * Math.sqrt(remainingFrac));
+    const z = (meanFinal - ptb) / (sigma || 1);
+    let pUp = normalCDF(z);
+
+    const actualSettleUp = exit >= ptb;
+    const modelCallUp = pUp >= 0.50;
+    const isWin = (modelCallUp === actualSettleUp);
+    const payoffPct = isWin ? 1.0 : -1.0;
+    const rawReturn = payoffPct * (Math.abs((exit - ptb) / (ptb || 1)) * 100 + 0.5);
+    const returnPct = clamp(rawReturn, -25, 25);
+    const ptbScore = clamp((pUp - 0.5) * 2.0, -1, 1);
+
     signals.push({
       barIdx: idx,
-      absScore: model.absScore, score: model.score, coreScore: model.coreScore,
+      absScore: Math.abs(ptbScore), score: ptbScore, coreScore: ptbScore,
       agreement: model.agreement, conflict: model.conflict,
       structureZone: model.structureZone, structureBias: model.structureBias,
       persistenceScore: model.persistenceScore || 0,
       emaCross: model.emaCross, mom: model.mom, atrPct: model.atrPct,
       returnPct, t: candles[idx].t,
+      isWin,
     });
   }
   return signals;
@@ -674,7 +848,7 @@ function evaluateSet(signals, entryThreshold, minAgreement, maxThreshold) {
   const active = signals.filter(s => passesFilter(s, entryThreshold, minAgreement, maxThreshold));
   const total  = signals.length;
   if (!active.length) return { winRate: 0, coverage: 0, profitFactor: 0, wins: 0, losses: 0, count: 0 };
-  const signedReturns = active.map(s => s.returnPct * (s.score > 0 ? 1 : -1));
+  const signedReturns = active.map(s => s.returnPct);
   const wins   = signedReturns.filter(r => r > 0).length;
   const losses = signedReturns.filter(r => r < 0).length;
   const grossW = signedReturns.filter(r => r > 0).reduce((a, b) => a + b, 0);
@@ -775,12 +949,12 @@ async function runWalkForwardForCoin(sym, candles) {
 
       // Session breakdown on test window
       const testActive = testSigs.filter(s => passesFilter(s, cal.entryThreshold, cal.minAgreement, null));
-      const sessions = {};
+      const sessions = Object.create(null);
       testActive.forEach(s => {
         const sess = getSession(s.t);
         if (!sessions[sess]) sessions[sess] = { w: 0, t: 0 };
         sessions[sess].t++;
-        if (s.returnPct * (s.score > 0 ? 1 : -1) > 0) sessions[sess].w++;
+        if (s.returnPct > 0) sessions[sess].w++;
       });
 
       folds.push({
@@ -845,7 +1019,7 @@ function printWalkForwardReport(sym, hrResults, logLines) {
   line(`\n${d}`);
   line(' RECOMMENDED BACKTEST_FILTER_OVERRIDES');
   line(d);
-  const overrides = {};
+  const overrides = Object.create(null);
   for (const horizonMin of SHORT_HORIZON_MINUTES) {
     const hr = hrResults[`h${horizonMin}`];
     if (hr) {

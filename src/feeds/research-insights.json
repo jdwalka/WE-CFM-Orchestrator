@@ -1,0 +1,131 @@
+{
+  "timestamp": 1781232226316,
+  "insights": [
+    {
+      "timestamp": "2026-06-12T02:43:46.316Z",
+      "category": "on-chain-data",
+      "focus": [
+        "MEV detection",
+        "transaction flow analysis",
+        "whale movements",
+        "smart contract interactions"
+      ],
+      "findings": [
+        {
+          "title": "on-chain-data Update",
+          "impact": "high",
+          "actionable": true,
+          "code_suggestion": "// TODO: Integrate on-chain-data data"
+        }
+      ],
+      "recommendations": [],
+      "sources": [
+        "https://eigenphi.io/",
+        "https://www.nansen.ai/",
+        "https://www.glassnode.com/",
+        "https://dune.com/home"
+      ]
+    },
+    {
+      "timestamp": "2026-06-12T02:43:46.316Z",
+      "category": "prediction-models",
+      "focus": [
+        "emerging ML techniques",
+        "transformer models for price prediction",
+        "reinforcement learning strategies",
+        "ensemble methods"
+      ],
+      "findings": [
+        {
+          "title": "prediction-models Update",
+          "impact": "high",
+          "actionable": true,
+          "code_suggestion": "// TODO: Integrate prediction-models data"
+        }
+      ],
+      "recommendations": [],
+      "sources": [
+        "https://arxiv.org/list/q-fin/recent",
+        "https://github.com/topics/machine-learning-trading",
+        "https://paperswithcode.com/task/time-series-prediction"
+      ]
+    },
+    {
+      "timestamp": "2026-06-12T02:43:46.316Z",
+      "category": "kalshi-contracts",
+      "focus": [
+        "contract patterns",
+        "settlement mechanisms",
+        "market dynamics",
+        "hidden liquidity"
+      ],
+      "findings": [
+        {
+          "title": "kalshi-contracts Update",
+          "impact": "high",
+          "actionable": true,
+          "code_suggestion": "// TODO: Integrate kalshi-contracts data"
+        }
+      ],
+      "recommendations": [],
+      "sources": [
+        "https://kalshi.com/blog",
+        "https://docs.kalshi.com/",
+        "https://forum.kalshi.com/"
+      ]
+    },
+    {
+      "timestamp": "2026-06-12T02:43:46.316Z",
+      "category": "blockchain-infrastructure",
+      "focus": [
+        "network upgrades",
+        "chain health metrics",
+        "new L2s",
+        "interoperability",
+        "staking/validator dynamics"
+      ],
+      "findings": [
+        {
+          "title": "blockchain-infrastructure Update",
+          "impact": "high",
+          "actionable": true,
+          "code_suggestion": "// TODO: Integrate blockchain-infrastructure data"
+        }
+      ],
+      "recommendations": [],
+      "sources": [
+        "https://ethereum.org/en/upgrades/",
+        "https://chain.link/blog",
+        "https://mirror.xyz/",
+        "https://messari.io/",
+        "https://blog.lido.fi/"
+      ]
+    },
+    {
+      "timestamp": "2026-06-12T02:43:46.316Z",
+      "category": "market-microstructure",
+      "focus": [
+        "volatility surface changes",
+        "order book dynamics",
+        "spread analysis",
+        "liquidity pools"
+      ],
+      "findings": [
+        {
+          "title": "market-microstructure Update",
+          "impact": "high",
+          "actionable": true,
+          "code_suggestion": "// TODO: Integrate market-microstructure data"
+        }
+      ],
+      "recommendations": [],
+      "sources": [
+        "https://www.theblock.co/research",
+        "https://santiment.net/",
+        "https://api.coingecko.com/",
+        "https://api.covalenthq.com/"
+      ]
+    }
+  ],
+  "nextUpdate": 1781232526316
+}

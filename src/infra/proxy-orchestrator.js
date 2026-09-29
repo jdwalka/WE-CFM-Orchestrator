@@ -46,7 +46,7 @@ if (
  *   const data = await _proxyOrchestrator.fetch(url, { endpoint: 'kalshi' });
  *   console.log(_proxyOrchestrator.getHealthStatus());
  *
- * Export metrics every 30s to: F:\WECRYP\data\{date}\proxy-metrics.jsonl
+ * Export metrics every 30s to: F:\WECRYPTO\data\{date}\proxy-metrics.jsonl
  * ================================================================
  */
 
@@ -56,20 +56,177 @@ if (
   // ── RATE LIMIT CONFIGURATION ────────────────────────────────────
   const RATE_LIMITS = {
     kalshi: { reqs_per_min: 100, burst: 0, backoff_start: 2000, backoff_max: 32000 },
-    cmc: { credits_per_month: 10000, per_request: 1, burst: 0, backoff_start: 5000 },
-    polymarket: { reqs_per_second: 50, reqs_per_minute: 1000, burst: 1000, backoff_start: 1000 },
-    coinbase: { reqs_per_second: 15, burst: 100, backoff_start: 1000 },
-    pyth: { reqs_per_second: Infinity, burst: Infinity, backoff_start: 0 },
-    coingecko: { reqs_per_minute: 50, burst: 0, backoff_start: 2000 },
+    polymarket: { reqs_per_second: 4, reqs_per_minute: 180, burst: 8, backoff_start: 2500, backoff_max: 45000 },
+    cmc: { credits_per_month: 20000, per_request: 1, burst: 0, backoff_start: 5000 },
+
+    coinbase: { reqs_per_second: 4, burst: 15, backoff_start: 3000, backoff_max: 20000 },
+    okx: { reqs_per_second: 12, reqs_per_minute: 700, burst: 30, backoff_start: 1000, backoff_max: 25000 },
+    okc: { reqs_per_second: 12, reqs_per_minute: 700, burst: 30, backoff_start: 1000, backoff_max: 25000 },
+    bitstamp: { reqs_per_second: 8, reqs_per_minute: 400, burst: 25, backoff_start: 1200, backoff_max: 30000 },
+    kraken: { reqs_per_second: 10, reqs_per_minute: 500, burst: 20, backoff_start: 1200, backoff_max: 30000 },
+    bybit: { reqs_per_second: 20, reqs_per_minute: 900, burst: 60, backoff_start: 800, backoff_max: 20000 },
+    binance: { reqs_per_second: 20, reqs_per_minute: 1200, burst: 100, backoff_start: 800, backoff_max: 15000 },
+    kucoin: { reqs_per_second: 12, reqs_per_minute: 700, burst: 30, backoff_start: 1200, backoff_max: 25000 },
+    mexc: { reqs_per_second: 10, reqs_per_minute: 600, burst: 30, backoff_start: 1500, backoff_max: 25000 },
+    bitfinex: { reqs_per_second: 10, reqs_per_minute: 600, burst: 25, backoff_start: 1500, backoff_max: 25000 },
+    cryptocom: { reqs_per_second: 10, reqs_per_minute: 600, burst: 25, backoff_start: 1400, backoff_max: 25000 },
+    pyth: { reqs_per_second: 20, burst: 50, backoff_start: 1000, backoff_max: 20000 },
+    coingecko: { reqs_per_minute: 20, burst: 10, backoff_start: 3000, backoff_max: 90000 },
+    blockchainraw: { reqs_per_second: 10, reqs_per_minute: 500, burst: 20, backoff_start: 1000, backoff_max: 20000 },
+    default: { reqs_per_second: 5, reqs_per_minute: 240, burst: 10, backoff_start: 1500, backoff_max: 30000 },
   };
+
+  // Provider timing audit matrix (operational min/max bounds used by cascade timer).
+  const PROVIDER_TIMING_AUDIT = {
+    coingecko: {
+      hostPatterns: ['coingecko.com'],
+      minRpm: 300, maxRpm: 600,
+      minTimeoutMs: 15000, maxTimeoutMs: 45000,
+      minIntervalMs: 60000, maxIntervalMs: 300000,
+      maxPayloadBytes: 550000,
+    },
+    coinbase: {
+      hostPatterns: ['exchange.coinbase.com', 'coinbase.com'],
+      minRps: 4, maxRps: 15,
+      minTimeoutMs: 15000, maxTimeoutMs: 45000,
+      minIntervalMs: 60000, maxIntervalMs: 300000,
+      maxPayloadBytes: 650000,
+    },
+    okx: {
+      hostPatterns: ['okx.com', 'okcoin.com'],
+      minRps: 5, maxRps: 12,
+      minTimeoutMs: 15000, maxTimeoutMs: 45000,
+      minIntervalMs: 60000, maxIntervalMs: 300000,
+      maxPayloadBytes: 700000,
+    },
+    okc: {
+      hostPatterns: ['okx.com', 'okcoin.com'],
+      minRps: 5, maxRps: 12,
+      minTimeoutMs: 15000, maxTimeoutMs: 45000,
+      minIntervalMs: 60000, maxIntervalMs: 300000,
+      maxPayloadBytes: 700000,
+    },
+    bitstamp: {
+      hostPatterns: ['bitstamp.net'],
+      minRps: 3, maxRps: 8,
+      minTimeoutMs: 15000, maxTimeoutMs: 45000,
+      minIntervalMs: 60000, maxIntervalMs: 300000,
+      maxPayloadBytes: 600000,
+    },
+    binance: {
+      hostPatterns: ['binance.com', 'binance.vision'],
+      minRps: 8, maxRps: 20,
+      minTimeoutMs: 15000, maxTimeoutMs: 45000,
+      minIntervalMs: 60000, maxIntervalMs: 300000,
+      maxPayloadBytes: 800000,
+    },
+    bybit: {
+      hostPatterns: ['bybit.com'],
+      minRps: 8, maxRps: 20,
+      minTimeoutMs: 15000, maxTimeoutMs: 45000,
+      minIntervalMs: 60000, maxIntervalMs: 300000,
+      maxPayloadBytes: 800000,
+    },
+    kraken: {
+      hostPatterns: ['kraken.com'],
+      minRps: 5, maxRps: 15,
+      minTimeoutMs: 15000, maxTimeoutMs: 45000,
+      minIntervalMs: 60000, maxIntervalMs: 300000,
+      maxPayloadBytes: 700000,
+    },
+    kucoin: {
+      hostPatterns: ['kucoin.com'],
+      minRps: 5, maxRps: 12,
+      minTimeoutMs: 15000, maxTimeoutMs: 45000,
+      minIntervalMs: 60000, maxIntervalMs: 300000,
+      maxPayloadBytes: 700000,
+    },
+    mexc: {
+      hostPatterns: ['mexc.com'],
+      minRps: 4, maxRps: 10,
+      minTimeoutMs: 15000, maxTimeoutMs: 45000,
+      minIntervalMs: 60000, maxIntervalMs: 300000,
+      maxPayloadBytes: 700000,
+    },
+    bitfinex: {
+      hostPatterns: ['bitfinex.com'],
+      minRps: 4, maxRps: 10,
+      minTimeoutMs: 15000, maxTimeoutMs: 45000,
+      minIntervalMs: 60000, maxIntervalMs: 300000,
+      maxPayloadBytes: 700000,
+    },
+    cryptocom: {
+      hostPatterns: ['crypto.com'],
+      minRps: 4, maxRps: 10,
+      minTimeoutMs: 15000, maxTimeoutMs: 45000,
+      minIntervalMs: 60000, maxIntervalMs: 300000,
+      maxPayloadBytes: 700000,
+    },
+    kalshi: {
+      hostPatterns: ['kalshi.com', 'elections.kalshi.com'],
+      minRps: 3, maxRps: 12,
+      minTimeoutMs: 15000, maxTimeoutMs: 45000,
+      minIntervalMs: 120, maxIntervalMs: 2500,
+      maxPayloadBytes: 900000,
+    },
+    polymarket: {
+      hostPatterns: ['polymarket.com', 'clob.polymarket.com', 'gamma-api.polymarket.com'],
+      minRps: 2, maxRps: 6,
+      minTimeoutMs: 15000, maxTimeoutMs: 45000,
+      minIntervalMs: 180, maxIntervalMs: 3000,
+      maxPayloadBytes: 900000,
+    },
+    pyth: {
+      hostPatterns: ['pyth.network', 'pythnet', 'hermes'],
+      minRps: 8, maxRps: 20,
+      minTimeoutMs: 8000, maxTimeoutMs: 25000,
+      minIntervalMs: 50, maxIntervalMs: 1000,
+      maxPayloadBytes: 600000,
+    },
+
+    blockchainraw: {
+      hostPatterns: ['mempool.space', 'blockchair.com', 'etherscan.io', 'blockscout.com', 'xrplcluster.com', 'solana.com'],
+      minRps: 2, maxRps: 6,
+      minTimeoutMs: 15000, maxTimeoutMs: 45000,
+      minIntervalMs: 160, maxIntervalMs: 2500,
+      maxPayloadBytes: 600000,
+    },
+    default: {
+      hostPatterns: [],
+      minRps: 2, maxRps: 8,
+      minTimeoutMs: 15000, maxTimeoutMs: 45000,
+      minIntervalMs: 60000, maxIntervalMs: 300000,
+      maxPayloadBytes: 500000,
+    },
+  };
+
+  // ── DYNAMIC RATE LIMITS MAPPING ─────────────────────────────────
+  Object.keys(PROVIDER_TIMING_AUDIT).forEach((key) => {
+    const audit = PROVIDER_TIMING_AUDIT[key];
+    const limits = RATE_LIMITS[key] || {};
+    if (audit.minRps && audit.maxRps) {
+      limits.reqs_per_minute = Math.floor(((audit.minRps + audit.maxRps) / 2) * 60);
+      limits.backoff_start = Math.max(1000, Math.round(audit.maxIntervalMs * (audit.maxRps / audit.minRps)));
+    } else if (audit.minRpm && audit.maxRpm) {
+      limits.reqs_per_minute = Math.floor((audit.minRpm + audit.maxRpm) / 2);
+      limits.backoff_start = Math.max(1000, Math.round(audit.maxIntervalMs * (audit.maxRpm / audit.minRpm)));
+    }
+    RATE_LIMITS[key] = limits;
+  });
 
   // ── FALLBACK CHAINS ─────────────────────────────────────────────
   const FALLBACK_CHAINS = {
-    'kalshi-markets': ['kalshi', 'polymarket', 'cache'],
-    'kalshi-markets-legacy': ['kalshi', 'polymarket', 'cache'],
-    'cmc-quotes': ['cmc', 'pyth', 'cache'],
-    'kalshi-settlement': ['kalshi', 'polymarket', 'cache'],
-    'polymarket-markets': ['polymarket', 'kalshi', 'cache'],
+    'kalshi-markets': ['kalshi', 'cache'],
+    'kalshi-markets-legacy': ['kalshi', 'cache'],
+    'cmc-quotes': ['cmc', 'cache'],
+    'cmc': ['cmc', 'cache'],
+    'pyth': ['pyth', 'cache'],
+    'polymarket': ['polymarket', 'kalshi', 'cache'],
+    'kalshi': ['kalshi', 'cache'],
+    'kalshi-settlement': ['kalshi', 'cache'],
+    'polymarket-markets': ['kalshi', 'cache'],
+    'market-data': ['coinbase', 'okx', 'binance', 'blockchainraw', 'cache'],
+    'coingecko': ['coingecko', 'cache'],
   };
 
   // ── CACHE TTL CONFIGURATION ────────────────────────────────────
@@ -79,6 +236,7 @@ if (
     'settlement': 3600000,          // 1h for settlement (never changes)
     'fear-greed': 3600000,          // 1h for macro sentiment
     'global-metrics': 300000,       // 5min for global metrics
+    'coingecko': 120000,            // 2min for CoinGecko
   };
 
   // ── METRICS COLLECTION ────────────────────────────────────────
@@ -89,10 +247,13 @@ if (
     cacheMisses: 0,
     fallbackUsage: {},     // endpoint → count of fallback activations
     latencies: [],         // circular buffer of request latencies
+    events: [],
     startTime: Date.now(),
   };
 
   const LATENCY_BUFFER_SIZE = 1000; // keep last 1000 measurements
+  const OUTCOME_BUFFER_SIZE = 500;
+  const HEALTH_ROLLING_WINDOW_MS = 120000;
 
   // ── RATE LIMITER CLASS ──────────────────────────────────────────
   /**
@@ -106,6 +267,7 @@ if (
       this.failures = 0;
       this.circuitOpen = false;
       this.circuitOpenUntil = 0;
+      this.authLockUntil = 0;
       this.backoffUntil = 0;
       this.backoffMultiplier = 1;
       this.lastRequestTime = 0;
@@ -134,8 +296,18 @@ if (
         }
       }
 
+      // Provider auth rejection lock (401/403) to avoid hot-loop retries.
+      if (now < this.authLockUntil) {
+        return false;
+      }
+
       // Backoff check
       if (now < this.backoffUntil) {
+        return false;
+      }
+
+      const minInterval = this.getSafeInterval();
+      if (minInterval > 0 && (now - this.lastRequestTime) < minInterval) {
         return false;
       }
 
@@ -146,8 +318,24 @@ if (
      * Calculate safe wait time before next request
      */
     getSafeInterval() {
+      if (Number.isFinite(this.config.reqs_per_second) && this.config.reqs_per_second > 0) {
+        return (1000 / this.config.reqs_per_second) * this.backoffMultiplier;
+      }
+      const rpm = this.config.reqs_per_minute || this.config.reqs_per_min;
+      if (Number.isFinite(rpm) && rpm > 0) {
+        return (60000 / rpm) * this.backoffMultiplier;
+      }
       const minInterval = this.config.backoff_start || 1000;
       return minInterval * this.backoffMultiplier;
+    }
+
+    getWaitMs() {
+      const now = Date.now();
+      if (this.circuitOpen && now < this.circuitOpenUntil) return this.circuitOpenUntil - now;
+      if (now < this.authLockUntil) return this.authLockUntil - now;
+      if (now < this.backoffUntil) return this.backoffUntil - now;
+      const minInterval = this.getSafeInterval();
+      return Math.max(0, minInterval - (now - this.lastRequestTime));
     }
 
     /**
@@ -161,12 +349,30 @@ if (
       this.failureHistory = [];
     }
 
+    recordAuthFailure(lockMs = 15 * 60_000, status = 401) {
+      const now = Date.now();
+      this.lastRequestTime = now;
+      this.failures += 1;
+      this.authLockUntil = Math.max(this.authLockUntil || 0, now + Math.max(60_000, lockMs));
+      this.backoffUntil = Math.max(this.backoffUntil || 0, now + Math.min(lockMs, this.config.backoff_max || 300000));
+      console.warn(
+        `[ProxyOrchestrator] ${this.endpoint} HTTP ${status}: auth lock ${Math.round((this.authLockUntil - now) / 1000)}s`
+      );
+      return this.authLockUntil - now;
+    }
+
     /**
      * Record a 429/503 failure — enter backoff or open circuit
      */
-    recordFailure(status = 429) {
+    recordFailure(status = 'network') {
       const now = Date.now();
-      this.failures++;
+      this.lastRequestTime = now;
+      // Immediate circuit break on gateway errors
+      if (status === 502 || status === 503 || status === '502' || status === '503') {
+        this.failures = Math.max(this.failures, this.CIRCUIT_BREAK_THRESHOLD);
+      } else {
+        this.failures++;
+      }
       this.failureHistory.push(now);
 
       // Prune old failures outside window
@@ -208,11 +414,168 @@ if (
         healthy: this.canRequest() && !this.circuitOpen,
         circuitOpen: this.circuitOpen,
         failures: this.failures,
+        authLockUntil: this.authLockUntil,
+        authLockRemaining: Math.max(0, this.authLockUntil - now),
         backoffUntil: this.backoffUntil,
         nextRetry: Math.max(0, this.backoffUntil - now),
         safeInterval: this.getSafeInterval(),
       };
     }
+  }
+
+  class CascadingTimer {
+    constructor(policies = {}) {
+      this.policies = policies;
+      this.state = {}; // endpoint => adaptive stats
+    }
+
+    _policy(endpoint) {
+      return this.policies[endpoint] || this.policies.default || {};
+    }
+
+    _ensure(endpoint) {
+      if (!this.state[endpoint]) {
+        this.state[endpoint] = {
+          failures: 0,
+          consecutiveTimeouts: 0,
+          lastLatencyMs: 0,
+          avgLatencyMs: 0,
+          lastStatus: 'idle',
+          lastError: '',
+          lastSuccessTs: 0,
+          lastFailureTs: 0,
+          cascadeLevel: 0,
+        };
+      }
+      return this.state[endpoint];
+    }
+
+    _deriveBaseInterval(policy) {
+      if (Number.isFinite(policy.maxRps) && policy.maxRps > 0) {
+        return 1000 / policy.maxRps;
+      }
+      if (Number.isFinite(policy.maxRpm) && policy.maxRpm > 0) {
+        return 60000 / policy.maxRpm;
+      }
+      return Number.isFinite(policy.minIntervalMs) ? policy.minIntervalMs : 250;
+    }
+
+    _jitter(ms, pct = 0.12) {
+      const spread = Math.max(25, Math.round(ms * pct));
+      return Math.max(1, Math.round(ms + ((Math.random() * 2 - 1) * spread)));
+    }
+
+    getWindow(endpoint) {
+      const policy = this._policy(endpoint);
+      const s = this._ensure(endpoint);
+      const baseInterval = this._deriveBaseInterval(policy);
+      const minInterval = Number.isFinite(policy.minIntervalMs) ? policy.minIntervalMs : baseInterval;
+      const maxInterval = Number.isFinite(policy.maxIntervalMs) ? policy.maxIntervalMs : Math.max(minInterval * 8, 4000);
+      const level = Math.max(0, Math.min(6, s.cascadeLevel));
+      const adaptiveInterval = Math.min(maxInterval, minInterval + (Math.pow(1.7, level) * minInterval * 0.35));
+
+      const minTimeout = Number.isFinite(policy.minTimeoutMs) ? policy.minTimeoutMs : 25000;
+      const maxTimeout = Number.isFinite(policy.maxTimeoutMs) ? policy.maxTimeoutMs : 30000;
+      const latencyFactor = s.avgLatencyMs > 0 ? Math.min(2.5, Math.max(0.8, s.avgLatencyMs / Math.max(1, minTimeout))) : 1;
+      const adaptiveTimeout = Math.max(minTimeout, Math.min(maxTimeout, Math.round(minTimeout * (1 + level * 0.3) * latencyFactor)));
+
+      return {
+        endpoint,
+        intervalMs: Math.round(adaptiveInterval),
+        timeoutMs: adaptiveTimeout,
+        minTimeoutMs: minTimeout,
+        maxTimeoutMs: maxTimeout,
+        maxPayloadBytes: Number.isFinite(policy.maxPayloadBytes) ? policy.maxPayloadBytes : 500000,
+        cascadeLevel: level,
+      };
+    }
+
+    getAttemptTimeout(endpoint, attempt = 0) {
+      const window = this.getWindow(endpoint);
+      const level = Math.max(0, Math.min(6, window.cascadeLevel || 0));
+      const stage = Math.max(0, Math.min(3, Number(attempt) || 0));
+      const stageFactor = [1.0, 1.25, 1.55, 1.85][stage];
+      const failureFactor = 1 + (level * 0.12);
+      const raw = Math.round(window.minTimeoutMs * stageFactor * failureFactor);
+      const clamped = Math.max(window.minTimeoutMs, Math.min(window.maxTimeoutMs, raw));
+      return this._jitter(clamped, 0.08);
+    }
+
+    recordSuccess(endpoint, latencyMs = 0, payloadBytes = 0) {
+      const s = this._ensure(endpoint);
+      const now = Date.now();
+      s.lastSuccessTs = now;
+      s.lastStatus = 'ok';
+      s.lastError = '';
+      s.failures = Math.max(0, s.failures - 1);
+      s.consecutiveTimeouts = 0;
+      s.cascadeLevel = Math.max(0, s.cascadeLevel - 1);
+      s.lastLatencyMs = Number(latencyMs) || 0;
+      if (s.avgLatencyMs <= 0) s.avgLatencyMs = s.lastLatencyMs;
+      else s.avgLatencyMs = Math.round((s.avgLatencyMs * 0.82) + (s.lastLatencyMs * 0.18));
+      s.lastPayloadBytes = Number(payloadBytes) || 0;
+    }
+
+    recordFailure(endpoint, errLike) {
+      const s = this._ensure(endpoint);
+      const now = Date.now();
+      const msg = String(errLike && errLike.message ? errLike.message : errLike || '');
+      s.lastFailureTs = now;
+      s.lastStatus = 'fail';
+      s.lastError = msg;
+      s.failures += 1;
+      if (/timeout|abort|timed out/i.test(msg)) {
+        s.consecutiveTimeouts += 1;
+      }
+      const growth = /429|503|timeout|abort|timed out/i.test(msg) ? 2 : 1;
+      s.cascadeLevel = Math.min(6, s.cascadeLevel + growth);
+    }
+
+    getStatus() {
+      return Object.keys(this.state).reduce((acc, endpoint) => {
+        acc[endpoint] = {
+          ...this.state[endpoint],
+          window: this.getWindow(endpoint),
+        };
+        return acc;
+      }, {});
+    }
+  }
+
+  function inferEndpointFromUrl(url) {
+    try {
+      const host = new URL(String(url), (typeof window !== 'undefined' ? window.location.href : 'http://localhost')).hostname.toLowerCase();
+      for (const [endpoint, policy] of Object.entries(PROVIDER_TIMING_AUDIT)) {
+        if (!policy || !Array.isArray(policy.hostPatterns)) continue;
+        if (policy.hostPatterns.some((p) => host.includes(String(p).toLowerCase()))) return endpoint;
+      }
+    } catch (_) { }
+    return 'default';
+  }
+
+  function truncateJsonPayload(value, limits = {}, depth = 0) {
+    const maxDepth = Number.isFinite(limits.maxDepth) ? limits.maxDepth : 5;
+    const maxArray = Number.isFinite(limits.maxArray) ? limits.maxArray : 250;
+    const maxString = Number.isFinite(limits.maxString) ? limits.maxString : 2000;
+    if (depth > maxDepth) return null;
+    if (value == null) return value;
+    if (typeof value === 'string') {
+      return value.length > maxString ? `${value.slice(0, maxString)}…` : value;
+    }
+    if (typeof value === 'number' || typeof value === 'boolean') return value;
+    if (Array.isArray(value)) {
+      const sliced = value.slice(0, maxArray).map((item) => truncateJsonPayload(item, limits, depth + 1));
+      if (value.length > maxArray) sliced.push({ _truncated: value.length - maxArray });
+      return sliced;
+    }
+    if (typeof value === 'object') {
+      const out = {};
+      Object.keys(value).forEach((k) => {
+        out[k] = truncateJsonPayload(value[k], limits, depth + 1);
+      });
+      return out;
+    }
+    return null;
   }
 
   // ── REQUEST BATCHER CLASS ────────────────────────────────────────
@@ -344,8 +707,7 @@ if (
           // Continue to next in chain
         }
       }
-      // All endpoints exhausted
-      throw new Error(`All endpoints exhausted: ${chain.join(' → ')}`);
+      return Promise.reject(new Error(`All endpoints exhausted: ${chain.join(' → ')}`));
     }
 
     /**
@@ -395,12 +757,159 @@ if (
     }
   }
 
+  const MAX_IDLE_TTL = {
+    kalshi: 20000,
+    pyth: 30000,
+    polymarket: 300000,
+    binance: 180000,
+    coinbase: 120000,
+    bybit: 25000,
+    kraken: 65000,
+    bitstamp: 65000,
+    okx: 45000,
+    cryptocom: 60000,
+    bitfinex: 60000,
+    mexc: 60000,
+    coingecko: 60000,
+    cmc: 60000,
+    blockchainraw: 60000,
+    default: 120000
+  };
+
+  // No retry limit or queue depth cap previously existed here: a genuinely
+  // dead shared transport (not just one slow request) meant a single
+  // request retried forever and everything else queued behind it,
+  // indefinitely -- see the fix in enqueue()/_processQueue() below.
+  const MAX_ENDPOINT_RETRIES = 3;
+  const MAX_QUEUE_DEPTH = 10;
+
+  // ── TIMEOUT ORCHESTRATOR CLASS ───────────────────────────────────
+  /**
+   * TimeoutOrchestrator: Manages long-running connection stability (9+ hours overnight)
+   * Detects hanging transports, queues requests to prevent drop, automatically refreshes connections.
+   */
+  class TimeoutOrchestrator {
+    constructor() {
+      this.queues = {}; // endpoint -> array of pending requests
+      this.health = {}; // endpoint -> { state: 'active' | 'recovering', lastSuccess: ts }
+      this.refreshIntervals = {};
+      this.heartbeatTimer = setInterval(() => this._checkZombies(), 60000);
+    }
+
+    scheduleRefresh(endpoint, intervalMs = 6 * 3600 * 1000) { // default 6 hours
+      if (this.refreshIntervals[endpoint]) clearInterval(this.refreshIntervals[endpoint]);
+      this.refreshIntervals[endpoint] = setInterval(() => {
+        this._triggerRefresh(endpoint, 'proactive_refresh');
+      }, intervalMs);
+    }
+
+    _triggerRefresh(endpoint, reason, delayMs = 3000) {
+      console.log(`[TimeoutOrchestrator] Refreshing connection for ${endpoint} due to ${reason} (${delayMs}ms)`);
+      this.health[endpoint] = { ...this.health[endpoint], state: 'recovering' };
+      // Simulate connection drop & revival, pausing queue
+      setTimeout(() => this.revive(endpoint), delayMs);
+    }
+
+    _checkZombies() {
+      const now = Date.now();
+      Object.keys(this.health).forEach(endpoint => {
+        const h = this.health[endpoint];
+        const maxTtlMs = MAX_IDLE_TTL[endpoint] || MAX_IDLE_TTL.default;
+        // If a request was queued but connection has been inactive for maxTtlMs, revive
+        if (h && h.state === 'active' && (now - h.lastSuccess > maxTtlMs) && this.queues[endpoint]?.length > 0) {
+           this._triggerRefresh(endpoint, 'zombie_detection');
+        }
+      });
+    }
+
+    recordActivity(endpoint, isSuccess) {
+      if (!this.health[endpoint]) this.health[endpoint] = { state: 'active', lastSuccess: Date.now() };
+      if (isSuccess) {
+        this.health[endpoint].lastSuccess = Date.now();
+        if (this.health[endpoint].state === 'recovering') this.revive(endpoint);
+      }
+    }
+
+    async enqueue(endpoint, executor) {
+      if (!this.queues[endpoint]) this.queues[endpoint] = [];
+      if (!this.health[endpoint]) this.health[endpoint] = { state: 'active', lastSuccess: Date.now() };
+
+      // Bound the queue: an endpoint stuck retrying a dead shared transport
+      // would otherwise accumulate every subsequent poll forever. Drop the
+      // oldest queued requests first -- for live market data, a fresher
+      // request superseding a stale one is correct; blocking on stale data
+      // is not.
+      const q = this.queues[endpoint];
+      while (q.length >= MAX_QUEUE_DEPTH) {
+        const dropped = q.shift();
+        dropped.reject(new Error(`[TimeoutOrchestrator] queue overflow for ${endpoint}, dropping stale request`));
+      }
+
+      return new Promise((resolve, reject) => {
+        const req = { executor, resolve, reject, timestamp: Date.now(), attempts: 0 };
+        q.push(req);
+        this._processQueue(endpoint);
+      });
+    }
+
+    async _processQueue(endpoint) {
+      if (this.health[endpoint]?.state === 'recovering') return; // Wait for revival
+      const q = this.queues[endpoint];
+      if (!q || q.length === 0) return;
+
+      const req = q.shift();
+      try {
+        const result = await req.executor();
+        req.resolve(result);
+        this.recordActivity(endpoint, true);
+      } catch (err) {
+        req.attempts += 1;
+        if (/timeout|abort/i.test(err.message) && req.attempts < MAX_ENDPOINT_RETRIES) {
+          // Pause and trigger revival, put req back at the front to retry --
+          // but only up to MAX_ENDPOINT_RETRIES. Without a cap, a genuinely
+          // dead shared transport (not just one slow request) means this
+          // single request retries forever and every subsequent request to
+          // this endpoint queues up behind it indefinitely -- which is what
+          // "18 unrelated providers degrade at once" actually was: one dead
+          // proxy, not 18 real outages.
+          console.warn(
+            `[TimeoutOrchestrator] Timeout for ${endpoint} ` +
+            `(attempt ${req.attempts}/${MAX_ENDPOINT_RETRIES}), retrying...`
+          );
+          q.unshift(req);
+          const backoffMs = Math.min(3000 * (2 ** (req.attempts - 1)), 30000);
+          this._triggerRefresh(endpoint, 'timeout_error', backoffMs);
+        } else {
+          if (req.attempts >= MAX_ENDPOINT_RETRIES) {
+            console.error(
+              `[TimeoutOrchestrator] ${endpoint} exceeded ${MAX_ENDPOINT_RETRIES} retries, ` +
+              `marking degraded and dropping request`
+            );
+            this.health[endpoint] = { state: 'active', lastSuccess: this.health[endpoint]?.lastSuccess || 0 };
+          }
+          req.reject(err);
+        }
+      }
+
+      if (q.length > 0) setTimeout(() => this._processQueue(endpoint), 10);
+    }
+
+    revive(endpoint) {
+      if (this.health[endpoint]) {
+        this.health[endpoint].state = 'active';
+        this.health[endpoint].lastSuccess = Date.now();
+      }
+      console.log(`[TimeoutOrchestrator] Connection revived for ${endpoint}, processing queue...`);
+      this._processQueue(endpoint);
+    }
+  }
+
   // ── CACHE ORCHESTRATOR CLASS ────────────────────────────────────
   /**
    * CacheOrchestrator: Multi-layer cache
    * L1: In-memory (promises, 1s)
    * L2: localStorage (5min)
-   * L3: Disk persistence (F:\WECRYP\data)
+   * L3: Disk persistence (F:\WECRYPTO\data)
    * L4: Network (with backoff)
    */
   class CacheOrchestrator {
@@ -566,9 +1075,16 @@ if (
     constructor(config = {}) {
       this.config = config;
       this.rateLimiters = {};       // endpoint → RateLimiter
+      this.cascadeTimer = new CascadingTimer(PROVIDER_TIMING_AUDIT);
       this.batcher = new RequestBatcher(500);
       this.fallback = new FallbackRouter();
       this.cache = new CacheOrchestrator();
+      this.timeoutOrchestrator = new TimeoutOrchestrator();
+
+      // Schedule proactive refreshes every 6 hours for critical endpoints
+      ['kalshi', 'polymarket', 'pyth', 'coingecko', 'cmc'].forEach(ep => {
+        this.timeoutOrchestrator.scheduleRefresh(ep, 6 * 3600 * 1000);
+      });
 
       // Initialize rate limiters for known endpoints
       Object.keys(RATE_LIMITS).forEach(endpoint => {
@@ -579,6 +1095,9 @@ if (
       Object.keys(RATE_LIMITS).forEach(endpoint => {
         this.fallback.registerSource(endpoint, null, 'http');
       });
+
+      // Register pseudo-endpoints
+      this.fallback.registerSource('cache', null, 'http');
 
       // Register gRPC endpoints
       if (typeof window.grpcKalshiHandler === 'function') {
@@ -601,13 +1120,19 @@ if (
      * Main fetch interface: Unified logic with all layers
      */
     async fetch(url, options = {}) {
+      const pPort = window.__PROXY_PORT__ || 3010;
+      // ---- BACKEND PROXY ROUTING DISABLED ----
+      // All these are now natively routed through Tor via Chromium PAC script.
+
       const {
-        endpoint = 'default',
+        endpoint: endpointOpt = null,
         cacheType = 'market-data',
         skipCache = false,
         fallbackChain = null,
         retries = 2,
+        requestOptions = {},
       } = options;
+      const endpoint = endpointOpt || inferEndpointFromUrl(url);
 
       const startTime = Date.now();
       const cacheKey = this.cache._cacheKey(url, endpoint);
@@ -626,44 +1151,70 @@ if (
 
       // 2. Get rate limiter
       const limiter = this.rateLimiters[endpoint] || this.rateLimiters.default;
+      const cascadeWindow = this.cascadeTimer.getWindow(endpoint);
       if (!limiter.canRequest()) {
-        console.warn(`[ProxyOrchestrator] Rate limited (${endpoint}), using cache...`);
-        const cached = this.cache.get(cacheKey, cacheType);
-        if (cached) return cached;
-        throw new Error(`Rate limited and no cache available: ${endpoint}`);
+        const waitMs = Math.max(limiter.getWaitMs(), cascadeWindow.intervalMs);
+        const canWait = waitMs > 0 && waitMs <= Math.max(20000, cascadeWindow.timeoutMs) && !limiter.circuitOpen;
+        if (canWait) {
+          await new Promise(r => setTimeout(r, waitMs));
+        } else {
+          console.warn(`[ProxyOrchestrator] Rate limited (${endpoint}), using cache...`);
+          const cached = this.cache.get(cacheKey, cacheType);
+          if (cached) {
+            return cached;
+          } else {
+            return Promise.reject(new Error(`Rate limited and no cache available: ${endpoint}`));
+          }
+        }
       }
 
-      // 3. Execute fetch (with deduplication and fallback)
+      // 3. Execute fetch (with deduplication, fallback, and timeout queueing)
       let result;
       const chain = fallbackChain || (FALLBACK_CHAINS[endpoint] || [endpoint]);
 
       try {
-        if (chain.length === 1) {
-          // Direct fetch without fallback chain
-          if (this.fallback.sources[endpoint] && this.fallback.sources[endpoint].type === 'grpc') {
-            // gRPC endpoint
-            result = await this.fallback.sources[endpoint].handler({ url, options }, endpoint);
-          } else {
-            // HTTP endpoint
-            result = await this._executeFetch(url, endpoint, limiter, retries);
-          }
-        } else {
-          // Use fallback chain (mixed HTTP/gRPC)
-          result = await this.fallback.tryChain(chain, async (ep) => {
-            if (this.fallback.sources[ep] && this.fallback.sources[ep].type === 'grpc') {
-              return await this.fallback.sources[ep].handler({ url, options }, ep);
+        result = await this.timeoutOrchestrator.enqueue(endpoint, async () => {
+          let innerResult;
+          if (chain.length === 1) {
+            // Direct fetch without fallback chain
+            if (this.fallback.sources[endpoint] && this.fallback.sources[endpoint].type === 'grpc') {
+              // gRPC endpoint
+              innerResult = await this.fallback.sources[endpoint].handler({ url, options }, endpoint);
             } else {
-              return await this._executeFetch(url, ep, this.rateLimiters[ep], retries);
+              // HTTP endpoint
+              innerResult = await this._executeFetch(url, endpoint, limiter, retries, requestOptions);
             }
-          }, { url, options });
-          result = result.result;
-        }
+          } else {
+            // Use fallback chain (mixed HTTP/gRPC)
+            innerResult = await this.fallback.tryChain(chain, async (ep) => {
+              if (ep === 'cache') {
+                const cached = this.cache.get(cacheKey, cacheType);
+                if (!cached) {
+                  return Promise.reject(new Error('Cache miss'));
+                }
+                return cached;
+              }
+              if (this.fallback.sources[ep] && this.fallback.sources[ep].type === 'grpc') {
+                return await this.fallback.sources[ep].handler({ url, options }, ep);
+              } else {
+                return await this._executeFetch(url, ep, this.rateLimiters[ep], retries, requestOptions);
+              }
+            }, { url, options });
+            innerResult = innerResult.result;
+          }
+          return innerResult;
+        });
 
-        limiter.recordSuccess();
+        if (limiter) limiter.recordSuccess();
         this.cache.set(cacheKey, result, cacheType);
 
         const latency = Date.now() - startTime;
         this._recordLatency(latency);
+        this._recordOutcome(endpoint, true, latency);
+        const payloadBytes = (() => {
+          try { return JSON.stringify(result).length; } catch (_) { return 0; }
+        })();
+        this.cascadeTimer.recordSuccess(endpoint, latency, payloadBytes);
 
         console.log(`[ProxyOrchestrator] Success (${endpoint}): ${url} (${latency}ms)`);
         metrics.requests[endpoint] = (metrics.requests[endpoint] || 0) + 1;
@@ -672,7 +1223,9 @@ if (
       } catch (err) {
         const latency = Date.now() - startTime;
         this._recordLatency(latency);
-        limiter.recordFailure();
+        this._recordOutcome(endpoint, false, latency, err?.message || err);
+        if (limiter) limiter.recordFailure();
+        this.cascadeTimer.recordFailure(endpoint, err);
         metrics.failures[endpoint] = (metrics.failures[endpoint] || 0) + 1;
 
         console.error(`[ProxyOrchestrator] Failed (${endpoint}): ${err.message}`);
@@ -683,36 +1236,106 @@ if (
     /**
      * Internal: Execute fetch with rate limiting and retry
      */
-    async _executeFetch(url, endpoint, limiter, retries = 2) {
+    async _executeFetch(url, endpoint, limiter, retries = 2, requestOptions = {}) {
       let lastErr;
       for (let attempt = 0; attempt <= retries; attempt++) {
         try {
+          const cascadeWindow = this.cascadeTimer.getWindow(endpoint);
           // Use batcher to deduplicate
           return await this.batcher.batch(url, { endpoint }, async () => {
-            const res = await fetch(url, {
-              headers: { Accept: 'application/json' },
-            });
+            if (limiter) {
+              limiter.lastRequestTime = Date.now();
+            }
+            let fetchUrl = (endpoint === 'coingecko' || /coingecko/i.test(String(url))) && typeof window !== 'undefined' && typeof window.coinGeckoUrl === 'function'
+              ? window.coinGeckoUrl(url)
+              : url;
+            const controller = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+            const dynamicTimeoutMs = this.cascadeTimer.getAttemptTimeout(endpoint, attempt);
+
+            const timer = setTimeout(() => {
+              try {
+                if (controller) {
+                  controller.abort(new DOMException(
+                    `[ProxyOrchestrator] ${endpoint} timeout after ${dynamicTimeoutMs}ms (Attempt ${attempt + 1})`,
+                    'TimeoutError'
+                  ));
+                }
+              } catch (_) {
+                try { if (controller) controller.abort(); } catch (_) { }
+              }
+            }, dynamicTimeoutMs);
+            let res;
+            try {
+              const isGecko = endpoint === 'coingecko' || /coingecko/i.test(String(url));
+              const headers = { Accept: 'application/json' };
+              if (requestOptions.headers) {
+                if (typeof Headers !== 'undefined' && requestOptions.headers instanceof Headers) {
+                  for (const [k, v] of requestOptions.headers.entries()) headers[k] = v;
+                } else if (typeof requestOptions.headers.entries === 'function') {
+                  for (const [k, v] of requestOptions.headers.entries()) headers[k] = v;
+                } else {
+                  Object.assign(headers, requestOptions.headers);
+                }
+              }
+              if (endpoint === 'binance' || /binance/i.test(String(url))) {
+                const binanceKey = window.resolveRuntimeKey('BINANCE_API_KEY');
+                if (binanceKey) headers['X-MBX-APIKEY'] = binanceKey;
+              } else if ((endpoint === 'cmc' || /coinmarketcap/i.test(String(url))) && !/\/trial-pro-api\//i.test(String(fetchUrl))) {
+                const cmcKey = window.resolveRuntimeKey('CMC_PRO_API_KEY') || window.resolveRuntimeKey('COINMARKETCAP_API_KEY');
+                if (cmcKey && !headers['X-CMC_PRO_API_KEY'] && !headers['x-cmc_pro-api-key']) {
+                  headers['X-CMC_PRO_API_KEY'] = cmcKey;
+                }
+              }
+              const requestWithAuth = isGecko && typeof window !== 'undefined' && typeof window.withCoinGeckoAuth === 'function'
+                ? window.withCoinGeckoAuth(fetchUrl, { headers })
+                : { headers };
+
+              res = await fetch(fetchUrl, {
+                ...requestOptions,
+                headers: requestWithAuth.headers || headers,
+                signal: controller ? controller.signal : undefined,
+              });
+            } finally {
+              clearTimeout(timer);
+            }
 
             if (res.status === 429 || res.status === 503) {
-              const backoffMs = limiter.recordFailure(res.status);
-              if (attempt < retries) {
-                await new Promise(r => setTimeout(r, backoffMs));
-                throw new Error(`HTTP ${res.status}, retrying...`);
-              }
-              throw new Error(`HTTP ${res.status} after ${retries} retries`);
+              if (limiter) limiter.recordFailure(res.status);
+              return Promise.reject(new Error(`HTTP ${res.status}: upstream reject`));
+            }
+
+            if (res.status === 401 || res.status === 403) {
+              const isGecko = endpoint === 'coingecko' || /coingecko/i.test(String(url));
+              const lockMs = isGecko ? 60 * 60_000 : 15 * 60_000;
+              if (limiter) limiter.recordAuthFailure(lockMs, res.status);
+              return Promise.reject(new Error(`HTTP ${res.status}: auth rejection (${endpoint})`));
             }
 
             if (!res.ok) {
-              throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+              return Promise.reject(new Error(`HTTP ${res.status}: ${res.statusText}`));
             }
-
-            return res.json();
+            const raw = await res.text();
+            let parsed = JSON.parse(raw);
+            if (raw.length > cascadeWindow.maxPayloadBytes) {
+              parsed = truncateJsonPayload(parsed, { maxDepth: 5, maxArray: 200, maxString: 2000 });
+              console.warn(`[ProxyOrchestrator] Truncated oversized payload (${endpoint}) at ${raw.length}B`);
+            }
+            return parsed;
           });
         } catch (err) {
           lastErr = err;
+          if (/HTTP 401|HTTP 403|HTTP 429|HTTP 503|auth rejection|upstream reject/i.test(String(err?.message || err || ''))) {
+            // Hard rejects (auth or rate limit) should instantly break to trigger the FallbackRouter
+            break;
+          }
           if (attempt < retries) {
-            const backoffMs = (this.config.backoff_start || 2000) * Math.pow(2, attempt);
-            console.log(`[ProxyOrchestrator] Retry ${attempt + 1}/${retries} after ${backoffMs}ms`);
+            const cascadeWindow = this.cascadeTimer.getWindow(endpoint);
+            const baseBackoff = limiter?.getSafeInterval?.() || this.config.backoff_start || 2000;
+            const backoffMs = Math.min(
+              cascadeWindow.intervalMs * 8,
+              Math.max(cascadeWindow.intervalMs, baseBackoff * Math.pow(1.6, attempt))
+            );
+            console.log(`[ProxyOrchestrator] Retry ${attempt + 1}/${retries} after ${Math.round(backoffMs)}ms`);
             await new Promise(r => setTimeout(r, backoffMs));
           }
         }
@@ -728,6 +1351,19 @@ if (
       metrics.latencies.push(ms);
       if (metrics.latencies.length > LATENCY_BUFFER_SIZE) {
         metrics.latencies.shift();
+      }
+    }
+
+    _recordOutcome(endpoint, ok, latencyMs = 0, error = '') {
+      metrics.events.push({
+        endpoint,
+        ok: !!ok,
+        latencyMs: Number(latencyMs) || 0,
+        error: String(error || ''),
+        ts: Date.now(),
+      });
+      if (metrics.events.length > OUTCOME_BUFFER_SIZE) {
+        metrics.events.splice(0, metrics.events.length - OUTCOME_BUFFER_SIZE);
       }
     }
 
@@ -751,6 +1387,16 @@ if (
 
       const cacheStats = this.cache.getStats();
       const uptime = Date.now() - metrics.startTime;
+      const cutoff = Date.now() - HEALTH_ROLLING_WINDOW_MS;
+      const recentEvents = metrics.events.filter((event) => Number(event.ts || 0) >= cutoff);
+      const recentByEndpoint = {};
+      const recentFailuresByEndpoint = {};
+      for (const event of recentEvents) {
+        recentByEndpoint[event.endpoint] = (recentByEndpoint[event.endpoint] || 0) + 1;
+        if (!event.ok) {
+          recentFailuresByEndpoint[event.endpoint] = (recentFailuresByEndpoint[event.endpoint] || 0) + 1;
+        }
+      }
 
       return {
         uptime,
@@ -768,6 +1414,13 @@ if (
           total: Object.values(metrics.failures).reduce((a, b) => a + b, 0),
           byEndpoint: metrics.failures,
         },
+        rolling: {
+          windowMs: HEALTH_ROLLING_WINDOW_MS,
+          requests: recentEvents.length,
+          failures: recentEvents.filter((event) => !event.ok).length,
+          byEndpoint: recentByEndpoint,
+          failuresByEndpoint: recentFailuresByEndpoint,
+        },
         latency: {
           average: this._getAverageLatency(),
           min: Math.min(...metrics.latencies || [0]),
@@ -775,6 +1428,7 @@ if (
         },
         batcher: this.batcher.getStatus(),
         fallback: this.fallback.getStatus(),
+        providerTiming: this.cascadeTimer.getStatus(),
       };
     }
 

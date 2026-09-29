@@ -1,0 +1,20 @@
+        if (!ki || ki.action === 'skip') return '';
+
+        // ── Model probability: convert score (-1..+1) to directional % ───
+        const modelUpPct = Math.round(Math.min(99, Math.max(1, 50 + (p.score || 0) * 50)));
+        const modelDownPct = 100 - modelUpPct;
+        const _strikeDirKi = (_k15mV?.strikeDir ?? _kAlignEarly?.strikeDir ?? 'above') === 'below' ? 'below' : 'above';
+        const _yesDirKi = _strikeDirKi === 'below' ? 'down' : 'up';
+        const _noDirKi = _yesDirKi === 'up' ? 'down' : 'up';
+        const modelYesPct = Number.isFinite(_kAlignEarly?.modelYesPct)
+          ? _kAlignEarly.modelYesPct
+          : (_strikeDirKi === 'below' ? modelDownPct : modelUpPct);
+        const modelLean = modelYesPct >= 58 ? _yesDirKi : modelYesPct <= 42 ? _noDirKi : 'neutral';
+        const modelLeanStr = modelLean === 'up' ? `${modelUpPct}% UP`
+          : modelLean === 'down' ? `${modelDownPct}% DOWN`
+            : 'NEUTRAL';
+        const modelColor = '#7db7ff';
+        const modelDirectionColor = modelLean === 'up' ? 'var(--color-green)'
+          : modelLean === 'down' ? 'var(--color-red)'
+            : 'var(--color-text-muted)';
+

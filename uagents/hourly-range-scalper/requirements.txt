@@ -1,0 +1,5 @@
+uagents>=0.25
+uagents-core>=0.4
+python-dotenv>=1.2
+requests>=2.32
+tzdata>=2026.1

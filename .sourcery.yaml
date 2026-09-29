@@ -1,0 +1,25 @@
+version: "1"
+
+rule_settings:
+  enable:
+    - default
+    - python
+    - javascript
+    - typescript
+
+ignore:
+  - "node_modules/**"
+  - "dist/**"
+  - "proxy/target/**"
+  - "WE-CRYPTO-backup-*/**"
+  - "WE-CRYPTO-CACHE/**"
+  - "backtest-logs/**"
+  - "backtest-results/**"
+  - "build/**"
+  - "vendor/**"
+  - "vendors/**"
+
+github:
+  action_on_new_pr: review
+  suggest_improvements: false
+  request_review: none

@@ -1,0 +1,48 @@
+name: JavaScript Coverage Gate
+
+on:
+  push:
+    branches: ["main", "master", "dev"]
+  pull_request:
+    branches: ["main", "master", "dev"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  syntax:
+    name: Core JavaScript syntax
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Check core JavaScript files
+        shell: bash
+        run: |
+          set -euo pipefail
+          files=(
+            electron/main.js
+            electron/preload.js
+            src/core/app-core.js
+            src/core/predictions.js
+            src/infra/asi1-client.js
+            src/infra/proxy-fetch.js
+            src/feeds/polymarket-ws.js
+            src/feeds/polymarket-client.js
+            cloudflared/mullvad-standalone-socks.js
+          )
+          for file in "${files[@]}"; do
+            node --check "$file"
+          done

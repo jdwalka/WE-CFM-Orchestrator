@@ -1,0 +1,18 @@
+          : 'safety-weak-conviction';
+    }
+    */
+
+    // Targeted guard (ultra-late only): keep aggressive mispricing capture intact,
+    // but block semi-confidence crowd-conflict flips in the last seconds.
+    const confNorm = _normalizeConfidence(p.confidence) ?? 0;
+    const isSemiConfidence = confNorm >= 0.40 && confNorm < 0.70;
+    const isCrowdConflict =
+      kalshiDir !== null && modelDir !== 'wait' && modelDir !== kalshiDir;
+    const isUltraLateWindow =
+      Number.isFinite(msToClose) && msToClose >= 0 && msToClose <= 45_000;
+
+    if (
+      verdictDir !== 'wait' &&
+      isSemiConfidence &&
+      isCrowdConflict &&
+      isUltraLateWindow

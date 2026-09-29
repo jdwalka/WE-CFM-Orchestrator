@@ -32,7 +32,7 @@
                 ...metadata,
             });
 
-            if (this.predictions.length > 10000) {
+            if (this.predictions.length > 20000) {
                 this.predictions.shift();
             }
         }

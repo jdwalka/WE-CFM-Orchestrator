@@ -1,0 +1,106 @@
+{
+  "version": 1,
+  "phase": "offline-tft-scaffold",
+  "horizons": [
+    {
+      "key": "h5",
+      "label": "5m",
+      "minutes": 5,
+      "basePrior": 0.33222591362126247
+    },
+    {
+      "key": "h15",
+      "label": "15m",
+      "minutes": 15,
+      "basePrior": 0.41860465116279066
+    },
+    {
+      "key": "h60",
+      "label": "1h",
+      "minutes": 60,
+      "basePrior": 0.24916943521594684
+    }
+  ],
+  "attention": {
+    "weights": {
+      "h5": 0.3322259169435116,
+      "h15": 0.4186043953496046,
+      "h60": 0.24916968770688372
+    },
+    "basePriors": {
+      "h5": 0.33222591362126247,
+      "h15": 0.41860465116279066,
+      "h60": 0.24916943521594684
+    },
+    "logits": {
+      "h5": -1.1019370687653145,
+      "h15": -0.8708259689113624,
+      "h60": -1.3896181378872854
+    },
+    "coeffs": {
+      "magnitude": 1.35,
+      "closeBias": 1,
+      "volBias": 1,
+      "agreement": 1,
+      "conflictPenalty": 0.08,
+      "blend": 0.38
+    }
+  },
+  "features": {
+    "fastKeys": [
+      "momentum",
+      "volume",
+      "obv",
+      "rsi",
+      "stochrsi",
+      "williamsR"
+    ],
+    "midKeys": [
+      "ema",
+      "macd",
+      "vwap",
+      "bands",
+      "keltner",
+      "cmf"
+    ],
+    "slowKeys": [
+      "ichimoku",
+      "hma",
+      "sma",
+      "adx",
+      "supertrend",
+      "persistence"
+    ]
+  },
+  "training": {
+    "days": 3,
+    "coins": [
+      "BTC"
+    ],
+    "samples": 9,
+    "horizonAccuracy": {
+      "h5": 0.5714285714285714,
+      "h15": 1,
+      "h60": 0.42857142857142855
+    },
+    "horizonCounts": {
+      "h5": 7,
+      "h15": 2,
+      "h60": 7
+    }
+  },
+  "exportedAt": "2026-06-20T20:08:05.193Z",
+  "validation": {
+    "fuseKeys": [
+      "h5",
+      "h15",
+      "h60"
+    ],
+    "fusePhase": "lite-mlp-attention",
+    "sampleWeights": {
+      "h5": 0.2994011162165831,
+      "h15": 0.496499832921261,
+      "h60": 0.20409905086215593
+    }
+  }
+}

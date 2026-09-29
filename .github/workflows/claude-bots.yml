@@ -1,0 +1,223 @@
+name: Claude Bots
+
+# Aggregates the Claude-powered review / autofix actions.
+#
+# REQUIRED BEFORE THIS WORKS (see PR description):
+#   1. Repo secret  ANTHROPIC_API_KEY   (Settings > Secrets and variables > Actions)
+#      - or, for the two official anthropics/* actions, CLAUDE_CODE_OAUTH_TOKEN
+#        from `claude setup-token` if you're on a Max/Pro subscription.
+#   2. Install the "Claude" GitHub App on this repo so anthropics/claude-code-action
+#      can post comments / open PRs:  https://github.com/apps/claude
+#   3. Nothing to install for enriconunes/claude-autofix-action or
+#      rekpero/claude-bugbot-github-action beyond the API key.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  id-token: write
+
+concurrency:
+  group: claude-bots-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # Cheap static validators for the repo's .claude/ config. No API key needed.
+  claude-config-lint:
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: claude-commands-check
+        uses: MukundaKatta/claude-commands-check@3fd1b946b46f23ec1b88373746762d39c891dc6b
+        with:
+          paths: .claude/commands
+      - name: claude-hooks-check
+        uses: MukundaKatta/claude-hooks-check@7ebcea5d5e828d003cdbb5841a50dd6047efecf3
+        with:
+          paths: .claude/hooks
+      - name: claude-skill-check
+        uses: MukundaKatta/claude-skill-check@77bbd644d76bf926266f5971c2c81c579271f6af
+        with:
+          paths: .claude/skills
+
+  # Official Anthropic action. Runs as a PR reviewer on PR events, and responds
+  # to "@claude ..." mentions in issue / PR / review comments.
+  claude-code:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' && github.event.pull_request.draft == false) ||
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
+      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude'))
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+      - name: Temporarily hide tsconfig.json to avoid bun tsconfig auto-discovery
+        run: |
+          if [ -f tsconfig.json ]; then mv tsconfig.json .tsconfig.ci.bak; echo "tsconfig hidden"; fi
+        shell: bash
+      - name: Claude Code Action Official
+        uses: anthropics/claude-code-action@923714f19352008835430ae7d21fa14865c3d476
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}  # use instead of api key on Max/Pro
+      - name: Restore tsconfig.json
+        if: always()
+        run: |
+          if [ -f .tsconfig.ci.bak ]; then mv .tsconfig.ci.bak tsconfig.json; echo "tsconfig restored"; fi
+        shell: bash
+
+  # Lower-level building block. Only useful with an explicit prompt, so it is
+  # gated to manual runs; edit the prompt for whatever one-off automation you need.
+  claude-code-base:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+      - name: Claude Code Base Action
+        uses: anthropics/claude-code-base-action@e8132bc5e637a42c27763fc757faa37e1ee43b34
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: "Review the latest changes on this branch for correctness bugs and summarise anything risky."
+
+  # Third-party PR review bot.
+  bugbot:
+    if: github.event_name == 'pull_request' && github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+      - name: Claude BugBot
+        uses: rekpero/claude-bugbot-github-action@8eedc356796c3b6e73a2d2288fe10643702b8bfb
+        with:
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github-token: ${{ github.token }}
+          model: sonnet
+          max-budget: "1.00"
+
+  # Third-party PR reviewer. Reads .ai-reviewer.yml at repo root if present.
+  ai-pr-reviewer:
+    if: github.event_name == 'pull_request' && github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+      - name: Claude PR Auditor
+        uses: LennardGeissler/ai-pr-reviewer@9162ccdeb8fb6b513b2a7fe1d3386d314e82ebcc
+        with:
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github-token: ${{ github.token }}
+
+  # Third-party PR reviewer. NOTE: input names below are assumed (action.yml not
+  # verified) -- confirm against https://github.com/mjthinkkits/claude-pr-review
+  claude-pr-review:
+    if: github.event_name == 'pull_request' && github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+      - name: Claude PR Review
+        uses: mjthinkkits/claude-pr-review@587dee6ac5b220f5f9bd3b177f8a11ee9346cc46
+        with:
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github-token: ${{ github.token }}
+
+  # Third-party: runs the test suite, has Claude fix failures, opens a PR with the fix.
+  autofix:
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+      - name: Claude AutoFix
+        uses: enriconunes/claude-autofix-action@86cc82d4d18e33e99106982f12b5e2a502d5ab97
+        with:
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          language: javascript
+          test-framework: jest
+          create-pr: "true"
+          max-fixes: "5"
+
+  # Third-party: applies changes on PRs labelled "claudecoder". Uses AWS Bedrock,
+  # NOT the Anthropic API -- needs AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY secrets.
+  claudecoder:
+    if: >-
+      github.event_name == 'pull_request' &&
+      contains(join(github.event.pull_request.labels.*.name, ','), 'claudecoder')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+      - name: ClaudeCoderAction
+        uses: EndemicMedia/claudecoder@ad844d436c9a5354cd2d61314763c254daf39644
+        with:
+          github-token: ${{ github.token }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+  # Third-party: Claude PR reviewer bot using Bedrock. Requires AWS credentials.
+  claude-code-review:
+    if: github.event_name == 'pull_request' && github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+      - name: Claude AI Code Review
+        uses: chimaek/claude-code-review-action@8b7f3e33b5503cb940562c20ef5061f267b1c03c
+        with:
+          github-token: ${{ github.token }}
+
+  # Third-party: Claude self-learning review bot (tracks patterns across PRs).
+  claude-learn:
+    if: github.event_name == 'pull_request' && github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+      - name: Claude Self-Learning Review
+        uses: Valmarelox/claude-learn-action@b47c547cd995d6c132376ceb3ebdbb9b353613d7
+        with:
+          github-token: ${{ github.token }}
+
+  # Third-party: Claude code session tracking bot.
+  claude-session:
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+      - name: Claude Code session
+        uses: CVector-Energy/claude-code-session@d1678c397e6a74044b2ebd3e049fc5d2ae3d2286
+        with:
+          github-token: ${{ github.token }}
+
+  # Third-party: Setup Claude Code in the runner environment.
+  setup-claude:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Install Claude Code
+        uses: pleaseai/setup-claude-code@a584779d3e6ee20cf6246a0ba4dcc2672a97ca2a

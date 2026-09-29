@@ -1,0 +1,16 @@
+# ── 00-tailscale-operator.yaml ─────────────────────────────────────────────
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: tailscale
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: operator-oauth
+  namespace: tailscale
+type: Opaque
+stringData:
+  # Generated from Tailscale Admin > Settings > OAuth Clients
+  client_id: "tskey-client-REPLACE_ME"
+  client_secret: "tskey-secret-REPLACE_ME"

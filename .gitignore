@@ -1,9 +1,13 @@
 # Dependencies
 node_modules/
+node_modules (1)/
 
 # Build output
 dist/
 build/
+.vercel/
+# Do not add sibling dist-* release folders. They are intentionally not ignored
+# so accidental generated output stays visible in git status.
 
 # Electron build artifacts
 *.exe
@@ -11,13 +15,24 @@ build/
 
 # Logs
 *.log
+logs/
+backtest-logs/
 debug-logs/
 
 # Secrets — NEVER COMMIT
 secrets/
 KALSHI-API-KEY.txt
+WECRYpto KALSHI RDONLY APIKEY.txt
 *-api-key*
+*APIKEY*
+*API-KEY*
+ENDPOINTS_AND_KEYS.md
 *.key
+*.pem
+*.p8
+*.p12
+credentials*.json
+service-account*.json
 .env
 .env.*
 
@@ -43,6 +58,7 @@ venv/
 
 # HAR debug files (huge, personal)
 *.har
+COPILOT_DEBUG/
 
 # Backtest results (regenerated locally)
 backtest/results/
@@ -52,6 +68,8 @@ backtest-results/
 
 # Data files with personal trade history
 data/
+*.db
+*.db-*
 
 # Temp / scratch
 *.old
@@ -64,3 +82,12 @@ data/
 config.toml
 
 .fake
+
+# Local Cleanup Folders
+logs/
+scratch/
+_consolidated-from-drive/
+
+# Local CodeQL/Semgrep scan artifacts
+.codeql-results/
+

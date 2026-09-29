@@ -1,0 +1,21 @@
+# Dockerfile.ingestion
+# Heavy-Duty Ingestion Container for WECRYPTO WebSocket feeds
+
+FROM node:20-bullseye-slim
+
+# Install any necessary native build tools if we need native compilation for Redis/WebSocket libraries
+RUN apt-get update && apt-get install -y python3 build-essential && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy package files and install dependencies
+# Note: Using npm ci for deterministic builds if package-lock is present
+COPY package*.json ./
+RUN npm install --production
+
+# Copy the application source code
+COPY ./src ./src
+
+# Expose no external ports, as this only pushes data to Redis
+# CMD should point to the primary ingestor script
+CMD ["node", "src/orbital/orbital-ingestor-daemon.js"]

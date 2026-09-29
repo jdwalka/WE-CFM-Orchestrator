@@ -15,24 +15,39 @@
   'use strict';
 
   const COINS = ['BTC', 'ETH', 'SOL', 'XRP', 'BNB', 'DOGE', 'HYPE'];
-  const POLL_MS = 15000;
+  const BINANCE_SPOT_SYMS = new Set(['BTC', 'ETH', 'SOL', 'XRP', 'BNB', 'DOGE']);
+  const POLL_MS = 45000; // Relaxed cadence: Pyth Lazer handles sub-second spot
   const TIMEOUT = 9000;
   const CACHE = {};        // sym → { exchanges[], aggregate, ts }
   const VOL_HISTORY = {};    // `${exchange}_${sym}` → [vol24h, ...]  (rolling 8)
+  const EXCHANGE_CACHE = {}; // `${exchange}_${sym}` -> { value, ts, inFlight }
+  const EXCHANGE_POLL_INTERVAL_MS = {
+    Binance: 45000,
+    Bybit: 45000,
+    OKX: 45000,
+    Coinbase: 30000,
+    Kraken: 45000,
+  };
+  const SECONDARY_EXCHANGES = Object.keys(EXCHANGE_POLL_INTERVAL_MS);
   let _timer = null;
+  let _fetchCycle = 0;
+
+  function wait(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
 
   // ── helpers ──────────────────────────────────────────────────────
-  function timedFetch(url) {
+  function timedFetch(url, opts = {}) {
     return Promise.race([
-      fetch(url),
+      fetch(url, opts),
       new Promise((_, reject) =>
         setTimeout(() => reject(new Error('timeout')), TIMEOUT)
       ),
     ]);
   }
 
-  async function getJson(url) {
-    const res = await timedFetch(url);
+  async function getJson(url, opts = {}) {
+    const res = await timedFetch(url, opts);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.json();
   }
@@ -52,6 +67,54 @@
     return currentVol / avg;
   }
 
+  function shouldPollExchange(exchange, sym, intervalMs) {
+    const slots = Math.max(1, Math.ceil((Number(intervalMs) || POLL_MS) / POLL_MS));
+    if (slots <= 1) return true;
+    const coinIndex = Math.max(0, COINS.indexOf(sym));
+    const exchangeIndex = Math.max(0, SECONDARY_EXCHANGES.indexOf(exchange));
+    return ((coinIndex + exchangeIndex + _fetchCycle) % slots) === 0;
+  }
+
+  async function withExchangeCadence(exchange, sym, fetcher) {
+    const intervalMs = EXCHANGE_POLL_INTERVAL_MS[exchange] || POLL_MS;
+    const key = `${exchange}_${sym}`;
+    const row = EXCHANGE_CACHE[key] || {};
+    const ageMs = Date.now() - Number(row.ts || 0);
+    if (row.value && ageMs < intervalMs) {
+      return {
+        ...row.value,
+        via: row.value.via || 'cached-pool',
+        cadenceMs: intervalMs,
+      };
+    }
+    if (row.inFlight) {
+      if (row.value) return { ...row.value, via: row.value.via || 'cached-pool', cadenceMs: intervalMs };
+      return row.inFlight;
+    }
+    if (!shouldPollExchange(exchange, sym, intervalMs)) {
+      if (row.value) return { ...row.value, via: row.value.via || 'stale-pool', cadenceMs: intervalMs };
+      return {
+        exchange,
+        available: false,
+        reason: `pooled ${Math.round(intervalMs / 1000)}s cadence wait`,
+        cadenceMs: intervalMs,
+        via: 'cadence-wait',
+      };
+    }
+    row.inFlight = Promise.resolve()
+      .then(fetcher)
+      .then(value => {
+        EXCHANGE_CACHE[key] = { value, ts: Date.now(), inFlight: null };
+        return { ...value, cadenceMs: intervalMs };
+      })
+      .catch(err => {
+        if (row.value) return { ...row.value, via: row.value.via || 'stale-pool', cadenceMs: intervalMs };
+        return { exchange, available: false, reason: err?.message || 'cadence fetch failed', cadenceMs: intervalMs };
+      });
+    EXCHANGE_CACHE[key] = row;
+    return row.inFlight;
+  }
+
   function wsSnapshot(exchange, sym) {
     const providerMap = {
       Binance: 'BINANCE',
@@ -61,6 +124,11 @@
       OKX: 'OKX',
       KuCoin: 'KUCOIN',
       'Gate.io': 'GATE',
+      Upbit: 'UPBIT',
+      Bitget: 'BITGET',
+      BingX: 'BINGX',
+      Bitstamp: 'BITSTAMP',
+      Bitvavo: 'BITVAVO',
     };
     const provider = providerMap[exchange];
     if (!provider || !window.ExchangeWS?.getTicker) return null;
@@ -109,13 +177,16 @@
 
   async function fetchBinance(sym) {
     const exchange = 'Binance';
+    if (!BINANCE_SPOT_SYMS.has(sym)) {
+      return { exchange, available: false, reason: 'Unsupported symbol' };
+    }
     const ws = wsSnapshot(exchange, sym);
     if (ws) return ws;
     try {
       // HYPE not on Binance futures but we still try spot
       const [tradesRes, tickerRes] = await Promise.allSettled([
-        getJson(`https://api.binance.us/api/v3/aggTrades?symbol=${sym}USDT&limit=500`),
-        getJson(`https://api.binance.us/api/v3/ticker/24hr?symbol=${sym}USDT`),
+        getJson(`https://data-api.binance.vision/api/v3/aggTrades?symbol=${sym}USDT&limit=500`),
+        getJson(`https://data-api.binance.vision/api/v3/ticker/24hr?symbol=${sym}USDT`),
       ]);
 
       if (tradesRes.status === 'rejected') throw new Error(tradesRes.reason?.message || 'trades failed');
@@ -159,23 +230,54 @@
     const exchange = 'Coinbase';
     const ws = wsSnapshot(exchange, sym);
     if (ws) return ws;
-    // BNB and HYPE not on Coinbase
-    if (sym === 'BNB' || sym === 'HYPE') {
+    // BNB is not listed on Coinbase spot; skip it instead of burning requests.
+    if (sym === 'BNB') {
       return { exchange, available: false, reason: 'Not listed' };
     }
     try {
+      let jwtStr1 = null;
+      let jwtStr2 = null;
+      try {
+        if (window.desktopApp && window.desktopApp.generateCoinbaseJWT) {
+          const [res1, res2] = await Promise.all([
+            window.desktopApp.generateCoinbaseJWT({
+              requestMethod: 'GET',
+              requestPath: `api.coinbase.com/api/v3/brokerage/market/products/${sym}-USD/ticker?limit=100`
+            }),
+            window.desktopApp.generateCoinbaseJWT({
+              requestMethod: 'GET',
+              requestPath: `api.coinbase.com/api/v3/brokerage/market/products/${sym}-USD`
+            })
+          ]);
+          if (res1 && res1.success) jwtStr1 = res1.jwt;
+          if (res2 && res2.success) jwtStr2 = res2.jwt;
+        }
+      } catch(e) { console.warn('[CexFlow] CB JWT failed:', e.message); }
+
+      const headers1 = { 'Accept': 'application/json' };
+      if (jwtStr1) headers1['Authorization'] = `Bearer ${jwtStr1}`;
+      
+      const headers2 = { 'Accept': 'application/json' };
+      if (jwtStr2) headers2['Authorization'] = `Bearer ${jwtStr2}`;
+
+      const url1 = `https://api.coinbase.com/api/v3/brokerage/market/products/${sym}-USD/ticker?limit=100`;
+      const url2 = `https://api.coinbase.com/api/v3/brokerage/market/products/${sym}-USD`;
+
       const [tradesRes, tickerRes] = await Promise.allSettled([
-        getJson(`https://api.exchange.coinbase.com/products/${sym}-USD/trades?limit=100`),
-        getJson(`https://api.exchange.coinbase.com/products/${sym}-USD/ticker`),
+        getJson(url1, { headers: headers1 }),
+        getJson(url2, { headers: headers2 }),
       ]);
 
-      if (tradesRes.status === 'rejected') throw new Error(tradesRes.reason?.message || 'trades failed');
+      if (tradesRes.status === 'rejected') {
+        throw new Error(tradesRes.reason?.message || 'trades failed');
+      }
 
-      const trades = Array.isArray(tradesRes.value) ? tradesRes.value : [];
+      const trades = tradesRes.value?.trades || [];
       let buyQty = 0, sellQty = 0;
       for (const t of trades) {
         const qty = parseFloat(t.size || 0);
-        if (t.side === 'buy') buyQty += qty;
+        // In Coinbase V3, side is the aggressor side ("BUY" or "SELL")
+        if (t.side === 'BUY') buyQty += qty;
         else sellQty += qty;
       }
       const totalQty = buyQty + sellQty;
@@ -184,7 +286,7 @@
 
       let vol24h = null;
       if (tickerRes.status === 'fulfilled') {
-        vol24h = parseFloat(tickerRes.value.volume || 0);
+        vol24h = parseFloat(tickerRes.value.volume_24h || 0);
       }
       const volKey = `${exchange}_${sym}`;
       pushVolHistory(volKey, vol24h);
@@ -292,6 +394,9 @@
   // Binance global has identical liquidity profile and the same futures funding rate feed.
   async function fetchBybitViaBinanceFallback(sym) {
     const exchange = 'Bybit';
+    if (!BINANCE_SPOT_SYMS.has(sym)) {
+      return { exchange, available: false, reason: 'Unsupported symbol' };
+    }
     try {
       const [tradesRes, fundRes] = await Promise.allSettled([
         getJson(`https://api.binance.com/api/v3/trades?symbol=${sym}USDT&limit=200`),
@@ -336,6 +441,7 @@
       return { exchange, available: false, reason: 'Not listed' };
     }
     try {
+      // Use proxy bypass for OKX geo-blocks
       const data = await getJson(`https://www.okx.com/api/v5/market/trades?instId=${sym}-USDT&limit=200`);
       const list = data?.data ?? [];
 
@@ -356,22 +462,271 @@
     }
   }
 
+  const KUCOIN_SYMS = { BTC: 'BTC-USDT', ETH: 'ETH-USDT', SOL: 'SOL-USDT', XRP: 'XRP-USDT', BNB: 'BNB-USDT', DOGE: 'DOGE-USDT' };
   async function fetchKuCoin(sym) {
     const exchange = 'KuCoin';
     const ws = wsSnapshot(exchange, sym);
     if (ws) return ws;
-    return { exchange, available: false, reason: 'WS unavailable' };
+    const kucoinSym = KUCOIN_SYMS[sym];
+    if (!kucoinSym) return { exchange, available: false, reason: 'Not listed' };
+    try {
+      const [tradesRes, tickerRes] = await Promise.allSettled([
+        getJson(`https://api.kucoin.com/api/v1/market/histories?symbol=${encodeURIComponent(kucoinSym)}`),
+        getJson(`https://api.kucoin.com/api/v1/market/stats?symbol=${encodeURIComponent(kucoinSym)}`),
+      ]);
+      if (tradesRes.status === 'rejected') throw new Error(tradesRes.reason?.message || 'trades failed');
+
+      const trades = Array.isArray(tradesRes.value?.data) ? tradesRes.value.data : [];
+      let buyQty = 0, sellQty = 0;
+      for (const t of trades) {
+        const qty = parseFloat(t.size || t.qty || 0);
+        if (String(t.side || '').toLowerCase() === 'buy') buyQty += qty;
+        else sellQty += qty;
+      }
+      const totalQty = buyQty + sellQty;
+      const buyPct = totalQty > 0 ? (buyQty / totalQty) * 100 : 50;
+      const sellPct = 100 - buyPct;
+
+      const ticker = tickerRes.status === 'fulfilled' ? tickerRes.value?.data || {} : {};
+      const vol24h = parseFloat(ticker.volValue || ticker.vol || 0);
+      const volKey = `${exchange}_${sym}`;
+      pushVolHistory(volKey, vol24h);
+      const volMult = vol24h > 0 ? rollingVolMult(volKey, vol24h) : null;
+      const { signal, color } = computeSignal(buyPct, sellPct, volMult, null);
+      return {
+        exchange,
+        buyPct,
+        sellPct,
+        volMult,
+        fundingPct: null,
+        signal,
+        color,
+        available: true,
+        via: 'rest-fallback',
+        price: parseFloat(ticker.last || ticker.buy || ticker.sell || 0) || null,
+      };
+    } catch (e) {
+      return { exchange, available: false, reason: `WS/REST unavailable: ${e.message.slice(0, 44)}` };
+    }
   }
 
+  const GATE_SYMS = { BTC: 'BTC_USDT', ETH: 'ETH_USDT', SOL: 'SOL_USDT', XRP: 'XRP_USDT', BNB: 'BNB_USDT', DOGE: 'DOGE_USDT' };
   async function fetchGate(sym) {
     const exchange = 'Gate.io';
     const ws = wsSnapshot(exchange, sym);
     if (ws) return ws;
-    return { exchange, available: false, reason: 'WS unavailable' };
+    const gateSym = GATE_SYMS[sym];
+    if (!gateSym) return { exchange, available: false, reason: 'Not listed' };
+    try {
+      const [tradesRes, tickerRes] = await Promise.allSettled([
+        getJson(`https://api.gateio.ws/api/v4/spot/trades?currency_pair=${encodeURIComponent(gateSym)}&limit=100`),
+        getJson(`https://api.gateio.ws/api/v4/spot/tickers?currency_pair=${encodeURIComponent(gateSym)}`),
+      ]);
+      if (tradesRes.status === 'rejected') throw new Error(tradesRes.reason?.message || 'trades failed');
+
+      const trades = Array.isArray(tradesRes.value) ? tradesRes.value : [];
+      let buyQty = 0, sellQty = 0;
+      for (const t of trades) {
+        const qty = parseFloat(t.amount || t.size || 0);
+        if (String(t.side || '').toLowerCase() === 'buy') buyQty += qty;
+        else sellQty += qty;
+      }
+      const totalQty = buyQty + sellQty;
+      const buyPct = totalQty > 0 ? (buyQty / totalQty) * 100 : 50;
+      const sellPct = 100 - buyPct;
+
+      const tickerRows = tickerRes.status === 'fulfilled'
+        ? (Array.isArray(tickerRes.value) ? tickerRes.value : [tickerRes.value])
+        : [];
+      const ticker = tickerRows[0] || {};
+      const vol24h = parseFloat(ticker.quote_volume || ticker.base_volume || 0);
+      const volKey = `${exchange}_${sym}`;
+      pushVolHistory(volKey, vol24h);
+      const volMult = vol24h > 0 ? rollingVolMult(volKey, vol24h) : null;
+      const { signal, color } = computeSignal(buyPct, sellPct, volMult, null);
+      return {
+        exchange,
+        buyPct,
+        sellPct,
+        volMult,
+        fundingPct: null,
+        signal,
+        color,
+        available: true,
+        via: 'rest-fallback',
+        price: parseFloat(ticker.last || 0) || null,
+        bid: parseFloat(ticker.highest_bid || 0) || null,
+        ask: parseFloat(ticker.lowest_ask || 0) || null,
+      };
+    } catch (e) {
+      return { exchange, available: false, reason: `WS/REST unavailable: ${e.message.slice(0, 44)}` };
+    }
+  }
+
+
+  const UPBIT_SYMS = { BTC: 'USDT-BTC', ETH: 'USDT-ETH', SOL: 'USDT-SOL', XRP: 'USDT-XRP', DOGE: 'USDT-DOGE' };
+  async function fetchUpbit(sym) {
+    const exchange = 'Upbit';
+    const ws = wsSnapshot(exchange, sym);
+    if (ws) return ws;
+    const upbitSym = UPBIT_SYMS[sym];
+    if (!upbitSym) return { exchange, available: false, reason: 'Not listed' };
+    try {
+      const list = await getJson(`https://api.upbit.com/v1/trades/ticks?market=${upbitSym}&count=100`);
+      let buyQty = 0, sellQty = 0;
+      for (const t of list) {
+        const qty = parseFloat(t.trade_volume || 0);
+        if (t.ask_bid === 'BID') buyQty += qty;
+        else sellQty += qty;
+      }
+      const latest = Array.isArray(list) ? list[0] : null;
+      const totalQty = buyQty + sellQty;
+      const buyPct = totalQty > 0 ? (buyQty / totalQty) * 100 : 50;
+      const sellPct = 100 - buyPct;
+      const { signal, color } = computeSignal(buyPct, sellPct, null, null);
+      return {
+        exchange,
+        buyPct,
+        sellPct,
+        volMult: null,
+        fundingPct: null,
+        signal,
+        color,
+        available: true,
+        price: parseFloat(latest?.trade_price || latest?.price || 0) || null,
+      };
+    } catch (e) {
+      return { exchange, available: false, reason: e.message.slice(0, 60) };
+    }
+  }
+
+  const BITGET_SYMS = { BTC: 'BTCUSDT', ETH: 'ETHUSDT', SOL: 'SOLUSDT', XRP: 'XRPUSDT', BNB: 'BNBUSDT', DOGE: 'DOGEUSDT', HYPE: 'HYPEUSDT' };
+  async function fetchBitget(sym) {
+    const exchange = 'Bitget';
+    const ws = wsSnapshot(exchange, sym);
+    if (ws) return ws;
+    const bitgetSym = BITGET_SYMS[sym];
+    if (!bitgetSym) return { exchange, available: false, reason: 'Not listed' };
+    try {
+      const res = await getJson(`https://api.bitget.com/api/v2/spot/market/tickers?symbol=${bitgetSym}`);
+      const t = res?.data?.[0];
+      const vol24h = parseFloat(t?.usdtVol || 0);
+      const volKey = `${exchange}_${sym}`;
+      pushVolHistory(volKey, vol24h);
+      const volMult = vol24h != null ? rollingVolMult(volKey, vol24h) : null;
+      const { signal, color } = computeSignal(50, 50, volMult, null);
+      return {
+        exchange,
+        buyPct: 50,
+        sellPct: 50,
+        volMult,
+        fundingPct: null,
+        signal,
+        color,
+        available: true,
+        price: parseFloat(t?.lastPr || t?.close || t?.price || 0) || null,
+        bid: parseFloat(t?.bidPr || 0) || null,
+        ask: parseFloat(t?.askPr || 0) || null,
+      };
+    } catch (e) { return { exchange, available: false, reason: e.message.slice(0, 60) }; }
+  }
+
+  const BINGX_SYMS = { BTC: 'BTC-USDT', ETH: 'ETH-USDT', SOL: 'SOL-USDT', XRP: 'XRP-USDT', BNB: 'BNB-USDT', DOGE: 'DOGE-USDT', HYPE: 'HYPE-USDT' };
+  async function fetchBingX(sym) {
+    const exchange = 'BingX';
+    const ws = wsSnapshot(exchange, sym);
+    if (ws) return ws;
+    const bingxSym = BINGX_SYMS[sym];
+    if (!bingxSym) return { exchange, available: false, reason: 'Not listed' };
+    try {
+      const data = await getJson(`https://open-api.bingx.com/openApi/spot/v1/ticker/trade?symbol=${bingxSym}&limit=100`);
+      const list = data?.data ?? [];
+      let buyQty = 0, sellQty = 0;
+      for (const t of list) {
+        const qty = parseFloat(t.qty || 0);
+        if (!t.isBuyerMaker) buyQty += qty;
+        else sellQty += qty;
+      }
+      const latest = Array.isArray(list) ? list[0] : null;
+      const totalQty = buyQty + sellQty;
+      const buyPct = totalQty > 0 ? (buyQty / totalQty) * 100 : 50;
+      const sellPct = 100 - buyPct;
+      const { signal, color } = computeSignal(buyPct, sellPct, null, null);
+      return {
+        exchange,
+        buyPct,
+        sellPct,
+        volMult: null,
+        fundingPct: null,
+        signal,
+        color,
+        available: true,
+        price: parseFloat(latest?.price || latest?.p || 0) || null,
+      };
+    } catch (e) {
+      return { exchange, available: false, reason: e.message.slice(0, 60) };
+    }
+  }
+
+  async function fetchBitstamp(sym) {
+    const exchange = 'Bitstamp';
+    const ws = wsSnapshot(exchange, sym);
+    if (ws) return ws;
+    try {
+      const bitstampSym = sym.toLowerCase() + 'usd';
+      const res = await getJson(`https://www.bitstamp.net/api/v2/ticker/${bitstampSym}/`);
+      const vol24h = parseFloat(res?.volume || 0);
+      const volKey = `${exchange}_${sym}`;
+      pushVolHistory(volKey, vol24h);
+      const volMult = vol24h != null ? rollingVolMult(volKey, vol24h) : null;
+      const { signal, color } = computeSignal(50, 50, volMult, null);
+      return {
+        exchange,
+        buyPct: 50,
+        sellPct: 50,
+        volMult,
+        fundingPct: null,
+        signal,
+        color,
+        available: true,
+        price: parseFloat(res?.last || 0) || null,
+        bid: parseFloat(res?.bid || 0) || null,
+        ask: parseFloat(res?.ask || 0) || null,
+      };
+    } catch (e) { return { exchange, available: false, reason: e.message.slice(0, 60) }; }
+  }
+
+  async function fetchBitvavo(sym) {
+    const exchange = 'Bitvavo';
+    const ws = wsSnapshot(exchange, sym);
+    if (ws) return ws;
+    try {
+      const bitvavoSym = sym.toUpperCase() + '-EUR'; // Bitvavo primarily uses EUR
+      const res = await getJson(`https://api.bitvavo.com/v2/ticker/24h?market=${bitvavoSym}`);
+      const vol24h = parseFloat(res?.volume || 0);
+      const volKey = `${exchange}_${sym}`;
+      pushVolHistory(volKey, vol24h);
+      const volMult = vol24h != null ? rollingVolMult(volKey, vol24h) : null;
+      const { signal, color } = computeSignal(50, 50, volMult, null);
+      return {
+        exchange,
+        buyPct: 50,
+        sellPct: 50,
+        volMult,
+        fundingPct: null,
+        signal,
+        color,
+        available: true,
+        price: parseFloat(res?.last || 0) || null,
+        bid: parseFloat(res?.bid || 0) || null,
+        ask: parseFloat(res?.ask || 0) || null,
+      };
+    } catch (e) { return { exchange, available: false, reason: e.message.slice(0, 60) }; }
   }
 
   // ── aggregate ─────────────────────────────────────────────────────
-  const WEIGHTS = { Binance: 0.25, Bybit: 0.20, OKX: 0.15, Coinbase: 0.12, Kraken: 0.10, KuCoin: 0.10, 'Gate.io': 0.08 };
+
+  const WEIGHTS = { Binance: 0.40, Bybit: 0.25, OKX: 0.20, Coinbase: 0.10, Kraken: 0.05 };
 
   function computeAggregate(exchanges) {
     let score = 0;
@@ -432,16 +787,14 @@
     window.dispatchEvent(new CustomEvent('market-data-envelope', { detail: envelope }));
   }
 
-  // ── per-coin fetch ────────────────────────────────────────────────
+  // ── per-coin fetch (Pure Tier-1: Binance, Bybit, OKX, Coinbase, Kraken) ─────
   async function fetchCoin(sym) {
     const results = await Promise.allSettled([
-      fetchBinance(sym),
-      fetchCoinbase(sym),
-      fetchKraken(sym),
-      fetchBybit(sym),
-      fetchOkx(sym),
-      fetchKuCoin(sym),
-      fetchGate(sym),
+      withExchangeCadence('Binance', sym, () => fetchBinance(sym)),
+      withExchangeCadence('Bybit', sym, () => fetchBybit(sym)),
+      withExchangeCadence('OKX', sym, () => fetchOkx(sym)),
+      withExchangeCadence('Coinbase', sym, () => fetchCoinbase(sym)),
+      withExchangeCadence('Kraken', sym, () => fetchKraken(sym)),
     ]);
 
     const exchanges = results.map(r =>
@@ -464,11 +817,87 @@
 
   // ── fetchAll ──────────────────────────────────────────────────────
   async function fetchAll() {
-    const results = await Promise.allSettled(COINS.map(sym => fetchCoin(sym)));
+    _fetchCycle++;
     const detail = {};
-    for (let i = 0; i < COINS.length; i++) {
-      if (results[i].status === 'fulfilled') detail[COINS[i]] = results[i].value;
+    const batchSize = 2;
+    for (let i = 0; i < COINS.length; i += batchSize) {
+      const batch = COINS.slice(i, i + batchSize);
+      const results = await Promise.allSettled(batch.map(sym => fetchCoin(sym)));
+      for (let j = 0; j < batch.length; j++) {
+        if (results[j].status === 'fulfilled') detail[batch[j]] = results[j].value;
+      }
+      if (i + batchSize < COINS.length) await wait(75);
     }
+
+    // INTEGRATION: Load local Python supervisor and high-frequency state files
+    if (window.electron && typeof window.electron.readFile === 'function') {
+      try {
+        const supervisorStr = await window.electron.readFile('WECRYP0-data/cex_flow_state.json');
+        if (supervisorStr) {
+          const supervisorState = JSON.parse(supervisorStr);
+          const activeMonitors = supervisorState.active_monitors || [];
+          
+          for (const coin of COINS) {
+            const pyStats = supervisorState.coins?.[coin];
+            if (pyStats) {
+              if (!CACHE[coin]) {
+                CACHE[coin] = { exchanges: [], aggregate: {}, ts: Date.now() };
+              }
+              
+              // Merge/Override aggregate stats with supervisor metrics
+              CACHE[coin].aggregate = {
+                ...CACHE[coin].aggregate,
+                score: pyStats.vol_mult > 2.0 
+                  ? (pyStats.buy_pct > pyStats.sell_pct ? 0.35 : -0.35) 
+                  : (pyStats.buy_pct > pyStats.sell_pct ? 0.15 : -0.15),
+                label: pyStats.signal,
+                volMult: pyStats.vol_mult,
+                hurst_v: pyStats.hurst_v,
+                vr_v: pyStats.vr_v,
+                distributing: pyStats.signal === 'DISTRIBUTING' ? 1 : 0,
+                accumulating: pyStats.signal === 'ACCUMULATING' ? 1 : 0,
+                volatile: pyStats.signal === 'VOLATILE' ? 1 : 0,
+              };
+              
+              CACHE[coin].ts = supervisorState.ts * 1000; // Convert to ms timestamp
+              
+              // If high-frequency monitor is active, load the child JSON state
+              if (activeMonitors.includes(coin)) {
+                try {
+                  const hfStr = await window.electron.readFile(`WECRYP0-data/cex_high_freq_${coin.toLowerCase()}.json`);
+                  if (hfStr) {
+                    const hfState = JSON.parse(hfStr);
+                    CACHE[coin].hf = {
+                      active: true,
+                      connected: hfState.connected,
+                      tradesPerSec: hfState.trades_per_sec,
+                      vpin: hfState.vpin,
+                      whaleTrades10k: hfState.whale_trades_1m_10k,
+                      whaleTrades50k: hfState.whale_trades_1m_50k,
+                      price: hfState.price,
+                      buyPct: hfState.buy_pct_1m,
+                      sellPct: hfState.sell_pct_1m,
+                    };
+                    
+                    // Override price with high-frequency spot price for precision
+                    CACHE[coin].price = hfState.price;
+                  }
+                } catch (hfErr) {
+                  CACHE[coin].hf = { active: true, connected: false };
+                }
+              } else {
+                CACHE[coin].hf = { active: false };
+              }
+              
+              detail[coin] = CACHE[coin];
+            }
+          }
+        }
+      } catch (err) {
+        console.warn('[CexFlow] Python state sync skipped/failed:', err.message);
+      }
+    }
+
     window.dispatchEvent(new CustomEvent('cex-flow-update', { detail }));
     return detail;
   }

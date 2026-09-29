@@ -1,0 +1,92 @@
+version: '3.8'
+
+services:
+  # 1. The Inmemory Message Broker (Zero-Latency IPC)
+  redis-broker:
+    image: redis:alpine
+    container_name: wecrypto-redis-broker
+    command: redis-server --save "" --appendonly no # Pure in-memory, no disk I/O overhead
+    ports:
+      - "6379:6379"
+    networks:
+      - orbital-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # 2. Phase 1: High-Throughput Ingestion (Heavy Duty)
+  ingestion-layer:
+    build:
+      context: .
+      dockerfile: Dockerfile.ingestion # Assumes a dedicated Dockerfile for the ingestor daemon
+    container_name: orbital-ingestor
+    environment:
+      - NODE_ENV=production
+      - REDIS_URL=redis://redis-broker:6379
+      - MAX_MEMORY_RESTART=4G
+    deploy:
+      resources:
+        limits:
+          cpus: '4.0' # Heavy CPU allocation for WebSocket streaming & filtering
+          memory: 4G
+    depends_on:
+      redis-broker:
+        condition: service_healthy
+    networks:
+      - orbital-net
+    restart: always
+
+  # 3. Phase 1: Orchestrator Container (Routing & State)
+  orchestrator-gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: orbital-orchestrator
+    environment:
+      - NODE_ENV=production
+      - REDIS_URL=redis://redis-broker:6379
+      # Firebase / Vertex AI routing config
+      - GOOGLE_APPLICATION_CREDENTIALS=/app/secrets/service-account.json
+      - WECRYPTO_FIREBASE_ENABLED=1
+    volumes:
+      - ./secrets:/app/secrets:ro
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+    depends_on:
+      redis-broker:
+        condition: service_healthy
+    networks:
+      - orbital-net
+
+  # 4. Phase 2: First-Party Node Container (Lightweight & Secure)
+  validation-node:
+    build:
+      context: .
+      dockerfile: Dockerfile.node # Assumes a dedicated lightweight Dockerfile
+    container_name: orbital-validator-node
+    environment:
+      - NODE_ENV=production
+      - REDIS_URL=redis://redis-broker:6379
+      - SIGNING_KEY_PATH=/app/secrets/node_private_key.pem
+    volumes:
+      - ./secrets:/app/secrets:ro
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5' # Extremely lightweight
+          memory: 512M
+    # No exposed ports to the host; only communicates internally via Redis
+    depends_on:
+      redis-broker:
+        condition: service_healthy
+    networks:
+      - orbital-net
+
+networks:
+  orbital-net:
+    driver: bridge

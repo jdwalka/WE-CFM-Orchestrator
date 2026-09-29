@@ -1,0 +1,30 @@
+                  symbols.forEach(sym => {
+                    window.PredictionMarkets.setAdaptiveWeights(sym, res.weights);
+                  });
+                }
+              }
+            })
+            .catch(err => console.warn('[RL Loop] Failed to sync startup weights:', err));
+        }
+      }, 3000);
+    })();
+    const waitRationale = (() => {
+      if (displayVerdictDir !== 'wait') return '';
+
+      const modelYesPct = Number(_kAlignEarly?.modelYesPct);
+      if (verdictSource === 'model-cdf-neutral' && Number.isFinite(modelYesPct)) {
+        return `Model thinking: CDF neutral at ${modelYesPct.toFixed(1)}% YES (needs >=58% for YES direction or <=42% for NO direction)${_flowDir ? `, while raw flow still leans ${String(_flowDir).toUpperCase()}${_flowAction ? ` / ${_flowAction}` : ''}` : ''}.`;
+      }
+      if (verdictSource === 'model-uncertain') {
+        return `Model thinking: low conviction score ${scoreStr} (needs >+${MODEL_FLOW_THRESHOLD.toFixed(2)} for UP or <${(-MODEL_FLOW_THRESHOLD).toFixed(2)} for DOWN)${_flowDir ? `, current flow lean ${String(_flowDir).toUpperCase()}${_flowAction ? ` / ${_flowAction}` : ''}` : ''}.`;
+      }
+      if (verdictSource === 'safety-stale-data') {
+        return `Model thinking: signal blocked by stale ticker data (${Math.round(tickerAgeMs / 1000)}s old) inside the 90-second pre-close guard.`;
+      }
+      if (verdictSource === 'safety-borderline-strike') {
+        const gap = Number(_kAlignEarly?.gapPct);
+        return `Model thinking: strike gap too narrow (${Number.isFinite(gap) ? gap.toFixed(3) : 'n/a'}%) inside the 90-second pre-close guard.`;
+      }
+      if (verdictSource === 'safety-weak-conviction') {
+        return `Model thinking: weak score ${scoreStr} in the 90-second pre-close guard (requires stronger than ±${MODEL_FLOW_THRESHOLD.toFixed(2)}).`;
+      }

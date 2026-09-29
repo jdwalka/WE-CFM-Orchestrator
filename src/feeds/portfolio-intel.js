@@ -12,32 +12,39 @@
 (function () {
   'use strict';
 
-  const ALCHEMY_KEY = localStorage.getItem('alchemyApiKey') ||
-    window._env?.ALCHEMY_KEY ||
-    'UNcUYppLXPl4s0jAkQe_J';
-
-  // Multi-chain Alchemy endpoints (mainnet + devnet/testnet options)
-  const ALCHEMY_ENDPOINTS = {
-    BTC: `https://bitcoin-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}`,
-    ETH: `https://eth-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}`,
-    ETH_SEPOLIA: `https://eth-sepolia.g.alchemy.com/v2/${ALCHEMY_KEY}`,
-    SOL: `https://solana-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}`,
-    SOL_DEVNET: `https://solana-devnet.g.alchemy.com/v2/${ALCHEMY_KEY}`,
-    BNB: `https://bnb-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}`,
-    BASE: `https://base-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}`,
-    BASE_SEPOLIA: `https://base-sepolia.g.alchemy.com/v2/${ALCHEMY_KEY}`,
-    HYPE: `https://hyperliquid-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}`,
-  };
-
-  // Multi-chain support with configurable endpoints
+  // Chain slug + whether a devnet variant exists — endpoints are resolved
+  // on demand via _alchemyEndpoint() so a key set after page load (e.g. via
+  // wallet-intel-config.js) takes effect immediately, and so there is no
+  // module-level fallback key baked into a constant at import time.
   const CHAINS = {
-    BTC: { name: 'bitcoin', endpoint: ALCHEMY_ENDPOINTS.BTC },
-    ETH: { name: 'ethereum', endpoint: ALCHEMY_ENDPOINTS.ETH, devnet: ALCHEMY_ENDPOINTS.ETH_SEPOLIA },
-    SOL: { name: 'solana', endpoint: ALCHEMY_ENDPOINTS.SOL, devnet: ALCHEMY_ENDPOINTS.SOL_DEVNET },
-    BNB: { name: 'bsc', endpoint: ALCHEMY_ENDPOINTS.BNB },
-    BASE: { name: 'base', endpoint: ALCHEMY_ENDPOINTS.BASE, devnet: ALCHEMY_ENDPOINTS.BASE_SEPOLIA },
-    HYPE: { name: 'hyperliquid', endpoint: ALCHEMY_ENDPOINTS.HYPE },
+    BTC: { name: 'bitcoin' },
+    ETH: { name: 'ethereum', hasDevnet: true },
+    SOL: { name: 'solana', hasDevnet: true },
+    BNB: { name: 'bsc' },
+    BASE: { name: 'base', hasDevnet: true },
+    HYPE: { name: 'hyperliquid' },
   };
+
+  // Exact subdomain prefix per chain+variant — stored whole (not derived by
+  // appending "-mainnet") because the devnet/testnet prefixes don't follow
+  // that suffix pattern (e.g. eth-sepolia, solana-devnet, not
+  // eth-sepolia-mainnet).
+  const ALCHEMY_HOST_PREFIX = {
+    BTC: 'bitcoin-mainnet',
+    ETH: 'eth-mainnet', ETH_DEVNET: 'eth-sepolia',
+    SOL: 'solana-mainnet', SOL_DEVNET: 'solana-devnet',
+    BNB: 'bnb-mainnet',
+    BASE: 'base-mainnet', BASE_DEVNET: 'base-sepolia',
+    HYPE: 'hyperliquid-mainnet',
+  };
+
+  async function _alchemyEndpoint(chain, useDevnet) {
+    const key = await window.AlchemyKey.get();
+    if (!key) return null;
+    const prefix = useDevnet ? ALCHEMY_HOST_PREFIX[`${chain}_DEVNET`] : ALCHEMY_HOST_PREFIX[chain];
+    if (!prefix) return null;
+    return `https://${prefix}.g.alchemy.com/v2/${key}`;
+  }
 
   // ── In-memory tracking ────────────────────────────────────────
   const _trackedWallets = new Map(); // addr → { chains, callback, data }
@@ -70,25 +77,30 @@
     const chainConfig = CHAINS[chain];
     if (!chainConfig) return null;
 
-    // Select endpoint (mainnet or devnet)
-    const endpoint = useDevnet && chainConfig.devnet
-      ? chainConfig.devnet
-      : chainConfig.endpoint;
-
+    const endpoint = await _alchemyEndpoint(chain, useDevnet && chainConfig.hasDevnet);
     if (!endpoint) return null;
 
     try {
-      // Get token balances
+      const isSol = chain === 'SOL';
+
+      // 1. Get Balances
+      const balPayload = isSol ? {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'getBalance',
+        params: [addr]
+      } : {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'alchemy_getTokenBalances',
+        params: [addr]
+      };
+
       const balRes = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          jsonrpc: '2.0',
-          id: 1,
-          method: 'alchemy_getTokenBalances',
-          params: [addr],
-        }),
-        signal: AbortSignal.timeout(8000),
+        body: JSON.stringify(balPayload),
+        signal: AbortSignal.timeout(30000),
       });
 
       if (!balRes.ok) {
@@ -99,27 +111,51 @@
       const balData = await balRes.json();
       _markOk('alchemy');
 
-      // Get transaction history
+      // 2. Get Transaction History
+      const txPayload = isSol ? {
+        jsonrpc: '2.0',
+        id: 2,
+        method: 'getSignaturesForAddress',
+        params: [addr, { limit: 100 }]
+      } : {
+        jsonrpc: '2.0',
+        id: 2,
+        method: 'alchemy_getAssetTransfers',
+        params: [{
+          fromAddress: addr,
+          category: ['external', 'internal', 'erc20'],
+          maxCount: '0x64', // 100
+        }]
+      };
+
       const txRes = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          jsonrpc: '2.0',
-          id: 2,
-          method: 'alchemy_getAssetTransfers',
-          params: [{
-            fromAddress: addr,
-            category: ['external', 'internal', 'erc20'],
-            maxCount: '0x64', // 100
-          }],
-        }),
+        body: JSON.stringify(txPayload),
       });
 
-      const txData = txRes.ok ? await txRes.json() : { result: { transfers: [] } };
+      const txData = txRes.ok ? await txRes.json() : null;
+
+      // 3. Normalize Response
+      let balances = [];
+      let transfers = [];
+
+      if (isSol) {
+        const solBalance = balData.result?.value || 0;
+        balances = [{ contractAddress: 'native', tokenBalance: '0x' + solBalance.toString(16) }];
+        transfers = (txData?.result || []).map(t => ({
+          hash: t.signature,
+          blockNum: '0x' + (t.slot || 0).toString(16),
+          category: 'external'
+        }));
+      } else {
+        balances = balData.result?.tokenBalances || [];
+        transfers = txData?.result?.transfers || [];
+      }
 
       return {
-        balances: balData.result?.tokenBalances || [],
-        transfers: txData.result?.transfers || [],
+        balances,
+        transfers,
         source: 'alchemy',
         network: useDevnet ? 'devnet' : 'mainnet',
       };

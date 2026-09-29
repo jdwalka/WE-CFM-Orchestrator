@@ -1,0 +1,73 @@
+# ── 04-wecrypto-mcp-deployment.yaml ───────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: wecrypto-mcp-server
+  namespace: default
+  labels:
+    app: wecrypto-mcp
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: wecrypto-mcp
+  template:
+    metadata:
+      labels:
+        app: wecrypto-mcp
+    spec:
+      containers:
+        - name: wecrypto-mcp
+          image: node:20-alpine
+          command:
+            - "sh"
+            - "-c"
+            - |
+              mkdir -p /app
+              cat << 'EOF' > /app/server.js
+              const http = require('http');
+              const PORT = process.env.PORT || 3450;
+              const server = http.createServer((req, res) => {
+                res.setHeader('Content-Type', 'application/json');
+                res.setHeader('Access-Control-Allow-Origin', '*');
+                if (req.url === '/health' || req.url === '/api/status') {
+                  res.writeHead(200);
+                  return res.end(JSON.stringify({
+                    success: true,
+                    service: 'wecrypto-k8s-mcp',
+                    node: 'prairiedog-godzilla.ts.net',
+                    status: 'online',
+                    timestamp: new Date().toISOString()
+                  }));
+                }
+                res.writeHead(200);
+                res.end(JSON.stringify({ success: true, url: req.url }));
+              });
+              server.listen(PORT, '0.0.0.0', () => console.log('WeCrypto MCP active on :' + PORT));
+              EOF
+              node /app/server.js
+          ports:
+            - containerPort: 3450
+          env:
+            - name: PORT
+              value: "3450"
+            - name: TAILSCALE_API_KEY
+              value: "tskey-api-k4mb2nnbBX11CNTRL-guS8MGQBM9gGX7yBGcR7AgGvwLTrz4ZUS"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: wecrypto-mcp
+  namespace: default
+  annotations:
+    tailscale.com/expose: "true"
+    tailscale.com/hostname: "wecrypto-mcp"
+    tailscale.com/tags: "tag:core,tag:trading"
+spec:
+  type: ClusterIP
+  selector:
+    app: wecrypto-mcp
+  ports:
+    - name: https
+      port: 443
+      targetPort: 3450

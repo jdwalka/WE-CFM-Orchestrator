@@ -1,0 +1,15 @@
+[Unit]
+Description=Pyth Lazer price/bid-ask collector
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/mnt/g/WECRYP
+ExecStart=/home/mauro/leaksnipe-mcp-agent/.venv/bin/python -u /mnt/g/WECRYP/pyth_lazer_collector.py
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target

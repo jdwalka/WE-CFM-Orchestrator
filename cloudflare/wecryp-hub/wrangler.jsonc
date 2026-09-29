@@ -1,0 +1,49 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "wecryp-hub",
+  "main": "src/index.js",
+  "compatibility_date": "2026-09-10",
+  "routes": [
+    {
+      "pattern": "hub.leaksnipe.win",
+      "custom_domain": true
+    },
+    {
+      "pattern": "hub.leaksnipe.win/*",
+      "zone_name": "leaksnipe.win"
+    }
+  ],
+  "services": [
+    {
+      "binding": "HYPEDOG",
+      "service": "hypedog"
+    },
+    {
+      "binding": "SCALPER",
+      "service": "scalper-market-data"
+    },
+    {
+      "binding": "PRICE_PROXY",
+      "service": "wecryp-price-proxy"
+    },
+    {
+      "binding": "ARCHIVER",
+      "service": "kodak-market-archiver"
+    }
+  ],
+  "workers_dev": true,
+  "preview_urls": true,
+  "observability": {
+    "logs": {
+      "enabled": true,
+      "head_sampling_rate": 1,
+      "invocation_logs": true,
+      "persist": true
+    },
+    "traces": {
+      "enabled": true,
+      "head_sampling_rate": 1,
+      "persist": true
+    }
+  }
+}

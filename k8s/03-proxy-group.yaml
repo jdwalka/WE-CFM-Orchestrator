@@ -1,0 +1,22 @@
+# ── 03-proxy-group.yaml ───────────────────────────────────────────────────
+apiVersion: tailscale.com/v1alpha1
+kind: ProxyClass
+metadata:
+  name: wecrypto-proxy-class
+spec:
+  tailscale:
+    acceptRoutes: true
+---
+apiVersion: tailscale.com/v1alpha1
+kind: ProxyGroup
+metadata:
+  name: wecrypto-mcp-ingress
+  namespace: default
+spec:
+  type: ingress
+  tags:
+    - tag:core
+    - tag:trading
+  replicas: 1
+  hostnamePrefix: wecrypto-mcp-
+  proxyClass: wecrypto-proxy-class

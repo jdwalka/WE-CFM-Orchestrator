@@ -116,7 +116,7 @@
   function _isBackedOff(src) {
     const h = _health[src];
     if (!h || h.fails === 0) return false;
-    const backoffMs = Math.min(Math.pow(2, h.fails) * 10000, 300000);
+    const backoffMs = Math.min(Math.pow(2, h.fails) * 20000, 300000);
     return (Date.now() - h.lastFail) < backoffMs;
   }
 
@@ -402,9 +402,15 @@
 
   // ── Utilities ────────────────────────────────────────────────────
 
-  function _timedFetch(url, opts = {}, ms = 8000) {
+  function _timedFetch(url, opts = {}, ms = 30000) {
     const ctrl = new AbortController();
-    const tid = setTimeout(() => ctrl.abort(), ms);
+    const tid = setTimeout(() => {
+      try {
+        ctrl.abort(new DOMException(`Wallet cache fetch timed out after ${ms}ms`, 'TimeoutError'));
+      } catch (_) {
+        try { ctrl.abort(); } catch (_) { }
+      }
+    }, ms);
 
     // Try resilientFetch first for GET requests (adds automatic retry + fallback)
     if ((!opts.method || opts.method === 'GET') && window.resilientFetch) {

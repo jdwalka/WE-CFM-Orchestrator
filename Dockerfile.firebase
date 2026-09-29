@@ -1,0 +1,21 @@
+FROM node:20-alpine
+
+# Install Java JRE (Required for Firebase Emulators: Firestore, Realtime Database, Pub/Sub, etc)
+RUN apk add --no-cache openjdk11-jre-headless bash
+
+# Install Firebase CLI globally
+RUN npm install -g firebase-tools
+
+# Create app directory
+WORKDIR /app
+
+# Copy package and config files for emulator setup
+COPY package.json ./
+COPY firebase.json ./
+
+# The default ports Firebase emulators use (we expose them all just in case)
+# Auth, Functions, Firestore, Realtime DB, Hosting, Pub/Sub, Storage, Eventarc, UI
+EXPOSE 9099 5001 8080 9000 5000 8085 9199 9299 4000
+
+# Command to start all emulators with persistent storage (no cold starts)
+CMD ["firebase", "emulators:start", "--project", "wecrypto", "--host", "0.0.0.0", "--import", "./data", "--export-on-exit", "./data"]

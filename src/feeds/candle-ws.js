@@ -15,7 +15,7 @@
   // Map Coinbase product_id → internal symbol
   const PRODUCTS = [
     'BTC-USD', 'ETH-USD', 'SOL-USD',
-    'XRP-USD', 'DOGE-USD', 'BNB-USD', 'HYPE-USD'
+    'XRP-USD', 'DOGE-USD', 'HYPE-USD'
   ];
   const SYM_MAP = {
     'BTC-USD':  'BTC',
@@ -23,7 +23,6 @@
     'SOL-USD':  'SOL',
     'XRP-USD':  'XRP',
     'DOGE-USD': 'DOGE',
-    'BNB-USD':  'BNB',
     'HYPE-USD': 'HYPE'
   };
 
@@ -128,6 +127,12 @@
   function handleMessage(raw) {
     let msg;
     try { msg = JSON.parse(raw); } catch { return; }
+    
+    if (msg?.type === 'price_update' && msg?.source === 'coingecko_poller') {
+      dispatchEvent(new CustomEvent('coingecko:markets', { detail: msg.data }));
+      return;
+    }
+    
     if (!msg || !msg.events) return;
 
     if (msg.channel === 'candles') {
@@ -166,14 +171,47 @@
 
   // ─── Subscribe ──────────────────────────────────────────────────────────────
 
-  function subscribe() {
+  async function fetchCoinbaseJwt() {
+    try {
+      if (window.desktopApp?.generateCoinbaseJWT) {
+        const res = await window.desktopApp.generateCoinbaseJWT();
+        if (res?.success && res.jwt) return res.jwt;
+        if (res?.error) console.warn('[CandleWS] Coinbase JWT failed:', res.error);
+      }
+    } catch (e) {
+      console.warn('[CandleWS] Coinbase JWT failed:', e.message);
+    }
+
+    for (const port of [3011, 3010]) {
+      try {
+        const res = await fetch(`http://localhost:${port}/jwt/coinbase`);
+        if (res.ok) {
+          const data = await res.json();
+          if (data.token) return data.token;
+        }
+      } catch (_) {
+        // Local proxy is optional when Electron can sign through IPC.
+      }
+    }
+    return '';
+  }
+
+  async function subscribe() {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    // Filter to products that Coinbase actually supports (HYPE may not be listed)
-    const sub = (channel) => ws.send(JSON.stringify({
-      type:        'subscribe',
-      product_ids: PRODUCTS,
-      channel
-    }));
+    
+    const jwt = await fetchCoinbaseJwt();
+    
+    const sub = (channel) => {
+      const payload = {
+        type:        'subscribe',
+        product_ids: PRODUCTS,
+        channel
+      };
+      if (jwt) payload.jwt = jwt;
+      ws.send(JSON.stringify(payload));
+    };
+    
+    sub('heartbeats');
     sub('candles');
     sub('ticker');
   }

@@ -1,0 +1,65 @@
+{
+  "name": "we-cfm-orchestrator",
+  "version": "2.13.1-scorecard-persistence",
+  "private": true,
+  "description": "WalkerEnterprise CFM benchmark orchestration engine",
+  "main": "electron/main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder --win",
+    "build:portable": "electron-builder --win portable",
+    "build:installer": "electron-builder --win nsis",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build"
+  },
+  "build": {
+    "appId": "com.walkerenterprise.wecfmorchestrator",
+    "productName": "WE--CRYPTO--BETA3",
+    "electronVersion": "37.2.0",
+    "artifactName": "WECRYPTO-v${version}-portable.exe",
+    "files": [
+      "public/**",
+      "src/**",
+      "electron/**",
+      "assets/**",
+      "we-crypto-proxy.exe",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "we-crypto-proxy.exe"
+    ],
+    "icon": "assets/app-icon.ico",
+    "win": {
+      "icon": "assets/app-icon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "WE--CRYPTO--BETA3"
+    }
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.10.1",
+    "electron": "^41.3.0",
+    "electron-builder": "^26.8.1"
+  },
+  "dependencies": {
+    "dotenv": "^17.4.2"
+  }
+}

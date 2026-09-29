@@ -195,6 +195,7 @@ input, select { font: inherit; color: inherit; }
   display: grid;
   grid-template-rows: var(--header-h) 1fr;
   overflow: hidden;
+  min-height: 0;
 }
 
 /* ---- Header ---- */
@@ -265,7 +266,14 @@ input, select { font: inherit; color: inherit; }
   overflow-x: hidden;
   padding: 16px 20px 24px;
   overscroll-behavior: contain;
+  min-height: 0;
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border) transparent;
 }
+.content::-webkit-scrollbar { width: 10px; }
+.content::-webkit-scrollbar-track { background: var(--color-bg); }
+.content::-webkit-scrollbar-thumb { background: var(--color-border); border-radius: 5px; border: 2px solid var(--color-bg); }
+.content::-webkit-scrollbar-thumb:hover { background: var(--color-text-faint); }
 
 /* ---- Loading ---- */
 .loading-screen {
@@ -1466,7 +1474,18 @@ input, select { font: inherit; color: inherit; }
           CFM Benchmarks
         </button>
         <button class="nav-btn" data-view="predictions" data-testid="nav-predictions">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+          <span style="display:inline-flex;align-items:center;gap:3px;margin-right:5px;">
+            <span style="display:inline-flex;align-items:center;justify-content:center;width:15px;height:15px;background:rgba(0,230,118,0.22);border:1.2px solid #00e676;border-radius:3px;">
+              <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="#00e676" stroke-width="4" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="18 15 12 9 6 15" />
+              </svg>
+            </span>
+            <span style="display:inline-flex;align-items:center;justify-content:center;width:15px;height:15px;background:rgba(255,82,82,0.22);border:1.2px solid #ff5252;border-radius:3px;">
+              <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="#ff5252" stroke-width="4" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="6 9 12 15 18 9" />
+              </svg>
+            </span>
+          </span>
           UP/DOWN Calls
         </button>
         <button class="nav-btn" data-view="mlb" data-testid="nav-mlb">
@@ -1716,7 +1735,7 @@ const PREDICTION_COINS = [
   const BIN_SYMS = { BTC:'BTCUSDT', ETH:'ETHUSDT', SOL:'SOLUSDT', XRP:'XRPUSDT', HYPE:'HYPEUSDT', DOGE:'DOGEUSDT', BNB:'BNBUSDT' };
   const OKX_SYMS = { BTC:'BTC-USDT', ETH:'ETH-USDT', SOL:'SOL-USDT', XRP:'XRP-USDT', HYPE:'HYPE-USDT', DOGE:'DOGE-USDT', BNB:'BNB-USDT' };
 
-  const CDC_BASE = 'https://api.crypto.com/exchange/v1/public';
+  const CDC_BASE = 'https://api.crypto.com/v2/public';
   const CB_BASE  = 'https://api.coinbase.com/v2/prices';
   const GKO_BASE = 'https://api.coingecko.com/api/v3';
   const DEX_BASE = 'https://api.dexscreener.com/latest/dex';
@@ -1756,7 +1775,7 @@ const PREDICTION_COINS = [
     if (cdcTickerCache && Date.now() - cdcTickerAge < 10000) return cdcTickerCache;
     try {
       hit('CDC');
-      const r = await fetch(`${CDC_BASE}/get-tickers`);
+      const r = await fetch(`${CDC_BASE}/get-ticker`);
       if (!r.ok) return null;
       const j = await r.json();
       if (j.code !== 0) return null;
@@ -2197,7 +2216,7 @@ const PREDICTION_COINS = [
 (function () {
   'use strict';
 
-  const CDC_BASE = 'https://api.crypto.com/exchange/v1/public';
+  const CDC_BASE = 'https://api.crypto.com/v2/public';
   const GECKO_BASE = 'https://api.coingecko.com/api/v3';
   const GECKO_ONLY = new Set(['HYPE', 'BNB']);
 
@@ -2566,10 +2585,11 @@ const PREDICTION_COINS = [
   function applyBacktestFilter(observation, filter) {
     const isActive = observation.absScore >= filter.entryThreshold && observation.agreement >= filter.minAgreement;
     const direction = isActive ? (observation.score > 0 ? 1 : -1) : 0;
+    const signedReturn = direction === 0 ? 0 : (observation.isWin != null ? (observation.isWin ? Math.abs(observation.returnPct) : -Math.abs(observation.returnPct)) : observation.returnPct);
     return {
       ...observation,
       direction,
-      signedReturn: direction === 0 ? 0 : observation.returnPct * direction,
+      signedReturn,
       bucket: direction === 0 ? 'neutral' : scoreBucket(observation.absScore),
       appliedThreshold: filter.entryThreshold,
       appliedAgreement: filter.minAgreement,
@@ -3069,20 +3089,40 @@ const PREDICTION_COINS = [
         if (!model) continue;
 
         const entry = windowCandles[windowCandles.length - 1].c;
+        const ptb = windowCandles[windowCandles.length - 1].o || entry;
         const exit = candles[idx + horizonBars].c;
-        const returnPct = entry > 0 ? ((exit - entry) / entry) * 100 : 0;
+
+        const atrPctRaw = Number(model.volatility?.atrPct);
+        const atrPct = (Number.isFinite(atrPctRaw) && atrPctRaw > 0) ? (atrPctRaw / 100) : 0.0035;
+        const atrDollar = entry * atrPct;
+        const remainingFrac = 0.60;
+        const expectedMove = model.score * atrDollar * 0.40 * remainingFrac;
+        const meanFinal = entry + expectedMove;
+        const sigma = Math.max(entry * 0.0015, atrDollar * Math.sqrt(remainingFrac));
+        const z = (meanFinal - ptb) / (sigma || 1);
+        let pUp = normalCDF(z);
+
+        const actualSettleUp = exit >= ptb;
+        const modelCallUp = pUp >= 0.50;
+        const isWin = (modelCallUp === actualSettleUp);
+        const payoffPct = isWin ? 1.0 : -1.0;
+        const rawReturn = payoffPct * (Math.abs((exit - ptb) / (ptb || 1)) * 100 + 0.5);
+        const returnPct = clamp(rawReturn, -25, 25);
+        const ptbScore = clamp((pUp - 0.5) * 2.0, -1, 1);
+
         observations.push({
           idx,
           ...applyBacktestFilter({
             idx,
-            score: model.score,
-            absScore: Math.abs(model.score),
+            isWin,
+            score: ptbScore,
+            absScore: Math.abs(ptbScore),
             signal: model.signal,
             agreement: model.diagnostics?.agreement ?? 0.5,
             conflict: model.diagnostics?.conflict ?? 0,
             regime: classifyMarketRegime(model),
             returnPct,
-            bucket: scoreBucket(Math.abs(model.score)),
+            bucket: scoreBucket(Math.abs(ptbScore)),
           }, filter),
           calibrationSample: 0,
           regimeAware: false,
@@ -3946,7 +3986,7 @@ const PREDICTION_COINS = [
   // API LAYER — Crypto.com Exchange public endpoints (no auth)
   // ================================================================
 
-  const CDC_BASE = 'https://api.crypto.com/exchange/v1/public';
+  const CDC_BASE = 'https://api.crypto.com/v2/public';
   const GECKO_BASE = 'https://api.coingecko.com/api/v3';
 
   // ---- Shared HTTP cache: prevents duplicate CDC calls across engines ----
@@ -3979,7 +4019,7 @@ const PREDICTION_COINS = [
     if (cache.data && Date.now() - cache.age < 8000) {
       return cache.data;
     }
-    const res = await fetch(`${CDC_BASE}/get-tickers`);
+    const res = await fetch(`${CDC_BASE}/get-ticker`);
     if (!res.ok) throw new Error(`Tickers HTTP ${res.status}`);
     const json = await res.json();
     if (json.code !== 0) throw new Error(`Tickers error code ${json.code}`);
@@ -6935,7 +6975,7 @@ const PREDICTION_COINS = [
           </div>
           <div>
             <div class="pred-coin-price">${fmtPrice(p.price)}</div>
-            <div class="pred-coin-src">${p.source} &middot; ${p.candleCount || '?'} candles</div>
+            <div class="pred-coin-src">${p.source || 'partial'} &middot; ${p.candleCount15m || p.candleCount || '?'} x 15m (pooled from exchanges)</div>
           </div>
           <div class="pred-expand-icon">${expanded ? '−' : '+'}</div>
         </div>

@@ -1,0 +1,90 @@
+{
+  "ts": 1782132597.4270127,
+  "active_monitors": [],
+  "coins": {
+    "BTC": {
+      "price": 65175.72,
+      "vol_24h": 700025.3649942,
+      "recent_vol_usd": 24942.829798300005,
+      "vol_mult": 0.9889097694978598,
+      "buy_pct": 58.363241643063986,
+      "sell_pct": 41.636758356936014,
+      "signal": "ACCUMULATING",
+      "color": "green",
+      "hurst_v": 0.5,
+      "vr_v": 1.1509459387072463
+    },
+    "ETH": {
+      "price": 1766.84,
+      "vol_24h": 539341.818655,
+      "recent_vol_usd": 159482.636149,
+      "vol_mult": 0.9912900152035804,
+      "buy_pct": 16.01057654147643,
+      "sell_pct": 83.98942345852358,
+      "signal": "DISTRIBUTING",
+      "color": "red",
+      "hurst_v": 0.5,
+      "vr_v": 0.6880329135180233
+    },
+    "SOL": {
+      "price": 74.52,
+      "vol_24h": 422620.34019,
+      "recent_vol_usd": 16740.103960000004,
+      "vol_mult": 1.007689152197686,
+      "buy_pct": 51.81381083848417,
+      "sell_pct": 48.18618916151583,
+      "signal": "NEUTRAL",
+      "color": "muted",
+      "hurst_v": 0.5,
+      "vr_v": 0.3949055825372803
+    },
+    "XRP": {
+      "price": 1.1543,
+      "vol_24h": 837716.97706,
+      "recent_vol_usd": 85873.06164,
+      "vol_mult": 0.9461112814904987,
+      "buy_pct": 53.24095710208569,
+      "sell_pct": 46.75904289791431,
+      "signal": "NEUTRAL",
+      "color": "muted",
+      "hurst_v": 0.5,
+      "vr_v": 1.003012974386788
+    },
+    "DOGE": {
+      "price": 0.08443,
+      "vol_24h": 53125.47973,
+      "recent_vol_usd": 32056.04703,
+      "vol_mult": 0.9999999999999999,
+      "buy_pct": 39.20876166745504,
+      "sell_pct": 60.79123833254496,
+      "signal": "DISTRIBUTING",
+      "color": "red",
+      "hurst_v": 0.5,
+      "vr_v": 1.0
+    },
+    "BNB": {
+      "price": 600.4,
+      "vol_24h": 103654.28559,
+      "recent_vol_usd": 12820.381039999998,
+      "vol_mult": 0.9594661236163647,
+      "buy_pct": 45.94815576557934,
+      "sell_pct": 54.05184423442066,
+      "signal": "NEUTRAL",
+      "color": "muted",
+      "hurst_v": 0.5,
+      "vr_v": 0.8422063449166638
+    },
+    "HYPE": {
+      "price": 68.553,
+      "vol_24h": 0.0,
+      "recent_vol_usd": 14387.058770000001,
+      "vol_mult": 2.1921746060539404,
+      "buy_pct": 76.09460595815722,
+      "sell_pct": 23.905394041842783,
+      "signal": "ACCUMULATING",
+      "color": "green",
+      "hurst_v": 0.5,
+      "vr_v": 0.33630810278051293
+    }
+  }
+}

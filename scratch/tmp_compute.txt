@@ -1,0 +1,15 @@
+    const liveBookAgeMs = effectiveBook?.timestamp ? Math.max(0, Date.now() - effectiveBook.timestamp) : null;
+    const baseModel = buildSignalModel(cache.candles, effectiveBook || cache.book, cache.trades, {
+      includeMicrostructure: true,
+      includeSetups: true,
+      sym: coin.sym,
+      candles1m: cache.candles1m || null,  // PATCH1.11: wall absorption needs 1m data
+      horizon: 15,  // ★ H15 TUNING: Apply h15-specific indicator weights (2026-05-06)
+    });
+    const calibrated = applyLiveCalibration(baseModel, backtest);
+    const fastTiming = buildFastTimingModel(cache.candles1m, coin.sym);
+    const timed = applyFastTimingOverlay(calibrated, fastTiming);
+    const routerContext = buildSignalRouterContext(coin, timed, fastTiming, backtest, effectiveCache);
+    const routedPackets = filterSignalPackets(buildSignalPackets(routerContext), routerContext);
+    const routed = summarizeRoutedSignals(routedPackets, routerContext);
+    logLiveExecutionCues(coin.sym, routed, routedPackets);

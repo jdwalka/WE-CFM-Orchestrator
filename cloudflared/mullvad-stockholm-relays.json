@@ -1,0 +1,19 @@
+{
+  "comment": "Public Mullvad Stockholm relays. SOCKS5 on *.relays.mullvad.net:1080 only accepts clients already on Mullvad. In-tunnel address is 10.64.0.1:1080. No account keys.",
+  "in_tunnel_socks5": "10.64.0.1:1080",
+  "tailscale_exit": "se-sto-wg-209.mullvad.ts.net",
+  "relays": [
+    {"id":"se-sto-wg-001","ipv4":"185.195.233.76","ipv6":"2a03:1b20:4:f011::999f","pubkey":"MkP/Jytkg51/Y/EostONjIN6YaFRpsAYiNKMX27/CAY=","socks5":"se-sto-wg-socks5-001.relays.mullvad.net:1080","multihop":3438,"owner":"Mullvad","gbps":20},
+    {"id":"se-sto-wg-002","ipv4":"185.65.135.67","ipv6":"2a03:1b20:4:f011::a02f","pubkey":"q2ZZPfumPaRVl4DJfzNdQF/GHfe6BYAzQ2GZZHb6rmI=","socks5":"se-sto-wg-socks5-002.relays.mullvad.net:1080","multihop":3011,"owner":"Mullvad","gbps":20},
+    {"id":"se-sto-wg-003","ipv4":"185.65.135.68","ipv6":"2a03:1b20:4:f011::f201","pubkey":"qZbwfoY4LHhDPzUROFbG+LqOjB0+Odwjg/Nv3kGolWc=","socks5":"se-sto-wg-socks5-003.relays.mullvad.net:1080","multihop":3556,"owner":"Mullvad","gbps":20},
+    {"id":"se-sto-wg-007","ipv4":"185.65.135.70","ipv6":"2a03:1b20:4:f011::b07f","pubkey":"YD4k8xaiw2kcRhfLRf2UiRNcDmvvu5NV0xT4d5xOFzU=","socks5":"se-sto-wg-socks5-007.relays.mullvad.net:1080","multihop":3172,"owner":"Mullvad","gbps":20},
+    {"id":"se-sto-wg-008","ipv4":"185.65.135.71","ipv6":"2a03:1b20:4:f011::f701","pubkey":"4nOXEaCDYBV//nsVXk7MrnHpxLV9MbGjt+IGQY//p3k=","socks5":"se-sto-wg-socks5-008.relays.mullvad.net:1080","multihop":3173,"owner":"Mullvad","gbps":20},
+    {"id":"se-sto-wg-009","ipv4":"185.195.233.69","ipv6":"2a03:1b20:4:f011::a09f","pubkey":"t1XlQD7rER0JUPrmh3R5IpxjUP9YOqodJAwfRorNxl4=","socks5":"se-sto-wg-socks5-009.relays.mullvad.net:1080","multihop":3050,"owner":"Mullvad","gbps":20,"daita":true},
+    {"id":"se-sto-wg-010","ipv4":"185.195.233.70","ipv6":"2a03:1b20:4:f011::a10f","pubkey":"pWhNidLbYca9j66c7iw/3kgtU+UyFRIgc75xy8riqzg=","socks5":"se-sto-wg-socks5-010.relays.mullvad.net:1080","multihop":3061,"owner":"Mullvad","gbps":20},
+    {"id":"se-sto-wg-201","ipv4":"89.37.63.10","ipv6":"2a02:6ea0:1508:1::f001","pubkey":"V5RUvv8xp3xYc9b/KoGjTL6EUEb2mTv+8egxuEvUAnc=","socks5":"se-sto-wg-socks5-201.relays.mullvad.net:1080","multihop":3046,"owner":"DataPacket","gbps":40},
+    {"id":"se-sto-wg-202","ipv4":"89.37.63.66","ipv6":"2a02:6ea0:1508:2::f001","pubkey":"S4fVJ6wjUxrRQsDZwWvKVLtcNBJgoSshkqy3wXWG0UM=","socks5":"se-sto-wg-socks5-202.relays.mullvad.net:1080","multihop":3052,"owner":"DataPacket","gbps":40},
+    {"id":"se-sto-wg-203","ipv4":"89.37.63.129","ipv6":"2a02:6ea0:1508:3::f001","pubkey":"mkBf9JhtMPHS3w0FfJOwSS5kfmUQ0RGSLXBdxUNlzTs=","socks5":"se-sto-wg-socks5-203.relays.mullvad.net:1080","multihop":3057,"owner":"DataPacket","gbps":40},
+    {"id":"se-sto-wg-204","ipv4":"89.37.63.190","ipv6":"2a02:6ea0:1508:4::f001","pubkey":"cPhM7ShRWQmKiJtD9Wd1vDh0GwIlaMvFb/WPrP58FH8=","socks5":"se-sto-wg-socks5-204.relays.mullvad.net:1080","multihop":3058,"owner":"DataPacket","gbps":40},
+    {"id":"se-sto-wg-205","ipv4":"170.62.100.10","ipv6":"2a02:6ea0:1508:5::f001","pubkey":"9V4G5BERZI4xHudcIf5wdDG77XZSY08lVEiXrAGXuEE=","socks5":"se-sto-wg-socks5-205.relays.mullvad.net:1080","multihop":3079,"owner":"DataPacket","gbps":40,"daita":true}
+  ]
+}

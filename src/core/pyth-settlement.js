@@ -7,16 +7,27 @@
 class PythSettlementValidator {
   constructor(pythHermesBaseUrl = 'https://hermes.pyth.network') {
     this.pythBase = pythHermesBaseUrl;
+    this.pythBases = Array.from(new Set([
+      pythHermesBaseUrl,
+      'https://hermes.pyth.network',
+    ].filter(Boolean)));
+    this.requestTimeoutMs = 5000;
+    // Hermes is geo-blocked on some networks (HTTP 403). Once blocked, stop
+    // hammering it and go straight to the public Lazer proxy endpoints.
+    this.hermesBlockedUntil = 0;
+    this.hermesCooldownMs = 10 * 60_000;
 
-    // Pyth feed IDs for our 7 main coins
+    // Pyth feed IDs for our 7 main coins (with 0x prefix for Hermes v2 API)
     this.feedIds = {
-      BTC: 'e62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43',
-      ETH: 'ff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace',
-      SOL: 'ef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d',
-      XRP: 'ec5d399846a9209f3fe5881d70aae9268c94339ff9817e8d18ff19fa05eea1c8',
-      DOGE: 'dcef50dd0a4cd2dcc17e45df1676dcb336a11a61c69df7a0299b0150c672d25c',
-      BNB: '2f95862b045670cd22bee3114c39763a4a08beeb663b145d283c31d7d1101c4f',
+      BTC: '0xe62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43',
+      ETH: '0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace',
+      SOL: '0xef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d',
+      XRP: '0xec5d399846a9209f3fe5881d70aae9268c94339ff9817e8d18ff19fa05eea1c8',
+      DOGE: '0xdcef50dd0a4cd2dcc17e45df1676dcb336a11a61c69df7a0299b0150c672d25c',
+      BNB: '0x2f95862b045670cd22bee3114c39763a4a08beeb663b145d283c31d7d1101c4f',
+      HYPE: '0x4279e31cc369bbcc2faf022b382b080e32a8e689ff20fbc530d2a603eb6cd98b',
     };
+
 
     // Price cache (avoid redundant API calls)
     this.priceCache = {};
@@ -32,12 +43,69 @@ class PythSettlementValidator {
     console.log('[PythSettlementValidator] Initialized');
   }
 
+  _getPythKey() {
+    try {
+      if (typeof window !== 'undefined' && typeof window.resolveRuntimeKey === 'function') {
+        const k = window.resolveRuntimeKey('PYTH_PRO_API_KEY');
+        if (k) return k;
+      }
+    } catch (_) {}
+    return (typeof process !== 'undefined' && process.env?.PYTH_PRO_API_KEY) || '';
+  }
+
+  async fetchJsonWithTimeout(url, timeoutMs = this.requestTimeoutMs) {
+    const fetchImpl =
+      (typeof window !== 'undefined' && (window.resilientFetch || window.throttledFetch))
+        ? (window.resilientFetch || window.throttledFetch).bind(window)
+        : fetch;
+
+    const token = this._getPythKey();
+    const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
+
+    if (typeof AbortController === 'undefined') {
+      const response = await fetchImpl(url, { headers });
+      if (!response.ok) throw new Error(`Pyth API error: ${response.status}`);
+      return response.json();
+    }
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => {
+      try {
+        controller.abort(new DOMException(`Pyth fetch timed out after ${timeoutMs}ms`, 'TimeoutError'));
+      } catch (_) {
+        try { controller.abort(); } catch (_) { }
+      }
+    }, timeoutMs);
+
+    try {
+      const response = await fetchImpl(url, { signal: controller.signal, headers });
+      if (!response.ok) throw new Error(`Pyth API error: ${response.status}`);
+      return await response.json();
+    } catch (err) {
+      const canProxy = typeof window !== 'undefined' && typeof window.proxyFetch === 'function';
+      if (!canProxy) throw err;
+      const proxyController = new AbortController();
+      const proxyTimeoutId = setTimeout(() => {
+        try { proxyController.abort(new DOMException(`Pyth proxy timed out after ${timeoutMs}ms`, 'TimeoutError')); } catch (_) { }
+      }, timeoutMs);
+      try {
+        const proxied = await window.proxyFetch(url, { signal: proxyController.signal, headers });
+        if (!proxied.ok) throw new Error(`Pyth proxy error: ${proxied.status}`);
+        return await proxied.json();
+      } finally {
+        clearTimeout(proxyTimeoutId);
+      }
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
+
   // ──────────────────────────────────────────────────────────────
   // PUBLIC API
   // ──────────────────────────────────────────────────────────────
 
   /**
-   * Fetch current price for a coin from Pyth Hermes
+   * Fetch current price for a coin from Pyth Hermes or Lazer proxy
    * @param {string} sym - Coin symbol (BTC, ETH, SOL, etc.)
    * @returns {Promise<object>} { price, confidence, publishTime, age_ms }
    */
@@ -47,50 +115,103 @@ class PythSettlementValidator {
       throw new Error(`[PythSettlementValidator] Unknown coin: ${sym}`);
     }
 
-    // Check cache
+    // 1. Check local instance cache
     const cached = this.priceCache[sym];
     if (cached && Date.now() - cached.fetchTime < this.cacheExpiry) {
       return cached.data;
     }
 
+    // 2. Check window._pythPrices or memory store before network round trip
+    if (typeof window !== 'undefined' && window._pythPrices && window._pythPrices[sym]) {
+      const p = Number(window._pythPrices[sym]);
+      if (Number.isFinite(p) && p > 0) {
+        const data = { price: p, confidence: 0, publishTime: Date.now(), age_ms: 0 };
+        this.priceCache[sym] = { data, fetchTime: Date.now() };
+        return data;
+      }
+    }
+
+    // 3. Query Hermes with Pro key (skipped while the endpoint is in a 403 cooldown)
     try {
-      const url = `${this.pythBase}/api/latest_price_feeds?ids[]=${feedId}`;
-      const response = await fetch(url, { timeout: 5000 });
+      try {
+        let json = null;
+        let lastError = null;
+        if (Date.now() >= this.hermesBlockedUntil) {
+          for (const base of this.pythBases) {
+            try {
+              const url = `${base.replace(/\/+$/, '')}/v2/updates/price/latest?ids[]=${encodeURIComponent(feedId)}`;
+              json = await this.fetchJsonWithTimeout(url, this.requestTimeoutMs);
+              this.pythBase = base;
+              break;
+            } catch (err) {
+              lastError = err;
+              if (/\b403\b/.test(String(err?.message || ''))) {
+                this.hermesBlockedUntil = Date.now() + this.hermesCooldownMs;
+                console.warn('[PythSettlementValidator] Hermes returned 403; cooling down for 10 minutes');
+                break;
+              }
+            }
+          }
+          if (lastError) throw lastError;
+        }
 
-      if (!response.ok) {
-        throw new Error(`Pyth API error: ${response.status}`);
+      const feed = json?.parsed?.[0];
+      if (feed && feed.price) {
+        const rawPrice = feed.price.price;
+        const expo = feed.price.expo;
+        const conf = feed.price.conf;
+        const publishTime = feed.price.publish_time * 1000;
+        const price = Number(rawPrice) * Math.pow(10, expo);
+        const data = {
+          price,
+          confidence: Number(conf) * Math.pow(10, expo),
+          publishTime,
+          age_ms: Date.now() - publishTime,
+        };
+        this.priceCache[sym] = { data, fetchTime: Date.now() };
+        return data;
       }
+    } catch (_) {}
 
-      const json = await response.json();
-      const feed = json.parsed?.[0];
-
-      if (!feed || !feed.price) {
-        throw new Error(`No price data for ${sym}`);
+    // 4. Fallback to Douro Labs Lazer proxy (public, fast)
+    const lazerIdMap = { BTC: 1, ETH: 2, SOL: 6, DOGE: 13, XRP: 14, BNB: 15, HYPE: 7 };
+    const lazerId = lazerIdMap[sym];
+    if (lazerId) {
+      for (const host of ['pyth-lazer-proxy-1.dourolabs.app', 'pyth-lazer-proxy-2.dourolabs.app']) {
+        try {
+          const u = `https://${host}/v1/latest_price?price_feed_ids=${lazerId}`;
+          const res = await this.fetchJsonWithTimeout(u, 2500);
+          const feeds = res?.priceFeeds || res?.parsed?.priceFeeds || [];
+          const found = feeds.find(f => Number(f.priceFeedId) === lazerId);
+          if (found && found.price) {
+            const exp = found.exponent ?? -8;
+            const price = Number(found.price) * Math.pow(10, exp);
+            const tsUs = Number(found.feedUpdateTimestamp);
+            const publishTime = tsUs > 1e12 ? tsUs / 1000 : Date.now();
+            const data = {
+              price,
+              confidence: Number(found.confidence || 0) * Math.pow(10, exp),
+              publishTime,
+              age_ms: Date.now() - publishTime,
+            };
+            this.priceCache[sym] = { data, fetchTime: Date.now() };
+            return data;
+          }
+        } catch (_) {}
       }
+    }
 
-      const price = parseFloat(feed.price.price);
-      const confidence = parseFloat(feed.price.conf);
-      const publishTime = parseInt(feed.price.publish_time) * 1000; // Convert to ms
-      const age_ms = Date.now() - publishTime;
-
-      const result = {
-        price,
-        confidence,
-        publishTime,
-        age_ms,
-        feedId: feed.id,
-      };
-
-      // Cache result
-      this.priceCache[sym] = { data: result, fetchTime: Date.now() };
-
-      // Update window timestamp for adaptive tuner's staleness check
-      if (typeof window !== 'undefined') {
-        window.PYTH_HERMES_LAST_UPDATE = Date.now();
+    throw new Error(`No price data available for ${sym}`);
+  } catch (err) {
+      if (cached?.data) {
+        console.warn(`[PythSettlementValidator] ${sym} fetch failed, serving stale cache:`, err.message);
+        return {
+          ...cached.data,
+          stale: true,
+          fetchError: err.message,
+          age_ms: cached.data.publishTime ? Date.now() - cached.data.publishTime : cached.data.age_ms,
+        };
       }
-
-      return result;
-    } catch (err) {
       console.error(`[PythSettlementValidator] Error fetching ${sym}:`, err.message);
       throw err;
     }
@@ -148,7 +269,7 @@ class PythSettlementValidator {
         pythDirection: pythDir,
         kalshiDirection: kalshiDir,
         match,
-        deviation: Math.round(deviation * 10000) / 100,
+        deviation: Math.round(deviation * 20000) / 100,
         timestamp: Date.now(),
       };
 

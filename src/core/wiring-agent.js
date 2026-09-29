@@ -26,6 +26,7 @@
 
     window.addEventListener('network-health-update', handleNetworkHealthUpdate);
     window.addEventListener('network-health-alert', handleNetworkHealthAlert);
+    window.addEventListener('network-transport-update', handleNetworkHealthUpdate);
     window.addEventListener('circuit-breaker-event', handleCircuitBreakerEvent);
 
     // Initial render

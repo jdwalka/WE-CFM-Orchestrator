@@ -28,11 +28,11 @@
 
         // Sort by x values
         const indices = Array.from({ length: n }, (_, i) => i)
-            .sort((i, j) => x[i] - x[j]);
+            .sort((i, j) => (x.at(i) ?? 0) - (x.at(j) ?? 0));
 
-        const xs = indices.map(i => x[i]);
-        const ys = indices.map(i => y[i]);
-        const ws = indices.map(i => weights[i]);
+        const xs = indices.map(i => x.at(i));
+        const ys = indices.map(i => y.at(i));
+        const ws = indices.map(i => weights.at(i));
 
         // PAV (Pool Adjacent Violators) Algorithm
         let ghat = ys.slice();
@@ -43,15 +43,19 @@
         while (changed) {
             changed = false;
             for (let i = 0; i < ghat.length - 1; i++) {
-                if (ghat[i] > ghat[i + 1]) {
+                const g_i = ghat.at(i);
+                const g_next = ghat.at(i + 1);
+                if (g_i > g_next) {
                     // Pool blocks i and i+1
-                    const newVal = (ghat[i] * gw[i] + ghat[i + 1] * gw[i + 1]) / (gw[i] + gw[i + 1]);
+                    const gw_i = gw.at(i);
+                    const gw_next = gw.at(i + 1);
+                    const newVal = (g_i * gw_i + g_next * gw_next) / (gw_i + gw_next);
                     ghat[i] = newVal;
                     ghat[i + 1] = newVal;
-                    gw[i] = gw[i] + gw[i + 1];
+                    gw[i] = gw_i + gw_next;
 
                     // Merge blocks
-                    blocks[i] = blocks[i].concat(blocks[i + 1]);
+                    blocks[i] = (blocks.at(i) || []).concat(blocks.at(i + 1) || []);
                     blocks.splice(i + 1, 1);
                     ghat.splice(i + 1, 1);
                     gw.splice(i + 1, 1);
@@ -66,7 +70,8 @@
         const f = Array(n);
         blocks.forEach((blockIndices, blockIdx) => {
             blockIndices.forEach(idx => {
-                f[indices[idx]] = ghat[blockIdx];
+                const origIdx = indices.at(idx);
+                if (origIdx !== undefined) f[origIdx] = ghat.at(blockIdx);
             });
         });
 
@@ -95,9 +100,13 @@
         const bins = Array(numBins).fill(0).map(() => ({ preds: [], outcomes: [] }));
 
         for (let i = 0; i < predictions.length; i++) {
-            const bin = Math.min(numBins - 1, Math.floor(predictions[i] * numBins));
-            bins[bin].preds.push(predictions[i]);
-            bins[bin].outcomes.push(outcomes[i]);
+            const predVal = predictions.at(i);
+            const outVal = outcomes.at(i);
+            if (predVal !== undefined && outVal !== undefined) {
+                const bin = Math.min(numBins - 1, Math.floor(predVal * numBins));
+                bins.at(bin)?.preds.push(predVal);
+                bins.at(bin)?.outcomes.push(outVal);
+            }
         }
 
         let totalError = 0;
@@ -167,7 +176,9 @@
         // Sum PSI across bins
         let psi = 0;
         for (let i = 0; i < numBins; i++) {
-            psi += (actProb[i] - expProb[i]) * Math.log(actProb[i] / expProb[i]);
+            const a = actProb.at(i) ?? 1e-10;
+            const e = expProb.at(i) ?? 1e-10;
+            psi += (a - e) * Math.log(a / e);
         }
 
         return psi;
@@ -189,9 +200,10 @@
 
         let kl = 0;
         for (let i = 0; i < p.length; i++) {
-            if (p[i] > 1e-10) {  // avoid log(0)
-                const qVal = Math.max(1e-10, q[i]);
-                kl += p[i] * Math.log(p[i] / qVal);
+            const pVal = p.at(i) ?? 0;
+            if (pVal > 1e-10) {  // avoid log(0)
+                const qVal = Math.max(1e-10, q.at(i) ?? 1e-10);
+                kl += pVal * Math.log(pVal / qVal);
             }
         }
 
@@ -256,11 +268,12 @@
         } else if (type === 'ema') {
             const result = [];
             const alpha = 2 / (period + 1);
-            let ema = values[0];
+            let ema = values.at(0) ?? 0;
             result.push(ema);
 
             for (let i = 1; i < values.length; i++) {
-                ema = values[i] * alpha + ema * (1 - alpha);
+                const val = values.at(i) ?? 0;
+                ema = val * alpha + ema * (1 - alpha);
                 result.push(ema);
             }
             return result;
@@ -317,7 +330,7 @@
 
         let cov = 0;
         for (let i = 0; i < x.length; i++) {
-            cov += (x[i] - meanX) * (y[i] - meanY);
+            cov += ((x.at(i) ?? 0) - meanX) * ((y.at(i) ?? 0) - meanY);
         }
 
         return cov / (x.length - 1 || 1);
@@ -340,8 +353,8 @@
         let denomY = 0;
 
         for (let i = 0; i < x.length; i++) {
-            const dx = x[i] - meanX;
-            const dy = y[i] - meanY;
+            const dx = (x.at(i) ?? 0) - meanX;
+            const dy = (y.at(i) ?? 0) - meanY;
             numSum += dx * dy;
             denomX += dx * dx;
             denomY += dy * dy;
@@ -423,10 +436,12 @@
             let sum = 0, sumVar = 0, n = 0;
             for (let i = start; i < end; i++) {
                 if (i < this.buckets.length) {
-                    const b = this.buckets[i];
-                    sum += b.sum;
-                    sumVar += b.var;
-                    n += b.size;
+                    const b = this.buckets.at(i);
+                    if (b) {
+                        sum += b.sum;
+                        sumVar += b.var;
+                        n += b.size;
+                    }
                 }
             }
             return { sum, var: sumVar, n };
@@ -490,6 +505,86 @@
         };
     }
 
+    /**
+     * Approximates the inverse normal CDF (probit function).
+     */
+    function norm_ppf(p) {
+        if (!Number.isFinite(p) || p <= 0.0 || p >= 1.0) throw new Error("p must be in (0, 1)");
+        
+        const a1 = -3.969683028665376e+01, a2 =  2.209460984245205e+02,
+              a3 = -2.759285104469687e+02, a4 =  1.383577518672690e+02,
+              a5 = -3.066479806614716e+01, a6 =  2.506628277459239e+00;
+        
+        const b1 = -5.447609879822406e+01, b2 =  1.615858368580409e+02,
+              b3 = -1.556989798598866e+02, b4 =  6.680131188771972e+01,
+              b5 = -1.328068155288572e+01;
+        
+        const c1 = -7.784894002430293e-03, c2 = -3.223964580411365e-01,
+              c3 = -2.400758277161838e+00, c4 = -2.549732539343734e+00,
+              c5 =  4.374664141464968e+00, c6 =  2.938163982698783e+00;
+        
+        const d1 =  7.784695709041462e-03, d2 =  3.224671290700398e-01,
+              d3 =  2.445134137142996e+00, d4 =  3.754408661907416e+00;
+        
+        const p_low = 0.02425, p_high = 1 - p_low;
+        let q, r, x;
+        
+        if (0 < p && p < p_low) {
+            q = Math.sqrt(-2 * Math.log(p));
+            x = (((((c1 * q + c2) * q + c3) * q + c4) * q + c5) * q + c6) /
+                ((((d1 * q + d2) * q + d3) * q + d4) * q + 1);
+        } else if (p_low <= p && p <= p_high) {
+            q = p - 0.5;
+            r = q * q;
+            x = (((((a1 * r + a2) * r + a3) * r + a4) * r + a5) * r + a6) * q /
+                (((((b1 * r + b2) * r + b3) * r + b4) * r + b5) * r + 1);
+        } else {
+            q = Math.sqrt(-2 * Math.log(1 - p));
+            x = -(((((c1 * q + c2) * q + c3) * q + c4) * q + c5) * q + c6) /
+                 ((((d1 * q + d2) * q + d3) * q + d4) * q + 1);
+        }
+        return x;
+    }
+
+    /**
+     * Calculates Binary Implied Volatility
+     */
+    function calculateBinaryIV(price, spot, strike, daysToExpiry, exchange = "polymarket", realizedVol = null) {
+        let p = price;
+        const ex = String(exchange || 'polymarket').toLowerCase();
+        
+        if (ex === "polymarket") {
+            p = price / 1.02;
+        } else if (ex === "kalshi") {
+            p = price - (0.07 * price * (1 - price));
+        }
+        
+        p = Math.max(0.001, Math.min(0.999, p));
+        const T = daysToExpiry / 365.0;
+        const d2 = norm_ppf(p);
+        
+        const logMoneyness = Math.log(spot / strike);
+        const discriminant = (d2 * d2) + 2 * logMoneyness;
+        
+        if (discriminant < 0) {
+            return { error: "Price violates no-arbitrage bounds for given Spot/Strike." };
+        }
+        
+        const iv = (-d2 + Math.sqrt(discriminant)) / Math.sqrt(T);
+        let vrp = null;
+        
+        if (realizedVol !== null && typeof realizedVol === 'number') {
+            vrp = iv - realizedVol;
+        }
+        
+        return {
+            exchange: ex.charAt(0).toUpperCase() + ex.slice(1),
+            adjusted_prob: Number(p.toFixed(4)),
+            implied_vol: Number(iv.toFixed(4)),
+            vrp: vrp !== null ? Number(vrp.toFixed(4)) : null
+        };
+    }
+
     // ── Expose API ──────────────────────────────────────────────────
     window.QuantStatUtils = {
         isotonicRegression,
@@ -505,6 +600,8 @@
         correlation,
         ADWINDetector,
         qqStats,
+        norm_ppf,
+        calculateBinaryIV,
     };
 
     console.log('[QuantStatUtils] Loaded: 14 utility functions');

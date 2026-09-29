@@ -9,6 +9,7 @@
 //   s-orbital  (core)       BTC  ETH  XRP  BNB   innermost, most stable
 //   p-orbital  (momentum)   SOL  HYPE             reactive, 1.65× amplitude
 //   d-orbital  (highBeta)   DOGE                  complex, 2.80× amplitude
+//   f-orbital  (sentiment)  BTC..DOGE             externality-driven, global risk pulse
 //
 // ENERGY ROUTING
 //   Shell ionisation = velocity crosses ionizeThreshold.
@@ -35,11 +36,33 @@
 (function () {
   'use strict';
 
+  function clamp(value, min, max) {
+    return Math.min(Math.max(value, min), max);
+  }
+
   // ── Shell definitions ──────────────────────────────────────────────────────
+  const ORBITAL_RINGS = {
+    s: ['spot price', 'market cap', 'TVL', '1% order book depth'],
+    p: ['15m VWAP', 'spot volume', 'on-chain transaction velocity'],
+    d: ['open interest', 'funding rates', 'long/short ratios', 'liquidation clusters'],
+    f: ['prediction market odds', 'social sentiment velocity', 'fear/greed'],
+  };
+
+  const ASSET_ORBITAL_BASE = {
+    BTC:  { shell: 's', beta: 1.00, weight: 1.00, classification: 'Heavy Metal',       orbitalFocus: 'core',           marketCapUsd: 1.39e12, tvlUsd: 5.0e9 },
+    ETH:  { shell: 's', beta: 1.15, weight: 0.90, classification: 'Heavy Metal',       orbitalFocus: 'defi-base',      marketCapUsd: 2.85e11, tvlUsd: 45.0e9 },
+    SOL:  { shell: 'p', beta: 1.65, weight: 0.90, classification: 'Transition Metal',  orbitalFocus: 'momentum',       marketCapUsd: 6.50e10, tvlUsd: 8.0e9 },
+    XRP:  { shell: 's', beta: 1.25, weight: 0.70, classification: 'Transition Metal',  orbitalFocus: 'isolated-flow',  marketCapUsd: 3.50e10, tvlUsd: 0 },
+    BNB:  { shell: 's', beta: 1.10, weight: 0.40, classification: 'Transition Metal',  orbitalFocus: 'ecosystem',      marketCapUsd: null,      tvlUsd: 0 },
+    HYPE: { shell: 'p', beta: 1.80, weight: 0.60, classification: 'Reactive Non-Metal', orbitalFocus: 'derivatives',    marketCapUsd: 1.20e10, tvlUsd: 4.5e9 },
+    DOGE: { shell: 'd', beta: 2.80, weight: 0.50, classification: 'Noble Gas',         orbitalFocus: 'sentiment',      marketCapUsd: 1.50e10, tvlUsd: 0 },
+  };
+
   const SHELLS = {
-    s: { key: 's', label: 'core',      coins: ['BTC', 'ETH', 'XRP', 'BNB'], ionizeThreshold: -0.022 },
-    p: { key: 'p', label: 'momentum',  coins: ['SOL', 'HYPE'],              ionizeThreshold: -0.028 },
-    d: { key: 'd', label: 'highBeta',  coins: ['DOGE'],                     ionizeThreshold: -0.045 },
+    s: { key: 's', label: 'core',       coins: ['BTC', 'ETH', 'XRP', 'BNB'], ionizeThreshold: -0.022 },
+    p: { key: 'p', label: 'momentum',   coins: ['SOL', 'HYPE'],               ionizeThreshold: -0.028 },
+    d: { key: 'd', label: 'highBeta',   coins: ['DOGE'],                      ionizeThreshold: -0.045 },
+    f: { key: 'f', label: 'sentiment',  coins: Object.keys(ASSET_ORBITAL_BASE), ionizeThreshold: -0.035 },
   };
 
   // ── Inter-shell routing table ──────────────────────────────────────────────
@@ -47,18 +70,75 @@
     { from: 's', to: 'p', delay_ms:  90_000, beta: 1.65, label: 's→p' },
     { from: 's', to: 'd', delay_ms: 210_000, beta: 2.80, label: 's→d' },
     { from: 'p', to: 'd', delay_ms: 120_000, beta: 1.70, label: 'p→d' },
+    { from: 'f', to: 's', delay_ms:  45_000, beta: 1.40, label: 'f→s' },
+    { from: 'f', to: 'p', delay_ms:  60_000, beta: 1.55, label: 'f→p' },
+    { from: 'f', to: 'd', delay_ms:  90_000, beta: 1.85, label: 'f→d' },
   ];
 
   // ── Per-coin beta coefficients ─────────────────────────────────────────────
   const COIN_META = {
-    BTC:  { shell: 's', beta: 1.00, weight: 1.00 },
-    ETH:  { shell: 's', beta: 1.15, weight: 0.90 },
-    XRP:  { shell: 's', beta: 1.25, weight: 0.70 },
-    BNB:  { shell: 's', beta: 1.10, weight: 0.40 },
-    SOL:  { shell: 'p', beta: 1.65, weight: 0.90 },
-    HYPE: { shell: 'p', beta: 1.80, weight: 0.60 },
-    DOGE: { shell: 'd', beta: 2.80, weight: 0.50 },
+    BTC:  { ...ASSET_ORBITAL_BASE.BTC },
+    ETH:  { ...ASSET_ORBITAL_BASE.ETH },
+    XRP:  { ...ASSET_ORBITAL_BASE.XRP },
+    BNB:  { ...ASSET_ORBITAL_BASE.BNB },
+    SOL:  { ...ASSET_ORBITAL_BASE.SOL },
+    HYPE: { ...ASSET_ORBITAL_BASE.HYPE },
+    DOGE: { ...ASSET_ORBITAL_BASE.DOGE },
   };
+
+  function getLiveMarketCapUsd(sym) {
+    const liveQuote = window._cmcProFeed?.getCachedQuote?.(sym);
+    const base = ASSET_ORBITAL_BASE[sym];
+    const liveCap = Number(liveQuote?.marketCap);
+    if (Number.isFinite(liveCap) && liveCap > 0) return liveCap;
+    return Number.isFinite(base?.marketCapUsd) ? base.marketCapUsd : null;
+  }
+
+  function getAtomicProfile(sym) {
+    const base = COIN_META[sym];
+    if (!base) return null;
+    const marketCapUsd = getLiveMarketCapUsd(sym);
+    const tvlUsd = Number.isFinite(base.tvlUsd) ? base.tvlUsd : 0;
+    const atomicWeightUsd = Number.isFinite(marketCapUsd) ? marketCapUsd + tvlUsd : null;
+    const rings = {
+      s: ORBITAL_RINGS.s.slice(),
+      p: ORBITAL_RINGS.p.slice(),
+      d: ORBITAL_RINGS.d.slice(),
+      f: ORBITAL_RINGS.f.slice(),
+    };
+    return {
+      sym,
+      ...base,
+      marketCapUsd,
+      tvlUsd,
+      atomicWeightUsd,
+      orbitalOrder: ['s', 'p', 'd', 'f'],
+      rings,
+    };
+  }
+
+  function sentimentVelocity() {
+    const markets = window.PredictionMarkets?.getAll?.() || {};
+    const fng = Number(window._cmcProFeed?.fearGreed?.()?.value ?? 50);
+    const btcDom = Number(window._cmcProFeed?.globalMetrics?.()?.btcDominance ?? 50);
+    let total = 0;
+    let weight = 0;
+    for (const [sym, meta] of Object.entries(COIN_META)) {
+      const profile = getAtomicProfile(sym) || meta;
+      const pm = markets[sym];
+      const prob = Number(pm?.combinedProb);
+      let signal = 0;
+      if (Number.isFinite(prob)) signal += clamp((prob - 0.5) * 2, -1, 1) * 0.7;
+      const vel = Number(window.PredictionMarkets?.getVelocity?.(sym)?.velCentsPerMin);
+      if (Number.isFinite(vel)) signal += clamp(vel / 8, -1, 1) * 0.3;
+      const seriesWeight = profile?.weight || meta.weight || 1;
+      total += signal * seriesWeight;
+      weight += seriesWeight;
+    }
+    const fngBias = Number.isFinite(fng) ? clamp((50 - fng) / 50, -1, 1) * 0.35 : 0;
+    const domBias = Number.isFinite(btcDom) ? clamp((btcDom - 50) / 20, -1, 1) * -0.12 : 0;
+    return (weight > 0 ? total / weight : 0) + fngBias + domBias;
+  }
 
   // ── VE constants ───────────────────────────────────────────────────────────
   const VE_EVAL_TICKS   = 3;       // snapshots to collect before deciding (3 × 5s = 15s)
@@ -81,10 +161,33 @@
   const _vetoState     = {};  // sym → VetoEvaluator state object
   const _volBaseline   = {};  // shellKey → EMA of |cfmRate|
   const _volTicks      = {};  // shellKey → tick count for warm-up guard
+  const _quantumTracker = window.OrbitalQuantumState?.createQuantumStateTracker?.() || null;
+
+  function shellElectronPayload(shellKey) {
+    const payload = {};
+    if (shellKey === 'f') {
+      const markets = window.PredictionMarkets?.getAll?.() || {};
+      for (const sym of SHELLS.f.coins) {
+        const probability = Number(markets[sym]?.combinedProb);
+        const velocity = Number(window.PredictionMarkets?.getVelocity?.(sym)?.velCentsPerMin);
+        if (Number.isFinite(probability)) payload[sym + '_probability'] = probability;
+        if (Number.isFinite(velocity)) payload[sym + '_velocity'] = velocity;
+      }
+      return payload;
+    }
+
+    const cfmAll = window._cfm || {};
+    for (const sym of SHELLS[shellKey].coins) {
+      const momentum = Number(cfmAll[sym]?.momentum);
+      if (Number.isFinite(momentum)) payload[sym + '_momentum'] = momentum;
+    }
+    return payload;
+  }
 
   // ── Shell velocity ─────────────────────────────────────────────────────────
   function shellVelocity(shellKey) {
     const shell  = SHELLS[shellKey];
+    if (shellKey === 'f') return sentimentVelocity();
     const cfmAll = window._cfm || {};
     let vSum = 0, wSum = 0;
     for (const sym of shell.coins) {
@@ -318,10 +421,24 @@
       );
     }
 
+    const quantumState = _quantumTracker
+      ? _quantumTracker.enrich(shellKey, 'SHELL_' + shellKey, shellElectronPayload(shellKey), Date.now()).quantum_state
+      : {
+          shell: shellKey,
+          ion_charge: velocity > 0 ? '+' : velocity < 0 ? '-' : '0',
+          net_charge: clamp(velocity, -1, 1),
+          coherence: Math.abs(velocity) > 0 ? 1 : 0,
+          electron_count: 0,
+          subatomic_orbital_count: 0,
+          subshells: [],
+          ts: Date.now(),
+        };
+
     _shellState[shellKey] = {
       velocity, energy: Math.abs(velocity), ionized, volSpiked,
       volSpikeMult: vol.spikeMult, volRate: vol.curRate,
       direction: velocity < 0 ? -1 : 1, lastTs: Date.now(),
+      quantum_state: quantumState,
     };
   }
 
@@ -330,6 +447,7 @@
     tickShell('s');
     tickShell('p');
     tickShell('d');
+    tickShell('f');
     processPhotons();
 
     // Advance all active VE cycles
@@ -360,6 +478,8 @@
     getVetoState:     sym      => _vetoState[sym] ?? null,
     getShellVelocity: shellVelocity,
     getCoinMeta:      sym      => COIN_META[sym] ?? null,
+    getAtomicProfile: sym      => getAtomicProfile(sym),
+    getOrbitalRings:  sym      => getAtomicProfile(sym)?.rings ?? null,
     clearVeto:        sym      => { veRelease(sym, 'manual-clear'); },
     SHELLS, COIN_META, ROUTES,
   };

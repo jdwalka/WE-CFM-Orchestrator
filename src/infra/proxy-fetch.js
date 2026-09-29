@@ -2,8 +2,8 @@
 // WE CFM ALPHA-1.3 — Smart Proxy Shim
 //
 // CORS is just a browser bouncer with a clipboard — it only fires
-// when the browser asks. Electron (webSecurity:false) already
-// dismissed that bouncer. The proxy's REAL job is server-side:
+// when the browser asks. Electron's scoped webRequest CORS passthrough
+// already dismissed that bouncer. The proxy's REAL job is server-side:
 //
 //  BUCKET A — CF_PROTECTED   : Cloudflare Bot Mgmt / 403 without
 //                               Chrome TLS fingerprint → ALWAYS proxy
@@ -23,59 +23,75 @@
 (function () {
   'use strict';
 
-  const PORT_CASCADE = [3010, 3011, 3012, 3013, 3014];
+  const PORT_CASCADE = [3010, 3011, 3012, 3013, 3014, 3015, 3016, 3017, 3018, 3019, 3020];
 
-  // Start in direct mode; enable proxy only after positive health discovery.
-  let PROXY_ORIGIN = null;
-  let proxyReady = false;
+  // Initialize PROXY_ORIGIN immediately so early fetches are never sent unproxied.
+  let PROXY_ORIGIN = (typeof window !== 'undefined' && window.__PROXY_PORT__)
+    ? `http://127.0.0.1:${window.__PROXY_PORT__}`
+    : null;
+  let proxyReady = !!PROXY_ORIGIN;
 
   const IS_ELECTRON = window.location.protocol === 'file:';
 
-  // ── Bucket A: Cloudflare Bot Mgmt — always needs the proxy ──────────────
+  // ── Bucket A: Cloudflare Bot Mgmt & Geo-restricted APIs — always proxy ─────
   const CF_PROTECTED = new Set([
+    'api.binance.com',
+    'fapi.binance.com',
+    'dapi.binance.com',
+    'data-api.binance.vision',
     'api.bybit.com',
-    'api.bytick.com',   // Bybit EU/Asia mirror — automatic geo-fence failover
+    'api.bytick.com',
+    'api.kraken.com',
+    'www.kraken.com',
+    'api.hyperliquid.xyz',
+    'api.bitstamp.net',
+    'www.bitstamp.net',
     'www.okx.com',
+    'api.okx.com',
     'api-pub.bitfinex.com',
     'api.kucoin.com',
     'api.mexc.com',
     'api.crypto.com',
-    'clob.polymarket.com',
-    'gamma-api.polymarket.com',
+    'api.bitvavo.com',
+    'api.upbit.com',
   ]);
 
   // ── Bucket B: rate-limited public APIs — proxy for headroom ─────────────
   const RATE_LIMITED = new Set([
-    'api.coingecko.com',
     'api.dexscreener.com',
     'api.blockchair.com',
+    'api.blockcypher.com',
     'hypurrscan.io',
     'api.etherscan.io',
     'api.bscscan.com',
+    'api.gateio.ws',
+    'fx-api.gateio.ws',
+    'pyth.dourolabs.app',
   ]);
 
-  // ── Bucket C: open / first-party APIs — direct ok in Electron ───────────
-  // (still proxied in browser so the CORS bouncer doesn't fire)
-  // api.binance.us, fapi.binance.com, api.coinbase.com,
-  // api.exchange.coinbase.com, api.kraken.com, api.elections.kalshi.com,
-  // s2.ripple.com, xrplcluster.com, api.mainnet-beta.solana.com,
-  // eth.blockscout.com, bsc.blockscout.com, api.blockcypher.com, mempool.space, api.hyperliquid.xyz
+  // ── Bucket C: open / first-party APIs ──────────────────────────────────
 
   // hostname → proxy exchange prefix (config.toml keys)
   const HOST_MAP = {
-    'api.binance.us': 'binance',
-    'api.binance.com': 'binance',  // Binance spot geoblocked (451)
+    'api.binance.us': 'binance-us',
+    'api.binance.com': 'binance',
+    'data-api.binance.vision': 'binance',
     'fapi.binance.com': 'binance-f',
+    'dapi.binance.com': 'binance-d',
     'api.coingecko.com': 'coingecko',
+    'pro-api.coingecko.com': 'coingecko-pro',
     'api.coinbase.com': 'coinbase',
     'api.exchange.coinbase.com': 'coinbase-ex',
     'api.kraken.com': 'kraken',
+    'www.kraken.com': 'kraken',
     'api.bybit.com': 'bybit',
     'api.bytick.com': 'bybit',   // EU mirror — same proxy route
     'www.okx.com': 'okx',
-    'api.elections.kalshi.com': 'kalshi',
+    'api.okx.com': 'okx',
     'gamma-api.polymarket.com': 'polymarket',
     'clob.polymarket.com': 'polymarket-clob',
+    'data-api.polymarket.com': 'polymarket-data',
+    'api.perpetuals.polymarket.com': 'polymarket-perps',
     'api-pub.bitfinex.com': 'bitfinex',
     'api.kucoin.com': 'kucoin',
     'api.mexc.com': 'mexc',
@@ -93,14 +109,35 @@
     'xrplcluster.com': 'xrpl',
     'api.mainnet-beta.solana.com': 'solana',
     'api.crypto.com': 'crypto-com',
+    'pyth.dourolabs.app': 'pyth-history',
+    'api.upbit.com': 'upbit',
+    'api.bitget.com': 'bitget',
+    'open-api.bingx.com': 'bingx',
+    'api.gemini.com': 'gemini',
+    'api.whitebit.com': 'whitebit',
+    'whitebit.com': 'whitebit',
+    'www.coinw.com': 'coinw',
+    'ourbit.com': 'ourbit',
+    'www.lbank.com': 'lbank',
+    'www.bitstamp.net': 'bitstamp',
+    'api.bitstamp.net': 'bitstamp',
+    'api.bitso.com': 'bitso',
+    'www.bullish.com': 'bullish',
+    'www.weex.com': 'weex',
   };
 
   const _origFetch = window.fetch.bind(window);
   const EXTERNAL = /^https?:\/\//;
 
+  // Explicit direct bypass for AI/LLM endpoints so they always use native source IP.
+  // pyth added 2026-08-24: Hermes/Lazer aren't geo-blocked, so routing them through
+  // the local proxy (and from there, the Mullvad/Sweden path) only adds latency and
+  // ties price-feed reliability to that tunnel's health for no access-control benefit.
+  const IGNORE_DOMAINS = /localhost|127\.0\.0\.1|asi1\.ai|fetch-ai\.com|openai\.com|anthropic\.com|x\.ai|deepseek\.com|timeapi\.io|pyth/i;
+
   function needsProxy(hostname) {
-    if (!IS_ELECTRON) return true;           // browser: CORS bouncer is live → proxy everything
-    return CF_PROTECTED.has(hostname) || RATE_LIMITED.has(hostname);
+    if (IGNORE_DOMAINS.test(hostname)) return false;
+    return true; // All exchange / market endpoints MUST route through local proxy
   }
 
   function rewrite(url) {
@@ -124,12 +161,135 @@
     }
   }
 
+  let _nodeFetch = null;
+  try {
+    if (typeof require !== 'undefined') {
+      _nodeFetch = require('node-fetch');
+    }
+  } catch (_) { }
+
+  function shouldUseNodeFetch(originalUrl, rewrittenUrl) {
+    if (!_nodeFetch) return false;
+    const isProxyRoute = rewrittenUrl !== originalUrl;
+    return isProxyRoute; // ONLY use node-fetch for the local proxy (127.0.0.1) route. External DNS hangs in Electron renderer.
+  }
+
+  // ── Per-host circuit breaker: stop re-hammering a dead upstream leg ─────
+  // The local proxy binary can stay up (health-checks green) while its own
+  // outbound connections fail — e.g. the box's current egress IP is flagged
+  // by a provider's Cloudflare edge. Without this, every poll loop across the
+  // app keeps re-dispatching to the same doomed host every ~20s, drowning the
+  // health dashboard in identical "502 Bad Gateway" rows. Track failures per
+  // real upstream hostname (not the local proxy port) and fail fast during an
+  // open backoff window instead. Reuses ApiCircuitBreaker (src/feeds/api-
+  // circuit-breaker.js) when present so state shows up alongside the app's
+  // other resilience tooling; degrades to a no-op if that module isn't loaded.
+  const CIRCUIT_TRIP_STATUSES = new Set([502, 503, 504, 522, 524]);
+
+  function safeHostname(url) {
+    try { return new URL(url).hostname; } catch (_) { return null; }
+  }
+
+  // When tauri-bridge builds a local proxy URL itself and calls the patched
+  // fetch, the hostname is 127.0.0.1. Attributing failures to the local proxy
+  // trips ONE global breaker and disables every proxied host together.
+  // Resolve the real upstream host (slug prefix or /proxy?url=) instead.
+  const LOCAL_PROXY_HOST = /^(127\.0\.0\.1|localhost|\[::1\])$/i;
+  const REVERSE_HOST_MAP = Object.fromEntries(
+    Object.entries(HOST_MAP).map(([host, slug]) => [slug, host])
+  );
+
+  function breakerHostname(url) {
+    try {
+      const u = new URL(url);
+      if (!LOCAL_PROXY_HOST.test(u.hostname)) return u.hostname;
+      if (u.pathname === '/proxy') {
+        const target = u.searchParams.get('url');
+        return target ? new URL(target).hostname : null;
+      }
+      const slug = u.pathname.replace(/^\//, '').split('/')[0];
+      return REVERSE_HOST_MAP[slug] || null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function getHostBreaker(hostname) {
+    if (!hostname || !window.ApiCircuitBreaker) return null;
+    return window.ApiCircuitBreaker.getBreaker(`proxy-fetch:${hostname}`, { threshold: 3, timeout: 30000 });
+  }
+
+  function hostCircuitResponse(hostname, breaker) {
+    const retryAfterSec = breaker?.nextRetryTime
+      ? Math.max(1, Math.ceil((breaker.nextRetryTime - Date.now()) / 1000))
+      : 30;
+    return new Response(
+      JSON.stringify({ error: 'circuit_open', hostname, retryAfterSeconds: retryAfterSec }),
+      {
+        status: 503,
+        statusText: `Circuit open for ${hostname} (WE proxy-fetch backoff)`,
+        headers: { 'content-type': 'application/json', 'retry-after': String(retryAfterSec) },
+      },
+    );
+  }
+
+  function trackHostResult(hostname, res) {
+    const breaker = getHostBreaker(hostname);
+    if (!breaker || !res) return;
+    if (CIRCUIT_TRIP_STATUSES.has(res.status)) {
+      breaker.recordFailure();
+    } else if (res.status < 500) {
+      // Any non-5xx response means the upstream leg is reachable again —
+      // only gateway/timeout-class errors indicate a broken network path.
+      if (breaker.state !== 'CLOSED') breaker.close();
+      else breaker.failureCount = 0;
+    }
+  }
+
+  function trackHostFailure(hostname) {
+    const breaker = getHostBreaker(hostname);
+    if (breaker) breaker.recordFailure();
+  }
+
+  function dispatch(originalUrl, requestInput, init) {
+    const hostname = breakerHostname(originalUrl) || safeHostname(originalUrl);
+    const breaker = getHostBreaker(hostname);
+    if (breaker && !breaker.isAvailable()) {
+      return Promise.resolve(hostCircuitResponse(hostname, breaker));
+    }
+
+    const urlToUse = IGNORE_DOMAINS.test(originalUrl) ? originalUrl : rewrite(originalUrl);
+    let fetchPromise;
+    if (shouldUseNodeFetch(originalUrl, urlToUse)) {
+      if (requestInput instanceof Request) {
+        const opts = init || {};
+        opts.method = opts.method || requestInput.method;
+        opts.headers = opts.headers || requestInput.headers;
+        if (requestInput.body && !opts.body) opts.body = requestInput.body;
+        opts.signal = opts.signal || requestInput.signal;
+        fetchPromise = _nodeFetch(urlToUse, opts);
+      } else {
+        fetchPromise = _nodeFetch(urlToUse, init);
+      }
+    } else {
+      const finalInput = requestInput instanceof Request
+        ? (urlToUse !== requestInput.url ? new Request(urlToUse, requestInput) : requestInput)
+        : urlToUse;
+      fetchPromise = _origFetch(finalInput, init);
+    }
+
+    if (!hostname) return fetchPromise;
+    return fetchPromise.then(
+      (res) => { trackHostResult(hostname, res); return res; },
+      (err) => { trackHostFailure(hostname); throw err; },
+    );
+  }
+
   window.fetch = function (input, init) {
     if (typeof input === 'string') {
-      input = rewrite(input);
+      return dispatch(input, input, init);
     } else if (input instanceof Request && EXTERNAL.test(input.url)) {
-      const rw = rewrite(input.url);
-      if (rw !== input.url) input = new Request(rw, input);
+      return dispatch(input.url, input, init);
     }
     return _origFetch(input, init);
   };
@@ -140,25 +300,22 @@
   (function discoverProxyPort() {
     let idx = 0;
 
-    // First: honour port injected by main.js after proxy binds (fastest path)
-    if (typeof window.__PROXY_PORT__ === 'number') {
-      PROXY_ORIGIN = `http://127.0.0.1:${window.__PROXY_PORT__}`;
-      proxyReady = true;
-      console.info(`[WE] proxy-fetch — port from main.js: ${window.__PROXY_PORT__}`);
-      return;
-    }
-
+    // To ensure 100% reliability, we ALWAYS ping the cascade ports to verify health.
+    // If the proxy is slow to start (e.g. due to OS/antivirus delay), we retry the sweep.
     function tryNext() {
       if (idx >= PORT_CASCADE.length) {
         PROXY_ORIGIN = null;
-        console.warn('[WE] proxy-fetch — proxy not found on any port; proxied calls will go direct');
+        proxyReady = false;
+        console.warn('[WE] proxy-fetch — proxy not found on cascade in this sweep; retrying sweep in 2s...');
+        idx = 0;
+        setTimeout(tryNext, 2000);
         return;
       }
       const port = PORT_CASCADE[idx++];
       const xhr = new XMLHttpRequest();
       xhr.timeout = 500;
       xhr.onload = function () {
-        if (xhr.status === 200) {
+        if (xhr.status === 200 && xhr.responseText.trim() === 'OK') {
           PROXY_ORIGIN = `http://127.0.0.1:${port}`;
           proxyReady = true;
           console.info(`[WE] proxy-fetch v1.4 — live on port ${port}`);
