@@ -1139,6 +1139,26 @@ async function fetchPythHistoryCandles(instrument, timeframe) {
     };
     const now = Math.floor(Date.now() / 1000);
     const from = now - (SEC[res] || 3600) * (BARS[res] || 100);
+    // Fresh lane first: douro fixed-rate history with the operator-rotated
+    // PYTH_HISTORICAL_API_KEY. Any failure (auth, shape, unsupported
+    // resolution) falls through to the Pro lane below unchanged.
+    const DOURO_RES = { '1': '1m', '5': '5m', '15': '15m', '30': '30m', '60': '1h', 'D': '1D' };
+    const douroRes = DOURO_RES[res];
+    const histKey = String(resolveRuntimeKeyLocal('PYTH_HISTORICAL_API_KEY') || '').trim();
+    if (histKey && douroRes) {
+      try {
+        const durl = `https://pyth.dourolabs.app/v1/fixed_rate@1000ms/history?symbol=${encodeURIComponent(sym)}&from=${from}&to=${now}&resolution=${douroRes}`;
+        const dr = await fetchWithTimeout(durl, 20000, {
+          headers: { Authorization: `Bearer ${histKey}` },
+        });
+        if (dr.ok) {
+          const dd = await dr.json();
+          if (dd.s === 'ok' && dd.c?.length) {
+            return dd.t.map((ts, i) => [ts * 1000, +dd.o[i], +dd.h[i], +dd.l[i], +dd.c[i], +(dd.v?.[i] ?? 0)]);
+          }
+        }
+      } catch (_) { /* fall through to Pro lane */ }
+    }
     const url = `${PYTH_HISTORY_BASE}/v1/real_time/history?symbol=${encodeURIComponent(sym)}&from=${from}&to=${now}&resolution=${res}`;
     // Pyth's real-time history API moved behind Pyth Pro auth
     // (docs.pyth.network/price-feeds/pro/api/history#authentication) -- was

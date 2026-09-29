@@ -305,6 +305,18 @@ function readPublicEnv() {
     out.PYTH_PRO_API_KEY = pythProKey;
   }
 
+  // Pyth historical key (secrets/PYTH_HISTORICAL_API_KEY.txt, else env) --
+  // operator-rotated key for the douro fixed-rate history endpoint. Distinct
+  // from both the Lazer streaming token and the Pro key.
+  const pythHistSecret = readSecretFileValue([
+    'PYTH_HISTORICAL_API_KEY',
+    'PYTH_HISTORICAL_API_KEY.txt',
+  ]);
+  const pythHistKey = (pythHistSecret && pythHistSecret.value) || readEnvValue(['PYTH_HISTORICAL_API_KEY']);
+  if (pythHistKey) {
+    out.PYTH_HISTORICAL_API_KEY = pythHistKey;
+  }
+
   // Alchemy key (secrets/ALCHEMY-API-KEY-gitgoin.txt preferred) — feeds the
   // ETH WSS feed (alchemy-ws.js) and chain-router Alchemy handlers.
   const alchemySecret = readAlchemySecret();
