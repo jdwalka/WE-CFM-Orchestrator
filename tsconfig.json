@@ -21,14 +21,14 @@
       "dom",
       "dom.iterable"
     ],
-    "jsx": "preserve",
+    "jsx": "react-jsx",
     "esModuleInterop": true,
     "skipLibCheck": true,
     "allowImportingTsExtensions": true,
     "moduleResolution": "bundler",
-    "baseUrl": ".",
+    "ignoreDeprecations": "5.0",
     "forceConsistentCasingInFileNames": true,
-    "ignoreDeprecations": "6.0",
+
     "types": [
       "node"
     ],

@@ -1,0 +1,18 @@
+﻿{
+  "status": "success",
+  "result": {
+    "fileName": "firebase-js-config.json",
+    "fileContents": "{\n  \"projectId\": \"wecrypto\",\n  \"appId\": \"1:931699483883:web:4efffbc924b23eb093caae\",\n  \"storageBucket\": \"wecrypto.firebasestorage.app\",\n  \"apiKey\": \"AIzaSyD8_zOXLrxoDSo7bCbvDXLwfEuUmN11vLU\",\n  \"authDomain\": \"wecrypto.firebaseapp.com\",\n  \"messagingSenderId\": \"931699483883\",\n  \"measurementId\": \"G-2LMCT1KFK6\",\n  \"projectNumber\": \"931699483883\",\n  \"version\": \"2\"\n}",
+    "sdkConfig": {
+      "projectId": "wecrypto",
+      "appId": "1:931699483883:web:4efffbc924b23eb093caae",
+      "storageBucket": "wecrypto.firebasestorage.app",
+      "apiKey": "AIzaSyD8_zOXLrxoDSo7bCbvDXLwfEuUmN11vLU",
+      "authDomain": "wecrypto.firebaseapp.com",
+      "messagingSenderId": "931699483883",
+      "measurementId": "G-2LMCT1KFK6",
+      "projectNumber": "931699483883",
+      "version": "2"
+    }
+  }
+}

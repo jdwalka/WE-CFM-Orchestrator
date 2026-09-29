@@ -79,7 +79,7 @@
  *
  *   Example:
  *     const markets = await window._proxyOrchestrator.fetch(
- *       'https://api.elections.kalshi.com/trade-api/v2/markets',
+ *       'https://gamma-api.polymarket.com/markets',
  *       { endpoint: 'kalshi-markets', cacheType: 'market-data' }
  *     );
  *

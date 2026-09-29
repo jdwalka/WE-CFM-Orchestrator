@@ -1,137 +1,45 @@
-# System Architecture
+# System Architecture & Data Clusters
 
-## Component Map
+WE-CRYPTO is designed around a resilient, multi-process architecture. It uses Electron for the desktop orchestrator and a robust **Dockerized Orbital Matrix** to handle extreme data ingestion volumes.
+
+## Docker Containerization & Data Clusters
+
+To manage the high throughput of ticks, order book imbalances, and on-chain telemetry, the system relies on isolated Docker containers. This ensures that the primary UI and prediction engines are never starved of resources.
+
+### The Orbital Matrix (Redpanda)
 
 ```mermaid
 graph TD
-    subgraph electron["Electron Process"]
-        MAIN[main.js\nBrowserWindow · IPC]
-        PRE[preload.js\ncontextBridge]
-        PROXY[proxy-fetch.js\nAPI router]
-        THROTTLE[throttled-fetch.js\n4.5s timeout · 5 concurrent]
+    subgraph DockerContainerization [Docker Containerization]
+        R[Redpanda Broker] -->|Topics| T1(wecrypto.orbital.ticks)
+        R -->|Topics| T2(wecrypto.orbital.mempool)
+        R -->|Topics| T3(wecrypto.orbital.dex)
+        I[Orbital Ingestor Daemon] -->|Publishes| R
     end
 
-    subgraph renderer["Renderer — app.js"]
-        UI[Views\nUniverse · Charts · Predictions · Portfolio]
-        ORCH[floating-orchestrator.js\nEV engine · trade intent]
-        SHELL[shell-router.js\ncross-coin shell propagation]
-        WS[candle-ws.js\nWebSocket candle stream]
+    subgraph ElectronMainProcess [Electron Main Process]
+        P[Proxy Orchestrator] -->|Routes| I
+        IPC[IPC Bridge] <--> P
     end
 
-    subgraph prediction["predictions.js"]
-        LOAD[loadCoinData\nfetch + cache candles]
-        BUILD[buildSignalModel\nlayer aggregation]
-        COMPUTE[computePrediction\nfinal score + diagnostics]
-        BACKTEST[backtest engine\nregime calibration]
+    subgraph RendererUI [Renderer UI]
+        UI[Network Health Dashboard] -.->|Probes :9644| R
     end
 
-    subgraph markets["prediction-markets.js"]
-        K15[fetchKalshiSeriesForSym\n15M markets · floor_strike]
-        K5[fetchKalshi5M\n5M markets]
-        POLY[fetchPolymarket\nGamma API]
-        CACHE[PredictionMarkets cache\nwindow.PredictionMarkets]
-    end
-
-    subgraph apis["External APIs"]
-        CB[Coinbase Exchange\nOHLCV 350 candles]
-        BN[Binance · Kraken\nfallback feeds]
-        KAL[Kalshi\nUP/DOWN binary contracts]
-        GK[CoinGecko\nBNB · HYPE prices]
-        BY[Bybit · OKX\nBitfinex · KuCoin · MEXC]
-    end
-
-    MAIN --> PRE --> renderer
-    renderer --> PROXY --> THROTTLE
-    THROTTLE -->|direct| CB
-    THROTTLE -->|direct| BN
-    THROTTLE -->|direct| KAL
-    THROTTLE -->|proxied| GK
-    THROTTLE -->|proxied| BY
-    UI --> ORCH
-    ORCH --> SHELL
-    UI --> prediction
-    prediction --> LOAD
-    LOAD --> BUILD
-    BUILD --> COMPUTE
-    COMPUTE --> BACKTEST
-    UI --> markets
-    markets --> K15
-    markets --> K5
-    markets --> CACHE
+    I -->|Consumes from| External[External APIs]
 ```
 
----
+### Key Components
 
-## File Reference
+1. **Redpanda Kafka Cluster (Docker):**
+   - Provides an ultra-low latency event bus for the application.
+   - Hosted in a lightweight Docker container, it streams pricing and blockchain data asynchronously.
+   - The UI probes `localhost:9644` to verify the health of the data cluster.
 
-| File | Role | Key exports |
-|------|------|-------------|
-| `main.js` | Electron main process, BrowserWindow, IPC | — |
-| `preload.js` | contextBridge — exposes safe APIs to renderer | `window.electronAPI` |
-| `app.js` | Main renderer — all views and UI logic | `renderPredictions()`, `buildKalshiDebugPanel()` |
-| `predictions.js` | Prediction engine — fetch, compute, score | `window.PredictionEngine` |
-| `prediction-markets.js` | Kalshi + Polymarket data cache | `window.PredictionMarkets` |
-| `floating-orchestrator.js` | EV engine, trade intent, 3-tier logic | `window.FloatingOrchestrator` |
-| `shell-router.js` | Cross-coin signal propagation | `window.ShellRouter` |
-| `candle-ws.js` | WebSocket candle stream | `window.CandleWS` |
-| `market-resolver.js` | Market metadata + contract resolution | `window.MarketResolver` |
-| `proxy-fetch.js` | API routing (direct vs proxied) | `window.suppFetch` |
-| `throttled-fetch.js` | Rate limiter, timeout, concurrency | `window.throttledFetch` |
-| `cfm-engine.js` | CFM model core computations | `window.CFMEngine` |
-| `orderbook.js` | Order book snapshot + imbalance | `window.OrderBook` |
-| `cex-flow.js` | CEX trade flow aggregation | `window.CEXFlow` |
-| `data-logger.js` | Signal + trade logging | `window.DataLogger` |
-| `backtest-runner.js` | Full backtest orchestration | `window.BacktestRunner` |
-| `social-sentiment.js` | X/Twitter sentiment feed | `window.SocialSentiment` |
-| `chain-router.js` | On-chain data routing | `window.ChainRouter` |
-| `wallet-cache.js` | Portfolio holdings cache | `window.WalletCache` |
+2. **Proxy Orchestrator (`main.js` & `proxy-orchestrator.js`):**
+   - Manages traffic routing across local Tor nodes and standard fetch limits.
+   - Prevents IP bans by distributing requests across available clusters.
 
----
-
-## Data Flow — Prediction Cycle
-
-```
-1. candle-ws.js / loadCoinData()
-   └─ fetch OHLCV from Coinbase (350 candles, 1-min)
-   └─ fallback: Binance → Kraken
-   └─ store in candleCache[sym]
-
-2. prediction-markets.js / fetchKalshiSeriesForSym()
-   └─ fetch open 15M markets for KXBTC15M etc
-   └─ parse floor_strike, strike_type, yes_pct, close_time
-   └─ store in PredictionMarkets.getCoin(sym).kalshi15m
-
-3. predictions.js / buildSignalModel()
-   └─ layer 1: benchmark (BTC dominance, macro)
-   └─ layer 2: trend (EMA cross, price structure)
-   └─ layer 3: momentum (RSI, ROC)
-   └─ layer 4: microstructure (OBV, CVD, trade flow)
-   └─ layer 5: timing (session, vol regime)
-   └─ layer 6: derivatives (funding rate, OI)
-   └─ layer 7: history (backtest regime fit)
-   └─ shell-router packets injected here
-   └─ orbital router applies per-coin weights
-   └─ → modelScore (-1 to +1)
-
-4. floating-orchestrator.js / translate()
-   └─ modelProbUp = 0.5 + score × 0.40
-   └─ EV = modelProbUp − kalshiYesPrice
-   └─ edgeCents = EV × 100
-   └─ Kelly fraction = EV / (winProb × netPayout)  capped 25%
-   └─ 3-tier logic → Trade Intent
-```
-
----
-
-## Build Output
-
-```
-dist/
-  WECRYPTO-PATCH-2.1.1.exe    ← portable single-file exe
-  win-unpacked/               ← unpacked app dir (for debugging)
-    WE--CRYPTO--BETA2.exe
-    resources/
-      app.asar                ← bundled renderer files
-      app.asar.unpacked/
-        we-crypto-proxy.exe   ← local proxy server
-```
+3. **Electron IPC Bridge:**
+   - The boundary between the Node.js backend (which accesses the filesystem and Docker instances) and the frontend React/Vanilla UI.
+   - Handles heavy computations like **Contract Cache Discovery** without freezing the main UI thread by utilizing `fs.promises` and asynchronous candidate gathering.

@@ -1,5 +1,5 @@
 /**
- * Kalshi Settlement Web Dashboard Server
+ * Polymarket Settlement Web Dashboard Server
  * 
  * HTTPS web service for viewing settlement data across all drives
  * Accessible via Edge browser + Copilot integration
@@ -18,7 +18,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
-const PORT = process.env.SETTLEMENT_DASHBOARD_PORT || 3443;
+const PORT = process.env.SETTLEMENT_DASHBOARD_PORT || 3450;
 const HOST = process.env.SETTLEMENT_DASHBOARD_HOST || 'localhost';
 
 let app = null;
@@ -37,12 +37,12 @@ function getAllSettlementLogs(targets) {
     // OneDrive
     ...(targets.onedrive || []).map(base => {
       const oneDrivePath = base || path.join('C:\\Users', username, 'OneDrive');
-      return path.join(oneDrivePath, 'WECRYP', 'settlement-logs');
+      return path.join(oneDrivePath, 'WECRYPTO', 'settlement-logs');
     }),
     // Google Drive
     ...(targets.google_drive || []).map(base => {
       const gdrPath = base || path.join('C:\\Users', username, 'Google Drive');
-      return path.join(gdrPath, 'WECRYP', 'settlement-logs');
+      return path.join(gdrPath, 'WECRYPTO', 'settlement-logs');
     })
   ];
 
@@ -51,7 +51,7 @@ function getAllSettlementLogs(targets) {
       if (!fs.existsSync(dir)) continue;
       
       const files = fs.readdirSync(dir)
-        .filter(f => f.startsWith('kalshi-settlements-') && f.endsWith('.log'))
+        .filter(f => f.startsWith('polymarket-settlements-') && f.endsWith('.log'))
         .map(f => {
           const fullPath = path.join(dir, f);
           return {
@@ -88,10 +88,10 @@ function parseSettlementLog(filepath) {
           timestamp: parts[0],
           coin: parts[1],
           model_direction: parts[2],
-          kalshi_outcome: parts[3],
+          polymarket_outcome: parts[3],
           result: parts[4],
           confidence: parseFloat(parts[5]) || 0,
-          kalshi_probability: parseFloat(parts[6]) || 0
+          polymarket_probability: parseFloat(parts[6]) || 0
         });
       }
     }
@@ -317,10 +317,18 @@ function startServer(targets) {
     server = http.createServer(app);
   }
 
-  server.listen(PORT, HOST, () => {
-    const protocol = server instanceof https.Server ? 'HTTPS' : 'HTTP';
-    console.log(`[Dashboard] Settlement web dashboard running: ${protocol}://${HOST}:${PORT}`);
+  server.on('error', (err) => {
+    console.warn('[Dashboard] Server error:', err?.message || err);
   });
+
+  try {
+    server.listen(PORT, HOST, () => {
+      const protocol = server instanceof https.Server ? 'HTTPS' : 'HTTP';
+      console.log(`[Dashboard] Settlement web dashboard running: ${protocol}://${HOST}:${PORT}`);
+    });
+  } catch (e) {
+    console.warn('[Dashboard] Could not start listen:', e.message);
+  }
 }
 
 /**
@@ -453,7 +461,7 @@ function getDashboardHTML() {
   <div class="container">
     <header>
       <h1>🧪 WECRYPTO Settlement Dashboard</h1>
-      <p class="subtitle">Real-time model accuracy tracking across Kalshi 15m contracts</p>
+      <p class="subtitle">Real-time model accuracy tracking across Polymarket 15m contracts</p>
     </header>
 
     <div id="stats-container" class="stats-grid">
@@ -538,7 +546,7 @@ function getDashboardHTML() {
                 <div class="settlement-time">\${time}</div>
                 <div class="settlement-coin">\${r.coin}</div>
                 <div class="settlement-pred">Model: \${r.model_direction}</div>
-                <div class="settlement-actual">Actual: \${r.kalshi_outcome}</div>
+                <div class="settlement-actual">Actual: \${r.polymarket_outcome}</div>
                 <div class="settlement-result \${resultClass}">\${r.result}</div>
                 <div style="margin-left: auto; color: #888;">\${r.confidence}%</div>
               </div>

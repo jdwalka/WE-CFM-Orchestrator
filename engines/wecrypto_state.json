@@ -1,0 +1,22 @@
+{
+  "bitcoin": {
+    "active_trade": null,
+    "position_side": null,
+    "highest_pnl": 0.0
+  },
+  "ethereum": {
+    "active_trade": null,
+    "position_side": null,
+    "highest_pnl": 0.0
+  },
+  "solana": {
+    "active_trade": null,
+    "position_side": null,
+    "highest_pnl": 0.0
+  },
+  "ripple": {
+    "active_trade": null,
+    "position_side": null,
+    "highest_pnl": 0.0
+  }
+}

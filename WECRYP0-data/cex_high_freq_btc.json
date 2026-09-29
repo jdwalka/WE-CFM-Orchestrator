@@ -1,0 +1,13 @@
+{
+  "symbol": "BTC",
+  "connected": true,
+  "ts": 1782132066.767592,
+  "price": 65201.81,
+  "buy_pct_1m": 90.89063675515948,
+  "sell_pct_1m": 9.109363244840523,
+  "trades_per_sec": 1.0,
+  "whale_trades_1m_10k": 0,
+  "whale_trades_1m_50k": 0,
+  "vpin": 0.8178127351031895,
+  "last_update": 1782132069.3987305
+}

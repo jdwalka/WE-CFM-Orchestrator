@@ -1,0 +1,148 @@
+{"sym":"BTC","action":"skip","alignment":null,"side":null,"conf":0,"reason":"Model vetoed — Conflict veto; no independent market edge","ts":1778642500397}
+{"sym":"ETH","action":"watch","alignment":"KALSHI_ONLY","side":"YES","conf":8,"reason":"","ts":1778642500397}
+{"sym":"SOL","action":"watch","alignment":"KALSHI_ONLY","side":"YES","conf":11,"reason":"","ts":1778642500397}
+{"sym":"XRP","action":"skip","alignment":null,"side":null,"conf":0,"reason":"Negative EV — edge -5c (need >=8c)","ts":1778642500397}
+{"sym":"BTC","action":"skip","alignment":null,"side":null,"conf":0,"reason":"Model vetoed — Conflict veto; no independent market edge","ts":1778642500857}
+{"sym":"ETH","action":"watch","alignment":"KALSHI_ONLY","side":"YES","conf":8,"reason":"","ts":1778642500857}
+{"sym":"SOL","action":"watch","alignment":"KALSHI_ONLY","side":"YES","conf":11,"reason":"","ts":1778642500857}
+{"sym":"XRP","action":"skip","alignment":null,"side":null,"conf":0,"reason":"Negative EV — edge -5c (need >=8c)","ts":1778642500857}
+{"sym":"BTC","action":"skip","alignment":null,"side":null,"conf":0,"reason":"Model vetoed — Conflict veto; no independent market edge","ts":1778642501863}
+{"sym":"ETH","action":"watch","alignment":"KALSHI_ONLY","side":"YES","conf":8,"reason":"","ts":1778642501863}
+{"sym":"SOL","action":"watch","alignment":"KALSHI_ONLY","side":"YES","conf":11,"reason":"","ts":1778642501863}
+{"sym":"XRP","action":"skip","alignment":null,"side":null,"conf":0,"reason":"Negative EV — edge -5c (need >=8c)","ts":1778642501864}
+{"sym":"BTC","action":"skip","alignment":null,"side":null,"conf":0,"reason":"Model vetoed — Conflict veto; no independent market edge","ts":1778642502907}
+{"sym":"ETH","action":"watch","alignment":"KALSHI_ONLY","side":"YES","conf":8,"reason":"","ts":1778642502907}
+{"sym":"SOL","action":"watch","alignment":"KALSHI_ONLY","side":"YES","conf":11,"reason":"","ts":1778642502907}
+{"sym":"XRP","action":"skip","alignment":null,"side":null,"conf":0,"reason":"Negative EV — edge -5c (need >=8c)","ts":1778642502907}
+{"sym":"BTC","action":"skip","alignment":null,"side":null,"conf":0,"reason":"Model vetoed — Conflict veto; no independent market edge","ts":1778642503858}
+{"sym":"ETH","action":"watch","alignment":"KALSHI_ONLY","side":"YES","conf":8,"reason":"","ts":1778642503858}
+{"sym":"SOL","action":"watch","alignment":"KALSHI_ONLY","side":"YES","conf":11,"reason":"","ts":1778642503858}
+{"sym":"XRP","action":"skip","alignment":null,"side":null,"conf":0,"reason":"Negative EV — edge -5c (need >=8c)","ts":1778642503858}
+{"sym":"BTC","action":"skip","alignment":null,"side":null,"conf":0,"reason":"Model vetoed — Conflict veto; no independent market edge","ts":1778642504966}
+{"sym":"ETH","action":"watch","alignment":"KALSHI_ONLY","side":"YES","conf":8,"reason":"","ts":1778642504966}
+{"sym":"SOL","action":"watch","alignment":"KALSHI_ONLY","side":"YES","conf":11,"reason":"","ts":1778642504966}
+{"sym":"XRP","action":"skip","alignment":null,"side":null,"conf":0,"reason":"Negative EV — edge -5c (need >=8c)","ts":1778642504966}
+{"sym":"BTC","action":"skip","alignment":null,"side":null,"conf":0,"reason":"Model vetoed — Conflict veto; no independent market edge","ts":1778642505857}
+{"sym":"ETH","action":"watch","alignment":"KALSHI_ONLY","side":"YES","conf":8,"reason":"","ts":1778642505857}
+{"sym":"SOL","action":"watch","alignment":"KALSHI_ONLY","side":"YES","conf":11,"reason":"","ts":1778642505857}
+{"sym":"XRP","action":"skip","alignment":null,"side":null,"conf":0,"reason":"Negative EV — edge -5c (need >=8c)","ts":1778642505857}
+{"sym":"BTC","action":"skip","alignment":null,"side":null,"conf":0,"reason":"Model vetoed — Conflict veto; no independent market edge","ts":1778642506735}
+{"sym":"ETH","action":"watch","alignment":"KALSHI_ONLY","side":"YES","conf":8,"reason":"","ts":1778642506735}
+{"sym":"SOL","action":"watch","alignment":"KALSHI_ONLY","side":"YES","conf":11,"reason":"","ts":1778642506735}
+{"sym":"XRP","action":"skip","alignment":null,"side":null,"conf":0,"reason":"Negative EV — edge -5c (need >=8c)","ts":1778642506735}
+{"sym":"BTC","action":"skip","alignment":null,"side":null,"conf":0,"reason":"Model vetoed — Conflict veto; no independent market edge","ts":1778642506866}
+{"sym":"ETH","action":"watch","alignment":"KALSHI_ONLY","side":"YES","conf":8,"reason":"","ts":1778642506866}
+{"sym":"SOL","action":"watch","alignment":"KALSHI_ONLY","side":"YES","conf":11,"reason":"","ts":1778642506866}
+{"sym":"XRP","action":"skip","alignment":null,"side":null,"conf":0,"reason":"Negative EV — edge -5c (need >=8c)","ts":1778642506866}
+{"sym":"BTC","action":"watch","alignment":"KALSHI_ONLY","side":"NO","conf":6,"reason":"","ts":1778654574612}
+{"sym":"ETH","action":"watch","alignment":"KALSHI_ONLY","side":"YES","conf":20,"reason":"","ts":1778654574612}
+{"sym":"SOL","action":"earlyExit","alignment":"EARLY_EXIT","side":null,"conf":0,"reason":"Shell wall confirmed — stand aside","ts":1778654574612}
+{"sym":"XRP","action":"watch","alignment":"DIVERGENT","side":"YES","conf":23,"reason":"","ts":1778654574612}
+{"sym":"BTC","action":"watch","alignment":"KALSHI_ONLY","side":"NO","conf":6,"reason":"","ts":1778654575924}
+{"sym":"ETH","action":"watch","alignment":"KALSHI_ONLY","side":"YES","conf":20,"reason":"","ts":1778654575924}
+{"sym":"SOL","action":"earlyExit","alignment":"EARLY_EXIT","side":null,"conf":0,"reason":"Shell wall confirmed — stand aside","ts":1778654575924}
+{"sym":"XRP","action":"watch","alignment":"DIVERGENT","side":"YES","conf":23,"reason":"","ts":1778654575924}
+{"sym":"BTC","action":"watch","alignment":"KALSHI_ONLY","side":"NO","conf":6,"reason":"","ts":1778654577082}
+{"sym":"ETH","action":"watch","alignment":"KALSHI_ONLY","side":"YES","conf":20,"reason":"","ts":1778654577082}
+{"sym":"SOL","action":"earlyExit","alignment":"EARLY_EXIT","side":null,"conf":0,"reason":"Shell wall confirmed — stand aside","ts":1778654577082}
+{"sym":"XRP","action":"watch","alignment":"DIVERGENT","side":"YES","conf":23,"reason":"","ts":1778654577082}
+{"sym":"BTC","action":"watch","alignment":"KALSHI_ONLY","side":"NO","conf":6,"reason":"","ts":1778654583370}
+{"sym":"ETH","action":"watch","alignment":"KALSHI_ONLY","side":"YES","conf":20,"reason":"","ts":1778654583370}
+{"sym":"SOL","action":"earlyExit","alignment":"EARLY_EXIT","side":null,"conf":0,"reason":"Shell wall confirmed — stand aside","ts":1778654583370}
+{"sym":"XRP","action":"watch","alignment":"DIVERGENT","side":"YES","conf":27,"reason":"","ts":1778654583370}
+{"sym":"BTC","action":"watch","alignment":"KALSHI_ONLY","side":"NO","conf":6,"reason":"","ts":1778654583778}
+{"sym":"ETH","action":"watch","alignment":"KALSHI_ONLY","side":"YES","conf":20,"reason":"","ts":1778654583778}
+{"sym":"SOL","action":"earlyExit","alignment":"EARLY_EXIT","side":null,"conf":0,"reason":"Shell wall confirmed — stand aside","ts":1778654583778}
+{"sym":"XRP","action":"watch","alignment":"DIVERGENT","side":"YES","conf":27,"reason":"","ts":1778654583778}
+{"sym":"BTC","action":"watch","alignment":"MODEL_LEADS","side":"YES","conf":29,"reason":"","ts":1778666043386}
+{"sym":"ETH","action":"watch","alignment":"KALSHI_ONLY","side":"NO","conf":20,"reason":"","ts":1778666043386}
+{"sym":"SOL","action":"earlyExit","alignment":"EARLY_EXIT","side":null,"conf":0,"reason":"Shell wall confirmed — stand aside","ts":1778666043386}
+{"sym":"XRP","action":"skip","alignment":null,"side":null,"conf":0,"reason":"Negative EV — edge -13c (need >=8c)","ts":1778666043386}
+{"sym":"BTC","action":"watch","alignment":"MODEL_LEADS","side":"YES","conf":29,"reason":"","ts":1778666043901}
+{"sym":"ETH","action":"watch","alignment":"KALSHI_ONLY","side":"NO","conf":20,"reason":"","ts":1778666043901}
+{"sym":"SOL","action":"earlyExit","alignment":"EARLY_EXIT","side":null,"conf":0,"reason":"Shell wall confirmed — stand aside","ts":1778666043901}
+{"sym":"XRP","action":"skip","alignment":null,"side":null,"conf":0,"reason":"Negative EV — edge -13c (need >=8c)","ts":1778666043901}
+{"sym":"BTC","action":"watch","alignment":"MODEL_LEADS","side":"YES","conf":29,"reason":"","ts":1778666089414}
+{"sym":"ETH","action":"watch","alignment":"KALSHI_ONLY","side":"NO","conf":20,"reason":"","ts":1778666089416}
+{"sym":"SOL","action":"earlyExit","alignment":"EARLY_EXIT","side":null,"conf":0,"reason":"Shell wall confirmed — stand aside","ts":1778666089416}
+{"sym":"XRP","action":"skip","alignment":null,"side":null,"conf":0,"reason":"Negative EV — edge -13c (need >=8c)","ts":1778666089416}
+{"sym":"BTC","action":"watch","alignment":"MODEL_LEADS","side":"YES","conf":29,"reason":"","ts":1778666091089}
+{"sym":"ETH","action":"watch","alignment":"KALSHI_ONLY","side":"NO","conf":20,"reason":"","ts":1778666091089}
+{"sym":"SOL","action":"earlyExit","alignment":"EARLY_EXIT","side":null,"conf":0,"reason":"Shell wall confirmed — stand aside","ts":1778666091089}
+{"sym":"XRP","action":"skip","alignment":null,"side":null,"conf":0,"reason":"Negative EV — edge -13c (need >=8c)","ts":1778666091089}
+{"sym":"BTC","action":"watch","alignment":"MODEL_LEADS","side":"YES","conf":29,"reason":"","ts":1778666092724}
+{"sym":"ETH","action":"watch","alignment":"KALSHI_ONLY","side":"NO","conf":20,"reason":"","ts":1778666092724}
+{"sym":"SOL","action":"earlyExit","alignment":"EARLY_EXIT","side":null,"conf":0,"reason":"Shell wall confirmed — stand aside","ts":1778666092724}
+{"sym":"XRP","action":"skip","alignment":null,"side":null,"conf":0,"reason":"Negative EV — edge -13c (need >=8c)","ts":1778666092724}
+{"sym":"BTC","action":"watch","alignment":"MODEL_LEADS","side":"YES","conf":29,"reason":"","ts":1778666142148}
+{"sym":"ETH","action":"watch","alignment":"KALSHI_ONLY","side":"NO","conf":20,"reason":"","ts":1778666142148}
+{"sym":"SOL","action":"earlyExit","alignment":"EARLY_EXIT","side":null,"conf":0,"reason":"Shell wall confirmed — stand aside","ts":1778666142148}
+{"sym":"XRP","action":"skip","alignment":null,"side":null,"conf":0,"reason":"Negative EV — edge -13c (need >=8c)","ts":1778666142148}
+{"sym":"BTC","action":"watch","alignment":"MODEL_LEADS","side":"YES","conf":29,"reason":"","ts":1778666142751}
+{"sym":"ETH","action":"watch","alignment":"KALSHI_ONLY","side":"NO","conf":20,"reason":"","ts":1778666142751}
+{"sym":"SOL","action":"earlyExit","alignment":"EARLY_EXIT","side":null,"conf":0,"reason":"Shell wall confirmed — stand aside","ts":1778666142751}
+{"sym":"XRP","action":"skip","alignment":null,"side":null,"conf":0,"reason":"Negative EV — edge -13c (need >=8c)","ts":1778666142751}
+{"sym":"BTC","action":"watch","alignment":"MODEL_LEADS","side":"YES","conf":29,"reason":"","ts":1778666143096}
+{"sym":"ETH","action":"watch","alignment":"KALSHI_ONLY","side":"NO","conf":20,"reason":"","ts":1778666143096}
+{"sym":"SOL","action":"earlyExit","alignment":"EARLY_EXIT","side":null,"conf":0,"reason":"Shell wall confirmed — stand aside","ts":1778666143096}
+{"sym":"XRP","action":"skip","alignment":null,"side":null,"conf":0,"reason":"Negative EV — edge -13c (need >=8c)","ts":1778666143096}
+{"sym":"BTC","action":"watch","alignment":"MODEL_LEADS","side":"YES","conf":29,"reason":"","ts":1778666143487}
+{"sym":"ETH","action":"watch","alignment":"KALSHI_ONLY","side":"NO","conf":20,"reason":"","ts":1778666143487}
+{"sym":"SOL","action":"earlyExit","alignment":"EARLY_EXIT","side":null,"conf":0,"reason":"Shell wall confirmed — stand aside","ts":1778666143487}
+{"sym":"XRP","action":"skip","alignment":null,"side":null,"conf":0,"reason":"Negative EV — edge -13c (need >=8c)","ts":1778666143487}
+{"sym":"BTC","action":"watch","alignment":"KALSHI_ONLY","side":"NO","conf":2,"reason":"","ts":1778670860088}
+{"sym":"ETH","action":"watch","alignment":"ALIGNED","side":"NO","conf":6,"reason":"","ts":1778670860088}
+{"sym":"SOL","action":"earlyExit","alignment":"EARLY_EXIT","side":null,"conf":0,"reason":"Shell wall confirmed — stand aside","ts":1778670860088}
+{"sym":"XRP","action":"watch","alignment":"KALSHI_ONLY","side":"NO","conf":3,"reason":"","ts":1778670860088}
+{"sym":"BTC","action":"watch","alignment":"KALSHI_ONLY","side":"NO","conf":2,"reason":"","ts":1778670860682}
+{"sym":"ETH","action":"watch","alignment":"ALIGNED","side":"NO","conf":6,"reason":"","ts":1778670860682}
+{"sym":"SOL","action":"earlyExit","alignment":"EARLY_EXIT","side":null,"conf":0,"reason":"Shell wall confirmed — stand aside","ts":1778670860682}
+{"sym":"XRP","action":"watch","alignment":"KALSHI_ONLY","side":"NO","conf":3,"reason":"","ts":1778670860682}
+{"sym":"BTC","action":"watch","alignment":"KALSHI_ONLY","side":"NO","conf":2,"reason":"","ts":1778670861679}
+{"sym":"ETH","action":"watch","alignment":"ALIGNED","side":"NO","conf":6,"reason":"","ts":1778670861679}
+{"sym":"SOL","action":"earlyExit","alignment":"EARLY_EXIT","side":null,"conf":0,"reason":"Shell wall confirmed — stand aside","ts":1778670861679}
+{"sym":"XRP","action":"watch","alignment":"KALSHI_ONLY","side":"NO","conf":3,"reason":"","ts":1778670861679}
+{"sym":"BTC","action":"skip","alignment":null,"side":null,"conf":0,"reason":"Negative EV — edge -8c (need >=8c)","ts":1778671686018}
+{"sym":"ETH","action":"watch","alignment":"KALSHI_ONLY","side":"NO","conf":19,"reason":"","ts":1778671686018}
+{"sym":"SOL","action":"earlyExit","alignment":"EARLY_EXIT","side":null,"conf":0,"reason":"Shell wall confirmed — stand aside","ts":1778671686018}
+{"sym":"XRP","action":"watch","alignment":"KALSHI_ONLY","side":"NO","conf":6,"reason":"","ts":1778671686018}
+{"sym":"BTC","action":"skip","alignment":null,"side":null,"conf":0,"reason":"Negative EV — edge -8c (need >=8c)","ts":1778671686675}
+{"sym":"ETH","action":"watch","alignment":"KALSHI_ONLY","side":"NO","conf":19,"reason":"","ts":1778671686675}
+{"sym":"SOL","action":"earlyExit","alignment":"EARLY_EXIT","side":null,"conf":0,"reason":"Shell wall confirmed — stand aside","ts":1778671686675}
+{"sym":"XRP","action":"watch","alignment":"KALSHI_ONLY","side":"NO","conf":6,"reason":"","ts":1778671686675}
+{"sym":"BTC","action":"watch","alignment":"KALSHI_ONLY","side":"NO","conf":19,"reason":"","ts":1778710084551}
+{"sym":"ETH","action":"skip","alignment":null,"side":null,"conf":0,"reason":"Negative EV — edge -41c (need >=8c)","ts":1778710084551}
+{"sym":"SOL","action":"watch","alignment":"KALSHI_ONLY","side":"NO","conf":20,"reason":"","ts":1778710084551}
+{"sym":"XRP","action":"skip","alignment":null,"side":null,"conf":0,"reason":"Negative EV — edge -37c (need >=8c)","ts":1778710084551}
+{"sym":"BTC","action":"watch","alignment":"KALSHI_ONLY","side":"NO","conf":19,"reason":"","ts":1778710084595}
+{"sym":"ETH","action":"skip","alignment":null,"side":null,"conf":0,"reason":"Negative EV — edge -41c (need >=8c)","ts":1778710084595}
+{"sym":"SOL","action":"watch","alignment":"KALSHI_ONLY","side":"NO","conf":20,"reason":"","ts":1778710084595}
+{"sym":"XRP","action":"skip","alignment":null,"side":null,"conf":0,"reason":"Negative EV — edge -37c (need >=8c)","ts":1778710084595}
+{"sym":"BTC","action":"watch","alignment":"KALSHI_ONLY","side":"NO","conf":19,"reason":"","ts":1778710085534}
+{"sym":"ETH","action":"skip","alignment":null,"side":null,"conf":0,"reason":"Negative EV — edge -41c (need >=8c)","ts":1778710085534}
+{"sym":"SOL","action":"watch","alignment":"KALSHI_ONLY","side":"NO","conf":20,"reason":"","ts":1778710085535}
+{"sym":"XRP","action":"skip","alignment":null,"side":null,"conf":0,"reason":"Negative EV — edge -37c (need >=8c)","ts":1778710085535}
+{"sym":"BTC","action":"watch","alignment":"KALSHI_ONLY","side":"NO","conf":5,"reason":"","ts":1778710752091}
+{"sym":"ETH","action":"skip","alignment":null,"side":null,"conf":0,"reason":"Negative EV — edge -2c (need >=8c)","ts":1778710752091}
+{"sym":"SOL","action":"earlyExit","alignment":"EARLY_EXIT","side":null,"conf":0,"reason":"Shell wall confirmed — stand aside","ts":1778710752091}
+{"sym":"XRP","action":"skip","alignment":null,"side":null,"conf":0,"reason":"Negative EV — edge -9c (need >=8c)","ts":1778710752091}
+{"sym":"BTC","action":"watch","alignment":"KALSHI_ONLY","side":"NO","conf":6,"reason":"","ts":1778710752518}
+{"sym":"ETH","action":"skip","alignment":null,"side":null,"conf":0,"reason":"Negative EV — edge -7c (need >=8c)","ts":1778710752518}
+{"sym":"SOL","action":"earlyExit","alignment":"EARLY_EXIT","side":null,"conf":0,"reason":"Shell wall confirmed — stand aside","ts":1778710752518}
+{"sym":"XRP","action":"skip","alignment":null,"side":null,"conf":0,"reason":"Negative EV — edge -13c (need >=8c)","ts":1778710752518}
+{"sym":"BTC","action":"watch","alignment":"KALSHI_ONLY","side":"NO","conf":6,"reason":"","ts":1778710753533}
+{"sym":"ETH","action":"skip","alignment":null,"side":null,"conf":0,"reason":"Negative EV — edge -7c (need >=8c)","ts":1778710753534}
+{"sym":"SOL","action":"earlyExit","alignment":"EARLY_EXIT","side":null,"conf":0,"reason":"Shell wall confirmed — stand aside","ts":1778710753534}
+{"sym":"XRP","action":"skip","alignment":null,"side":null,"conf":0,"reason":"Negative EV — edge -13c (need >=8c)","ts":1778710753534}
+{"sym":"BTC","action":"watch","alignment":"KALSHI_ONLY","side":"NO","conf":2,"reason":"","ts":1778711971125}
+{"sym":"ETH","action":"watch","alignment":"MODEL_LEADS","side":"NO","conf":10,"reason":"","ts":1778711971125}
+{"sym":"SOL","action":"watch","alignment":"KALSHI_ONLY","side":"NO","conf":20,"reason":"","ts":1778711971125}
+{"sym":"XRP","action":"watch","alignment":"KALSHI_ONLY","side":"YES","conf":20,"reason":"","ts":1778711971125}
+{"sym":"BTC","action":"watch","alignment":"KALSHI_ONLY","side":"NO","conf":2,"reason":"","ts":1778711971512}
+{"sym":"ETH","action":"watch","alignment":"MODEL_LEADS","side":"NO","conf":10,"reason":"","ts":1778711971512}
+{"sym":"SOL","action":"watch","alignment":"KALSHI_ONLY","side":"NO","conf":20,"reason":"","ts":1778711971512}
+{"sym":"XRP","action":"watch","alignment":"KALSHI_ONLY","side":"YES","conf":20,"reason":"","ts":1778711971512}
+{"sym":"BTC","action":"watch","alignment":"KALSHI_ONLY","side":"NO","conf":2,"reason":"","ts":1778711972507}
+{"sym":"ETH","action":"watch","alignment":"MODEL_LEADS","side":"NO","conf":10,"reason":"","ts":1778711972507}
+{"sym":"SOL","action":"watch","alignment":"KALSHI_ONLY","side":"NO","conf":20,"reason":"","ts":1778711972507}
+{"sym":"XRP","action":"watch","alignment":"KALSHI_ONLY","side":"YES","conf":20,"reason":"","ts":1778711972507}

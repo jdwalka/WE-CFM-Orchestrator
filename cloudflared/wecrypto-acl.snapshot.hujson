@@ -1,0 +1,222 @@
+{
+	"groups": {"group:admins": ["maurofanellijr@gmail.com"]},
+
+	"hosts": {
+		"wecrypto-lan": "192.168.18.38",
+		"mauro-eth":    "192.168.18.38",
+	},
+
+	"tagOwners": {
+		"tag:core":      ["group:admins", "maurofanellijr@gmail.com"],
+		"tag:trading":   ["group:admins", "maurofanellijr@gmail.com"],
+		"tag:research":  ["group:admins", "maurofanellijr@gmail.com"],
+		"tag:sensitive": ["group:admins", "maurofanellijr@gmail.com"],
+
+		"tag:exit-node": [
+			"group:admins",
+			"autogroup:admin",
+			"autogroup:network-admin",
+			"maurofanellijr@gmail.com",
+		],
+
+		"tag:mullvad": ["group:admins", "maurofanellijr@gmail.com"],
+
+		"tag:google": [
+			"group:admins",
+			"maurofanellijr@gmail.com",
+			"gump10321@gmail.com",
+			"gboss101@github",
+		],
+
+		"tag:microsoft": [
+			"group:admins",
+			"maurofanellijr@gmail.com",
+			"gboss101@github",
+			"gump10321@gmail.com",
+		],
+
+		"tag:github": [
+			"group:admins",
+			"autogroup:owner",
+			"maurofanellijr@gmail.com",
+			"gump10321@gmail.com",
+			"gboss101@github",
+		],
+	},
+
+	"grants": [
+		{
+			"src": ["*"],
+			"dst": ["*"],
+			"ip":  ["*"],
+		},
+	],
+
+	"autoApprovers": {
+		"exitNode": [],
+		"routes":   {"192.168.18.0/24": ["tag:core", "tag:trading", "autogroup:admin"]},
+
+		"services": {
+			"autogroup:tagged": ["autogroup:member", "autogroup:admin"],
+			"svc:wecrypto":     ["tag:trading", "tag:core", "autogroup:admin"],
+		},
+	},
+
+	"nodeAttrs": [
+		{
+			"target": ["tag:core"],
+
+			"attr": [
+				"control-plane",
+				"routing-authority",
+				"dns-router",
+				"exit-node",
+			],
+		},
+		{
+			"target": ["tag:trading"],
+			"attr":   ["low-latency", "execution-plane", "no-cache-dns"],
+		},
+		{
+			"target": ["tag:research"],
+			"attr":   ["sandbox", "ephemeral", "untrusted"],
+		},
+		{
+			"target": ["tag:sensitive"],
+			"attr":   ["restricted", "admin-only"],
+		},
+		{
+			"target": ["tag:mullvad"],
+			"attr":   ["vpn-egress"],
+		},
+		{
+			"target": ["tag:google"],
+			"attr":   ["dns-router", "public-service"],
+		},
+		{
+			"target": ["tag:microsoft"],
+			"attr":   ["dns-router", "enterprise-service"],
+		},
+		{
+			"target": ["tag:github"],
+			"attr":   ["dns-router", "dev-service"],
+		},
+		{
+			"target": ["autogroup:member"],
+			"attr":   ["funnel"],
+		},
+		{
+			"target": ["100.77.52.97"],
+			"attr":   ["mullvad"],
+		},
+		{
+			"target": ["100.76.14.51"],
+			"attr":   ["mullvad"],
+		},
+		{
+			"target": ["100.100.165.112"],
+			"attr":   ["mullvad"],
+		},
+		{
+			"target": ["100.72.232.28"],
+			"attr":   ["mullvad"],
+		},
+		{
+			"target": ["100.90.124.47"],
+			"attr":   ["mullvad"],
+		},
+		{
+			"target": ["100.107.24.95"],
+			"attr":   ["mullvad"],
+		},
+		{
+			"target": ["100.107.24.94"],
+			"attr":   ["mullvad"],
+		},
+		{
+			"target": ["100.107.195.35"],
+			"attr":   ["mullvad"],
+		},
+		{
+			"target": ["100.93.169.126"],
+			"attr":   ["mullvad"],
+		},
+		{
+			"target": ["*"],
+
+			"app": {
+				"tailscale.com/app-connectors": [
+					{
+						"name":       "home-direct",
+						"connectors": ["tag:core"],
+						"domains":    ["asi1.ai", "fetch-ai.com"],
+					},
+					{
+						"name": "leaksnipe",
+
+						"connectors": [
+							"tag:sensitive",
+							"tag:core",
+							"tag:research",
+							"tag:trading",
+							"tag:exit-node",
+							"tag:mullvad",
+							"tag:google",
+							"tag:microsoft",
+							"tag:github",
+						],
+
+						"domains": [
+							"leaksnipe.win",
+							"db.leaksnipe.win",
+							"wecrypto.leaksnipe.win",
+							"mcp.leaksnipe.win",
+						],
+					},
+					{
+						"name":        "github",
+						"connectors":  ["tag:core", "tag:sensitive", "tag:github"],
+						"presetAppID": "github",
+					},
+					{
+						"name":        "google-workspace",
+						"connectors":  ["tag:core", "tag:research", "tag:google"],
+						"presetAppID": "google-workspace",
+					},
+					{
+						"name":        "oracle-osn-global",
+						"connectors":  ["tag:research", "tag:trading"],
+						"presetAppID": "oracle-osn-global",
+					},
+				],
+			},
+		},
+		{
+			"target": ["100.92.28.100"],
+			"attr":   ["mullvad"],
+		},
+		{
+			"target": ["100.72.232.27"],
+			"attr":   ["mullvad"],
+		},
+		{
+			"target": ["100.100.165.111"],
+			"attr":   ["mullvad"],
+		},
+		{
+			"target": ["100.101.43.9"],
+			"attr":   ["mullvad"],
+		},
+	],
+
+	"ssh": [
+		{
+			"action": "check",
+			"src":    ["group:admins"],
+			"dst":    ["tag:core"],
+			"users":  ["root", "admin"],
+		},
+	],
+
+	"ipsets": {"ipset:WECRYPTO": ["add host:wecrypto-lan", "add host:mauro-eth"]},
+}

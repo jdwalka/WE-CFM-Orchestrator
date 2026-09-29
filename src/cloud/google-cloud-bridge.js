@@ -145,12 +145,18 @@ async function predictTide(payload = {}) {
       };
     }
   } catch (error) {
-    return {
-      success: false,
-      queued: false,
-      mode: 'remote-endpoint',
-      error: error.message || 'TiDE endpoint request failed',
-    };
+    const msg = error.message || '';
+    if (msg.includes('401') || msg.includes('403') || msg.includes('Quota') || msg.includes('Forbidden')) {
+      console.warn(`[TiDE] Remote endpoint unavailable (${msg}). Gracefully falling back to local-shadow heuristic.`);
+      // Fall through to local-shadow fallback
+    } else {
+      return {
+        success: false,
+        queued: false,
+        mode: 'remote-endpoint',
+        error: msg || 'TiDE endpoint request failed',
+      };
+    }
   }
 
   return {

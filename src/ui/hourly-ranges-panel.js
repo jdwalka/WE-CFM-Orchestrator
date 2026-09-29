@@ -1,316 +1,1389 @@
 // ================================================================
-// WE|||CRYPTO — Hourly Ranges Panel v5 (Auto-load + Rich Data)
+// WE|||CRYPTO — Hourly Ranges Panel v9 (hourly ranges only)
 //
-// Fetches actual hourly range contracts from Kalshi API (~70 ranges per coin)
-// Enriches with live prices from Coinbase, Kraken, CoinGecko
-// Auto-loads on page init, updates every 30 seconds
+// Shows a spot-centered synthetic hourly range ladder. Kalshi 15m
+// contracts are intentionally not rendered here.
+// WE|||CRYPTO — Hourly Ranges Panel v8 (Kalshi 15m)
 //
-// Kalshi hourly range series (e.g., KXBTC_H, KXETH_H, etc.)
-// Each range: e.g., "KXBTC_H_75000_75100" = BTC between $75000-$75100
+// Shows a spot-centered synthetic hourly range ladder. Kalshi 15m
+// contracts are intentionally not rendered here.
+// Polls every 10s, accelerates to every 2.5s in the final 15 mins.
 // ================================================================
 
 (function () {
   'use strict';
 
-  const MAIN_COINS = ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'BNB', 'HYPE'];
-  const COIN_COLORS = {
-    BTC: '#f7931a', ETH: '#627eea', SOL: '#00d4aa', XRP: '#23292f',
-    DOGE: '#c2a633', BNB: '#f3ba2f', HYPE: '#00dcff',
+  // ── Constants ──────────────────────────────────────────────────
+  const escapeHTML = (str) => String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  const safeGet = (obj, key) => (obj && typeof key === 'string' && key !== '__proto__' && key !== 'constructor' && Object.prototype.hasOwnProperty.call(obj, key) ? obj[key] : undefined);
+  const COINBASE_EXCH_BASE = 'https://api.exchange.coinbase.com';
+  const INSTRUMENTS = {
+    BTC: 'BTCUSD', ETH: 'ETHUSD', SOL: 'SOLUSD',
+    XRP: 'XRPUSD', DOGE: 'DOGEUSD', BNB: 'BNBUSD', HYPE: 'HYPEUSD',
   };
-  const KALSHI_BASE = 'https://api.elections.kalshi.com/trade-api/v2';
-  const COINBASE_BASE = 'https://api.coinbase.com/api/v3/brokerage';
+
+  const COINS = ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'BNB', 'HYPE'];
+
+  const CB_PRODUCTS = {
+    BTC: 'BTC-USD', ETH: 'ETH-USD', SOL: 'SOL-USD',
+    XRP: 'XRP-USD', DOGE: 'DOGE-USD',
+  };
+
   const KRAKEN_BASE = 'https://api.kraken.com/0/public';
-  const COINGECKO_BASE = 'https://api.coingecko.com/api/v3';
-  
-  // Hourly range series base names (e.g., KXBTC_H)
-  const HOURLY_RANGE_SERIES = {
-    BTC:  'KXBTC_H',
-    ETH:  'KXETH_H',
-    SOL:  'KXSOL_H',
-    XRP:  'KXXRP_H',
-    DOGE: 'KXDOGE_H',
-    BNB:  'KXBNB_H',
-    HYPE: 'KXHYPE_H',
-  };
 
-  // Coinbase product IDs for live pricing
-  const COINBASE_PRODUCTS = {
-    BTC: 'BTC-USD', ETH: 'ETH-USD', SOL: 'SOL-USD', XRP: 'XRP-USD',
-    DOGE: 'DOGE-USD', BNB: 'BNB-USD', HYPE: 'HYPE-USD',
-  };
-
-  // Kraken tickers
   const KRAKEN_TICKERS = {
-    BTC: 'XXBTZUSD', ETH: 'XETHZUSD', SOL: 'SOLZUSD', XRP: 'XXRPZUSD',
-    DOGE: 'XDOGEZUSD', BNB: 'BNBUSD', HYPE: null,
+    BTC: 'XXBTZUSD', ETH: 'XETHZUSD', SOL: 'SOLZUSD',
+    XRP: 'XXRPZUSD', DOGE: 'XDOGEZUSD',
   };
 
-  // CoinGecko IDs
-  const COINGECKO_IDS = {
-    BTC: 'bitcoin', ETH: 'ethereum', SOL: 'solana', XRP: 'ripple',
-    DOGE: 'dogecoin', BNB: 'binancecoin', HYPE: 'hyperliquid',
+  const COIN_COLORS = {
+    BTC: '#f7931a', ETH: '#627eea', SOL: '#00d4aa',
+    XRP: '#00aae4', DOGE: '#c2a633', BNB: '#f3ba2f', HYPE: '#50e3c2',
   };
+  const VISIBLE_BUCKETS = 15;   // 7 above + current + 7 below (expanded by 4 rows)
+  const VISIBLE_PTB_ROWS = 9;   // real-ladder mode: single-PTB rows near spot (expanded by 4 rows from 5)
+  const KALSHI_LOCAL_BRIDGE = 'http://127.0.0.1:8788';
+  const KALSHI_LADDER_WORKER = 'https://kalshi-ladder-worker.gitgoin87.workers.dev';
+  const KALSHI_FALLBACK_WORKER = 'https://ladder.leaksnipe.win';
+  // Coins Kalshi runs an hourly "between" range series for — kept in sync
+  // with kalshi-ladder-worker's SERIES_BY_SYMBOL. HYPE has no such series,
+  // so it always falls back to the synthetic ladder below.
+  const REAL_LADDER_SYMBOLS = new Set(['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'BNB']);
+  // Sequential blue ramp, light->dark (dataviz skill reference palette,
+  // used as-is — no brand substitution needed). Discrete steps for a
+  // filled-cell heatmap treatment, legible against this app's dark surface
+  // regardless of which end of the ramp: the block itself carries the
+  // magnitude, text stays on top in the app's normal ink color.
+  const WALL_SATURATION_STEPS = ['#cde2fb', '#86b6ef', '#3987e5', '#1c5cab', '#0d366b'];
+  const POLL_NORMAL_MS  = 10000;  // First 30 mins (10s)
+  const POLL_HALF_MS    = 5000;   // Last 30 mins (5s)
+  const POLL_FAST_MS    = 2500;   // Last 15 mins (2.5s)
+  const HALF_WINDOW_MS  = 30 * 60 * 1000;
+  const FAST_WINDOW_MS  = 15 * 60 * 1000;
 
-  let _cachedRanges = {}; // { 'BTC': [{ ...market }, ...], ... }
-  let _cachedPrices = {}; // { 'BTC': 45000, ... }
-  let _pollTimer = null;
+  // ── State ──────────────────────────────────────────────────────
+  let _prices  = {}; // sym → number
+  let _ranges  = {}; // sym → [{ low, high, yesAsk, yesBid, yesAsk%, closeTime }] (synthetic fallback)
+  let _realBands = {}; // sym → real Kalshi "between" bands from kalshi-ladder-worker, or [] if unavailable
+  let _prevYesBid = {}; // sym → Map(low -> previous yes_bid_dollars), for the momentum arrow
+  let _closeTimes = {}; // sym → ISO string of active bucket
+  let _timer   = null;
+  let _hourRollScheduleTimer = null;
+  let _mounted = false;
+  let _lastHourBucket = Math.floor(Date.now() / 3600000);
 
-  // ── Route through Tauri suppFetch for CORS bypass ───────────────
-  async function proxyFetch(url) {
-    if (typeof window.suppFetch === 'function') {
-      try {
-        const txt = await window.suppFetch(url);
-        return typeof txt === 'string' ? JSON.parse(txt) : txt;
-      } catch (e) {
-        console.warn('[HR] suppFetch error:', url, e.message);
-      }
+  // Zero Cold-Start LocalStorage Persistence
+  try {
+    if (typeof localStorage !== 'undefined') {
+      const pCache = localStorage.getItem('__we_hr_prices_cache');
+      const rCache = localStorage.getItem('__we_hr_ranges_cache');
+      if (pCache) _prices = Object.assign(_prices, JSON.parse(pCache));
+      if (rCache) _ranges = Object.assign(_ranges, JSON.parse(rCache));
     }
+  } catch (_) {}
+
+  function saveHRCache() {
     try {
-      const res = await fetch(url);
-      if (!res.ok) throw new Error(res.status);
-      return res.json();
-    } catch (e) {
-      console.warn('[HR] fetch error:', url, e.message);
-      return null;
-    }
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem('__we_hr_prices_cache', JSON.stringify(_prices));
+        localStorage.setItem('__we_hr_ranges_cache', JSON.stringify(_ranges));
+      }
+    } catch (_) {}
   }
 
-  // ── Fetch live price from multiple sources ──────────────────────
-  async function getLivePrice(sym) {
-    // Try Coinbase first (fastest, most reliable)
-    const cbProduct = COINBASE_PRODUCTS[sym];
-    if (cbProduct) {
-      try {
-        const data = await proxyFetch(`${COINBASE_BASE}/market/products/${cbProduct}/ticker`);
-        if (data?.price) {
-          console.log(`[HR] ${sym} price from Coinbase: ${data.price}`);
-          return parseFloat(data.price);
+  // ── Top-of-Hour Flush & Re-pull ────────────────────────────────
+  function flushHourlies(reason = 'manual') {
+    console.log(`[HR] ⚡ Flushing hourlies (${reason}) at ${new Date().toISOString()}`);
+    // IMPORTANT: do NOT wipe _realBands / _prevYesBid here. The old hour's
+    // PTB bands are the last-known-good Kalshi contracts; buildCoinCard
+    // filters by close_time window anyway, and the next successful poll
+    // replaces them with the new hour's bands. Wiping them here used to
+    // blank the ladder at every top-of-hour and the panel flipped to the
+    // synthetic "Ranges" view until the next fetch landed — the exact
+    // PTB↔Ranges flapping bug. Synthetic caches (_ranges/_closeTimes) ARE
+    // hour-tied and get cleared.
+    _ranges = {};
+    _closeTimes = {};
+    _emptyRealStreak = {};
+    try {
+      if (typeof localStorage !== 'undefined') {
+        localStorage.removeItem('__we_hr_ranges_cache');
+      }
+    } catch (_) {}
+  }
+
+  function checkHourRoll() {
+    const currentHour = Math.floor(Date.now() / 3600000);
+    if (currentHour !== _lastHourBucket) {
+      _lastHourBucket = currentHour;
+      flushHourlies('top-of-hour-roll');
+      if (typeof window !== 'undefined' && window.electron?.kalshi?.flushLadder) {
+        window.electron.kalshi.flushLadder().catch(() => {});
+      }
+      loadAll().then(() => render());
+      return true;
+    }
+    return false;
+  }
+
+  function scheduleHourRoll() {
+    if (_hourRollScheduleTimer) {
+      clearTimeout(_hourRollScheduleTimer);
+      _hourRollScheduleTimer = null;
+    }
+    const now = Date.now();
+    const nextHourMs = (Math.floor(now / 3600000) + 1) * 3600000;
+    const msUntil = Math.max(250, nextHourMs - now);
+    _hourRollScheduleTimer = setTimeout(() => {
+      checkHourRoll();
+      scheduleHourRoll();
+    }, msUntil + 250);
+  }
+
+  // Listen for real-time WebSocket ladder updates from Electron IPC Worker
+  try {
+    if (typeof window !== 'undefined' && window.electron?.kalshi) {
+      window.electron.kalshi.onLadderUpdate((payload) => {
+        if (!payload || !payload.symbol || !Array.isArray(payload.bands)) return;
+        const sym = payload.symbol;
+        const now = Date.now();
+        // Same guards as the HTTP poll path: pushed bands must be in-window
+        // (not expired, not 13h+ daily far-futures) and must pass the width
+        // caps, or they'd fight the bridge poll and flip the view between
+        // two grids (the PTB↔Ranges flap).
+        const activeBands = payload.bands.filter(b => {
+          if (!b.close_time || new Date(b.close_time).getTime() <= now - 2 * 60000) return false;
+          const diffMins = (new Date(b.close_time).getTime() - now) / 60000;
+          if (diffMins > 75) return false;
+          const w = Number(b.high ?? b.low) - Number(b.low);
+          if (sym === 'BTC' && w > 105) return false;
+          if (sym === 'ETH' && w > 6) return false;
+          if (sym === 'SOL' && w > 1.5) return false;
+          if (sym === 'XRP' && w > 0.05) return false;
+          return true;
+        });
+        if (activeBands.length > 0) {
+          _realBands[sym] = activeBands;
+          _emptyRealStreak[sym] = 0;
+          if (isActive()) render();
         }
+      });
+
+      window.electron.kalshi.onHourlyFlushed(() => {
+        flushHourlies('ipc-worker-hourly-flushed');
+        loadAll().then(() => render());
+      });
+    }
+  } catch (_) {}
+
+  // ── View detection ─────────────────────────────────────────────
+  function isActive() {
+    return (window.__weCurrentView || '') === 'hourly-ranges'
+      || document.querySelector('.nav-btn.active')?.dataset?.view === 'hourly-ranges';
+  }
+
+  // ── Fetch helper (uses suppFetch for CORS bypass) ──────────────
+  async function apiFetch(url, timeoutMs = 20000) {
+    const race = (p) => Promise.race([p, new Promise((_, r) =>
+      setTimeout(() => r(new Error('timeout')), timeoutMs))]);
+
+    // Local bridge (127.0.0.1:8788) requests always use direct native fetch
+    if (/^https?:\/\/(127\.0\.0\.1|localhost):8788/i.test(url)) {
+      try {
+        const res = await race(fetch(url));
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return await res.json();
       } catch (e) {
-        console.warn(`[HR] Coinbase ${sym}:`, e.message);
+        console.warn('[HR]', url, 'local bridge fetch failed:', e.message);
+        return null;
       }
     }
 
-    // Fallback to Kraken
-    const krakenTicker = KRAKEN_TICKERS[sym];
-    if (krakenTicker) {
+    // Try suppFetch (Tauri/proxy layer)
+    if (typeof window.suppFetch === 'function') {
       try {
-        const data = await proxyFetch(`${KRAKEN_BASE}/Ticker?pair=${krakenTicker}`);
-        if (data?.result?.[krakenTicker]) {
-          const price = parseFloat(data.result[krakenTicker].c[0]);
-          console.log(`[HR] ${sym} price from Kraken: ${price}`);
-          return price;
+        const res = await race(window.suppFetch(url));
+        if (res && typeof res.json === 'function') {
+          if (res.ok === false) throw new Error(`HTTP ${res.status}`);
+          return await race(res.json());
         }
+        return typeof res === 'string' ? JSON.parse(res) : res;
       } catch (e) {
-        console.warn(`[HR] Kraken ${sym}:`, e.message);
+        console.warn('[HR]', url, 'suppFetch failed:', e.message);
       }
     }
 
-    // Fallback to CoinGecko
-    const geckoId = COINGECKO_IDS[sym];
-    if (geckoId) {
-      try {
-        const data = await proxyFetch(`${COINGECKO_BASE}/simple/price?ids=${geckoId}&vs_currencies=usd`);
-        if (data?.[geckoId]?.usd) {
-          const price = data[geckoId].usd;
-          console.log(`[HR] ${sym} price from CoinGecko: ${price}`);
-          return price;
-        }
-      } catch (e) {
-        console.warn(`[HR] CoinGecko ${sym}:`, e.message);
-      }
+    // Fallback to native fetch
+    const res = await race(fetch(url));
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  }
+
+  // ── Spot-Centered Range Synthesizer (for bracket & strike ranges) ──
+  function getStepSize(sym, refPrice) {
+    if (sym === 'BTC' || refPrice >= 20000) return 100;
+    if (sym === 'ETH' || (refPrice >= 1000 && refPrice < 20000)) return 10;
+    if (sym === 'SOL' || (refPrice >= 50 && refPrice < 1000)) return 0.5;
+    if (sym === 'BNB') return 2;
+    if (sym === 'HYPE') return 0.25;
+    if (sym === 'XRP' || (refPrice >= 0.5 && refPrice < 50)) return 0.01;
+    if (sym === 'DOGE' || refPrice < 0.5) return 0.005;
+    return refPrice * 0.002;
+  }
+
+  function getFallbackDecimals(sym) {
+    if (sym === 'SOL' || sym === 'HYPE' || sym === 'XRP') return 4;
+    if (sym === 'DOGE') return 7;
+    return 2;
+  }
+
+  function buildSpotCenteredRanges(sym, refPrice, closeTimeIso) {
+    if (!Number.isFinite(refPrice) || refPrice <= 0) return [];
+    const step = getStepSize(sym, refPrice);
+    const pivotLow = Math.floor(refPrice / step) * step;
+    const numBelow = 7;
+    const numAbove = 7;
+    const result = [];
+    const closeIso = closeTimeIso || new Date(Math.ceil(Date.now() / 3600000) * 3600000).toISOString();
+
+    for (let i = -numBelow; i <= numAbove; i++) {
+      const low = Number((pivotLow + i * step).toFixed(4));
+      const high = Number((pivotLow + (i + 1) * step).toFixed(4));
+      const distFromSpot = Math.abs((low + high) / 2 - refPrice) / step;
+      let prob = Math.exp(-distFromSpot * distFromSpot * 0.35) * 0.48;
+      prob = Number(Math.max(0.01, Math.min(0.85, prob)).toFixed(2));
+      const tickerStr = `${sym}-RANGE-${low}`;
+
+      result.push({
+        low,
+        high,
+        yesAsk: prob,
+        yesBid: prob,
+        noAsk: Number((1 - prob).toFixed(2)),
+        prob,
+        ticker: tickerStr,
+        closeTime: closeIso,
+        subtitle: `$${low} to ${high}`,
+      });
     }
 
-    // Fallback to cached prediction market data
-    const pred = window._predictions?.[sym];
-    if (pred?.price) {
-      console.log(`[HR] ${sym} price from window._predictions: ${pred.price}`);
-      return pred.price;
-    }
-    
-    console.warn(`[HR] No price found for ${sym}`);
+    return result;
+  }
+
+  // ── Spot price: Pyth ONLY ────────────────────────────────────
+  // Never Kalshi, never exchange averages. Kalshi quotes are market odds,
+  // not spot; mixing them into the spot moves every bucket and the HERE
+  // marker off the true price. If Pyth has no reading, return null and let
+  // the card show pending — a stale/wrong spot is worse than none.
+  function readPythPrice(sym) {
+    try {
+      const raw = window.PythClient?.getPrice?.(sym);
+      const p = (raw != null && typeof raw === 'object')
+        ? parseFloat(raw.price ?? raw.priceData ?? raw.value)
+        : parseFloat(raw);
+      if (Number.isFinite(p) && p > 0) return p;
+    } catch (_) {}
+    try {
+      const all = window.PythClient?.getPrices?.();
+      const raw = all ? all[sym] : null;
+      const p = (raw != null && typeof raw === 'object')
+        ? parseFloat(raw.price ?? raw.priceData ?? raw.value)
+        : parseFloat(raw);
+      if (Number.isFinite(p) && p > 0) return p;
+    } catch (_) {}
     return null;
   }
 
-  // ── Fetch all hourly range contracts for a coin ─────────────────
-  async function fetchHourlyRangesForCoin(sym) {
-    const series = HOURLY_RANGE_SERIES[sym];
-    if (!series) return [];
+  function readLivePrice(sym) {
+    return readPythPrice(sym);
+  }
 
+  // ── Live price fetcher: Pyth only, no exchange REST ─────────────
+  async function fetchPrice(sym) {
+    const p = readLivePrice(sym);
+    if (p === null) console.warn(`[HR] no Pyth spot for ${sym} — card shows pending`);
+    return p;
+  }
+
+  // ── Build range list for a coin ────────────────────────────────
+  // No live multi-strike hourly ladder market exists today,
+  // so the ladder is always the
+  // spot-centered synthetic distribution.
+  const _rangeHourTs = Object.create(null);
+
+  function get60mContract(sym) {
+    return window.PredictionMarkets?.getCoin?.(sym)?.poly60m || null;
+  }
+
+  // A successful fetch can still return zero bands — Kalshi briefly shows no
+  // open "between" markets for a symbol during the hourly contract rollover
+  // (old hour's bands close right as the new hour's are still opening).
+  // Treating "succeeded with 0 bands" the same as "never had real data"
+  // caused the panel to flicker: real ladder shown, one poll returns an
+  // empty array, and it flips straight back to synthetic. Require a few
+  // consecutive confirmed-empty polls before believing it (same distrust of
+  // a single sample as the failure path already has), so a 10-30s rollover
+  // blip doesn't wipe out perfectly good real data.
+  const EMPTY_STREAK_TO_FALL_BACK = 3;
+  let _emptyRealStreak = {}; // sym -> consecutive successful-but-empty poll count
+
+  // ── Real Kalshi hourly ladder (single-strike PTB rows, real bid-wall size) ──
+  const _kalshiWorkerHost = (() => { try { return new URL(KALSHI_LADDER_WORKER).hostname; } catch (_) { return ''; } })();
+  function kalshiWorkerCircuitOpen() {
+    // Worker down (5xx) → breaker opens for 60s. Skip the fetch entirely
+    // while open: the tick runs every 2.5–10s and each attempt otherwise
+    // burns a proxied + direct call that both 503. Keep last-known bands.
     try {
-      // Fetch all markets matching the hourly range series (status=open, limit=100)
-      const url = `${KALSHI_BASE}/markets?series_ticker=${series}&status=open&limit=100`;
-      console.log(`[HR] Fetching ${sym} ranges from: ${url}`);
-      const data = await proxyFetch(url);
-      
-      if (!data?.markets) {
-        console.warn(`[HR] No markets returned for ${sym}:`, data);
-        return [];
-      }
-
-      console.log(`[HR] Got ${data.markets.length} ranges for ${sym}`);
-
-      // Parse contract titles to extract range bounds: "KXBTC_H_75000_75100" → { low: 75000, high: 75100 }
-      const ranges = data.markets.map(m => {
-        const parts = m.ticker.split('_');
-        // Format: [KXBTC, H, 75000, 75100]
-        const low = parseFloat(parts[2]);
-        const high = parseFloat(parts[3]);
-        return {
-          ticker: m.ticker,
-          low,
-          high,
-          yesPrice: m.yes_price || 0,
-          noPrice: m.no_price || 0,
-          prob: m.yes_price / 100, // yes_price is in cents, convert to probability (0-1)
-          closeTime: m.close_time,
-        };
-      });
-
-      // Sort by low price descending (highest at top, lowest at bottom)
-      ranges.sort((a, b) => b.low - a.low);
-      return ranges;
-    } catch (e) {
-      console.error(`[HR] Error fetching ranges for ${sym}:`, e);
-      return [];
-    }
+      const b = window.ApiCircuitBreaker?.getBreaker?.(`proxy-fetch:${_kalshiWorkerHost}`, { threshold: 5, timeout: 60000 });
+      return !!(b && typeof b.isAvailable === 'function' && !b.isAvailable());
+    } catch (_) { return false; }
   }
-
-  // ── Fetch all hourly ranges for all coins + live prices ────────
-  async function loadAllRanges() {
-    console.log('[HR] ⏳ Starting loadAllRanges...');
-    _cachedRanges = {};
-    _cachedPrices = {};
-    
-    const results = [];
-    for (const sym of MAIN_COINS) {
-      console.log(`[HR] Fetching ${sym}...`);
+  async function loadRealLadder(sym) {
+    if (!REAL_LADDER_SYMBOLS.has(sym)) return;
+    try {
+      let data = null;
+      // 1. Try local wecrypto-bridge first (fast, fully paginated, never 429'd)
       try {
-        // Fetch ranges and live price in parallel
-        const [ranges, price] = await Promise.all([
-          fetchHourlyRangesForCoin(sym),
-          getLivePrice(sym),
-        ]);
-        _cachedRanges[sym] = ranges;
-        _cachedPrices[sym] = price;
-        const status = ranges.length > 0 ? `✓ ${ranges.length} ranges` : '✗ No ranges';
-        console.log(`[HR] ${sym}: ${status}, price=$${price}`);
-        results.push({ sym, ranges: ranges.length, price });
-      } catch (e) {
-        console.error(`[HR] ERROR loading ${sym}:`, e);
-        results.push({ sym, error: e.message });
+        data = await apiFetch(`${KALSHI_LOCAL_BRIDGE}/ladder?symbol=${sym}`, 3000);
+      } catch (_) {}
+      if (!data || data.status !== 'ok' || !Array.isArray(data.bands) || !data.bands.length) {
+        try {
+          data = await apiFetch(`http://172.24.118.176:8788/ladder?symbol=${sym}`, 3000);
+        } catch (_) {}
       }
-    }
-    console.log('[HR] ✓ loadAllRanges complete', results);
-    return results;
-  }
 
-  // ── Determine range classification relative to current price ────
-  function classifyRange(low, high, currentPrice) {
-    if (!currentPrice) return 'neutral'; // grey if no price
-    if (currentPrice >= low && currentPrice <= high) return 'current'; // GREEN
-    if (currentPrice < low) return 'lower'; // RED
-    return 'higher'; // ORANGE (projected higher)
-  }
-
-  // ── Build range ladder with color coding ──────────────────────
-  function buildRangeLadder(sym, ranges, currentPrice) {
-    if (!ranges || ranges.length === 0) {
-      return `<div class="hr-ladder-empty">No ranges available…</div>`;
-    }
-
-    const levels = ranges.map(r => {
-      const probPct = Math.round(r.prob * 100);
-      const classification = classifyRange(r.low, r.high, currentPrice);
-      
-      const priceStr = r.low >= 1 ? `$${r.low.toFixed(0)}-$${r.high.toFixed(0)}` : 
-                                      `$${r.low.toFixed(4)}-$${r.high.toFixed(4)}`;
-      
-      let badge = '';
-      if (classification === 'current' && currentPrice) {
-        badge = ` <span class="hr-range-badge">● ${currentPrice.toFixed(2)}</span>`;
+      // 2. Fallback to remote worker if local bridge was unavailable
+      if (!data || data.status !== 'ok' || !Array.isArray(data.bands) || !data.bands.length) {
+        if (!kalshiWorkerCircuitOpen()) {
+          try {
+            data = await apiFetch(`${KALSHI_FALLBACK_WORKER}/ladder?symbol=${sym}`, 5000);
+          } catch (_) {
+            try {
+              data = await apiFetch(`${KALSHI_LADDER_WORKER}/ladder?symbol=${sym}`, 5000);
+            } catch (_) {}
+          }
+        }
       }
-      
-      return `
-        <div class="hr-level hr-level-${classification}" title="${r.ticker}">
-          <span class="hr-level-price">${priceStr}</span>
-          <span class="hr-level-prob">${probPct}%</span>
-          ${badge}
-        </div>
-      `;
-    });
 
-    return `<div class="hr-ladder">${levels.join('')}</div>`;
+      const bands = (data && data.status === 'ok' && Array.isArray(data.bands)) ? data.bands : [];
+
+      // Off-grid eviction guard: the remote worker fallback can return a
+      // partial page (e.g. 100 markets stuck above $91k while spot sits at
+      // $84k). If we already hold real bands for this symbol, data that
+      // doesn't bracket spot must never replace them — treat it as a miss
+      // so the streak path keeps the last-known-good ladder instead of
+      // painting the wrong hour or dropping the panel to synthetic.
+      if (bands.length && (safeGet(_realBands, sym) || []).length) {
+        const livePrice = safeGet(_prices, sym) || readLivePrice(sym);
+        if (livePrice != null && Number.isFinite(livePrice)) {
+          const lo = Math.min(...bands.map(b => Number(b.low)));
+          const hi = Math.max(...bands.map(b => Number(b.high ?? b.low)));
+          if (livePrice < lo || livePrice > hi) {
+            _emptyRealStreak[sym] = (_emptyRealStreak[sym] || 0) + 1;
+            return;
+          }
+        }
+      }
+
+      if (!bands.length) {
+        const streak = (_emptyRealStreak[sym] || 0) + 1;
+        _emptyRealStreak[sym] = streak;
+        // NEVER wipe last-known-good bands here — not even after many empty
+        // polls. The old hour's PTB rows are real, tradeable contracts and
+        // beat a synthetic flip every time; buildCoinCard filters by
+        // close_time window and the next good poll replaces them.
+        return;
+      }
+      _emptyRealStreak[sym] = 0;
+
+      const prevMap = _prevYesBid[sym] || (_prevYesBid[sym] = new Map());
+      for (const b of bands) {
+        const bid = Number(b.yes_bid_dollars);
+        if (Number.isFinite(bid)) {
+          b.prev_yes_bid_dollars = prevMap.has(b.low) ? prevMap.get(b.low) : null;
+          prevMap.set(b.low, bid);
+        } else {
+          b.prev_yes_bid_dollars = null;
+        }
+      }
+      _realBands[sym] = bands;
+    } catch (e) {
+      console.warn(`[HR] real ladder fetch failed for ${sym}:`, e.message);
+      // Leave whatever we had before (stale-but-real beats flipping to synthetic
+      // on a single transient failure); buildCoinCard falls back to synthetic
+      // only when _realBands[sym] has never been populated.
+    }
   }
 
-  // ── Build full panel ─────────────────────────────────────────────
-  function buildPanelHTML() {
-    let html = `<div class="hr-panel">
-      <div class="hr-panel-header">
-        <h2>Kalshi Hourly Range Contracts</h2>
-      </div>
-      <div class="hr-grid-wrapper">`;
+  // ── Model strike probabilities (engine artifact, Kalshi-independent) ──
+  // prediction_engine.py writes data/engine_latest.json every ~5 min.
+  // Indexed by "low-high" → p_touch (model's predicted touch probability
+  // for the hourly close window). Only BTC until the engine covers more
+  // coins; everything else stays Kalshi-only.
+  const MODEL_STRIKE_TTL_MS = 600_000; // artifact older than 10m = stale
+  const MODEL_REFRESH_MS = 60_000;     // re-read at most once a minute
+  let _modelStrikes = {}; // sym → { ts, byKey: Map("low-high" → p_touch) }
+  let _modelFetchTs = 0;
+  async function loadModelStrikes() {
+    const now = Date.now();
+    if (now - _modelFetchTs < MODEL_REFRESH_MS && Object.keys(_modelStrikes).length) return;
+    _modelFetchTs = now;
+    try {
+      // Prefer the absolute-path channel (works regardless of launch dir);
+      // fall back to the workspace-relative read.
+      let res = null;
+      if (window.electron && typeof window.electron.invoke === 'function') {
+        try { res = await window.electron.invoke('data:engineLatest'); } catch (_) { res = null; }
+      }
+      if ((!res || !res.ok) && window.electron && typeof window.electron.readFile === 'function') {
+        const content = await window.electron.readFile('data/engine_latest.json');
+        res = content ? { ok: true, content } : null;
+      }
+      if (!res || !res.ok || !res.content) return;
+      const doc = JSON.parse(typeof res.content === 'string' ? res.content : res.content);
+      const ageMs = now - Date.parse(doc.timestamp_utc || 0);
+      if (!Number.isFinite(ageMs) || ageMs > MODEL_STRIKE_TTL_MS) { _modelStrikes = {}; return; }
+      const byKey = new Map();
+      for (const s of (doc.strike_probs || [])) {
+        if (s && Number.isFinite(s.low) && Number.isFinite(s.high) && Number.isFinite(s.p_touch)) {
+          byKey.set(`${s.low}-${s.high}`, s.p_touch);
+        }
+      }
+      const regimeVal = doc.regime?.regime || (typeof doc.regime === 'string' ? doc.regime : null);
+      _modelStrikes = { BTC: { ts: now, byKey, regime: regimeVal } };
+      // Engine predicted range + remaining-window probabilities for
+      // spot-centered synthetic buckets. strike_probs only covers Kalshi's
+      // listed bands, so synthetic rows would otherwise show no model odds.
+      try {
+        const rp = doc.probabilities_remaining || {};
+        const rlo = Number(doc.range && doc.range.lower);
+        const rhi = Number(doc.range && doc.range.upper);
+        if (Number.isFinite(rlo) && Number.isFinite(rhi) && rhi > rlo) {
+          _modelStrikes.BTC.range = {
+            lower: rlo, upper: rhi,
+            inRange: Number.isFinite(rp.in_range) ? rp.in_range : null,
+            aboveUpper: Number.isFinite(rp.above_upper) ? rp.above_upper : null,
+            belowLower: Number.isFinite(rp.below_lower) ? rp.below_lower : null,
+          };
+        }
+      } catch (_) {}
+    } catch (e) { console.warn('[HR] model strikes unavailable:', e.message); }
+  }
+  // Model odds for spot-centered synthetic buckets: distribute the
+  // engine's remaining-window region probabilities (in_range / above_upper
+  // / below_lower) across the bucket by overlap with the predicted range.
+  // Band-key lookup (modelTouchPct) only covers Kalshi's listed strikes.
+  function modelRangePct(sym, low, high) {
+    const entry = _modelStrikes[sym];
+    const rg = entry && entry.range;
+    if (!rg || !Number.isFinite(rg.lower) || !Number.isFinite(rg.upper) || rg.upper <= rg.lower) return null;
+    const lo = Number(low), hi = Number(high);
+    if (!Number.isFinite(lo) || !Number.isFinite(hi) || hi <= lo) return null;
+    const w = hi - lo;
+    const overlap = (a, b) => Math.max(0, Math.min(hi, b) - Math.max(lo, a)) / w;
+    let p = 0, covered = false;
+    if (rg.inRange != null) { p += overlap(rg.lower, rg.upper) * rg.inRange; covered = true; }
+    if (rg.aboveUpper != null) { p += overlap(rg.upper, Infinity) * rg.aboveUpper; covered = true; }
+    if (rg.belowLower != null) { p += overlap(-Infinity, rg.lower) * rg.belowLower; covered = true; }
+    if (!covered) return null;
+    return Math.round(Math.max(0, Math.min(1, p)) * 100);
+  }
+  function modelTouchPct(sym, low, high) {
+    const entry = _modelStrikes[sym];
+    if (!entry) return null;
+    const exact = entry.byKey.get(`${low}-${high}`);
+    if (Number.isFinite(exact)) return Math.round(exact * 100);
+    // Hour-roll tolerance: panel may still show last hour's cached bands
+    // while the artifact already rolled — nearest band within $500.
+    let best = null, bestD = 500;
+    for (const [key, v] of entry.byKey) {
+      const sep = key.indexOf('-');
+      const klo = Number(key.slice(0, sep));
+      if (!Number.isFinite(klo)) continue;
+      const d = Math.abs(klo - low);
+      if (d < bestD) { bestD = d; best = v; }
+    }
+    return Number.isFinite(best) ? Math.round(best * 100) : null;
+  }
 
-    for (const sym of MAIN_COINS) {
-      const ranges = _cachedRanges[sym] || [];
-      const currentPrice = _cachedPrices[sym];
-      const ladder = buildRangeLadder(sym, ranges, currentPrice);
-      const color = COIN_COLORS[sym];
-      
-      const priceDisplay = currentPrice ? `$${currentPrice.toFixed(2)}` : 'Loading...';
-      
-      html += `
-        <div class="hr-coin-section">
-          <div class="hr-coin-label" style="color:${color}">${sym}</div>
-          <div class="hr-coin-price">Current: ${priceDisplay}</div>
-          ${ladder}
-        </div>
-      `;
+  async function loadCoin(sym) {    const price = await fetchPrice(sym);
+
+    if (price !== null && Number.isFinite(price) && sym) {
+      Object.defineProperty(_prices, sym, { value: price, writable: true, enumerable: true, configurable: true });
     }
 
-    html += `</div></div>`;
-    return html;
-  }
+    const p60 = get60mContract(sym);
+    const lockedPtb = Number(p60?.priceToBeatNum);
+    const hourStartMs = Math.floor(Date.now() / 3600000) * 3600000;
+    // Hourly contract is immutable at T0: center the ladder on locked PTB, not live spot.
+    const refPrice = (Number.isFinite(lockedPtb) && lockedPtb > 0) ? lockedPtb : (safeGet(_prices, sym) ?? price);
+    if (!Number.isFinite(refPrice) || refPrice <= 0) return;
 
-  // ── Render panel ─────────────────────────────────────────────────
-  function renderPanel() {
-    const container = document.getElementById('content');
-    if (!container) {
-      console.warn('[HR] Content container not found');
+    const nextHourIso = (p60?.closeTime) || new Date(hourStartMs + 3600000).toISOString();
+    if (sym) {
+      Object.defineProperty(_closeTimes, sym, { value: nextHourIso, writable: true, enumerable: true, configurable: true });
+    }
+    const currentHourTs = safeGet(_rangeHourTs, sym);
+    const currentRanges = safeGet(_ranges, sym);
+    if (currentHourTs === hourStartMs && currentRanges?.length && Number.isFinite(lockedPtb) && lockedPtb > 0) {
+      saveHRCache();
       return;
     }
-
-    const panelHTML = buildPanelHTML();
-    const panel = document.createElement('div');
-    panel.id = 'hourly-ranges-panel';
-    panel.innerHTML = panelHTML;
-    
-    container.replaceChildren(panel);
-    window.dispatchEvent(new CustomEvent('hourly-ranges:ready'));
-    console.log('[HR] Panel rendered');
+    if (sym) {
+      Object.defineProperty(_rangeHourTs, sym, { value: hourStartMs, writable: true, enumerable: true, configurable: true });
+      Object.defineProperty(_ranges, sym, { value: buildSpotCenteredRanges(sym, refPrice, nextHourIso), writable: true, enumerable: true, configurable: true });
+    }
+    saveHRCache();
   }
 
-  // ── Auto-load ranges periodically ────────────────────────────────
-  async function startAutoLoad(intervalMs = 30000) {
-    console.log('[HR] Starting auto-load loop');
-    await loadAllRanges();
-    renderPanel();
-    
-    _pollTimer = setInterval(async () => {
-      console.log('[HR] Polling ranges...');
-      await loadAllRanges();
-      renderPanel();
-    }, intervalMs);
+  // ── Select visible window around current price ─────────────────
+  function selectVisible(ranges, currentPrice) {
+    if (!ranges?.length) return ranges || [];
+
+    let pivotIdx = -1;
+
+    if (Number.isFinite(currentPrice) && currentPrice > 0) {
+      // Find the bucket the price falls in
+      pivotIdx = ranges.findIndex(r => currentPrice >= r.low && currentPrice <= r.high);
+
+      if (pivotIdx === -1) {
+        // Find nearest bucket mid
+        let best = Infinity;
+        for (let i = 0; i < ranges.length; i++) {
+          const r = ranges.at(i);
+          if (!r) continue;
+          const mid = (r.low + r.high) / 2;
+          const d = Math.abs(mid - currentPrice);
+          if (d < best) { best = d; pivotIdx = i; }
+        }
+      }
+    }
+
+    if (pivotIdx === -1) {
+      // Default: bucket with highest probability
+      let bestProb = -1;
+      for (let i = 0; i < ranges.length; i++) {
+        const r = ranges.at(i);
+        if (!r) continue;
+        if (r.prob > bestProb) { bestProb = r.prob; pivotIdx = i; }
+      }
+    }
+
+    if (pivotIdx === -1) return ranges.slice(0, VISIBLE_BUCKETS);
+
+    const half = Math.floor(VISIBLE_BUCKETS / 2);
+    let start = Math.max(0, pivotIdx - half);
+    let end   = Math.min(ranges.length - 1, start + VISIBLE_BUCKETS - 1);
+    // Shift start if we hit the end
+    if (end - start + 1 < VISIBLE_BUCKETS) {
+      start = Math.max(0, end - VISIBLE_BUCKETS + 1);
+    }
+
+    return ranges.slice(start, end + 1);
   }
 
-  // ── Public API ───────────────────────────────────────────────────
+  // ── Format helpers ─────────────────────────────────────────────
+  function fmtPrice(low, high) {
+    const dp = low >= 100 ? 0 : low >= 1 ? 2 : 4;
+    return `$${low.toFixed(dp)}`;
+  }
+
+  function fmtPct(p) {
+    return (p * 100).toFixed(0) + '%';
+  }
+
+  function timeToClose(isoStr) {
+    const ms = Date.parse(isoStr) - Date.now();
+    if (!Number.isFinite(ms) || ms <= -75000) return null;
+    if (ms <= 0) return 'Closing Now';
+    const mins = Math.floor(ms / 60000);
+    const secs = Math.floor((ms % 60000) / 1000);
+    return mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+  }
+
+  // ── Build HTML for one coin card ───────────────────────────────
+  function buildCoinCard(sym) {
+    let ranges  = safeGet(_ranges, sym) || [];
+    const price   = safeGet(_prices, sym) || readLivePrice(sym);
+    const color   = safeGet(COIN_COLORS, sym) || '#888';
+    const ctISO   = safeGet(_closeTimes, sym) || (ranges.at(0)?.closeTime) || new Date(Math.ceil(Date.now() / 3600000) * 3600000).toISOString();
+    const ttc     = ctISO ? timeToClose(ctISO) : null;
+    const ttcMs   = ctISO ? Date.parse(ctISO) - Date.now() : null;
+    const isFinal = ttcMs !== null && ttcMs < FAST_WINDOW_MS;
+
+    const priceStr = price
+      ? (window.CoinPrecision?.formatCoinPrice
+          ? window.CoinPrecision.formatCoinPrice(sym, price)
+          : `$${Number(price).toLocaleString('en-US', { minimumFractionDigits: getFallbackDecimals(sym), maximumFractionDigits: getFallbackDecimals(sym) })}`)
+      : '—';
+
+
+    let body;
+    let topBuckets = [];
+    const rawRealBands = safeGet(_realBands, sym) || [];
+    let realBands = rawRealBands;
+    if (rawRealBands.length > 0) {
+      const now = Date.now();
+      let targetCloseTime = null;
+      let minCloseMs = Infinity;
+      for (const b of rawRealBands) {
+        if (!b.close_time) continue;
+        const ms = new Date(b.close_time).getTime();
+        const diffMins = (ms - now) / 60000;
+        if (diffMins >= -2 && diffMins <= 75 && ms < minCloseMs) {
+          minCloseMs = ms;
+          targetCloseTime = b.close_time;
+        }
+      }
+      if (!targetCloseTime) {
+        // Rollover gap: every band is expired (or none in-window). Render the
+        // NEWEST close_time set we hold — the upcoming hour if Kalshi listed
+        // it early, else the just-closed hour — never a mixed-hours ladder,
+        // and never a flip to synthetic while we hold real contracts.
+        let newestMs = -Infinity;
+        for (const b of rawRealBands) {
+          if (!b.close_time) continue;
+          const ms = new Date(b.close_time).getTime();
+          if (ms > newestMs) { newestMs = ms; targetCloseTime = b.close_time; }
+        }
+      }
+      if (targetCloseTime) {
+        realBands = rawRealBands.filter(b => b.close_time === targetCloseTime);
+      }
+      // Ensure daily range contracts ($250+ width) are excluded from the hourly bucket ladder
+      realBands = realBands.filter(b => {
+        const w = Number(b.high ?? b.low) - Number(b.low);
+        if (sym === 'BTC' && w > 105) return false;
+        if (sym === 'ETH' && w > 6) return false;
+        if (sym === 'SOL' && w > 1.5) return false;
+        if (sym === 'XRP' && w > 0.05) return false;
+        return true;
+      });
+    }
+    let isLive = realBands.length > 0;
+    let sortedBands = [];
+
+    const gridLo = realBands.length ? Math.min(...realBands.map(b => Number(b.low))) : null;
+    const gridHi = realBands.length ? Math.max(...realBands.map(b => Number(b.high ?? b.low))) : null;
+    const offGrid = price != null && Number.isFinite(gridLo) && Number.isFinite(gridHi) &&
+      (price < gridLo || price > gridHi);
+
+    if (isLive) {
+      const uniqueBands = [];
+      const seenLows = new Set();
+      // Kalshi sometimes has overlapping markets (e.g. 84000-84100, 84000-84500, >84000).
+      // To enforce strict single buckets, we take only the first (tightest) bucket for each floor.
+      for (const b of realBands) {
+        if (!seenLows.has(b.low)) {
+          seenLows.add(b.low);
+          uniqueBands.push(b);
+        }
+      }
+      sortedBands = uniqueBands.sort((a, b) =>
+        Math.abs(a.low - (price ?? a.low)) - Math.abs(b.low - (price ?? b.low))
+      );
+    }
+
+    if (isLive) {
+      // ── Real Kalshi hourly ladder: single-PTB rows, bid-wall saturation ──
+      // PTB = the band's floor_strike — a real, exact number straight from
+      // Kalshi, not a computed midpoint. "In spec" here means: this row
+      // corresponds to an actual open, tradeable Kalshi contract right now.
+      const nearest = sortedBands.slice(0, VISIBLE_PTB_ROWS).sort((a, b) => a.low - b.low);
+
+      const pred = safeGet(window._predictions, sym) || window.PredictionEngine?.get?.(sym);
+      const modelEntry = safeGet(_modelStrikes, sym);
+      const regimeStr = String(pred?.regime?.regime || pred?.regime || modelEntry?.regime || 'MID').toUpperCase();
+      const rLower = Number(modelEntry?.range?.lower ?? pred?.range?.lower);
+      const rUpper = Number(modelEntry?.range?.upper ?? pred?.range?.upper);
+      const hasRegime = Number.isFinite(rLower) && Number.isFinite(rUpper) && rUpper > rLower;
+
+      // Regime colors: Blue for LOW, Yellow for MID, Red for HIGH
+      const regimeBorder = regimeStr === 'LOW' ? '#3b82f6' : regimeStr === 'HIGH' ? '#ef4444' : '#eab308';
+      const regimeBg = regimeStr === 'LOW' ? 'rgba(59, 130, 246, 0.12)' : regimeStr === 'HIGH' ? 'rgba(239, 68, 68, 0.14)' : 'rgba(234, 179, 8, 0.12)';
+
+      // Depth can sit on either side of the book
+      const wallDepth = (b) => Math.max(0, b.yes_bid_size || 0, b.yes_ask_size || 0, b.open_interest || 0);
+      const wallSizes = nearest.map(wallDepth);
+      const maxWall = Math.max(1, ...wallSizes);
+
+      // Pre-scan for model's estimated hourly close (peak model probability)
+      let maxModelTouch = -1;
+      let modelTargetStrike = null;
+      for (const b of nearest) {
+        const m = modelTouchPct(sym, b.low, b.high);
+        if (m !== null && m > maxModelTouch) {
+          maxModelTouch = m;
+          modelTargetStrike = b.low;
+        }
+      }
+
+      // Rank-based HOT: with a calibrated model that runs hotter than
+      // market, an absolute residual threshold flags the whole board.
+      // Rank the board by |market - model| and tag only the top 2
+      // divergences — the edge shows as a short list, never a sea of red.
+      // Engine-flagged rows keep their tag only if also top-2.
+      const residRank = nearest.map(b => {
+        const bid = Number(b.yes_bid_dollars);
+        const askVal = Number(b.yes_ask_dollars);
+        let probPct = null;
+        if (Number.isFinite(bid) && bid > 0 && Number.isFinite(askVal) && askVal > 0) {
+          probPct = Math.round(((bid + askVal) / 2) * 100);
+        } else if (Number.isFinite(askVal) && askVal > 0) {
+          probPct = Math.round(askVal * 100);
+        } else if (Number.isFinite(bid) && bid > 0) {
+          probPct = Math.round(bid * 100);
+        }
+        const mPct = modelTouchPct(sym, b.low, b.high);
+        const r = (probPct !== null && mPct !== null) ? probPct - mPct : null;
+        return { low: b.low, resid: r, mag: r !== null ? Math.abs(r) : -1 };
+      }).filter(x => x.mag >= 0).sort((a, b) => b.mag - a.mag).slice(0, 2);
+      const hotLows = new Set(residRank.map(x => x.low));
+
+      const rows = nearest.map(b => {
+        const isCurrent = price !== null && price >= b.low && price <= b.high;
+        const wallSize = wallDepth(b);
+        const satIdx = Math.min(
+          WALL_SATURATION_STEPS.length - 1,
+          Math.floor((wallSize / maxWall) * WALL_SATURATION_STEPS.length)
+        );
+        const wallColor = wallSize > 0 ? WALL_SATURATION_STEPS[satIdx] : 'transparent';
+
+        const bid = Number(b.yes_bid_dollars);
+        const prevBid = b.prev_yes_bid_dollars;
+        let arrow = '';
+        if (Number.isFinite(bid) && Number.isFinite(prevBid) && bid !== prevBid) {
+          arrow = bid > prevBid
+            ? `<span class="hr-ptb-arrow hr-ptb-arrow--up" title="Yes bid rose since last poll">▲</span>`
+            : `<span class="hr-ptb-arrow hr-ptb-arrow--down" title="Yes bid fell since last poll">▼</span>`;
+        }
+
+        const ptbStr = window.CoinPrecision?.formatCoinStrike
+          ? window.CoinPrecision.formatCoinStrike(sym, b.low)
+          : `$${b.low.toLocaleString()}`;
+        const bidStr = Number.isFinite(bid) ? `${(bid * 100).toFixed(0)}¢` : '—';
+        const askVal = Number(b.yes_ask_dollars);
+        const askStr = Number.isFinite(askVal) ? `${(askVal * 100).toFixed(0)}¢` : '—';
+
+        let probPct = null;
+        if (Number.isFinite(bid) && bid > 0 && Number.isFinite(askVal) && askVal > 0) {
+          probPct = Math.round(((bid + askVal) / 2) * 100);
+        } else if (Number.isFinite(askVal) && askVal > 0) {
+          probPct = Math.round(askVal * 100);
+        } else if (Number.isFinite(bid) && bid > 0) {
+          probPct = Math.round(bid * 100);
+        }
+        const probStr = probPct !== null ? `${probPct}%` : '—';
+
+        const modelPct = modelTouchPct(sym, b.low, b.high);
+        let modelStr = modelPct !== null ? `${modelPct}%` : null;
+        if (!modelStr && price && price > 0 && Number.isFinite(b.low) && Number.isFinite(b.high) && b.high > b.low) {
+          const atrPctRaw = Number(pred?.volatility?.atrPct);
+          const atrPct = Number.isFinite(atrPctRaw) && atrPctRaw > 0 ? atrPctRaw / 100 : 0.0055;
+          const minsLeft = ttcMs != null ? Math.max(1, ttcMs / 60000) : 30;
+          const sigma = price * atrPct * Math.sqrt(minsLeft / 60);
+          if (sigma > 0) {
+            const zLow = (b.low - price) / sigma;
+            const zHigh = (b.high - price) / sigma;
+            const cdf = (z) => {
+              const sign = z < 0 ? -1 : 1;
+              const x = Math.abs(z) / Math.SQRT2;
+              const t = 1 / (1 + 0.3275911 * x);
+              const y = 1 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * Math.exp(-x * x);
+              return 0.5 * (1 + sign * y);
+            };
+            const pBand = Math.max(0.01, Math.min(0.99, cdf(zHigh) - cdf(zLow)));
+            modelStr = `${Math.round(pBand * 100)}%`;
+          }
+        }
+        if (!modelStr) modelStr = '—';
+        const effectiveModelPct = modelPct ?? (modelStr !== '—' ? parseInt(modelStr, 10) : null);
+        const resid = (probPct !== null && effectiveModelPct !== null) ? probPct - effectiveModelPct : null;
+        const residStr = resid !== null ? `${resid > 0 ? '+' : ''}${resid}` : '—';
+        const hot = resid !== null && hotLows.has(b.low);
+        const isModelClose = (modelTargetStrike !== null && b.low === modelTargetStrike) || (effectiveModelPct !== null && effectiveModelPct >= 50 && !isCurrent);
+        const inRegime = hasRegime && (b.low <= rUpper && b.high >= rLower);
+
+        // Compute vibrant, living bucket hues
+        let rowBg = `${wallColor}18`;
+        let rowBorder = wallColor;
+        let rowTag = '';
+
+        if (isCurrent) {
+          // Spot Price Bucket: Bright Cyan / Electric Blue
+          rowBg = 'rgba(56, 189, 248, 0.22)';
+          rowBorder = '#38bdf8';
+          rowTag = `<span class="hr-ptb-here" style="color:#38bdf8;font-weight:700;margin-left:4px;">● HERE</span>`;
+        } else if (hot) {
+          // Hot bands priced with AMMs: Intense Red Mispricing Alert
+          rowBg = 'rgba(239, 68, 68, 0.24)';
+          rowBorder = '#ef4444';
+          rowTag = `<span class="hr-ptb-tag hr-tag--hot" style="color:#ef4444;font-weight:700;font-size:10px;margin-left:4px;border:1px solid #ef4444;border-radius:3px;padding:1px 3px;" title="AMM Mispricing: ${residStr}¢">⚡ HOT AMM</span>`;
+        } else if (isModelClose) {
+          // Model's Estimated Hourly Close Target: Emerald Green
+          rowBg = 'rgba(16, 185, 129, 0.22)';
+          rowBorder = '#10b981';
+          rowTag = `<span class="hr-ptb-tag hr-tag--close" style="color:#10b981;font-weight:700;font-size:10px;margin-left:4px;border:1px solid #10b981;border-radius:3px;padding:1px 3px;">★ MODEL CLOSE</span>`;
+        } else if (inRegime) {
+          // Where Regime lies: Blue (LOW), Yellow (MID), or Red (HIGH)
+          rowBg = regimeBg;
+          rowBorder = regimeBorder;
+        }
+
+        return `
+          <div class="hr-ptb-row${isCurrent ? ' hr-ptb-row--current' : ''}" style="background:${escapeHTML(rowBg)};border-left:3px solid ${escapeHTML(rowBorder)}">
+            <span class="hr-ptb-price">${escapeHTML(ptbStr)}</span>
+            <span class="hr-ptb-prob"${isCurrent ? ` style="color:#38bdf8;font-weight:700"` : ''}>${escapeHTML(probStr)}</span>
+            <span class="hr-ptb-model hr-col-model" title="Model touch probability (engine)${resid !== null ? ` — market-model residual ${residStr}¢` : ''}"${hot ? ' style="font-weight:700;text-decoration:underline;color:#ef4444"' : (isModelClose ? ' style="color:#10b981;font-weight:700"' : '')}>${escapeHTML(modelStr)}</span>
+            <span class="hr-ptb-odds">${escapeHTML(bidStr)} / ${escapeHTML(askStr)}</span>
+            ${arrow}
+            ${rowTag}
+          </div>`;
+      });
+
+      const closeLabel = ttc
+        ? `<span class="hr-ttc${isFinal ? ' hr-ttc--fast' : ''}">Closes in ${ttc}</span>`
+        : '';
+
+      body = `
+        <div class="hr-ranges-scroll">
+          <div class="hr-ranges-header">
+            <span class="hr-ranges-label hr-col-ptb">Hourly Buckets</span>
+            <span class="hr-ranges-label hr-col-prob">Prob</span>
+            <span class="hr-ranges-label hr-col-model" title="Model touch probability — engine, Kalshi-independent">Model</span>
+            <span class="hr-ranges-label hr-col-odds">Bid / Ask</span>
+          </div>
+          ${rows.join('')}
+        </div>
+        ${closeLabel}`;
+    } else {
+      // ── No real Kalshi coverage for this coin — synthetic fallback,
+      // clearly labeled so it's never mistaken for a live tradeable strike.
+      if (!ranges.length && price) {
+        ranges = buildSpotCenteredRanges(sym, price, ctISO);
+        Object.defineProperty(_ranges, sym, { value: ranges, writable: true, enumerable: true, configurable: true });
+      }
+
+      if (!ranges.length) {
+        body = `<div class="hr-empty">Loading market data…</div>`;
+      } else {
+        const visible = selectVisible(ranges, price);
+
+        const step = getStepSize(sym, price || 1);
+        const ranked = visible.map(r => {
+          const mid = (r.low + r.high) / 2;
+          const distSteps = price ? Math.abs(mid - price) / step : 0;
+          const likelihood = Math.exp(-distSteps * distSteps * 0.45) * Math.max(0.05, r.prob || 0.3);
+          return { ...r, likelihood };
+        }).sort((a, b) => b.likelihood - a.likelihood);
+        const sumL = ranked.reduce((s, b) => s + b.likelihood, 0) || 1;
+        ranked.forEach(b => { b.pctLikely = Math.round((b.likelihood / sumL) * 100); });
+        topBuckets = ranked.slice(0, 8);
+
+        const rows = visible.map(r => {
+          const isCurrent = price !== null && price >= r.low && price <= r.high;
+          const probPctStr = fmtPct(r.prob);
+          // Same Model column as live rows: engine touch for this band,
+          // Kalshi-independent. Null when uncovered/stale.
+          const modelPct = modelTouchPct(sym, r.low, r.high) ?? modelRangePct(sym, r.low, r.high);
+          const modelStr = modelPct !== null ? `${modelPct}%` : '—';
+          return `
+            <div class="hr-row${isCurrent ? ' hr-row--current' : ''}">
+              <span class="hr-row-range">${escapeHTML(fmtPrice(r.low, r.high))}</span>
+              <span class="hr-row-prob" style="${isCurrent ? `color:${escapeHTML(color)}` : ''}">${escapeHTML(probPctStr)}</span>
+              <span class="hr-ptb-model" title="Model touch probability (engine)">${escapeHTML(modelStr)}</span>
+              ${isCurrent ? `<span class="hr-ptb-here" style="color:${escapeHTML(color)}">● HERE</span>` : ''}
+            </div>`;
+        });
+
+        const closeLabel = ttc
+          ? `<span class="hr-ttc${isFinal ? ' hr-ttc--fast' : ''}">Closes in ${ttc}</span>`
+          : '';
+
+        body = `
+          <div class="hr-ranges-scroll">
+          <div class="hr-ranges-header">
+            <span class="hr-ranges-label">Synthetic estimate${offGrid ? ' · spot off Kalshi grid' : ''}</span>
+            <span class="hr-ranges-label">Prob (YES)</span>
+            <span class="hr-ranges-label" title="Model touch probability — engine, Kalshi-independent">Model</span>
+          </div>
+            ${rows.join('')}
+          </div>
+          ${closeLabel}`;
+      }
+    }
+
+    // ASI1 hourly bucket guidance, pegged to a fixed 60-minute interval.
+    // Grok 15m + hourly call pegged to live market data (no 5m, never WAIT)
+    let grokHtml = '';
+    try {
+      const api = window.GrokRangeOverlay || window.GrokRangeGrok;
+      const g60 = api && api.getGuidance ? api.getGuidance(sym, 60) : null;
+      const renderOne = (label, g) => {
+        if (!g) return '';
+        if (g.error && !g.call) {
+          return `<div class="hr-grok-row"><span class="hr-grok-label">${escapeHTML(label)}</span>
+            <span class="hr-grok-meta" style="color:var(--color-orange,#f59e0b)">${escapeHTML(g.error)}</span></div>`;
+        }
+        if (!g.call && !(g.livePath && g.livePath.dir) && !g.displayCall) return '';
+        const call = (g.displayCall || (g.livePath && g.livePath.dir) || g.call) === 'DOWN' ? 'DOWN' : 'UP';
+        const col = call === 'UP' ? 'var(--color-green,#26a69a)' : 'var(--color-red,#ef5350)';
+        const confRaw = Number(g.confidence) || 0;
+        const pct = confRaw <= 1 ? Math.round(confRaw * 100) : Math.round(confRaw);
+
+        let metaLine = `${pct}%`;
+        let notes = escapeHTML(String(g.notes || '').slice(0, 180));
+
+        const bucket = g.preferredBucket || g.preferredRange || g.range;
+        if (topBuckets.length) {
+          const top3Str = topBuckets.slice(0, 3).map((b, i) => `#${i+1} $${b.low} (${b.pctLikely}%)`).join(' · ');
+          metaLine += ` · Top buckets: ${top3Str}`;
+        } else if (bucket && Number.isFinite(Number(bucket.low))) {
+          metaLine += ` · fixed 60m bucket $${Number(bucket.low).toLocaleString()}`;
+        }
+        if (label === '15m contract') {
+          const peg15 = g.polyPeg || g.poly15m;
+          const slug = g.contractSlug || (peg15 && peg15.slug) || '';
+          const side = peg15 && peg15.side ? peg15.side : (call === 'UP' ? 'Up' : 'Down');
+          const ptb = peg15 && peg15.priceToBeatNum;
+          const ptbLabel = ptb
+            ? (window.CoinPrecision?.formatCoinStrike
+                ? window.CoinPrecision.formatCoinStrike(sym, ptb)
+                : `$${Number(ptb).toLocaleString('en-US', { minimumFractionDigits: getFallbackDecimals(sym), maximumFractionDigits: getFallbackDecimals(sym) })}`)
+            : (priceStr !== '—' ? priceStr : '');
+
+          if (slug) metaLine += ` · id: ${escapeHTML(slug.length > 20 ? slug.substring(0, 12) + '...' : slug)}`;
+          if (slug) metaLine += ` · buy ${side}`;
+          if (ptbLabel) metaLine += ` · PTB ${ptbLabel}`;
+          if (peg15 && peg15.yesProb != null) metaLine += ` · mkt Up ${(Number(peg15.yesProb) * 100).toFixed(0)}%`;
+          if (peg15 && peg15.secondsToClose != null) metaLine += ` · ttc ${peg15.secondsToClose}s`;
+        } else {
+          metaLine += ' · 60m interval';
+        }
+
+        if (/bucket\s+\$?\d+/i.test(notes)) {
+          notes = '';
+        }
+
+        return `<div class="hr-grok-row">
+          <span class="hr-grok-label">${escapeHTML(label)}</span>
+          <span class="hr-grok-call" style="color:${col}">${call === 'UP' ? '▲' : '▼'} price ${call}</span>
+          <span class="hr-grok-meta">${escapeHTML(metaLine)}</span>
+          ${notes ? `<div class="hr-grok-notes">${notes}</div>` : ''}
+        </div>`;
+      };
+      const b60 = renderOne('1h bucket', g60);
+      let asi1Strip = '';
+      try {
+        asi1Strip = window.Asi1PreContract?.renderStripHtml?.(sym, { horizon: '60m', maxNotes: 360 }) || '';
+      } catch (_) { asi1Strip = ''; }
+
+      if (b60 || asi1Strip) {
+        grokHtml = `<div class="hr-grok">
+          <div class="hr-grok-hdr">✨ ASI1 pre-contract · 🤖 range overlay · hourly buckets</div>
+          ${asi1Strip}
+          ${b60}
+        </div>`;
+      } else {
+        const stats = window.GrokAnalyticsMemory && window.GrokAnalyticsMemory.getStats
+          ? window.GrokAnalyticsMemory.getStats() : null;
+        const n = stats && stats.byCoin && stats.byCoin[sym] ? stats.byCoin[sym].samples : 0;
+        grokHtml = `<div class="hr-grok"><div class="hr-grok-hdr">✨ ASI1 · hourly bucket memory</div>
+          <div class="hr-grok-notes">Building hourly bucket briefs… ${n} samples · hourly buckets</div></div>`;
+      }
+    } catch (_) { grokHtml = ''; }
+
+    // The body is the spot-centered hourly bucket ladder (top-3 ranked by
+    // likelihood); Grok adds the LLM's
+    // Kalshi 15m Up/Down — pulled by prediction-markets.js fetchKalshi15M().
+    // Render the live Kalshi quote directly; do not substitute another venue here.
+    let kalshi15mHtml = '';
+    try {
+      const k15 = window.PredictionMarkets?.getCoin?.(sym)?.kalshi15m;
+      const ticker = k15?.ticker || '';
+      const upProb = Number(k15?.probability);
+      const hasProb = Number.isFinite(upProb);
+      const call = hasProb ? (upProb >= 0.5 ? 'UP' : 'DOWN') : null;
+      const col = call === 'UP' ? 'var(--color-green,#26a69a)' : call === 'DOWN' ? 'var(--color-red,#ef5350)' : 'var(--color-text-faint)';
+      const ptbNum = Number(k15?.targetPriceNum);
+      const ptbLabel = k15?.targetPrice || (Number.isFinite(ptbNum) && ptbNum > 0
+          ? (window.CoinPrecision?.formatCoinStrike
+              ? window.CoinPrecision.formatCoinStrike(sym, ptbNum)
+              : `$${ptbNum.toLocaleString('en-US', { minimumFractionDigits: getFallbackDecimals(sym), maximumFractionDigits: getFallbackDecimals(sym) })}`)
+          : 'pending');
+      const closeLabel15 = k15?.closeTime ? timeToClose(k15.closeTime) : null;
+      const currentPrice15 = _prices[sym] || readLivePrice(sym);
+      const prediction15 = window._predictions?.[sym] || window.PredictionEngine?.get?.(sym) || null;
+      const k15Contract = k15 ? {
+        ...k15,
+        live: true,
+        coin: sym,
+        secondsToClose: k15.closeTime ? Math.max(0, (new Date(k15.closeTime).getTime() - Date.now()) / 1000) : 0,
+        bestAsk: k15.yesAsk != null ? k15.yesAsk : k15.bestAsk,
+      } : null;
+      const fair15 = window.GrokRangeOverlay?.get15mModelFair?.(k15Contract, currentPrice15, prediction15);
+      let fair15Label = 'Model fair pending';
+      if (fair15?.model_fair_cents != null) {
+        fair15Label = `Model fair ${Number(fair15.model_fair_cents).toFixed(1)}¢ (${fair15.p_up != null ? Math.round(fair15.p_up * 100) : Math.round(fair15.model_fair_cents)}% odds)${fair15.residual_cents != null ? ` · residual ${Number(fair15.residual_cents).toFixed(1)}¢` : ''}`;
+      } else if (k15 && currentPrice15) {
+        const target = Number(k15.targetPriceNum || k15.floorPrice) || (k15.targetPrice ? parseFloat(String(k15.targetPrice).replace(/[^0-9.]/g, '')) : null);
+        if (target && target > 0) {
+          const sec = k15.closeTime ? Math.max(5, (new Date(k15.closeTime).getTime() - Date.now()) / 1000) : 300;
+          const sigma = currentPrice15 * 0.0055 * Math.sqrt(Math.max(0.02, Math.min(1, sec / 900)));
+          const z = (currentPrice15 - target) / (sigma || 1);
+          const cdf = (val) => {
+            const s = val < 0 ? -1 : 1;
+            const x = Math.abs(val) / Math.SQRT2;
+            const t = 1 / (1 + 0.3275911 * x);
+            const y = 1 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * Math.exp(-x * x);
+            return 0.5 * (1 + s * y);
+          };
+          const pAbove = cdf(z);
+          const prob = String(k15.strikeDir || '').toLowerCase() === 'below' ? 1 - pAbove : pAbove;
+          const fairCents = Math.max(1, Math.min(99, Math.round(prob * 1000) / 10));
+          const askCents = k15.yesAsk != null ? (Number(k15.yesAsk) <= 1 ? Number(k15.yesAsk) * 100 : Number(k15.yesAsk)) : null;
+          const resCents = askCents != null ? Math.round((askCents - fairCents) * 10) / 10 : null;
+          fair15Label = `Model fair ${fairCents.toFixed(1)}¢ (${Math.round(prob * 100)}% odds)${resCents != null ? ` · residual ${resCents.toFixed(1)}¢` : ''}`;
+        }
+      }
+
+      if (ticker) {
+        kalshi15mHtml = `<div class="hr-kalshi15m" style="margin-bottom:8px;">
+          <div class="hr-grok-hdr" style="display:flex;justify-content:space-between;">
+            <span>Kalshi 15m Up/Down</span>
+            <span style="opacity:0.5;font-family:monospace;font-size:9px;" title="Kalshi ticker">${escapeHTML(ticker)}</span>
+          </div>
+          <div class="hr-grok-row" style="margin-top:4px;">
+            <span class="hr-grok-call" style="color:${col}">${hasProb ? `${call === 'UP' ? '▲' : '▼'} ${Math.round(upProb * 100)}% YES` : 'awaiting odds'}</span>
+            <span class="hr-grok-meta">Strike ${ptbLabel}${closeLabel15 ? ` · closes ${closeLabel15}` : ''}</span>
+            <div class="hr-grok-notes">${fair15Label}${fair15?.flagged ? ' · ask above model' : ''}</div>
+          </div>
+        </div>`;
+      }
+    } catch (_) { kalshi15mHtml = ''; }
+
+    // Kalshi shows the live 15m odds; body is the spot-centered
+    // hourly bucket ladder (top-3 ranked by likelihood); Grok adds the LLM's
+    // own directional call + reasoning on top of both.
+    return `
+      <div class="hr-card">
+        <div class="hr-card-header">
+          <span class="hr-sym" style="color:${color}">${escapeHTML(sym)}</span>
+          <span class="hr-price">${escapeHTML(priceStr)}</span>
+        </div>
+        <div class="hr-card-body">${kalshi15mHtml || ''}${body}${grokHtml}</div>
+      </div>`;
+  }
+
+  // ── Build full panel HTML ──────────────────────────────────────
+  function buildPanelHTML() {
+    const now = new Date().toLocaleTimeString();
+    return `
+      <div class="hr-panel" id="hourly-ranges-panel">
+        <div class="hr-panel-hdr">
+          <h2 class="hr-panel-title">▲▼ Hourly Ranges</h2>
+          <span class="hr-panel-updated">Updated ${now}</span>
+        </div>
+        <div class="hr-grid">
+          ${COINS.map(buildCoinCard).join('')}
+        </div>
+      </div>
+      <style>
+        .hr-panel { padding: 12px 16px; font-family: inherit; }
+        .hr-panel-hdr { display:flex; align-items:center; gap:12px; margin-bottom:14px; }
+        .hr-panel-title { font-size:1.1rem; font-weight:700; margin:0; color:var(--color-text,#e0e0e0); }
+        .hr-panel-updated { font-size:0.72rem; color:var(--color-text-muted,#888); margin-left:auto; }
+        .hr-grid {
+          display: grid;
+          grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+          gap: 12px;
+        }
+        .hr-card {
+          background: var(--color-card-bg, rgba(255,255,255,0.05));
+          border: 1px solid var(--color-border, rgba(255,255,255,0.1));
+          border-radius: 10px;
+          overflow: hidden;
+        }
+        .hr-card-header {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          padding: 8px 12px 6px;
+          border-bottom: 1px solid rgba(255,255,255,0.07);
+        }
+        .hr-sym { font-size:1rem; font-weight:800; letter-spacing:.5px; }
+        .hr-price { font-size:.85rem; font-weight:600; color:var(--color-text-muted,#aaa); }
+        .hr-card-body { padding: 6px 0 6px; }
+        .hr-ranges-scroll {
+          overflow-y: visible;
+          scrollbar-width: thin;
+        }
+        .hr-ranges-header {
+          display: flex;
+          justify-content: space-between;
+          padding: 2px 12px 4px;
+          font-size: .65rem;
+          font-weight: 600;
+          text-transform: uppercase;
+          letter-spacing: .8px;
+          color: var(--color-text-muted,#666);
+        }
+        .hr-row {
+          position: relative;
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          padding: 5px 12px;
+          min-height: 28px;
+          overflow: hidden;
+        }
+        .hr-row--current {
+          background: rgba(255,255,255,0.07);
+          border-left: 3px solid var(--color-accent,#4af);
+        }
+        .hr-row-bar {
+          position: absolute;
+          left: 0; top: 0; bottom: 0;
+          opacity: 0.25;
+          pointer-events: none;
+          transition: width .4s ease;
+        }
+        .hr-row-range {
+          position: relative;
+          flex: 1;
+          font-size: .78rem;
+          font-weight: 500;
+          color: var(--color-text,#ddd);
+          white-space: nowrap;
+        }
+        .hr-row-prob {
+          position: relative;
+          font-size: .8rem;
+          font-weight: 700;
+          min-width: 38px;
+          text-align: right;
+          color: var(--color-text-muted,#aaa);
+        }
+        .hr-row-badge {
+          position: relative;
+          animation: hr-pulse-badge 2s infinite ease-in-out;
+          font-size: .58rem;
+          font-weight: 800;
+          letter-spacing: .5px;
+          padding: 1px 5px;
+          border-radius: 4px;
+          color: #000;
+        }
+        /* Real-ladder single-PTB rows. Background is the bid-wall saturation
+           color set inline per row (sequential blue ramp, magnitude = wall
+           size) — this block encodes depth; text stays in normal ink. */
+        .hr-ptb-row {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          padding: 6px 12px;
+          min-height: 28px;
+          border-left: 3px solid transparent;
+          border-radius: 2px;
+        }
+        .hr-ptb-row--current {
+          border-left-color: var(--color-accent,#4af) !important;
+        }
+        .hr-ptb-price {
+          flex: 1;
+          font-size: .78rem;
+          font-weight: 600;
+          color: var(--color-text,#ddd);
+          white-space: nowrap;
+        }
+        .hr-ptb-prob {
+          font-size: .8rem;
+          font-weight: 800;
+          font-variant-numeric: tabular-nums;
+          min-width: 34px;
+          text-align: right;
+          color: var(--color-text,#ddd);
+          white-space: nowrap;
+        }
+        .hr-ptb-model {
+          font-size: .78rem;
+          font-weight: 700;
+          font-variant-numeric: tabular-nums;
+          min-width: 38px;
+          text-align: right;
+          color: var(--color-cyan, #38bdf8);
+          white-space: nowrap;
+        }
+        .hr-col-ptb { flex: 1; text-align: left; }
+        .hr-col-prob { min-width: 34px; text-align: right; }
+        .hr-col-model { min-width: 38px; text-align: right; color: var(--color-cyan, #38bdf8); }
+        .hr-col-odds { min-width: 60px; text-align: right; }
+        .hr-ptb-odds {
+          font-size: .68rem;
+          font-weight: 600;
+          font-variant-numeric: tabular-nums;
+          min-width: 60px;
+          text-align: right;
+          color: var(--color-text-muted,#888);
+          white-space: nowrap;
+        }
+        .hr-ptb-arrow { font-size: .7rem; line-height: 1; }
+        .hr-ptb-arrow--up { color: var(--color-green,#26a69a); }
+        .hr-ptb-arrow--down { color: var(--color-red,#ef5350); }
+        .hr-ptb-here {
+          font-size: .6rem;
+          font-weight: 800;
+          letter-spacing: .3px;
+          white-space: nowrap;
+        }
+        .hr-ttc {
+          display: block;
+          text-align: center;
+          font-size: .7rem;
+          font-weight: 600;
+          color: var(--color-text-muted,#888);
+          padding: 4px 0 2px;
+        }
+        .hr-ttc--fast { color: #f59e0b; animation: hr-blink 1s infinite; }
+        @keyframes hr-pulse-badge { 0% { opacity: 0.8; } 50% { opacity: 1; transform: scale(1.05); } 100% { opacity: 0.8; } }
+        @keyframes hr-blink { 0%,100%{opacity:1} 50%{opacity:.4} }
+        .hr-grok {
+          margin: 8px 10px 6px;
+          padding: 8px 10px;
+          border-radius: 8px;
+          background: linear-gradient(180deg, rgba(138,109,255,0.12), rgba(255,255,255,0.03));
+          border: 1px solid rgba(138,109,255,0.35);
+        }
+        .hr-grok-hdr {
+          font-size: 0.65rem;
+          font-weight: 800;
+          letter-spacing: 0.06em;
+          text-transform: uppercase;
+          color: #a5b4fc;
+          margin-bottom: 4px;
+        }
+        .hr-grok-row { margin-top: 4px; font-size: 0.78rem; }
+        .hr-grok-label {
+          font-size: 0.62rem;
+          font-weight: 700;
+          color: var(--color-text-muted,#888);
+          text-transform: uppercase;
+          margin-right: 6px;
+        }
+        .hr-grok-call { font-weight: 800; margin-right: 6px; }
+        .hr-grok-meta { font-size: 0.72rem; color: var(--color-text-muted,#aaa); }
+        .hr-grok-notes {
+          font-size: 0.7rem;
+          color: var(--color-text,#ccc);
+          margin-top: 2px;
+          line-height: 1.3;
+        }
+        .hr-empty {
+          padding: 16px 12px;
+          font-size: .8rem;
+          color: var(--color-text-muted,#888);
+          text-align: center;
+        }
+      </style>`;
+  }
+
+  // ── Render (Flicker-Free with Scroll Preservation) ───────────────
+  let _renderScheduled = false;
+
+  function render() {
+    if (!isActive()) return;
+    if (_renderScheduled) return;
+    _renderScheduled = true;
+
+    requestAnimationFrame(() => {
+      _renderScheduled = false;
+      if (!isActive()) return;
+      const container = document.getElementById('content');
+      if (!container) return;
+
+      // Preserve page scroll position across re-renders
+      const savedScrollTop = container.scrollTop;
+
+      container.innerHTML = buildPanelHTML();
+      _mounted = true;
+
+      // Restore page scroll position seamlessly
+      container.scrollTop = savedScrollTop;
+    });
+  }
+
+  // ── Load all coins (parallelized per coin) ─────────────────────
+  async function loadAll() {
+    await Promise.allSettled([
+      loadModelStrikes(),
+      ...COINS.flatMap(sym => [loadCoin(sym), loadRealLadder(sym)]),
+    ]);
+  }
+
+  function nextPollMs() {
+    // Check if any close time is within the fast window
+    const now = Date.now();
+    for (const iso of Object.values(_closeTimes)) {
+      const ms = Date.parse(iso) - now;
+      if (ms > 0 && ms < FAST_WINDOW_MS) return POLL_FAST_MS;
+      if (ms > 0 && ms < HALF_WINDOW_MS) return POLL_HALF_MS;
+    }
+    return POLL_NORMAL_MS;
+  }
+
+  // ── Start auto-load loop ───────────────────────────────────────
+  async function startAutoLoad() {
+    if (_timer) { clearTimeout(_timer); _timer = null; }
+
+    // Render placeholder immediately
+    render();
+
+    const tick = async () => {
+      if (!isActive()) { _timer = null; return; }
+      try {
+        await loadAll();
+        render();
+      } catch (e) {
+        console.warn('[HR] tick error:', e.message);
+      }
+      if (!isActive()) { _timer = null; return; }
+      const delay = nextPollMs();
+      _timer = setTimeout(tick, delay);
+    };
+
+    // First load
+    await tick();
+  }
+
+  function stopAutoLoad() {
+    if (_timer) { clearTimeout(_timer); _timer = null; }
+  }
+
+  // ── Public API ─────────────────────────────────────────────────
   window.HourlyRangesPanel = {
-    render: renderPanel,
-    load: loadAllRanges,
     startAutoLoad,
-    getRanges: (sym) => _cachedRanges[sym] || [],
-    stopAutoLoad: () => { if (_pollTimer) clearInterval(_pollTimer); },
+    stopAutoLoad,
+    render,
+    load: loadAll,
+    getRanges: (sym) => {
+      const r = _ranges[sym] || [];
+      const p60 = get60mContract(sym);
+      const lockedPtb = Number(p60 && p60.priceToBeatNum);
+      // Once the hourly contract is open, the ladder is locked to that PTB.
+      if (Number.isFinite(lockedPtb) && lockedPtb > 0 && r.length) return r;
+      const p = (Number.isFinite(lockedPtb) && lockedPtb > 0) ? lockedPtb : (_prices[sym] || readLivePrice(sym));
+      if (p && Number.isFinite(p) && p > 0) {
+        if (!r.length) return buildSpotCenteredRanges(sym, p);
+        const nearest = r.reduce((best, item) => Math.min(best, Math.abs((item.low + item.high) / 2 - p)), Infinity);
+        if (nearest > p * 0.04) {
+          return buildSpotCenteredRanges(sym, p);
+        }
+      }
+      return r;
+    },
+    getPrice:  (sym) => _prices[sym] || null,
+    get60mMarket: get60mContract,
   };
 
-  console.log('[HourlyRangesPanel] ✓ Ready — call load() then render()');
+  console.log('[HourlyRangesPanel v9] ✓ Ready');
 })();

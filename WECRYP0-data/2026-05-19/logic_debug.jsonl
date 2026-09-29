@@ -1,0 +1,4 @@
+{"source":"tide","type":"tide_forecast","ts":1779187330312,"sym":"BTC","direction":"WAIT","confidence":53,"mode":"local-shadow","queued":false,"error":null}
+{"source":"tide","type":"tide_forecast","ts":1779187330486,"sym":"ETH","direction":"DOWN","confidence":56,"mode":"local-shadow","queued":false,"error":null}
+{"source":"tide","type":"tide_forecast","ts":1779187330691,"sym":"SOL","direction":"DOWN","confidence":55,"mode":"local-shadow","queued":false,"error":null}
+{"source":"tide","type":"tide_forecast","ts":1779187330844,"sym":"XRP","direction":"DOWN","confidence":57,"mode":"local-shadow","queued":false,"error":null}

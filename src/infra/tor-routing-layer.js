@@ -30,7 +30,7 @@
             polymarket: { enabled: false, name: 'Polymarket' },       // ⚠️ NO - too slow for live data
             coingecko: { enabled: true, name: 'CoinGecko' },         // ✓ OK - non-time-critical
             crypto_com: { enabled: false, name: 'Crypto.com' },      // ⚠️ NO - live candles needed
-            whale_alert: { enabled: true, name: 'Whale Alert' },     // ✓ OK - non-time-critical
+            whale_alert: { enabled: false, name: 'Whale Alert' },    // disabled — removed from net stack
             dex_scan: { enabled: true, name: 'DEX Scanners' },       // ✓ OK - analysis only
             portfolio: { enabled: true, name: 'Portfolio Tools' },   // ✓ OK - analytics only
             cex_flow: { enabled: false, name: 'CEX Flow' },          // ⚠️ NO - needs speed
@@ -49,6 +49,7 @@
             /api\.kucoin\.com/i,
             /api-pub\.bitfinex\.com/i,
             /api\.coincap\.io/i,
+            /rest\.coincap\.io/i,
             /api\.kraken\.com/i,
             /wss:\/\//,  // WebSockets
             /elections\.kalshi\.com/i,  // Critical settlement API
@@ -102,6 +103,13 @@
          * Test TOR connectivity
          */
         async _testTORConnection() {
+            // If running in Electron, test native SOCKS5 directly
+            if (window.electron && window.electron.ipcFetch) {
+                const response = await window.electron.ipcFetch('https://check.torproject.org/', { useTor: true });
+                if (response.ok) return { ok: true };
+                throw new Error(response.error || 'IPC SOCKS5 connection failed');
+            }
+
             return new Promise((resolve, reject) => {
                 // Since browser fetch cannot directly use SOCKS5, we test via Privoxy/HTTP fallback
                 const controller = new AbortController();
@@ -130,6 +138,9 @@
          * Decide if a URL should route through TOR
          */
         _shouldRouteThroughTOR(url, options = {}) {
+            // .onion URLs MUST ALWAYS route through TOR
+            if (/\.onion/i.test(url)) return true;
+
             // Never route unless analytics opt-in is enabled.
             if (!window.__TOR_ANALYTICS_OPT_IN__) return false;
 
@@ -172,6 +183,23 @@
 
             // Try TOR routing
             try {
+                // If native IPC SOCKS5 is available, use it directly (bypass Privoxy)
+                if (window.electron && window.electron.ipcFetch) {
+                    const response = await window.electron.ipcFetch(url, { ...options, useTor: true });
+                    if (!response.ok && response.status === 0) {
+                         throw new Error(response.error || 'IPC SOCKS5 failed');
+                    }
+                    this._stats.routed++;
+                    this._stats.totalMs += Date.now() - startTime;
+                    console.debug(`✅ [TOR] Routed natively via IPC SOCKS5 ${url} (${Date.now() - startTime}ms)`);
+                    
+                    return new Response(response.text, {
+                        status: response.status || 200,
+                        statusText: response.ok ? 'OK' : 'Error',
+                        headers: new Headers({ 'Content-Type': 'application/json' })
+                    });
+                }
+
                 // Modify request headers to indicate TOR origin
                 const torOptions = {
                     ...options,

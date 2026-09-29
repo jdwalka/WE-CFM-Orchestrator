@@ -1,0 +1,25 @@
+            ${londonBadge}${calibBadge}${weakBadge}${safetyBadge}${hcBadge}
+            <span style="font-size:11px;padding:2px 6px;border-radius:9999px;background:var(--color-surface-2);color:${setup15.cls === 'bull' ? 'var(--color-green)' : setup15.cls === 'bear' ? 'var(--color-red)' : 'var(--color-text-muted)'};font-weight:700;text-transform:uppercase">${setup15.label}</span>
+          </div>
+          ${(p.llm?.ai_wording?.wait_rationale) ? `<div class="pred-verdict-rationale"><span style="font-weight:700">✨ AI:</span> ${escapeHtml(p.llm.ai_wording.wait_rationale)}</div>` : waitRationale ? `<div class="pred-verdict-rationale">${waitRationale}</div>` : ''}
+          ${strikeStateRationale ? `<div class="pred-verdict-rationale" style="color:${liveStrikeColor}"><span style="font-weight:700">📍 LIVE:</span> ${escapeHtml(strikeStateRationale)}</div>` : ''}
+          ${guardRationale ? `<div class="pred-verdict-rationale" style="color:#ffea80"><span style="font-weight:600">🛡 ORCH:</span> ${escapeHtml(guardRationale)}</div>` : ''}
+          ${(p.llm?.ai_wording?.high_confidence_rationale) ? `<div class="pred-verdict-rationale"><span style="font-weight:700">✨ AI:</span> ${escapeHtml(p.llm.ai_wording.high_confidence_rationale)}</div>` : hcRationale ? `<div class="pred-verdict-rationale">${hcRationale}</div>` : ''}
+          ${(p.llm?.ai_wording?.primary_rationale) ? `<div class="pred-verdict-rationale"><span style="font-weight:700">✨ AI:</span> ${escapeHtml(p.llm.ai_wording.primary_rationale)}</div>` : ratPrimary ? `<div class="pred-verdict-rationale">${ratPrimary}</div>` : ''}
+          ${llmNotes ? `
+            <div class="ai-insights-block" style="margin-top:12px;padding:12px;border-radius:8px;background:rgba(143,168,255,0.08);border:1px solid rgba(143,168,255,0.2);">
+              <div style="font-size:13px;font-weight:700;color:#8fa8ff;margin-bottom:6px;display:flex;align-items:center;gap:6px;">
+                <span>🧠 AI MARKET ANALYSIS</span>
+                <span style="font-size:11px;padding:2px 6px;border-radius:4px;background:rgba(143,168,255,0.15);">${escapeHtml((llmRegime || 'Mixed Regime').replace(/_/g, ' '))}</span>
+              </div>
+              <div style="font-size:14px;color:var(--color-text);line-height:1.5;white-space:pre-wrap;">${escapeHtml(llmNotes)}</div>
+            </div>` : ''}
+          <div class="pred-verdict-bar-wrap">
+            <div class="pred-verdict-bar-fill ${verdictDir}" style="width:${p.confidence}%"></div>
+          </div>
+          <!-- Model vs Kalshi Comparison Bar -->
+          ${_liveKPctCard !== null ? `
+            <div class="pred-comparison-bar-wrap" title="Model vs Market: shows where model (top) differs from Kalshi crowd (bottom)" style="overflow:hidden">
+              <div style="font-size:10px;color:var(--color-text-muted);margin-bottom:2px;display:flex;justify-content:space-between">
+                <span>Model: ${_modelConfidencePct}%</span>
+                <span>Kalshi: ${_liveKPctCard}% YES</span>

@@ -1,0 +1,248 @@
+services:
+  # Redis pub/sub side-channel for live orbital tick fanout
+  redis:
+    image: redis:7-alpine
+    container_name: wecrypto-redis
+    command:
+      [
+        "redis-server",
+        "--save",
+        "",
+        "--appendonly",
+        "no",
+        "--maxmemory",
+        "512mb",
+        "--maxmemory-policy",
+        "allkeys-lru",
+      ]
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 3
+      start_period: 2s
+    networks:
+      - wecrypto-net
+
+  # Redpanda broker (Kafka-compatible streaming)
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:v24.1.2
+    container_name: redpanda-orbital
+    command:
+      - redpanda start
+      - --overprovisioned
+      - --smp 2
+      - --memory 2G
+      - --reserve-memory 0M
+      - --node-id 0
+      - --check=false
+      - --kafka-addr PLAINTEXT://0.0.0.0:29092,OUTSIDE://0.0.0.0:9092
+      - --advertise-kafka-addr PLAINTEXT://redpanda:29092,OUTSIDE://localhost:9092
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+      - "9644:9644"
+    user: "0:0"
+    volumes:
+      - redpanda_data:/var/lib/redpanda/data
+    environment:
+      - REDPANDA_ADVERTISE_KAFKA_ADDR=redpanda:29092
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster info"]
+      interval: 3s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    networks:
+      - wecrypto-net
+
+  # Redpanda console for stream monitoring
+  redpanda-console:
+    image: docker.redpanda.com/redpandadata/console:v2.5.2
+    container_name: redpanda-console
+    environment:
+      KAFKA_BROKERS: "redpanda:29092"
+      KAFKA_SCHEMAREGISTRY_ENABLED: "false"
+    ports:
+      - "8081:8080"
+    depends_on:
+      redpanda:
+        condition: service_started
+    networks:
+      - wecrypto-net
+
+  # Firebase Local Emulator Suite
+  firebase-emulator:
+    build:
+      context: .
+      dockerfile: Dockerfile.firebase
+    container_name: firebase-emulator
+    ports:
+      - "4000:4000" # UI
+      - "5000:5000" # Hosting
+      - "5001:5001" # Functions
+      - "8082:8080" # Firestore (host 8082 avoids conflict with cors-proxy on 8080)
+      - "8085:8085" # Pub/Sub
+      - "9000:9000" # Realtime Database
+      - "9099:9099" # Auth
+      - "9199:9199" # Storage
+      - "9299:9299" # Eventarc
+    volumes:
+      - ${WECRYPTO_CLOUD_DATA_PATH:-./data}/firebase:/app/data
+      - ./firebase.json:/app/firebase.json:ro
+      - ./functions:/app/functions
+    networks:
+      - wecrypto-net
+
+  # WE-CFM-Orchestrator backend service
+  wecrypto-backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: wecrypto-backend
+    environment:
+      # Core configuration
+      NODE_ENV: production
+      WECRYP_ROOT: /app
+      WECRYPTO_FIREBASE_ENABLED: "0"
+      WECRYPTO_REQUIRE_CLOUD_READY: "0"
+
+      # Kafka/Redpanda
+      KAFKA_BROKER: "redpanda:29092"
+      KAFKA_BROKERS: "redpanda:29092"
+
+      # API Keys and secrets (use .env file or secrets)
+      LLM_API_URL: ${LLM_API_URL:-https://api.openai.com/v1/chat/completions}
+      LLM_API_KEY: ${LLM_API_KEY}
+      LLM_MODEL: ${LLM_MODEL:-gpt-4o-mini}
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY}
+      PYTH_NEW_API: ${PYTH_NEW_API}
+
+      # Firebase Emulators
+      FIRESTORE_EMULATOR_HOST: "firebase-emulator:8080"
+      FIREBASE_AUTH_EMULATOR_HOST: "firebase-emulator:9099"
+      FIREBASE_DATABASE_EMULATOR_HOST: "firebase-emulator:9000"
+      FIREBASE_STORAGE_EMULATOR_HOST: "firebase-emulator:9199"
+      PUBSUB_EMULATOR_HOST: "firebase-emulator:8085"
+
+      # Port configuration
+      WEB_SERVICE_PORT: "3443"
+      WECRYPTO_WEB_PORT: "3443"
+      WECRYPTO_WEB_HOST: "0.0.0.0"
+      PROXY_PORT: "3010"
+
+      # Logging
+      LOG_LEVEL: "info"
+    ports:
+      - "3443:3443" # HTTPS web service
+      - "3010:3010" # Proxy server
+      - "3000:3000" # Fallback HTTP
+    volumes:
+      - ./src:/app/src:ro
+      - ./electron:/app/electron:ro
+      - ./public:/app/public:ro
+      - ${WECRYPTO_CLOUD_DATA_PATH:-./data}:/app/data
+      - ./logs:/app/logs
+      - ./secrets:/app/secrets:ro
+      - ./.env:/app/.env:ro
+      - wecrypto_cache:/app/.cache
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    healthcheck:
+      test:
+        ["CMD", "curl", "-f", "http://localhost:3443/health", "||", "exit", "1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    networks:
+      - wecrypto-net
+    restart: unless-stopped
+
+  # Optional: Development shell for debugging
+  wecrypto-shell:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: wecrypto-shell
+    profiles:
+      - debug
+    environment:
+      NODE_ENV: development
+      WECRYP_ROOT: /app
+    volumes:
+      - .:/app
+    networks:
+      - wecrypto-net
+    entrypoint: ["/bin/sh"]
+    stdin_open: true
+    tty: true
+
+  # Local Nginx CORS Proxy
+  cors-proxy:
+    image: nginx:alpine
+    container_name: we-cors-proxy
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    restart: unless-stopped
+    networks:
+      - wecrypto-net
+
+  # Freqtrade crypto trading bot - dry run mode
+  freqtrade:
+    image: freqtradeorg/freqtrade:stable
+    container_name: wecrypto-freqtrade
+    restart: unless-stopped
+    volumes:
+      - ./freqtrade/user_data:/freqtrade/user_data
+    ports:
+      - "8090:8080" # API server (host:container) — avoids collision with cors-proxy on 8080
+    command: >
+      trade
+      --logfile /freqtrade/user_data/logs/freqtrade.log
+      --db-url sqlite:////freqtrade/user_data/tradesv3.sqlite
+      --config /freqtrade/user_data/config.json
+      --strategy SampleStrategy
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    networks:
+      - wecrypto-net
+
+  # Jdwalkaz Bridge pricing & ACP endpoint (port 8040)
+  jdwalkaz-bridge:
+    build:
+      context: ./jdwalkaz-bridge
+      dockerfile: Dockerfile
+    container_name: jdwalkaz-bridge
+    ports:
+      - "8040:8040"
+    environment:
+      - ASI1_API_KEY=${ASI1_API_KEY}
+      - JDWALKAZ_ENDPOINT=https://truffle.leaksnipe.win
+      - REDPANDA_BROKERS=redpanda:29092
+      - REDIS_URL=redis://redis:6379/0
+      - JDWALKAZ_ORIGIN=https://wecrypto.leaksnipe.win
+    depends_on:
+      redis:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+    networks:
+      - wecrypto-net
+
+volumes:
+  redpanda_data:
+    driver: local
+  wecrypto_cache:
+    driver: local
+
+networks:
+  wecrypto-net:
+    driver: bridge

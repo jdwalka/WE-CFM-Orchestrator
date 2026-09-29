@@ -26,6 +26,12 @@ taskkill /F /IM electron.exe /T >nul 2>&1
 taskkill /F /IM we-crypto-proxy.exe /T >nul 2>&1
 timeout /t 2 /nobreak >nul
 
+REM Start the proxy backend
+echo Starting Proxy Orchestrator...
+set ALL_PROXY=socks5h://127.0.0.1:18090
+start /b "" "%~dp0proxy\target\release\we-crypto-proxy.exe"
+timeout /t 2 /nobreak >nul
+
 REM Launch Electron with patches from source
 cd /d %~dp0
 echo Launching app with dev-mode patches...

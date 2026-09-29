@@ -26,7 +26,7 @@
   /**
    * Initialize position tracker when order executes
    * 
-   * @param {string} marketId - Kalshi market ID
+   * @param {string} marketId - Polymarket market ID
    * @param {number} entryPrice - CFM price at entry (0-100)
    * @param {string} direction - 'YES' or 'NO'
    * @param {number} quantity - contracts

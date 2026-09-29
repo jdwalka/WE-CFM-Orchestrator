@@ -141,17 +141,74 @@ const PREDICTION_COINS = [
       'https://cdn.jsdelivr.net/gh/spothq/cryptocurrency-icons@master/svg/color/xrp.svg',
     ],
   },
+  {
+    sym: 'DOGE', name: 'Dogecoin', instrument: 'DOGEUSD', geckoId: 'dogecoin',
+    color: '#c2a633', icon: 'Ð',
+    iconSources: [
+      'https://assets.coingecko.com/coins/images/5/small/dogecoin.png',
+      'https://cdn.jsdelivr.net/gh/spothq/cryptocurrency-icons@master/svg/color/doge.svg',
+    ],
+  },
+  {
+    sym: 'BNB', name: 'BNB', instrument: 'BNBUSD', geckoId: 'binancecoin',
+    color: '#f3ba2f', icon: 'B',
+    iconSources: [
+      'https://assets.coingecko.com/coins/images/825/small/bnb-icon2_2x.png',
+      'https://cdn.jsdelivr.net/gh/spothq/cryptocurrency-icons@master/svg/color/bnb.svg',
+    ],
+  },
+  {
+    sym: 'HYPE', name: 'Hyperliquid', instrument: 'HYPEUSD', geckoId: 'hyperliquid',
+    color: '#50e3c2', icon: 'H',
+    iconSources: [
+      // NOTE: gecko 50882 403s and atomiclabs has no hype icon — coincap 200s.
+      'https://assets.coincap.io/assets/icons/hype@2x.png',
+    ],
+  },
 ];
 window.PREDICTION_COINS = PREDICTION_COINS;
 
-// ---- AGGRESSIVE 4-COIN FOCUS ────────────────────────────────────────────────
-// Removed HYPE (48% WR, losing money)
-// Removed DOGE (62% WR, but removed for focused model)
-// Removed BNB  (64% WR, but removed for focused model)
-//
-// CORE 4: BTC, ETH, SOL, XRP
-// Rationale: Faster adaptive tuning convergence on fewer strong signals,
-// cleaner weights, higher precision, path to 70%+ win rate.
+const COIN_WEIGHT = {
+  BTC: 'heavy', ETH: 'heavy',
+  SOL: 'mid', XRP: 'mid', BNB: 'mid',
+  DOGE: 'light', HYPE: 'light',
+};
+window.COIN_WEIGHT = COIN_WEIGHT;
+
+const WEIGHT_RANK = { heavy: 3, mid: 2, light: 1 };
+window.WEIGHT_RANK = WEIGHT_RANK;
+
+const ORBITAL_ACCESS = { all: 1, mid: 2, heavy: 3 };
+window.ORBITAL_ACCESS = ORBITAL_ACCESS;
+
+// Defensive fallbacks for cross-script helpers before secondary scripts finish loading
+if (typeof window.formatUtc4Time !== 'function') {
+  window.formatUtc4Time = function(input) {
+    const ms = typeof input === 'number' ? input : new Date(input).getTime();
+    if (!Number.isFinite(ms)) return '—';
+    return new Date(ms - (4 * 60 * 60 * 1000)).toISOString().slice(11, 19);
+  };
+}
+if (typeof window.isHighConfidenceOverlayOn !== 'function') {
+  window.isHighConfidenceOverlayOn = function() {
+    return false;
+  };
+}
+if (typeof window.fmtCompactUsd !== 'function') {
+  window.fmtCompactUsd = function(n) {
+    if (n === null || n === undefined || isNaN(n)) return '—';
+    const num = Number(n);
+    if (Math.abs(num) >= 1e9) return '$' + (num / 1e9).toFixed(2) + 'B';
+    if (Math.abs(num) >= 1e6) return '$' + (num / 1e6).toFixed(2) + 'M';
+    if (Math.abs(num) >= 1e3) return '$' + (num / 1e3).toFixed(1) + 'K';
+    return '$' + num.toFixed(2);
+  };
+}
+
+// ---- 7 MAJORS FOCUS (CORE 4 FIRST) ──────────────────────────────────────────
+// 7 MAJORS: BTC, ETH, SOL, XRP, DOGE, BNB, HYPE
+// Primary traded 4: BTC, ETH, SOL, XRP (prioritized in UI display and inference)
+// Secondary 3: DOGE, BNB, HYPE (active for 5m/15m contract monitoring & screening)
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ---- Market Universe display groups (used by renderUniverse / Periodic Table view) ----

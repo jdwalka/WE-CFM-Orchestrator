@@ -1,0 +1,16 @@
+{"source":"tide","type":"tide_forecast","ts":1778803772325,"sym":"BTC","direction":"UP","confidence":61,"mode":"local-shadow","queued":false,"error":null}
+{"source":"tide","type":"tide_forecast","ts":1778803772326,"sym":"ETH","direction":"UP","confidence":57,"mode":"local-shadow","queued":false,"error":null}
+{"source":"tide","type":"tide_forecast","ts":1778803772326,"sym":"SOL","direction":"UP","confidence":57,"mode":"local-shadow","queued":false,"error":null}
+{"source":"tide","type":"tide_forecast","ts":1778803772326,"sym":"XRP","direction":"UP","confidence":66,"mode":"local-shadow","queued":false,"error":null}
+{"source":"tide","type":"tide_forecast","ts":1778804159952,"sym":"BTC","direction":"UP","confidence":61,"mode":"local-shadow","queued":false,"error":null}
+{"source":"tide","type":"tide_forecast","ts":1778804159952,"sym":"ETH","direction":"UP","confidence":57,"mode":"local-shadow","queued":false,"error":null}
+{"source":"tide","type":"tide_forecast","ts":1778804159953,"sym":"SOL","direction":"UP","confidence":56,"mode":"local-shadow","queued":false,"error":null}
+{"source":"tide","type":"tide_forecast","ts":1778804159953,"sym":"XRP","direction":"UP","confidence":68,"mode":"local-shadow","queued":false,"error":null}
+{"source":"tide","type":"tide_forecast","ts":1778804200985,"sym":"BTC","direction":"UP","confidence":61,"mode":"local-shadow","queued":false,"error":null}
+{"source":"tide","type":"tide_forecast","ts":1778804200986,"sym":"ETH","direction":"UP","confidence":57,"mode":"local-shadow","queued":false,"error":null}
+{"source":"tide","type":"tide_forecast","ts":1778804200986,"sym":"SOL","direction":"UP","confidence":56,"mode":"local-shadow","queued":false,"error":null}
+{"source":"tide","type":"tide_forecast","ts":1778804200987,"sym":"XRP","direction":"UP","confidence":68,"mode":"local-shadow","queued":false,"error":null}
+{"source":"tide","type":"tide_forecast","ts":1778804369490,"sym":"BTC","direction":"UP","confidence":60,"mode":"local-shadow","queued":false,"error":null}
+{"source":"tide","type":"tide_forecast","ts":1778804369491,"sym":"ETH","direction":"UP","confidence":56,"mode":"local-shadow","queued":false,"error":null}
+{"source":"tide","type":"tide_forecast","ts":1778804369492,"sym":"SOL","direction":"UP","confidence":56,"mode":"local-shadow","queued":false,"error":null}
+{"source":"tide","type":"tide_forecast","ts":1778804369492,"sym":"XRP","direction":"UP","confidence":68,"mode":"local-shadow","queued":false,"error":null}

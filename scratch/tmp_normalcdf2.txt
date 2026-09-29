@@ -1,0 +1,40 @@
+  // ================================================================
+  // PREDICTION COMPUTATION
+  // ================================================================
+
+  // Normal CDF approximation (Abramowitz & Stegun 26.2.17, max error 7.5e-8)
+  // Used to compute P(price ≥ kalshiRef) — model-implied YES probability.
+  // The Kalshi contract resolves YES if close price MEETS OR EXCEEDS the reference.
+  function normalCDF(z) {
+    const t = 1 / (1 + 0.2316419 * Math.abs(z));
+    const poly = t * (0.319381530 + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429))));
+    const pdf = Math.exp(-0.5 * z * z) / Math.sqrt(2 * Math.PI);
+    const p = 1 - pdf * poly;
+    return z >= 0 ? p : 1 - p;
+  }
+
+
+  // ── PATCH1.11: Wall Absorption Detector ─────────────────────────────────
+  // Detects bid/ask wall events on 1m candles: large wick in one direction
+  // that recovers, or same price level tested 2+ times with recoveries.
+  // These events cause momentum/OBV to fire in the wick direction (wrong).
+  // The correct bias is OPPOSITE to the wick (wall absorbed supply/demand).
+  function detectWallAbsorption(candles1m) {
+    if (!candles1m || candles1m.length < 6) return { detected: false, dir: 0, strength: 0 };
+    const c = candles1m.slice(-16);
+    let rangeSum = 0;
+    for (let i = 0; i < c.length; i++) rangeSum += (c[i].h - c[i].l);
+    const avgRange = rangeSum / c.length || 0.0001;
+
+    let wallDetected = false, wallDir = 0, wallStrength = 0;
+
+    // Pass 1: wick-body ratio on last 6 candles
+    for (let i = Math.max(1, c.length - 6); i < c.length; i++) {
+      const bar = c[i];
+      const body = Math.abs(bar.c - bar.o);
+      const range = bar.h - bar.l || 0.0001;
+      const lowerWick = Math.min(bar.o, bar.c) - bar.l;
+      const upperWick = bar.h - Math.max(bar.o, bar.c);
+      if (range < avgRange * 1.1) continue;
+      // Bid wall (lower wick absorption)
+      if (lowerWick >= body * 2 && lowerWick >= avgRange * 1.4 && (lowerWick / range) > 0.38) {

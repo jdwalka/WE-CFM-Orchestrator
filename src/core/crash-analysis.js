@@ -28,16 +28,16 @@
             // ─────────────────────────────────────────────────────────────────────────
             // PHASE 1: Find all contracts that went from high prob to loss
             // ─────────────────────────────────────────────────────────────────────────
-            console.log('📊 PHASE 1: Searching for high-prob collapses in _kalshiLog...\n');
+            console.log('📊 PHASE 1: Searching for high-prob collapses in _marketSettlementLog...\n');
 
-            const kalshiLog = window._kalshiLog || [];
+            const marketLog = window._marketSettlementLog || [];
             const suspects = [];
 
-            kalshiLog.forEach((contract, idx) => {
+            marketLog.forEach((contract, idx) => {
                 // Entry probability: how confident we were when we made the prediction
                 const entryProb = contract.entryProb || contract.modelProbUp || 0;
 
-                // Actual outcome: what Kalshi says happened
+                // Actual outcome: what the market says happened
                 const outcome = contract.actualOutcome || contract.outcome || contract.result;
 
                 // Did we lose? YES prob entry but outcome was NO/LOSS
@@ -79,7 +79,7 @@
 
             report.candidates = suspects.slice(0, 10);
 
-            console.log(`Found ${suspects.length} high-prob losses in _kalshiLog`);
+            console.log(`Found ${suspects.length} high-prob losses in _marketSettlementLog`);
             if (suspects.length > 0) {
                 console.log('Top 5 candidates (sorted by entry probability):\n');
                 suspects.slice(0, 5).forEach((s, i) => {
@@ -151,16 +151,16 @@
             report.analysis.errors = recentErrors;
 
             // ─────────────────────────────────────────────────────────────────────────
-            // PHASE 4: Candle close price vs Kalshi strike analysis
+            // PHASE 4: Candle close price vs Polymarket strike analysis
             // ─────────────────────────────────────────────────────────────────────────
-            console.log('\n📊 PHASE 4: Analyzing candle closes vs Kalshi strike prices...\n');
+            console.log('\n📊 PHASE 4: Analyzing candle closes vs Polymarket strike prices...\n');
 
             const candleIssues = suspects.slice(0, 5).map(s => {
                 const contract = s.data;
                 return {
                     sym: s.sym,
-                    kalshiFloor: contract.floor_price,
-                    kalshiStrike: contract.strikeDir,
+                    polymarketFloor: contract.floor_price,
+                    polymarketStrike: contract.strikeDir,
                     closePrice: contract.close_price,
                     closeSnapshots: contract.closeSnapshots || [],
                     refPrice: contract.refPrice,
@@ -171,7 +171,7 @@
             console.log('Candle/Strike analysis:\n');
             candleIssues.forEach(issue => {
                 console.log(`${issue.sym}:`);
-                console.log(`  Kalshi floor: ${issue.kalshiFloor} | Strike: ${issue.kalshiStrike}`);
+                console.log(`  Polymarket floor: ${issue.polymarketFloor} | Strike: ${issue.polymarketStrike}`);
                 console.log(`  Close price: ${issue.closePrice}`);
                 console.log(`  Analysis: ${issue.issue}\n`);
             });
@@ -189,8 +189,8 @@
                 recommendations.push({
                     severity: 'CRITICAL',
                     issue: 'Rapid probability collapse detected',
-                    cause: 'Possible Kalshi API data mismatch or candle close proxy failure',
-                    action: 'Add real-time validation: compare model direction vs actual Kalshi settlement within 5 seconds of close',
+                    cause: 'Possible Polymarket data mismatch or candle close proxy failure',
+                    action: 'Add real-time validation: compare model direction vs actual Polymarket settlement within 5 seconds of close',
                     code: 'Add strike_price validation against candle close + last RTI quote',
                 });
             }
@@ -244,7 +244,7 @@
         },
 
         /**
-         * Analyze if candle close price matches Kalshi strike
+         * Analyze if candle close price matches Polymarket strike
          */
         _analyzeCandleVsStrike(contract) {
             const floor = contract.floor_price;
@@ -257,9 +257,9 @@
             const expectedDir = isAbove ? 'UP' : 'DOWN';
 
             if (expectedDir === strikeDir) {
-                return '✓ Match: close direction matches Kalshi strike';
+                return '✓ Match: close direction matches Polymarket strike';
             } else {
-                return `❌ MISMATCH: Expected ${expectedDir} but Kalshi has ${strikeDir}`;
+                return `❌ MISMATCH: Expected ${expectedDir} but Polymarket has ${strikeDir}`;
             }
         },
 

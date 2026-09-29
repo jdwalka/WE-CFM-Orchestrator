@@ -1,0 +1,430 @@
+/**
+ * scalper-market-data — live Coinbase / Kalshi / Polymarket data proxy for
+ * the Hourly Range Scalper uAgent. JS port of ../market_data.py's verified
+ * live clients, exposed as HTTP GET endpoints for an agent runtime that
+ * has no native HTTP-request tool (e.g. an ASI1/Agentverse chat agent).
+ *
+ * Deployed at: https://scalper-market-data.gitgoin87.workers.dev
+ * Deploy with: wrangler deploy (or the Cloudflare API) — no bindings,
+ * secrets, or KV/D1 required. Compatibility date 2026-09-10 or later.
+ *
+ *   - Kalshi KXBTC (hourly) and Polymarket's daily band ladder are real
+ *     [low, high] band contracts -> /kalshi/bands, /polymarket/daily-bands
+ *   - Kalshi KXBTC15M and Polymarket btc-updown-{5m,15m,4h} are plain
+ *     Up/Down (no band) -> /kalshi/updown, /polymarket/twap-updown
+ *   - Coinbase is spot + momentum reference for all of the above.
+ * No API keys required -- all upstream calls are public, unauthenticated
+ * market-data endpoints. This proxy does not place orders.
+ *
+ * See ../market_data.py's module docstring for the full write-up of the
+ * venue/product-line structural findings this mirrors (Polymarket runs 3
+ * BTC product lines with different settlement mechanisms; Kalshi's 15m
+ * product is a single threshold market, not a band ladder like hourly).
+ */
+
+const COINBASE_BASE = "https://api.exchange.coinbase.com";
+const KALSHI_BASE = "https://api.elections.kalshi.com/trade-api/v2";
+const POLYMARKET_GAMMA_BASE = "https://gamma-api.polymarket.com";
+const POLYMARKET_CLOB_BASE = "https://clob.polymarket.com";
+
+const TWAP_INTERVAL_SECONDS = { "5m": 300, "15m": 900, "4h": 14400 };
+
+function jsonResponse(data, status = 200) {
+  return new Response(JSON.stringify(data, null, 2), {
+    status,
+    headers: {
+      "Content-Type": "application/json",
+      "Access-Control-Allow-Origin": "*",
+    },
+  });
+}
+
+function parseTwapWindowSeconds(description) {
+  const m = /twap-(\d+)s-streams/i.exec(description || "");
+  return m ? parseInt(m[1], 10) : null;
+}
+
+// Coinbase's /candles endpoint (unlike /ticker) rejects requests with no
+// User-Agent header -- Workers' fetch() sends none by default.
+const COINBASE_HEADERS = { "User-Agent": "scalper-market-data/1.0 (+workers.dev)" };
+
+async function getCoinbaseSpot(symbol = "BTC") {
+  const productId = `${symbol}-USD`;
+  const r = await fetch(`${COINBASE_BASE}/products/${productId}/ticker`, { headers: COINBASE_HEADERS });
+  if (!r.ok) throw new Error(`Coinbase ticker ${productId} -> HTTP ${r.status}`);
+  const data = await r.json();
+  return { symbol, product_id: productId, price: parseFloat(data.price), time: data.time };
+}
+
+async function getCoinbaseRecentRange(symbol = "BTC", minutes = 30) {
+  const productId = `${symbol}-USD`;
+  const end = Math.floor(Date.now() / 1000);
+  const start = end - minutes * 60;
+  const r = await fetch(
+    `${COINBASE_BASE}/products/${productId}/candles?start=${start}&end=${end}&granularity=60`,
+    { headers: COINBASE_HEADERS }
+  );
+  if (!r.ok) {
+    const body = await r.text().catch(() => "");
+    throw new Error(`Coinbase candles ${productId} -> HTTP ${r.status}: ${body.slice(0, 200)}`);
+  }
+  const candles = await r.json();
+  if (!candles.length) return { high: null, low: null, momentum_signal: null };
+  const chrono = [...candles].sort((a, b) => a[0] - b[0]);
+  const windowOpen = chrono[0][3];
+  const windowClose = chrono[chrono.length - 1][4];
+  const windowHigh = Math.max(...chrono.map((c) => c[2]));
+  const windowLow = Math.min(...chrono.map((c) => c[1]));
+  const span = windowHigh - windowLow;
+  const move = windowClose - windowOpen;
+  let momentumSignal = null;
+  if (span > 0 && Math.abs(move) >= span * 0.15) {
+    momentumSignal = move > 0 ? "continuation_up" : "continuation_down";
+  }
+  return { high: windowHigh, low: windowLow, momentum_signal: momentumSignal };
+}
+
+async function getKalshiBands(spot, seriesTicker = "KXBTC", maxBandsEachSide = 6) {
+  const r = await fetch(
+    `${KALSHI_BASE}/markets?series_ticker=${seriesTicker}&status=open&limit=1000`
+  );
+  if (!r.ok) throw new Error(`Kalshi markets ${seriesTicker} -> HTTP ${r.status}`);
+  const data = await r.json();
+  const markets = data.markets || [];
+  if (!markets.length) throw new Error(`No open Kalshi markets for series ${seriesTicker}`);
+
+  const events = {};
+  for (const m of markets) {
+    (events[m.event_ticker] ||= []).push(m);
+  }
+
+  let bestTicker = null;
+  let bestMarkets = null;
+  let bestClose = null;
+  for (const [ticker, ms] of Object.entries(events)) {
+    const close = new Date(ms[0].close_time);
+    if (!bestClose || close < bestClose) {
+      bestClose = close;
+      bestTicker = ticker;
+      bestMarkets = ms;
+    }
+  }
+
+  const now = new Date();
+  const minutesToExpiry = (bestClose - now) / 60000;
+
+  const above = [];
+  const below = [];
+  for (const m of bestMarkets) {
+    if (m.strike_type !== "between") continue;
+    const low = m.floor_strike;
+    const high = m.cap_strike;
+    const yesAsk = Math.round(parseFloat(m.yes_ask_dollars) * 10000) / 100;
+    const yesBid = Math.round(parseFloat(m.yes_bid_dollars) * 10000) / 100;
+    if (low > spot) above.push({ dist: low - spot, low, high, yesAsk, yesBid });
+    else if (high < spot) below.push({ dist: spot - high, low, high, yesAsk, yesBid });
+  }
+  above.sort((a, b) => a.dist - b.dist);
+  below.sort((a, b) => a.dist - b.dist);
+
+  const toBand = (b, side) => ({
+    low: b.low,
+    high: b.high,
+    yes_ask: b.yesAsk,
+    yes_bid: b.yesBid,
+    side_vs_spot: side,
+  });
+
+  const candidateBands = [
+    ...above.slice(0, maxBandsEachSide).map((b) => toBand(b, "ABOVE_SPOT")),
+    ...below.slice(0, maxBandsEachSide).map((b) => toBand(b, "BELOW_SPOT")),
+  ];
+  return { candidate_bands: candidateBands, minutes_to_expiry: minutesToExpiry, event_ticker: bestTicker };
+}
+
+async function getKalshiUpdown(seriesTicker = "KXBTC15M") {
+  const r = await fetch(`${KALSHI_BASE}/markets?series_ticker=${seriesTicker}&status=open&limit=5`);
+  if (!r.ok) throw new Error(`Kalshi markets ${seriesTicker} -> HTTP ${r.status}`);
+  const data = await r.json();
+  const m = (data.markets || [])[0];
+  if (!m) throw new Error(`No open Kalshi markets for series ${seriesTicker}`);
+  const now = new Date();
+  const closeTime = new Date(m.close_time);
+  return {
+    ticker: m.ticker,
+    title: m.title,
+    target_price: m.yes_sub_title,
+    yes_bid_cents: Math.round(parseFloat(m.yes_bid_dollars) * 10000) / 100,
+    yes_ask_cents: Math.round(parseFloat(m.yes_ask_dollars) * 10000) / 100,
+    minutes_to_expiry: (closeTime - now) / 60000,
+    settlement_window_seconds: 60,
+    settlement_method: "kalshi_brti_60s_avg_vs_open",
+  };
+}
+
+async function getKalshiOrderbook(ticker) {
+  const r = await fetch(`${KALSHI_BASE}/markets/${ticker}/orderbook`);
+  if (!r.ok) throw new Error(`Kalshi orderbook ${ticker} -> HTTP ${r.status}`);
+  return r.json();
+}
+
+async function buildKalshiSnapshot(symbol = "BTC") {
+  const spotData = await getCoinbaseSpot(symbol);
+  const recent = await getCoinbaseRecentRange(symbol);
+  const bandsData = await getKalshiBands(spotData.price, "KXBTC");
+  return {
+    venue: "KALSHI",
+    symbol,
+    spot: spotData.price,
+    minutes_to_expiry: bandsData.minutes_to_expiry,
+    candidate_bands: bandsData.candidate_bands,
+    momentum_signal: recent.momentum_signal,
+    recent_30m_high: recent.high,
+    recent_30m_low: recent.low,
+    settlement_window_seconds: null,
+    snapshot_ts: new Date().toISOString(),
+  };
+}
+
+async function getClobYesPrices(tokenId) {
+  let yesBid = null;
+  let yesAsk = null;
+  try {
+    const r = await fetch(`${POLYMARKET_CLOB_BASE}/price?token_id=${tokenId}&side=buy`);
+    if (r.ok) {
+      const d = await r.json();
+      yesBid = Math.round(parseFloat(d.price) * 10000) / 100;
+    }
+  } catch (_) {}
+  try {
+    const r = await fetch(`${POLYMARKET_CLOB_BASE}/price?token_id=${tokenId}&side=sell`);
+    if (r.ok) {
+      const d = await r.json();
+      yesAsk = Math.round(parseFloat(d.price) * 10000) / 100;
+    }
+  } catch (_) {}
+  return [yesBid, yesAsk];
+}
+
+async function getPolymarketTwapUpdown(interval = "5m") {
+  const step = TWAP_INTERVAL_SECONDS[interval];
+  if (!step) {
+    throw new Error(`interval must be one of ${Object.keys(TWAP_INTERVAL_SECONDS).join(", ")}`);
+  }
+  const windowStartTs = Math.floor(Date.now() / 1000 / step) * step;
+  const slug = `btc-updown-${interval}-${windowStartTs}`;
+  const r = await fetch(`${POLYMARKET_GAMMA_BASE}/events?slug=${slug}`);
+  if (!r.ok) throw new Error(`Polymarket events ${slug} -> HTTP ${r.status}`);
+  const events = await r.json();
+  if (!events.length) throw new Error(`No Polymarket ${interval} TWAP Up/Down event found for slug ${slug}`);
+  const market = events[0].markets[0];
+  const tokenIds = JSON.parse(market.clobTokenIds || "[]");
+  const [upBid, upAsk] = tokenIds.length ? await getClobYesPrices(tokenIds[0]) : [null, null];
+  const endTime = new Date(market.endDate);
+  return {
+    slug,
+    question: market.question,
+    up_bid_cents: upBid,
+    up_ask_cents: upAsk,
+    minutes_to_expiry: (endTime - new Date()) / 60000,
+    settlement_window_seconds: parseTwapWindowSeconds(market.description),
+    settlement_method: "chainlink_twap",
+  };
+}
+
+function etDateParts(now, withHour = false) {
+  const options = {
+    timeZone: "America/New_York",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  };
+  if (withHour) {
+    options.hour = "numeric";
+    options.hour12 = true;
+  }
+  const parts = new Intl.DateTimeFormat("en-US", options).formatToParts(now);
+  const get = (type) => parts.find((p) => p.type === type)?.value;
+  return {
+    month: get("month").toLowerCase(),
+    day: parseInt(get("day"), 10),
+    year: get("year"),
+    hour: withHour ? get("hour") : null,
+    dayPeriod: withHour ? (get("dayPeriod") || "").toLowerCase() : null,
+  };
+}
+
+async function getPolymarketDailyBands(spot, maxBandsEachSide = 6) {
+  const now = new Date();
+  const { month, day, year } = etDateParts(now);
+  const slug = `bitcoin-price-on-${month}-${day}-${year}`;
+  const r = await fetch(`${POLYMARKET_GAMMA_BASE}/events?slug=${slug}`);
+  if (!r.ok) throw new Error(`Polymarket events ${slug} -> HTTP ${r.status}`);
+  const events = await r.json();
+  if (!events.length) throw new Error(`No Polymarket event found for slug ${slug}`);
+  const event = events[0];
+  const endTime = new Date(event.endDate);
+  const minutesToExpiry = (endTime - now) / 60000;
+
+  const bandRe = /between\s*\$?([\d,]+)\s*and\s*\$?([\d,]+)/i;
+  let settlementWindowSeconds = null;
+  const above = [];
+  const below = [];
+  for (const m of event.markets || []) {
+    const match = bandRe.exec(m.question || "");
+    if (!match) continue;
+    const low = parseFloat(match[1].replace(/,/g, ""));
+    const high = parseFloat(match[2].replace(/,/g, ""));
+    if (settlementWindowSeconds === null) {
+      const parsed = parseTwapWindowSeconds(m.description);
+      settlementWindowSeconds = parsed !== null ? parsed : 0;
+    }
+    const tokenIds = JSON.parse(m.clobTokenIds || "[]");
+    let [yesBid, yesAsk] = tokenIds.length ? await getClobYesPrices(tokenIds[0]) : [null, null];
+    if (yesBid === null || yesAsk === null) {
+      const prices = JSON.parse(m.outcomePrices || "[null,null]");
+      if (prices[0] !== null && prices[0] !== undefined) {
+        yesBid = yesAsk = Math.round(parseFloat(prices[0]) * 10000) / 100;
+      }
+    }
+    if (yesAsk === null) continue;
+    if (low > spot) above.push({ dist: low - spot, low, high, yesAsk, yesBid: yesBid ?? yesAsk });
+    else if (high < spot) below.push({ dist: spot - high, low, high, yesAsk, yesBid: yesBid ?? yesAsk });
+  }
+  above.sort((a, b) => a.dist - b.dist);
+  below.sort((a, b) => a.dist - b.dist);
+
+  const toBand = (b, side) => ({
+    low: b.low,
+    high: b.high,
+    yes_ask: b.yesAsk,
+    yes_bid: b.yesBid,
+    side_vs_spot: side,
+  });
+
+  const candidateBands = [
+    ...above.slice(0, maxBandsEachSide).map((b) => toBand(b, "ABOVE_SPOT")),
+    ...below.slice(0, maxBandsEachSide).map((b) => toBand(b, "BELOW_SPOT")),
+  ];
+  return {
+    candidate_bands: candidateBands,
+    minutes_to_expiry: minutesToExpiry,
+    settlement_window_seconds: settlementWindowSeconds,
+    slug,
+  };
+}
+
+async function buildPolymarketSnapshot(symbol = "BTC") {
+  if (symbol !== "BTC") throw new Error("Only BTC is wired for Polymarket so far");
+  const spotData = await getCoinbaseSpot(symbol);
+  const recent = await getCoinbaseRecentRange(symbol);
+  const bandsData = await getPolymarketDailyBands(spotData.price);
+  return {
+    venue: "POLYMARKET",
+    symbol,
+    spot: spotData.price,
+    minutes_to_expiry: bandsData.minutes_to_expiry,
+    candidate_bands: bandsData.candidate_bands,
+    momentum_signal: recent.momentum_signal,
+    recent_30m_high: recent.high,
+    recent_30m_low: recent.low,
+    settlement_window_seconds: bandsData.settlement_window_seconds,
+    snapshot_ts: new Date().toISOString(),
+  };
+}
+
+async function getPolymarketHourlyUpdown() {
+  const now = new Date();
+  const { month, day, year, hour, dayPeriod } = etDateParts(now, true);
+  const hourStr = `${hour}${dayPeriod}`;
+  const slug = `bitcoin-up-or-down-${month}-${day}-${year}-${hourStr}-et`;
+  const r = await fetch(`${POLYMARKET_GAMMA_BASE}/events?slug=${slug}`);
+  if (!r.ok) throw new Error(`Polymarket events ${slug} -> HTTP ${r.status}`);
+  const events = await r.json();
+  if (!events.length) throw new Error(`No Polymarket hourly Up/Down event found for slug ${slug}`);
+  const market = events[0].markets[0];
+  const tokenIds = JSON.parse(market.clobTokenIds || "[]");
+  const [upBid, upAsk] = tokenIds.length ? await getClobYesPrices(tokenIds[0]) : [null, null];
+  return {
+    slug,
+    question: market.question,
+    up_bid_cents: upBid,
+    up_ask_cents: upAsk,
+    settlement_window_seconds: parseTwapWindowSeconds(market.description),
+    settlement_method: "binance_1h_candle_open_close",
+  };
+}
+
+const ROUTES = [
+  "GET /spot?symbol=BTC",
+  "GET /coinbase/range?symbol=BTC&minutes=30",
+  "GET /kalshi/bands?symbol=BTC&series=KXBTC",
+  "GET /kalshi/updown?series=KXBTC15M",
+  "GET /kalshi/orderbook?ticker=<kalshi_ticker>",
+  "GET /polymarket/twap-updown?interval=5m|15m|4h",
+  "GET /polymarket/daily-bands?symbol=BTC",
+  "GET /polymarket/hourly-updown",
+  "GET /snapshot/kalshi?symbol=BTC",
+  "GET /snapshot/polymarket?symbol=BTC",
+];
+
+export default {
+  async fetch(request) {
+    const url = new URL(request.url);
+    if (request.method === "OPTIONS") {
+      return new Response(null, {
+        headers: {
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Methods": "GET, OPTIONS",
+        },
+      });
+    }
+    try {
+      const symbol = url.searchParams.get("symbol") || "BTC";
+      switch (url.pathname) {
+        case "/":
+        case "":
+          return jsonResponse({
+            name: "scalper-market-data",
+            description:
+              "Live Coinbase/Kalshi/Polymarket data proxy for the Hourly Range Scalper uAgent.",
+            routes: ROUTES,
+          });
+        case "/spot":
+          return jsonResponse(await getCoinbaseSpot(symbol));
+        case "/coinbase/range":
+          return jsonResponse(
+            await getCoinbaseRecentRange(symbol, Number(url.searchParams.get("minutes") || 30))
+          );
+        case "/kalshi/bands": {
+          const series = url.searchParams.get("series") || "KXBTC";
+          const spotData = await getCoinbaseSpot(symbol);
+          return jsonResponse(await getKalshiBands(spotData.price, series));
+        }
+        case "/kalshi/updown":
+          return jsonResponse(await getKalshiUpdown(url.searchParams.get("series") || "KXBTC15M"));
+        case "/kalshi/orderbook": {
+          const ticker = url.searchParams.get("ticker");
+          if (!ticker) return jsonResponse({ error: "ticker query param required" }, 400);
+          return jsonResponse(await getKalshiOrderbook(ticker));
+        }
+        case "/polymarket/twap-updown":
+          return jsonResponse(await getPolymarketTwapUpdown(url.searchParams.get("interval") || "5m"));
+        case "/polymarket/daily-bands": {
+          const spotData = await getCoinbaseSpot(symbol);
+          return jsonResponse(await getPolymarketDailyBands(spotData.price));
+        }
+        case "/polymarket/hourly-updown":
+          return jsonResponse(await getPolymarketHourlyUpdown());
+        case "/snapshot/kalshi":
+          return jsonResponse(await buildKalshiSnapshot(symbol));
+        case "/snapshot/polymarket":
+          return jsonResponse(await buildPolymarketSnapshot(symbol));
+        default:
+          return jsonResponse({ error: "not found", routes: ROUTES }, 404);
+      }
+    } catch (err) {
+      return jsonResponse({ error: String((err && err.message) || err) }, 502);
+    }
+  },
+};

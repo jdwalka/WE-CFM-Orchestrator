@@ -111,7 +111,7 @@ window.verifyMomentumDeployment = function() {
 };
 
 // Also make this available as a shorthand
-window.🚀MomentumCheck = window.verifyMomentumDeployment;
+window['🚀MomentumCheck'] = window.verifyMomentumDeployment;
 
 // Auto-run on load if in dev mode
 if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {

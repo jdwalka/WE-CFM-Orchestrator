@@ -10,7 +10,7 @@
  *   GET  /api/signals            → Live signals (color-coded)
  *   GET  /api/settlements        → All settlement records
  *   GET  /api/stats              → Win rates by coin
- *   GET  /api/kalshi-markets     → Current Kalshi contract prices
+ *   GET  /api/polymarket-markets → Current Polymarket contract prices
  *   GET  /api/network-status     → Real-time network congestion metrics
  *   WS   /ws                     → WebSocket for live updates
  */
@@ -49,8 +49,10 @@ try {
   webGoogleCloudBridge = null;
 }
 
-const PORT = Number(process.env.WECRYPTO_WEB_PORT || 3443);
-const HOST = process.env.WECRYPTO_WEB_HOST || '0.0.0.0';
+const PORT = Number(process.env.WECRYPTO_WEB_PORT || 3450);
+// Local companion API for the Electron app. Bind loopback by default so stale
+// system-wide 0.0.0.0 listeners do not block startup or expose the service.
+const HOST = process.env.WECRYPTO_WEB_HOST || '127.0.0.1';
 const PORT_RETRY_LIMIT = Number(process.env.WECRYPTO_WEB_PORT_RETRY_LIMIT || 10);
 
 let app = null;
@@ -110,7 +112,7 @@ function getStateMeta() {
     counts: {
       predictions: Object.keys(state.predictions || {}).length,
       signals: Object.keys(state.signals || {}).length,
-      kalshi_markets: Object.keys(state.kalshiMarkets || {}).length,
+      polymarket_markets: Object.keys(state.polymarketMarkets || {}).length,
     },
   };
 }
@@ -124,7 +126,7 @@ function buildLiveDebugScript(symbols) {
       activeCoins: (window.PREDICTION_COINS || []).map(c => c?.sym).filter(Boolean),
       hasPredictions: !!window._predictions,
       hasPredictionMarkets: !!window.PredictionMarkets,
-      hasOrchestrator: !!window.KalshiOrchestrator,
+      hasOrchestrator: !!window.PolymarketOrchestrator,
       startupLogTail: window.__WECRYPTO_STARTUP?.getLog?.()?.slice(-12) || [],
       coins: {},
     };
@@ -132,7 +134,7 @@ function buildLiveDebugScript(symbols) {
     syms.forEach(sym => {
       const pred = window._predictions?.[sym] || null;
       const market = window.PredictionMarkets?.getCoin?.(sym) || null;
-      const intent = window.KalshiOrchestrator?.getIntent?.(sym) || null;
+      const intent = window.PolymarketOrchestrator?.getIntent?.(sym) || null;
       const cfmAll = window._cfmAll || window.CFMEngine?.getAll?.() || window._cfm || {};
       const cfm = cfmAll?.[sym] || null;
 
@@ -144,7 +146,7 @@ function buildLiveDebugScript(symbols) {
           confidence: pred.confidence ?? null,
           price: pred.price ?? null,
           tapeVelocity: pred.diagnostics?.tapeVelocity || null,
-          kalshiAlign: pred.projections?.p15?.kalshiAlign || null,
+          polyAlign: pred.projections?.p15?.polyAlign || null,
           diagnostics: {
             agreement: pred.diagnostics?.agreement ?? null,
             conflict: pred.diagnostics?.conflict ?? null,
@@ -294,11 +296,11 @@ function startWebService() {
   });
 
   /**
-   * GET /api/kalshi-markets
-   * Current Kalshi contract prices and odds
+   * GET /api/polymarket-markets
+   * Current Polymarket contract prices and odds
    */
-  app.get('/api/kalshi-markets', (req, res) => {
-    const markets = global.WECRYPTO_STATE?.kalshiMarkets || {};
+  app.get('/api/polymarket-markets', (req, res) => {
+    const markets = global.WECRYPTO_STATE?.polymarketMarkets || {};
 
     res.json({
       success: true,
@@ -448,6 +450,62 @@ function startWebService() {
   }
 
   // Web UI
+  // Edge sync endpoints. Read by tools/edge-weight-sync.js on a co-located
+  // VPS via WireGuard. Restricted to loopback by default; when an edge token
+  // is set in WECRYPTO_EDGE_BEARER_TOKEN, requests must present it via the
+  // Authorization: Bearer header. We do not expose these on the public web
+  // port — the brain binds 127.0.0.1 and the edge reaches us over the tunnel.
+  const EDGE_BEARER = String(process.env.WECRYPTO_EDGE_BEARER_TOKEN || '').trim();
+  function isEdgeAuthorized(req) {
+    if (!EDGE_BEARER) return isLoopbackRequest(req);
+    const auth = String(req.headers['authorization'] || '');
+    if (!auth.startsWith('Bearer ')) return false;
+    return auth.slice(7).trim() === EDGE_BEARER;
+  }
+  function edgeReadSigProb() {
+    const state = global.WECRYPTO_STATE || {};
+    const predictions = state.predictions || {};
+    const out = {};
+    for (const sym of Object.keys(predictions)) {
+      const p = predictions[sym];
+      const c = Number(p?.confidence);
+      if (Number.isFinite(c)) out[sym.toUpperCase()] = c;
+    }
+    return out;
+  }
+  function edgeReadSpin() {
+    const state = global.WECRYPTO_STATE || {};
+    const signals = state.signals || {};
+    const out = {};
+    for (const sym of Object.keys(signals)) {
+      const s = signals[sym];
+      const spin = Number(s?.spin ?? s?.blendedSpin ?? s?.h);
+      if (Number.isFinite(spin)) out[sym.toUpperCase()] = spin;
+    }
+    return out;
+  }
+  function edgeReadWeights() {
+    const state = global.WECRYPTO_STATE || {};
+    const w = state.dqnWeights || state.modelWeights || null;
+    if (!w) return { version: 0, weights_b64: '', ts: Date.now() };
+    if (typeof w === 'string') return { version: 0, weights_b64: w, ts: Date.now() };
+    if (w.weights_b64) return { version: Number(w.version || 0), weights_b64: String(w.weights_b64), ts: Number(w.ts || Date.now()) };
+    if (w.buffer) return { version: Number(w.version || 0), weights_b64: Buffer.from(w.buffer).toString('base64'), ts: Number(w.ts || Date.now()) };
+    return { version: 0, weights_b64: '', ts: Date.now() };
+  }
+  app.get('/api/edge/weights', (req, res) => {
+    if (!isEdgeAuthorized(req)) return res.status(403).json({ success: false, error: 'edge_unauthorized' });
+    res.json({ success: true, ...edgeReadWeights() });
+  });
+  app.get('/api/edge/sig-prob', (req, res) => {
+    if (!isEdgeAuthorized(req)) return res.status(403).json({ success: false, error: 'edge_unauthorized' });
+    res.json({ success: true, sig_prob: edgeReadSigProb(), ts: Date.now() });
+  });
+  app.get('/api/edge/spin', (req, res) => {
+    if (!isEdgeAuthorized(req)) return res.status(403).json({ success: false, error: 'edge_unauthorized' });
+    res.json({ success: true, spin: edgeReadSpin(), ts: Date.now() });
+  });
+
   app.get('/', (req, res) => {
     res.send(getWebUIHTML());
   });
@@ -557,37 +615,50 @@ function startWebService() {
   });
 
   // Start listening with automatic failover when port is already in use.
-  let listenAttempts = 0;
+  const net = require('net');
   const maxAttempts = Number.isFinite(PORT_RETRY_LIMIT) ? Math.max(1, PORT_RETRY_LIMIT) : 10;
 
-  const tryListen = (port) => {
-    const onError = (err) => {
-      server.off('error', onError);
-      if (err && err.code === 'EADDRINUSE' && listenAttempts < maxAttempts) {
-        listenAttempts += 1;
-        const nextPort = port + 1;
-        runtimePort = nextPort;
-        console.warn(`[WebService] Port ${port} busy (EADDRINUSE). Retrying on ${nextPort} (${listenAttempts}/${maxAttempts})`);
-        setTimeout(() => tryListen(nextPort), 40);
-        return;
-      }
-      runtimeMode = 'stopped';
-      runtimeProtocol = 'http';
-      console.error('[WebService] Failed to bind server:', err?.message || err);
-    };
-
-    server.once('error', onError);
-    server.listen(port, HOST, () => {
-      server.off('error', onError);
-      runtimePort = port;
-      const protocol = runtimeProtocol.toUpperCase();
-      console.log(`[WebService] WECRYPTO web service running: ${protocol}://localhost:${runtimePort}`);
-      console.log(`[WebService] Access via Edge: edge://open?url=${runtimeProtocol}://localhost:${runtimePort}`);
+  function checkPortFree(port, host) {
+    return new Promise((resolve) => {
+      const tester = net.createServer();
+      tester.once('error', () => resolve(false));
+      tester.once('listening', () => {
+        tester.once('close', () => resolve(true)).close();
+      });
+      tester.listen(port, host);
     });
-  };
+  }
+
+  async function startListening(startPort) {
+    let targetPort = startPort;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      const isFree = await checkPortFree(targetPort, HOST);
+      if (isFree) {
+        break;
+      }
+      console.warn(`[WebService] Port ${targetPort} busy (EADDRINUSE). Trying next port ${targetPort + 1}`);
+      targetPort += 1;
+    }
+
+    server.on('error', (err) => {
+      console.warn('[WebService] Caught server error:', err?.message || err);
+      runtimeMode = 'stopped';
+    });
+
+    try {
+      server.listen(targetPort, HOST, () => {
+        runtimePort = targetPort;
+        const protocol = runtimeProtocol.toUpperCase();
+        console.log(`[WebService] WECRYPTO web service running: ${protocol}://localhost:${runtimePort}`);
+        console.log(`[WebService] Access via Edge: edge://open?url=${runtimeProtocol}://localhost:${runtimePort}`);
+      });
+    } catch (err) {
+      console.warn('[WebService] Failed to bind server listen:', err?.message || err);
+    }
+  }
 
   runtimePort = PORT;
-  tryListen(runtimePort);
+  startListening(runtimePort);
 
   return {
     started: true,
@@ -810,7 +881,7 @@ function getWebUIHTML() {
   <div class="container">
     <header>
       <h1>🚀 WECRYPTO Orchestrator</h1>
-      <p class="subtitle">Real-time Kalshi 15-minute prediction engine</p>
+      <p class="subtitle">Real-time Polymarket 15-minute prediction engine</p>
     </header>
 
     <div class="grid">
@@ -833,9 +904,9 @@ function getWebUIHTML() {
         <div class="stat-value" id="avg-confidence">—</div>
       </div>
 
-      <!-- Kalshi Markets -->
+      <!-- Polymarket Markets -->
       <div class="card">
-        <h3>💰 Kalshi Markets (15m)</h3>
+        <h3>💰 Polymarket Markets (15m)</h3>
         <div class="markets-grid" id="markets-container">
           <div style="color: #888;">Loading...</div>
         </div>
@@ -955,8 +1026,8 @@ function getWebUIHTML() {
       }
 
       // Update markets
-      if (state.kalshiMarkets) {
-        const html = Object.entries(state.kalshiMarkets).map(([market, data]) => {
+      if (state.polymarketMarkets) {
+        const html = Object.entries(state.polymarketMarkets).map(([market, data]) => {
           return \`
             <div class="market">
               <div class="market-name">\${market}</div>
@@ -1000,7 +1071,7 @@ function getWebUIHTML() {
         const [signalsRes, statsRes, marketsRes, networkRes, statusRes] = await Promise.all([
           fetch('/api/signals'),
           fetch('/api/stats'),
-          fetch('/api/kalshi-markets'),
+          fetch('/api/polymarket-markets'),
           fetch('/api/network-status'),
           fetch('/api/status')
         ]);
@@ -1014,7 +1085,7 @@ function getWebUIHTML() {
         const combined = {
           signals: signals.signals || {},
           stats: stats.stats || {},
-          kalshiMarkets: markets.markets || {},
+          polymarketMarkets: markets.markets || {},
           networkStatus: network.status || {},
           system: status.system || {},
           running: status.wecrypto?.running

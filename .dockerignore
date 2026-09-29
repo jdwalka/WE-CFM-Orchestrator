@@ -1,0 +1,88 @@
+# Build artifacts and logs
+dist/
+dist2/
+build/
+*.exe
+*.log
+logs/
+backtest-logs/
+debug-logs/
+
+# Dependencies (use node_modules from layers)
+node_modules/
+node_modules (1)/
+npm-debug.log
+package-lock.json
+yarn.lock
+
+# Secrets and credentials (NEVER include in image)
+.env
+.env.*
+secrets/
+*.key
+*.pem
+*.p8
+*.p12
+credentials*.json
+service-account*.json
+KALSHI-API-KEY.txt
+ENDPOINTS_AND_KEYS.md
+
+# Development/IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+.git/
+.gitignore
+
+# Backtest and data (regenerate in container if needed)
+backtest/results/
+backtest-results/
+*-report.json
+*-report.csv
+data/
+COPILOT_DEBUG/
+
+# Rust/Tauri (desktop-specific)
+src-tauri/
+cargo-target/
+proxy/target/
+we-crypto-proxy.exe
+*.rlib
+*.pdb
+
+# Python environments (if any)
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.Python
+venv/
+.venv/
+
+# Temp files
+*.tmp
+*.old
+*.bak
+*.har
+.tmp.driveupload/
+.tmp.drivedownload/
+
+# Docker-specific
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Large backup directories
+WE-CRYPTO-backup-*/
+2/
+WECRYP-codex-pr/
+WECRYP0-data/
+desktop-build/
+
+# CI/CD
+.github/workflows/

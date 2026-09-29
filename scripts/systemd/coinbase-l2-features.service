@@ -1,0 +1,15 @@
+[Unit]
+Description=Coinbase L2 order-book feature collector (L-ratio, V-ratio, dwell time)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/mnt/g/WECRYP
+ExecStart=/home/mauro/leaksnipe-mcp-agent/.venv/bin/python -u /mnt/g/WECRYP/coinbase_l2_features.py
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target

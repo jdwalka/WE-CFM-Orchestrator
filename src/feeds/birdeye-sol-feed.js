@@ -54,13 +54,13 @@
  *
  *  Shell h  (n=6, P-shell)  m_l={-5..+5}   EXTREME CONVICTION  ← NEW
  *  ─────────────────────────────────────────────────────
- *  Source : All shells + Kalshi confirmation
+ *  Source : All shells + Polymarket confirmation
  *  Signal : Full orbital alignment — rarest state (~2-3% of ticks)
  *  Spin   : ±5
  *  SOL+   : Birdeye wall + flow + whale + PYTH momentum ALL agree
  *             "Yellow wall confirmed" — bid wall holding AND
  *             buy flow dominant AND whale accumulation AND
- *             Kalshi crowd pricing the wrong side
+ *             Polymarket crowd pricing the wrong side
  *
  * ═══════════════════════════════════════════════════════════════════
  *  SOL Native Token Address (Wrapped SOL on all DEXes)
