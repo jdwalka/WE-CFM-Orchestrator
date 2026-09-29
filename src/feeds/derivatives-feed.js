@@ -27,7 +27,7 @@
   const POLL_MS = 45000;          // OI/funding REST cadence (liquidations are real-time WS push)
   const TIMEOUT_MS = 9000;
   const FETCH_ATTEMPTS = 3;
-  const RETRYABLE_HTTP_STATUS = new Set([408, 425, 429, 500, 502, 503, 504]);
+  const RETRYABLE_HTTP_STATUS = new Set([408, 425, 500, 502, 503, 504]);
   // 401/403/451 are hard policy/geo blocks — retrying them every poll only
   // floods the console and the local proxy. Cool the host down instead.
   // Geo-blocks (451/403) rest 5min between attempts — the egress path only
@@ -36,6 +36,11 @@
   const BLOCKED_STATUS = new Set([401, 403, 451]);
   const HOST_BLOCK_MS = 5000;
   const GEO_BLOCK_MS = 5 * 60 * 1000;
+  // 429s back off exponentially across poll cycles (30s → 8min cap) so a
+  // rate-limited host isn't hammered every 45s. Reset on first success.
+  const RATE429_BASE_MS = 30000;
+  const RATE429_MAX_MS = 8 * 60 * 1000;
+  const RATE429_COUNTS = new Map();
   const BLOCKED_HOSTS = new Map();
   const RETRY_DELAY_MS = 250;
   const OI_HISTORY_MAX = 30;      // ~10 min of 20s samples
@@ -155,6 +160,14 @@
         const latencyMs = Date.now() - t0;
         recordDiagnostics(url, res, latencyMs);
         if (!res.ok) {
+          if (res.status === 429) {
+            const host429 = urlHost(url);
+            const strikes = (RATE429_COUNTS.get(host429) || 0) + 1;
+            RATE429_COUNTS.set(host429, strikes);
+            const backoffMs = Math.min(RATE429_BASE_MS * (2 ** (strikes - 1)), RATE429_MAX_MS);
+            if (host429) BLOCKED_HOSTS.set(host429, Date.now() + backoffMs);
+            throw new Error(`HTTP 429 (rate-limit backoff ${Math.round(backoffMs / 1000)}s, strike ${strikes})`);
+          }
           if (BLOCKED_STATUS.has(res.status)) {
             markHostBlocked(url, (res.status === 451 || res.status === 403) ? GEO_BLOCK_MS : HOST_BLOCK_MS);
             throw new Error(`HTTP ${res.status} (blocked host cooldown)`);
@@ -163,6 +176,7 @@
           if (!RETRYABLE_HTTP_STATUS.has(res.status) || attempt === FETCH_ATTEMPTS) throw error;
           lastError = error;
         } else {
+          RATE429_COUNTS.delete(urlHost(url));
           return await res.json();
         }
       } catch (e) {
@@ -794,7 +808,7 @@
     // Convenience: liquidation pressure for the squeeze detector to consume.
     getLiquidationPressure(sym) { return CACHE[sym]?.liquidations || null; },
     getDiagnostics() { return { ...DIAGNOSTICS }; },
-    resetHostBlocks() { BLOCKED_HOSTS.clear(); },
+    resetHostBlocks() { BLOCKED_HOSTS.clear(); RATE429_COUNTS.clear(); },
     fetchAll,
     start() {
       if (_timer) return;
