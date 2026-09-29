@@ -1,0 +1,63 @@
+# Multi-language cross-platform builder
+# Targets: Linux (native), macOS/BSD (cross-compile), Windows (mingw)
+
+FROM rust:latest AS rust-base
+RUN rustup target add x86_64-apple-darwin aarch64-apple-darwin \
+    && rustup target add x86_64-unknown-linux-musl
+
+FROM golang:1.22 AS go-base
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc-aarch64-linux-gnu \
+    gcc-x86-64-linux-gnu \
+    clang \
+    && rm -rf /var/lib/apt/lists/*
+
+FROM python:3.12-slim AS python-base
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Final builder stage
+FROM python:3.12-slim
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    git \
+    build-essential \
+    gcc \
+    clang \
+    pkg-config \
+    libssl-dev \
+    gcc-aarch64-linux-gnu \
+    gcc-x86-64-linux-gnu \
+    g++-mingw-w64-x86-64-posix \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Rust
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+# Add Rust cross-compilation targets
+RUN rustup target add x86_64-apple-darwin aarch64-apple-darwin x86_64-unknown-linux-musl
+
+# Install Go
+ENV GO_VERSION=1.22.6
+RUN curl -fsSL https://dl.google.com/go/go${GO_VERSION}.linux-amd64.tar.gz | tar -xz -C /usr/local
+ENV PATH="/usr/local/go/bin:${PATH}"
+ENV GOPATH="/root/go"
+ENV PATH="${GOPATH}/bin:${PATH}"
+
+# Create workspace
+WORKDIR /workspace
+
+# Copy build scripts
+COPY build.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/build.sh
+
+ENV GOOS=linux \
+    GOARCH=amd64 \
+    CGO_ENABLED=1
+
+ENTRYPOINT ["/bin/bash"]
+CMD ["-c", "echo 'Ready to build. Run: build.sh <project-type> <target>'"]

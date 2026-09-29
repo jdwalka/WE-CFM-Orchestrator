@@ -110,14 +110,14 @@ function Show-LlmEnvStatus {
 
 function Test-TcpPort {
     param(
-        [string]$Host,
+        [string]$TargetHost,
         [int]$Port,
         [int]$TimeoutMs = 1500
     )
 
     $client = New-Object System.Net.Sockets.TcpClient
     try {
-        $iar = $client.BeginConnect($Host, $Port, $null, $null)
+        $iar = $client.BeginConnect($TargetHost, $Port, $null, $null)
         if (-not $iar.AsyncWaitHandle.WaitOne($TimeoutMs, $false)) {
             return $false
         }
@@ -172,19 +172,19 @@ function Ensure-TorFirewallPorts {
 function Invoke-NodeStep {
     param(
         [string]$Label,
-        [string[]]$Args,
+        [string[]]$NodeArgs,
         [string]$RepoRoot
     )
 
     Write-Host ""
     Write-Host "=============================================================="
     Write-Host $Label
-    Write-Host ("node " + ($Args -join " "))
+    Write-Host ("node " + ($NodeArgs -join " "))
     Write-Host "=============================================================="
 
     Push-Location $RepoRoot
     try {
-        & node @Args
+        & node @NodeArgs
         if ($LASTEXITCODE -ne 0) {
             throw "$Label failed with exit code $LASTEXITCODE"
         }
@@ -225,7 +225,7 @@ try {
             Ensure-TorFirewallPorts -Ports @(9050, 8118, 9051)
         }
 
-        $proxyOk = Test-TcpPort -Host $proxyUri.Host -Port $proxyUri.Port -TimeoutMs 1500
+        $proxyOk = Test-TcpPort -TargetHost $proxyUri.Host -Port $proxyUri.Port -TimeoutMs 1500
         if (-not $proxyOk -and $RequireTor) {
             throw "Tor proxy not reachable at $TorHttpProxy and -RequireTor is true."
         }
@@ -251,44 +251,44 @@ try {
 
     try {
         if (-not $SkipWalkForward) {
-            $args = @()
-            $args += $nodePrefix
-            $args += @(
+            $stepArgs = @()
+            $stepArgs += $nodePrefix
+            $stepArgs += @(
                 "backtest/walk-forward-backtest.js",
                 "--days", "$Days",
                 "--fold-size", "$FoldSize",
                 "--test", "$TestBars",
                 "--step", "$StepBars"
             )
-            Invoke-NodeStep -Label "Walk-forward calibration" -Args $args -RepoRoot $root
+            Invoke-NodeStep -Label "Walk-forward calibration" -NodeArgs $stepArgs -RepoRoot $root
         } else {
             Write-Warn "Skipping walk-forward step"
         }
 
         if (-not $SkipAdvanced) {
-            $args = @()
-            $args += $nodePrefix
-            $args += @(
+            $stepArgs = @()
+            $stepArgs += $nodePrefix
+            $stepArgs += @(
                 "backtest/advanced-backtest.js",
                 "--all",
                 "--days", "$Days"
             )
-            Invoke-NodeStep -Label "Advanced diagnostics" -Args $args -RepoRoot $root
+            Invoke-NodeStep -Label "Advanced diagnostics" -NodeArgs $stepArgs -RepoRoot $root
         } else {
             Write-Warn "Skipping advanced backtest step"
         }
 
         if (-not $SkipOutcomeRetuner) {
-            $args = @()
-            $args += $nodePrefix
-            $args += @(
+            $stepArgs = @()
+            $stepArgs += $nodePrefix
+            $stepArgs += @(
                 "backtest/outcome-retuner.js",
                 "--days", "$Days",
                 "--coins", "$Coins",
                 "--max", "$MaxWindows"
             )
-            if ($WriteWeights) { $args += "--write-weights" }
-            Invoke-NodeStep -Label "Outcome retuner" -Args $args -RepoRoot $root
+            if ($WriteWeights) { $stepArgs += "--write-weights" }
+            Invoke-NodeStep -Label "Outcome retuner" -NodeArgs $stepArgs -RepoRoot $root
         } else {
             Write-Warn "Skipping outcome-retuner step"
         }

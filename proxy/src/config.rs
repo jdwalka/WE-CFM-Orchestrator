@@ -8,8 +8,11 @@ pub struct Config {
 }
 
 #[derive(Deserialize, Clone, Debug)]
+#[allow(dead_code)]
 pub struct ServerCfg {
+    #[allow(dead_code)]
     pub host:         String,
+    #[allow(dead_code)]
     pub port:         u16,
     pub timeout_secs: u64,
 }

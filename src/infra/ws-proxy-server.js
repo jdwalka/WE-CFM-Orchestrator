@@ -9,16 +9,254 @@ const WebSocket = require('ws');
 const https = require('https');
 const http = require('http');
 const fs = require('fs');
-const PythLazerWebSocketHandler = require('./pyth-lazer-websocket');
-
-const PORT = 3011;
-const WSS_PORT = 3012;
-
-// Pyth API Key (from environment or hardcoded)
-const LAZER_TOKEN = process.env.LAZER_TOKEN || 'HjkdyqJTX45K7nrqtkiKwHPuCpDkh2gmvKNof29RwTW';
-
-// Initialize Pyth Lazer WebSocket handler (official SDK)
+const path = require('path');
+const crypto = require('crypto');
+const jwt = require('jsonwebtoken');
+const { normalizeCoinbaseJwtUri } = require('./coinbase-jwt-utils');
+let PythLazerWebSocketHandler;
+try {
+  PythLazerWebSocketHandler = require('../feeds/pyth-lazer-websocket');
+} catch (e) {
+  console.warn(`[PythLazerWS] Optional handler unavailable: ${e.message}`);
+  PythLazerWebSocketHandler = class {
+    addClient(ws) { try { ws.close(1013, 'Pyth Lazer handler unavailable'); } catch (_) { } }
+    removeClient() { }
+    async connect() { throw new Error('Pyth Lazer handler unavailable'); }
+    async disconnect() { }
+  };
+}
 const pythHandler = new PythLazerWebSocketHandler();
+let coinGeckoPoller;
+try {
+  coinGeckoPoller = require('../feeds/coingecko-poller');
+} catch (e) {
+  console.warn(`[CoinGeckoPoller] Optional handler unavailable: ${e.message}`);
+  coinGeckoPoller = {
+    addClient: (ws) => { try { ws.close(1013, 'CoinGecko poller unavailable'); } catch (_) { } },
+    removeClient: () => { }
+  };
+}
+
+function stripEnvValue(value) {
+  let v = String(value ?? '').trim();
+  if (!v) return '';
+  const quote = v[0];
+  if ((quote === '"' || quote === "'" || quote === '`') && v[v.length - 1] === quote) {
+    v = v.slice(1, -1);
+  } else {
+    v = v.replace(/\s+#.*$/, '').trim();
+  }
+  return v.replace(/\\r\\n/g, '\n').replace(/\\n/g, '\n').trim();
+}
+
+function readEnvValue(names) {
+  for (const name of names) {
+    const value = process.env?.[name];
+    if (value != null && String(value).trim()) return stripEnvValue(value);
+  }
+  return '';
+}
+
+function coinbaseCredentialFromObject(obj, source) {
+  if (!obj || typeof obj !== 'object') return null;
+  const name = stripEnvValue(obj.name || obj.keyName || obj.key_name || obj.apiKeyName || obj.api_key_name);
+  const privateKey = stripEnvValue(obj.privateKey || obj.private_key || obj.CDP_API_KEY_PRIVATE_KEY);
+  if (privateKey && !/-----BEGIN (EC )?PRIVATE KEY-----/.test(privateKey)) return null;
+  if (!name || !privateKey) return null;
+  return { name, privateKey, source };
+}
+
+function uniqueExistingPaths(pathsToCheck) {
+  const seen = new Set();
+  const out = [];
+  for (const p of pathsToCheck.filter(Boolean)) {
+    const normalized = path.resolve(p);
+    const key = normalized.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(normalized);
+  }
+  return out;
+}
+
+function getSecretDirCandidates() {
+  return uniqueExistingPaths([
+    path.join(process.cwd(), 'secrets'),
+    path.join(__dirname, '../../secrets'),
+    path.join(__dirname, '../../../secrets'),
+    'G:\\WECRYPTO\\secrets',
+    'g:\\WECRYPTO\\secrets',
+    'F:\\WECRYPTO\\secrets',
+  ]);
+}
+
+function isJwtLike(value) {
+  return /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(String(value || '').trim());
+}
+
+function decodeJwtPayload(token) {
+  try {
+    const payload = String(token || '').split('.')[1];
+    if (!payload) return null;
+    return JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+  } catch (_) {
+    return null;
+  }
+}
+
+function coinbaseJwtFromValue(value, source, requiredUri = '') {
+  const token = stripEnvValue(value);
+  if (!isJwtLike(token)) return null;
+  const payload = decodeJwtPayload(token) || {};
+  const now = Math.floor(Date.now() / 1000);
+  if (payload.exp && Number(payload.exp) <= now + 5) return null;
+  if (requiredUri) {
+    if (!payload.uri) return null;
+    if (String(payload.uri).trim() !== requiredUri) return null;
+  }
+  return { token, source, exp: payload.exp || null, uri: payload.uri || '' };
+}
+
+function readCoinbaseJwtFromObject(obj, source, requiredUri = '') {
+  if (!obj || typeof obj !== 'object') return null;
+  const value = obj.jwt || obj.JWT || obj.token || obj.accessToken || obj.access_token || obj.COINBASE_JWT;
+  return coinbaseJwtFromValue(value, source, requiredUri);
+}
+
+function loadCoinbaseStaticJwt(requiredUri = '') {
+  const direct = coinbaseJwtFromValue(readEnvValue([
+    'COINBASE_JWT',
+    'COINBASE_CDP_JWT',
+    'COINBASE_API_JWT',
+    'CDP_JWT',
+    'JWT',
+  ]), 'env-jwt', requiredUri);
+  if (direct) return direct;
+
+  const filePath = readEnvValue([
+    'COINBASE_JWT_FILE',
+    'COINBASE_CDP_JWT_FILE',
+    'COINBASE_API_JWT_FILE',
+    'CDP_JWT_FILE',
+  ]);
+  if (filePath) {
+    try {
+      const raw = fs.readFileSync(path.resolve(filePath), 'utf8');
+      const fromFile = coinbaseJwtFromValue(raw, 'env-jwt-file', requiredUri)
+        || readCoinbaseJwtFromObject(JSON.parse(raw), 'env-jwt-file-json', requiredUri);
+      if (fromFile) return fromFile;
+    } catch (_) { }
+  }
+
+  const jwtFileNames = [
+    'COINBASE_JWT.txt',
+    'COINBASE_CDP_JWT.txt',
+    'COINBASE_API_JWT.txt',
+    'CDP_JWT.txt',
+    'coinbase-jwt.txt',
+    'coinbase_jwt.txt',
+  ];
+  for (const dir of getSecretDirCandidates()) {
+    for (const fileName of jwtFileNames) {
+      try {
+        const p = path.join(dir, fileName);
+        if (!fs.existsSync(p)) continue;
+        const raw = fs.readFileSync(p, 'utf8');
+        const fromSecret = coinbaseJwtFromValue(raw, `secret-jwt:${p}`, requiredUri)
+          || readCoinbaseJwtFromObject(JSON.parse(raw), `secret-jwt-json:${p}`, requiredUri);
+        if (fromSecret) return fromSecret;
+      } catch (_) { }
+    }
+  }
+  return null;
+}
+
+function loadCoinbaseCredential() {
+  const jsonEnv = readEnvValue([
+    'CDP_API_KEY_JSON',
+    'COINBASE_CDP_API_KEY_JSON',
+    'COINBASE_API_KEY_JSON',
+  ]);
+  if (jsonEnv) {
+    try {
+      const credential = coinbaseCredentialFromObject(JSON.parse(jsonEnv), 'env-json');
+      if (credential) return credential;
+    } catch (_) { }
+  }
+
+  const name = readEnvValue([
+    'CDP_API_KEY_NAME',
+    'COINBASE_CDP_API_KEY_NAME',
+    'COINBASE_API_KEY_NAME',
+    'COINBASE_API_KEY',
+    'COINBASE_KEY_NAME',
+  ]);
+  const privateKey = readEnvValue([
+    'CDP_API_KEY_PRIVATE_KEY',
+    'COINBASE_CDP_PRIVATE_KEY',
+    'COINBASE_API_PRIVATE_KEY',
+    'COINBASE_PRIVATE_KEY',
+    'COINBASE_API_KEY_PRIVATE_KEY',
+  ]);
+  const envCredential = coinbaseCredentialFromObject({ name, privateKey }, 'env-fields');
+  if (envCredential) return envCredential;
+
+  const filePath = readEnvValue([
+    'CDP_API_KEY_FILE',
+    'COINBASE_CDP_API_KEY_FILE',
+    'COINBASE_API_KEY_FILE',
+  ]);
+  if (filePath) {
+    try {
+      const credential = coinbaseCredentialFromObject(JSON.parse(fs.readFileSync(path.resolve(filePath), 'utf8')), 'env-file');
+      if (credential) return credential;
+    } catch (_) { }
+  }
+
+  try {
+    const envContent = fs.readFileSync(path.join(__dirname, '../../.env'), 'utf-8');
+    const jsonMatch = envContent.match(/\{[\s\S]*?"privateKey"\s*:[\s\S]*?\}/);
+    if (jsonMatch) {
+      const parsed = JSON.parse(jsonMatch[0].replace(/\\n/g, '\n'));
+      const credential = coinbaseCredentialFromObject(parsed, '.env');
+      if (credential) return credential;
+    }
+  } catch (_) { }
+
+  const secretFileNames = [
+    'cdp_api_key-WECRYPTO-ECDSA.json',
+    'cdp_api_key-WECRYPTO-ECDSA.txt',
+    'COINBASE_CDP_API_KEY.json',
+    'COINBASE_CDP_API_KEY.txt',
+    'COINBASE_API_KEY.json',
+    'COINBASE_API_KEY.txt',
+    'CDP_API_KEY.json',
+    'CDP_API_KEY.txt',
+  ];
+  for (const dir of getSecretDirCandidates()) {
+    for (const fileName of secretFileNames) {
+      try {
+        const p = path.join(dir, fileName);
+        if (!fs.existsSync(p)) continue;
+        const credential = coinbaseCredentialFromObject(JSON.parse(fs.readFileSync(p, 'utf8')), `secret-file:${p}`);
+        if (credential) return credential;
+      } catch (_) { }
+    }
+  }
+
+  return null;
+}
+
+const coinbaseCredential = loadCoinbaseCredential();
+let CDP_KEY_NAME = coinbaseCredential?.name || null;
+let CDP_PRIVATE_KEY = coinbaseCredential?.privateKey || null;
+if (CDP_KEY_NAME && CDP_PRIVATE_KEY) {
+  console.log(`[Auth] Loaded Coinbase CDP credentials from ${coinbaseCredential.source}`);
+} else {
+  console.warn('[Auth] Could not load Coinbase CDP credentials');
+}
+const PORT = Number(process.env.WECRYPTO_WS_PROXY_PORT || process.env.WS_PROXY_PORT || 3011);
+const WSS_PORT = 3012;
 
 // Log with timestamp
 function log(msg, type = 'INFO') {
@@ -33,8 +271,22 @@ const UPSTREAM = {
   'mempool': 'wss://mempool.space/api/v1/blocksBitcoin',
   'pyth': 'POLLER', // Special marker - uses HTTP polling instead of WebSocket
   'pyth-lazer': 'POLLER', // Special marker - uses HTTP polling
-  'coingecko': 'wss://stream.coingecko.com/v1/stream'
+  'coingecko': 'POLLER' // Special marker - uses HTTP polling
 };
+
+const DEFAULT_DISABLED_PRECONNECT = new Set(['mempool', 'coingecko', 'pyth']);
+
+function envFlag(name) {
+  const value = String(process.env[name] || '').trim().toLowerCase();
+  return value === '1' || value === 'true' || value === 'yes' || value === 'on';
+}
+
+function shouldPreconnect(service) {
+  const suffix = String(service || '').replace(/[^a-z0-9]/gi, '_').toUpperCase();
+  if (envFlag(`WECRYPTO_PROXY_ENABLE_${suffix}`)) return true;
+  if (envFlag(`WECRYPTO_PROXY_DISABLE_${suffix}`)) return false;
+  return !DEFAULT_DISABLED_PRECONNECT.has(service);
+}
 
 // Store upstream connections
 const upstreamConnections = new Map();
@@ -104,7 +356,7 @@ class ProxyManager {
       const timeout = setTimeout(() => {
         ws.terminate();
         reject(new Error(`Connection timeout for ${service}`));
-      }, 10000);
+      }, 20000);
 
       ws.on('open', () => {
         clearTimeout(timeout);
@@ -164,9 +416,11 @@ class ProxyManager {
 
     log(`Client connected to ${service} (${clientConnections.get(service).size} clients)`, 'CLIENT');
 
-    // Special handling for Pyth services - register with handler
+    // Special handling for Poller services - register with handler
     if (service === 'pyth' || service === 'pyth-lazer') {
       pythHandler.addClient(ws);
+    } else if (service === 'coingecko') {
+      coinGeckoPoller.addClient(ws);
     }
 
     // Ensure upstream is connected
@@ -178,8 +432,8 @@ class ProxyManager {
     }
 
     ws.on('message', (data) => {
-      // Pyth services don't accept client messages (WebSocket streaming only)
-      if (service !== 'pyth' && service !== 'pyth-lazer') {
+      // Poller services don't accept client messages (Server-to-client streaming only)
+      if (service !== 'pyth' && service !== 'pyth-lazer' && service !== 'coingecko') {
         const upstream = upstreamConnections.get(service);
         if (upstream && upstream.readyState === WebSocket.OPEN) {
           try {
@@ -196,9 +450,11 @@ class ProxyManager {
     });
 
     ws.on('close', () => {
-      // Deregister from handler if Pyth
+      // Deregister from handler if Poller
       if (service === 'pyth' || service === 'pyth-lazer') {
         pythHandler.removeClient(ws);
+      } else if (service === 'coingecko') {
+        coinGeckoPoller.removeClient(ws);
       }
       
       const clients = clientConnections.get(service);
@@ -215,6 +471,121 @@ const proxy = new ProxyManager();
 
 // Create HTTP server (for upgrading to WebSocket)
 const server = http.createServer((req, res) => {
+  const url = new URL(req.url, `http://${req.headers.host}`);
+  
+  // Cross-Origin configuration
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204);
+    return res.end();
+  }
+
+  if (req.method === 'POST' && url.pathname === '/uvix/handover') {
+    let body = '';
+    req.on('data', chunk => { body += chunk.toString(); });
+    req.on('end', async () => {
+      try {
+        const payload = JSON.parse(body);
+        if (!payload.uvix_slug) {
+          res.writeHead(400);
+          return res.end(JSON.stringify({ error: 'Missing uvix_slug' }));
+        }
+
+        const { UVIXReverseEngineer } = require('./uvix-handover');
+        const reEngine = new UVIXReverseEngineer();
+
+        // Require a configured bearer token to protect the handover endpoint.
+        // Configure UVIX_HANDOVER_BEARER in the environment for production use.
+        const authHeader = req.headers.authorization || '';
+        const authToken = String(authHeader).replace(/^Bearer\s+/i, '').trim();
+        const expectedToken = process.env.UVIX_HANDOVER_BEARER || '';
+
+        if (!expectedToken) {
+          // Explicitly disabled in this environment — do not proceed.
+          res.writeHead(403, { 'Content-Type': 'application/json' });
+          return res.end(JSON.stringify({ error: 'uvix_handover_disabled' }));
+        }
+
+        if (!authToken || authToken !== expectedToken) {
+          res.writeHead(401, { 'Content-Type': 'application/json' });
+          return res.end(JSON.stringify({ error: 'unauthorized' }));
+        }
+
+        const decodedSlug = reEngine.decodeSlug(payload.uvix_slug);
+
+        // In production, executeHandover posts to Google Antigravity.
+        // For now, we prepare it to verify the logic works locally.
+        const result = reEngine.prepareHandover(decodedSlug);
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          status: 'success',
+          source_platform: decodedSlug.sourcePlatform,
+          target_platform: decodedSlug.targetPlatform,
+          integrity_verified: true,
+          handover_executed: false,
+          handover_package: result
+        }));
+      } catch (err) {
+        res.writeHead(500);
+        res.end(JSON.stringify({ error: err.message }));
+      }
+    });
+    return;
+  }
+
+  if (url.pathname === '/jwt/coinbase') {
+    try {
+      const requestMethod = url.searchParams.get('method') || null;
+      const requestPath = url.searchParams.get('path') || null;
+
+      const algorithm = 'ES256';
+      const uri = normalizeCoinbaseJwtUri(requestMethod, requestPath);
+
+      if (!CDP_KEY_NAME || !CDP_PRIVATE_KEY) {
+        const staticJwt = loadCoinbaseStaticJwt(uri);
+        if (staticJwt) {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          return res.end(JSON.stringify({
+            token: staticJwt.token,
+            source: staticJwt.source,
+            static: true,
+            exp: staticJwt.exp,
+            uri: staticJwt.uri || uri,
+          }));
+        }
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ error: 'Coinbase ECDSA credentials not configured in .env or secrets directory' }));
+      }
+      
+      const payload = {
+        iss: 'cdp',
+        nbf: Math.floor(Date.now() / 1000),
+        exp: Math.floor(Date.now() / 1000) + 120,
+        sub: CDP_KEY_NAME,
+      };
+
+      if (uri) {
+        payload.uri = uri;
+      }
+
+      const token = jwt.sign(payload, CDP_PRIVATE_KEY, {
+        algorithm,
+        header: { kid: CDP_KEY_NAME, nonce: crypto.randomBytes(16).toString('hex'), typ: 'JWT' }
+      });
+      
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ token, source: coinbaseCredential?.source || 'unknown', uri }));
+    } catch (e) {
+      console.error('[Auth] Error generating JWT:', e);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ error: 'Failed to generate JWT' }));
+    }
+  }
+
   res.writeHead(200, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify({
     status: 'WE-CRYPTO WebSocket Proxy',
@@ -235,7 +606,7 @@ wss.on('connection', (ws, req) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   const service = url.searchParams.get('service') || url.pathname.replace('/', '');
 
-  if (!UPSTREAM[service]) {
+  if (!Object.prototype.hasOwnProperty.call(UPSTREAM, service)) {
     log(`Invalid service requested: ${service}`, 'WARN');
     ws.close(1008, `Unknown service: ${service}`);
     return;
@@ -244,59 +615,88 @@ wss.on('connection', (ws, req) => {
   proxy.handleClientConnection(ws, service);
 });
 
-// Start listening
-server.listen(PORT, () => {
-  log(`🟢 WE-CRYPTO WebSocket Proxy running`, 'STARTUP');
-  log(`   HTTP Endpoint: http://localhost:${PORT}`, 'INFO');
-  log(`   WebSocket: ws://localhost:${PORT}?service=<service>`, 'INFO');
-  log(`   Available services: ${Object.keys(UPSTREAM).join(', ')}`, 'INFO');
-  console.log();
+// Start listening with Port Cascading (3030 - 3035)
+let currentPort = PORT;
+const maxPort = PORT + 10;
+
+function startServer(port) {
+  server.listen(port, () => {
+    log(`🟢 WE-CRYPTO WebSocket Proxy running`, 'STARTUP');
+    log(`   HTTP Endpoint: http://localhost:${port}`, 'INFO');
+    log(`   WebSocket: ws://localhost:${port}?service=<service>`, 'INFO');
+    log(`   Available services: ${Object.keys(UPSTREAM).join(', ')}`, 'INFO');
+    console.log();
+  });
+}
+
+server.on('error', (e) => {
+  if (e.code === 'EADDRINUSE') {
+    log(`Port ${currentPort} is in use, trying next port...`, 'WARN');
+    currentPort++;
+    if (currentPort <= maxPort) {
+      setTimeout(() => startServer(currentPort), 100);
+    } else {
+      log(`Could not find an open port between ${PORT} and ${maxPort}`, 'ERROR');
+      process.exit(1);
+    }
+  } else {
+    log(`Server error: ${e.message}`, 'ERROR');
+  }
 });
 
-// Pre-connect to all upstream services
-Object.keys(UPSTREAM).forEach(service => {
-  setTimeout(() => {
-    proxy.connectUpstream(service).catch(err => {
-      log(`Initial connection to ${service} failed: ${err.message}`, 'WARN');
+if (require.main === module) {
+  startServer(currentPort);
+
+  // Pre-connect only to healthy default upstreams. Stale/credentialed optional
+  // services stay available for explicit client requests or env opt-in.
+  Object.keys(UPSTREAM).filter(shouldPreconnect).forEach(service => {
+    setTimeout(() => {
+      proxy.connectUpstream(service).catch(err => {
+        log(`Initial connection to ${service} failed: ${err.message}`, 'WARN');
+      });
+    }, 1000);
+  });
+
+  // Graceful shutdown
+  process.on('SIGINT', () => {
+    log('Shutting down...', 'INFO');
+    
+    // Close all connections
+    upstreamConnections.forEach((ws, service) => {
+      log(`Closing upstream: ${service}`, 'INFO');
+      ws.close(1000, 'Server shutdown');
     });
-  }, 1000);
-});
-
-// Graceful shutdown
-process.on('SIGINT', () => {
-  log('Shutting down...', 'INFO');
-  
-  // Close all connections
-  upstreamConnections.forEach((ws, service) => {
-    log(`Closing upstream: ${service}`, 'INFO');
-    ws.close(1000, 'Server shutdown');
-  });
-  
-  clientConnections.forEach((clients, service) => {
-    clients.forEach(ws => {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.close(1000, 'Server shutdown');
-      }
+    
+    clientConnections.forEach((clients, service) => {
+      clients.forEach(ws => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.close(1000, 'Server shutdown');
+        }
+      });
     });
+
+    server.close(() => {
+      log('Server closed', 'INFO');
+      process.exit(0);
+    });
+
+    setTimeout(() => {
+      log('Force exit', 'WARN');
+      process.exit(1);
+    }, 5000);
   });
 
-  server.close(() => {
-    log('Server closed', 'INFO');
-    process.exit(0);
+  // Error handling
+  process.on('uncaughtException', (err) => {
+    log(`Uncaught exception: ${err.message}`, 'ERROR');
+    console.error(err.stack);
   });
 
-  setTimeout(() => {
-    log('Force exit', 'WARN');
-    process.exit(1);
-  }, 5000);
-});
+  process.on('unhandledRejection', (reason, promise) => {
+    log(`Unhandled rejection: ${reason}`, 'ERROR');
+  });
+}
 
-// Error handling
-process.on('uncaughtException', (err) => {
-  log(`Uncaught exception: ${err.message}`, 'ERROR');
-  console.error(err.stack);
-});
-
-process.on('unhandledRejection', (reason, promise) => {
-  log(`Unhandled rejection: ${reason}`, 'ERROR');
-});
+module.exports = {
+  normalizeCoinbaseJwtUri,
+};

@@ -1,0 +1,41 @@
+{
+  "generator": "WeCrypto MergeKit Evolutionary Tuner (Node.js)",
+  "method": "della",
+  "fitness": 86.565,
+  "brier_score": 0.1311,
+  "accuracy_pct": 86,
+  "ece": 0.1236,
+  "hyperparameters": {
+    "slerp_t": 0.678,
+    "density": 0.565,
+    "epsilon": 0.0231,
+    "tau": 0.668,
+    "variance_scale": 31.63,
+    "deadband": 0.0145,
+    "iqr_multiplier": 1.248,
+    "top_k": 0.714,
+    "lambda": 0.91
+  },
+  "optimized_indicator_weights": {
+    "book": 0.2933,
+    "flow": 0.2086,
+    "momentum": 0.0707,
+    "volume": 0.106,
+    "ema": 0.0697,
+    "hma": 0.0368,
+    "vwap": 0.0284,
+    "macd": 0.0316,
+    "rsi": 0.0174,
+    "obv": 0.0215,
+    "bands": 0.0462,
+    "williamsR": 0.0084,
+    "stochrsi": 0.018,
+    "cci": 0.0132,
+    "fearGreed": 0.0111,
+    "imbalanceVelocity": 0.0042,
+    "tradeFlow": 0.0067,
+    "toxicity": 0.0032,
+    "spoof": 0.0032,
+    "iceberg": 0.0019
+  }
+}

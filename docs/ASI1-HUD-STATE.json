@@ -1,0 +1,49 @@
+{
+  "saved": "2026-08-23T00:30:00-04:00",
+  "hud": "3ms (user-confirmed live)",
+  "path": "Electron → 127.0.0.1:18080 → WSL python CONNECT → api.asi1.ai (34.149.190.89) via Ethernet /32",
+  "tailscale": {
+    "exitNode": "se-sto-wg-209.mullvad.ts.net",
+    "exitNodeID": "nk3C3xRSyH11CNTRL",
+    "routeAll": true,
+    "exitNodeAllowLanAccess": true,
+    "corpDns": true,
+    "advertiseRoutes": ["192.168.18.0/24"],
+    "advertiseConnector": false,
+    "advertiseServices": ["svc:wecrypto"],
+    "splitDnsAsi1": ["1.1.1.1", "1.0.0.1"]
+  },
+  "publicIpWithExit": {
+    "ip": "170.62.100.250",
+    "mullvad": "se-sto-wg-209",
+    "city": "Stockholm"
+  },
+  "ethernet": {
+    "ifIndex": 17,
+    "ip": "192.168.18.38",
+    "gw": "192.168.18.1",
+    "punch": "34.149.190.89/32 via 192.168.18.1 metric 5 if 17"
+  },
+  "proxy": {
+    "windowsMustListen": "127.0.0.1:18080",
+    "wsl": "python3 /tmp/hudproxy.py 0.0.0.0:18080",
+    "wslIp": "172.24.122.10",
+    "neverBindWindowsNodeToEthernet": "192.168.18.38 + Sweden exit = EACCES"
+  },
+  "instances": {
+    "hud": "G:\\wecryp\\launch-hud.bat  (WECRYPTO_PROFILE=hud SKIP_INFERENCE=1 port 3450)",
+    "inference": "G:\\wecryp\\launch-inference.bat  (WECRYPTO_PROFILE=inference SKIP_INFERENCE=0 port 3460)"
+  },
+  "envUser": {
+    "WECRYPTO_DIRECT_PROXY": "http://127.0.0.1:18080",
+    "WECRYPTO_ASI1_PROXY": "http://127.0.0.1:18080",
+    "ASI1_PREFERRED_ACCOUNT": "icloud"
+  },
+  "doNot": [
+    "advertise-connector=true on mauro (GitHub/Google presets dump 34.0.0.0/15 and blackhole ASI1)",
+    "Windows node localAddress 192.168.18.38 while exit is on",
+    "POST device routes with only 192.168.18.0/24 if that wipes other prefixes you meant to keep",
+    "WARP",
+    "walk gitgoin+mauro keys"
+  ]
+}

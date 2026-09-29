@@ -1,0 +1,55 @@
+      p.score = 0;
+    }
+    // ── Verdict ──────────────────────────────────────────────────────────────
+    // Priority order:
+    //   1. Kalshi certainty (≥90% / ≤10%) — trust near-certain market consensus, never fade
+    //   2. CDF modelYesPct — P(close ≥ strike): correct metric for binary contracts (not raw score direction)
+    //   3. Raw score direction — fallback when no Kalshi ref is set yet
+    //   4. Kalshi tiebreak — when model is neutral and Kalshi has clear edge
+    // Raw model score (UP/DOWN) = "will price move?" — WRONG basis for binary "close above strike" contracts.
+    // modelYesPct = P(projected target ≥ strike) via normal CDF — this is the RIGHT metric.
+    const _k15mCV = window.PredictionMarkets?.getCoin(p.sym);
+    const _k15mV = _k15mCV?.kalshi15m ?? null;
+    const kalshiProb = _k15mV?.probability ?? _k15mCV?.combinedProb ?? null;
+    const kalshiPct = kalshiProb !== null ? Math.round(kalshiProb * 100) : null;
+    const kalshiEdge = kalshiProb !== null ? Math.abs(kalshiProb - 0.5) : null;
+    const _kAlignEarly = p.projections?.p15?.kalshiAlign ?? null;
+    const _strikeDirEarly = (_kAlignEarly?.strikeDir ?? _k15mV?.strikeDir) === 'below' ? 'below' : 'above';
+    const _yesDirEarly = _strikeDirEarly === 'below' ? 'down' : 'up';
+    const _noDirEarly = _yesDirEarly === 'up' ? 'down' : 'up';
+
+    const MODEL_FLOW_THRESHOLD = 0.06;
+    const modelDir = p.score > MODEL_FLOW_THRESHOLD ? 'up' : p.score < -MODEL_FLOW_THRESHOLD ? 'down' : 'wait';
+    const kalshiDir = kalshiProb !== null ? (kalshiProb >= 0.5 ? _yesDirEarly : _noDirEarly) : null;
+    const liveReferencePrice = Number.isFinite(_kAlignEarly?.rtiPrice)
+      ? Number(_kAlignEarly.rtiPrice)
+      : Number.isFinite(p.price)
+        ? Number(p.price)
+        : null;
+    const liveStrikeSide = Number.isFinite(_kAlignEarly?.ref) && Number.isFinite(liveReferencePrice)
+      ? ((_strikeDirEarly === 'below'
+        ? liveReferencePrice < Number(_kAlignEarly.ref)
+        : liveReferencePrice >= Number(_kAlignEarly.ref))
+        ? 'YES'
+        : 'NO')
+      : null;
+    const liveStrikeColor = liveStrikeSide === 'YES'
+      ? 'var(--color-green)'
+      : liveStrikeSide === 'NO'
+        ? 'var(--color-red)'
+        : 'var(--color-text-muted)';
+    const liveStrikeLabel = liveStrikeSide
+      ? `LIVE ${liveStrikeSide} SIDE`
+      : 'LIVE STRIKE N/A';
+
+    let verdictDir, verdictSource;
+    // MODEL-AGNOSTIC PRINCIPLE: Verdict color reflects MODEL conviction ONLY, never Kalshi odds.
+    // Kalshi is used for divergence awareness + comparison bar only (not verdict color override).
+
+    if (_kAlignEarly?.modelYesPct != null) {
+      // Use CDF P(close ≥ strike) — correct for binary contracts
+      const myp = _kAlignEarly.modelYesPct;
+      if (myp >= 58) { verdictDir = _yesDirEarly; verdictSource = 'model-cdf'; }
+      else if (myp <= 42) { verdictDir = _noDirEarly; verdictSource = 'model-cdf'; }
+      else { verdictDir = 'wait'; verdictSource = 'model-cdf-neutral'; }
+    } else if (modelDir !== 'wait') {

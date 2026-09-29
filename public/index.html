@@ -20,6 +20,7 @@
   <link rel="preconnect" href="https://api.crypto.com">
   <link rel="preconnect" href="https://api.coinbase.com">
   <link rel="preconnect" href="https://api.coingecko.com">
+  <link rel="preconnect" href="https://pro-api.coingecko.com">
   <link rel="preconnect" href="https://api.dexscreener.com">
   <!-- Block explorers used by chain-router.js -->
   <link rel="preconnect" href="https://mempool.space" crossorigin>
@@ -51,23 +52,37 @@
   <script defer src="vendors/chartjs-adapter-date-fns.bundle.min.js"></script>
   <script defer src="vendors/lightweight-charts.standalone.production.js"></script>
 
+  <!-- Smart Proxy Shim (MUST LOAD FIRST BEFORE ANY FETCH WRAPPERS) -->
+  <script src="../src/infra/proxy-fetch.js"></script>
+
+  <!-- Network Log (must load before any market-data fetches) -->
+  <script src="../src/infra/network-log.js"></script>
+
   <!-- WECRYPTO Startup & Calibration (IMPORTANT: load before app.js) -->
-  <script src="../src/kalshi/adaptive-weight-restorer.js"></script>
+  <script src="../src/prediction-markets/adaptive-weight-restorer.js"></script>
   <script src="../src/core/h15-tuner.js"></script>
-  <script src="../src/kalshi/contract-win-rate-calculator.js"></script>
-  <script src="../src/kalshi/accuracy-debug.js" defer></script>
-  <script src="../src/kalshi/settlement-debug-dashboard.js" defer></script>
-  <script src="../src/kalshi/settlement-multi-drive-logger.js" defer></script>
+  <script src="../src/prediction-markets/contract-win-rate-calculator.js"></script>
+  <script src="../src/prediction-markets/accuracy-debug.js" defer></script>
+  <script src="../src/prediction-markets/settlement-debug-dashboard.js" defer></script>
+  <script src="../src/prediction-markets/settlement-multi-drive-logger.js" defer></script>
   <script src="../src/core/quarter-hour-validator.js"></script>
   <script src="../src/feeds/network-congestion-engine.js"></script>
+  <!-- Injected Resolution Log (seeds verified contract settlements for adaptive tuning) -->
+  <script src="../src/prediction-markets/injected-resolution-log.js"></script>
   <!-- WECRYPTO Startup Loader (fast initialization) -->
-  <script src="../src/kalshi/wecrypto-startup-loader.js"></script>
+  <script src="../src/prediction-markets/wecrypto-startup-loader.js"></script>
 
+
+  <!-- Authoritative Coin Precision (BTC/ETH .00 cents, XRP .0000) -->
+  <script src="../src/shared/coin-precision.js"></script>
 
   <!-- API Resilience Utilities (must load before app.js) -->
   <script src="../src/feeds/api-rate-limiter.js"></script>
   <script src="../src/feeds/api-circuit-breaker.js"></script>
   <script src="../src/feeds/exchange-fallback-handler.js"></script>
+  <script src="../src/feeds/polymarket-ws.js"></script>
+  <script src="../src/feeds/polymarket-client.js"></script>
+  <script src="../src/feeds/polymarket-perps-client.js"></script>
 
   <!-- Wiring Agent: centralizes event wiring for health, escalation, circuit breaker -->
   <script src="../src/core/wiring-agent.js"></script>
@@ -117,9 +132,18 @@
           CFM Benchmarks
         </button>
         <button class="nav-btn" data-view="predictions" data-testid="nav-predictions">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M22 12h-4l-3 9L9 3l-3 9H2" />
-          </svg>
+          <span class="nav-icon-updown">
+            <span class="nav-icon-badge-up">
+              <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="#00e676" stroke-width="4" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="18 15 12 9 6 15" />
+              </svg>
+            </span>
+            <span class="nav-icon-badge-down">
+              <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="#ff5252" stroke-width="4" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="6 9 12 15 18 9" />
+              </svg>
+            </span>
+          </span>
           UP/DOWN Calls
         </button>
         <button class="nav-btn" data-view="depth" data-testid="nav-depth">
@@ -159,6 +183,12 @@
           </svg>
           5-Min Markets
         </button>
+        <button class="nav-btn" data-view="polymarket" data-testid="nav-polymarket">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
+          </svg>
+          Polymarket Pro
+        </button>
         <button class="nav-btn" data-view="debuglog" data-testid="nav-debuglog">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" />
@@ -194,6 +224,13 @@
           </svg>
           Wallet Intel
         </button>
+        <button class="nav-btn" data-view="hourly-ranges" data-testid="nav-hourly-ranges">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="23 6 13.5 15.5 8.5 10.5 1 18"></polyline>
+            <polyline points="17 6 23 6 23 12"></polyline>
+          </svg>
+          Hourly Ranges
+        </button>
         <button class="nav-btn" data-view="portfolio" data-testid="nav-portfolio">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <rect x="2" y="7" width="20" height="14" rx="2" />
@@ -208,6 +245,15 @@
             <line x1="8" y1="12" x2="16" y2="12" />
           </svg>
           <span>Log</span>
+        </button>
+        <div style="margin:10px 12px 4px;font-size:10px;letter-spacing:1.5px;color:#666;">SYSTEM</div>
+        <button id="masterResetBtn" data-testid="nav-master-reset" title="Master reset: clear circuit breakers, re-run recovery, re-render feeds"
+          style="display:flex;align-items:center;gap:10px;width:calc(100% - 16px);margin:0 8px;padding:9px 12px;background:rgba(255,82,82,0.08);border:1px solid #5a2b2b;border-radius:8px;color:#ff8a80;font-size:13px;cursor:pointer;">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="1 4 1 10 7 10" />
+            <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" />
+          </svg>
+          <span>Master Reset</span>
         </button>
       </nav>
 
@@ -236,10 +282,6 @@
           <div class="market-summary" id="marketSummary"></div>
         </div>
         <div class="header-right">
-          <div class="kalshi-badge" id="kalshiBadge" title="Kalshi account balance" hidden>
-            <span class="kalshi-label">K</span>
-            <span class="kalshi-balance" id="kalshiBalance">—</span>
-          </div>
           <div class="refresh-wrap">
             <button class="refresh-btn" id="refreshBtn" data-testid="refresh-btn" title="Refresh data"
               aria-label="Refresh data">
@@ -258,7 +300,7 @@
           </div>
           <button class="theme-btn" data-theme-toggle data-testid="theme-toggle" title="Toggle theme"
             aria-label="Toggle theme">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <circle cx="12" cy="12" r="5" />
               <path
                 d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42" />
@@ -278,10 +320,10 @@
   </div>
 
   <script src="../src/infra/tauri-bridge.js"></script>
-  <script src="../src/infra/proxy-fetch.js"></script>
   <script src="../src/infra/throttled-fetch.js"></script>
   <script src="../src/infra/resilient-fetch.js"></script>
   <script src="../src/infra/proxy-orchestrator.js"></script>
+  <script src="../src/infra/endpoint-transport.js"></script>
   <script src="../src/infra/signal-scheduler-agent.js"></script>
   <script src="../src/core/data.js"></script>
   <script src="../src/core/data-logger.js"></script>
@@ -289,60 +331,141 @@
   <script src="../src/feeds/exchange-ws.js"></script>
   <script src="../src/feeds/candle-ws.js"></script>
   <script src="../src/feeds/rti-feed.js"></script>
+  <script src="../src/orbital/quantum-state.js"></script>
   <script src="../src/orbital/shell-router.js"></script>
   <script src="../src/orbital/signal-router-cfm.js"></script>
-  <script src="../src/kalshi/kalshi-renderer-bridge.js"></script>
-  <script src="../src/kalshi/kalshi-prediction-enhancements.js"></script>
-  <script src="../src/kalshi/kalshi-ws.js"></script>
-  <script src="../src/kalshi/kalshi-rest.js"></script>
-  <script src="../src/kalshi/kalshi-client.js"></script>
+  <script src="../src/orbital/temporal-edge.js"></script>
+  <script src="../src/orbital/orbital-engine.js"></script>
+  <!-- Actually runs OrbitalEngine.processInterval() -- the module was fully
+       built (including a real forward-looking probUp forecast via
+       TemporalEdge) but had zero callers anywhere until this driver. -->
+  <script src="../src/orbital/orbital-engine-driver.js"></script>
+  <script src="../src/core/anomaly-detector.js" defer></script>
   <script src="../src/core/cfm-engine.js" defer></script>
-  <script src="../src/kalshi/prediction-markets.js" defer></script>
-  <script src="../src/kalshi/market-resolver.js" defer></script>
+  <script src="../src/prediction-markets/prediction-markets.js" defer></script>
+  <script src="../src/prediction-markets/poly5m-resolution-tracker.js" defer></script>
+  <script src="../src/prediction-markets/market-resolver.js" defer></script>
   <script src="../settlement-retune.js" defer></script>
+  <script src="../src/core/tensor-engine.js" defer></script>
   <script src="../src/ui/floating-orchestrator.js" defer></script>
+  <script src="../src/orbital/alchemy-ws.js" defer></script>
   <script src="../src/orbital/chain-router.js" defer></script>
   <script src="../src/feeds/wallet-cache.js" defer></script>
   <!-- Wallet Intelligence: Whale Alert, DEX Activity, Portfolio Analysis -->
   <script src="../src/feeds/whale-alert-monitor.js" defer></script>
   <script src="../src/feeds/dex-activity-monitor.js" defer></script>
+  <script src="../src/feeds/dexscreener-profiles.js" defer></script>
   <script src="../src/feeds/portfolio-intel.js" defer></script>
   <script src="../src/feeds/wallet-intel-config.js" defer></script>
   <script src="../src/feeds/panel-data-monitor.js" defer></script>
   <script src="../src/feeds/holder-metrics.js" defer></script>
   <script src="../src/feeds/cex-flow.js" defer></script>
-  <script src="../src/feeds/ethereum-ws-connectors.js" defer></script>
-  <script src="../src/feeds/mempool-telemetry-normalizer.js" defer></script>
-  <script src="../src/feeds/dataset-replay-capture.js" defer></script>
-  <script src="../src/feeds/feed-quality-monitor.js" defer></script>
+  <!-- BTC/ETH/SOL compressed on-chain side-scan for Grok + mechanical size (uses ChainRouter/Whale/CexFlow) -->
+  <script src="../src/feeds/onchain-side-scan.js" defer></script>
+  <!-- Derivatives + options feeds (additive dataset inputs) -->
+  <script src="../src/feeds/derivatives-feed.js" defer></script>
+  <script src="../src/feeds/options-gamma-feed.js" defer></script>
   <!-- Adaptive Walk-Forward Tuning Modules (Phase 6) -->
   <script src="../src/core/adaptive-tuner.js" defer></script>
-  <script src="../src/kalshi/historical-settlement-fetcher.js" defer></script>
-  <script src="../src/kalshi/scorecard-data-aggregator.js" defer></script>
-  <script src="../src/kalshi/accuracy-scorecard-comprehensive.js" defer></script>
+  <script src="../src/prediction-markets/historical-settlement-fetcher.js" defer></script>
+  <script src="../src/prediction-markets/scorecard-data-aggregator.js" defer></script>
   <script src="../src/adaptive-learning-engine.js" defer></script>
   <script src="../src/core/contract-cache-manager.js" defer></script>
   <script src="../src/core/multi-drive-cache.js" defer></script>
+  <script src="../src/core/tiered-cache.js" defer></script>
   <script src="../src/core/pyth-settlement.js" defer></script>
   <script src="../src/core/allocation-engine.js" defer></script>
   <script src="../src/feeds/microstructure-engine.js" defer></script>
+  <!-- Quantitative Core -->
+  <script src="../src/quant/statistical-utils.js" defer></script>
+  <script src="../src/quant/hmm-regime-classifier.js" defer></script>
+  <script src="../src/quant/kalman-filter.js" defer></script>
+  <script src="../src/quant/hurst-exponent.js" defer></script>
+  <script src="../src/quant/calibration-curve.js" defer></script>
+  <script src="../src/quant/drift-detector.js" defer></script>
+  <script src="../src/quant/winrate-segmentation.js" defer></script>
+  <script src="../src/quant/trade-journal.js" defer></script>
+  <!-- Statistical regime and microstructure helpers must load before predictions.js -->
+  <script src="../src/quant/regime-classifier.js" defer></script>
+  <script src="../src/core/market-microstructure-signals.js" defer></script>
+  <script src="../src/core/rl_loop.js" defer></script>
+  <!-- ML / RL stack: DQN + MCTS + CFR + mispricing hunter -->
+  <script src="../src/ml/neural-net.js" defer></script>
+  <script src="../src/ml/feature-encoder.js" defer></script>
+  <script src="../src/ml/deep-q-agent.js" defer></script>
+  <script src="../src/ml/mcts.js" defer></script>
+  <script src="../src/ml/cfr-agent.js" defer></script>
+  <script src="../src/ml/mispricing-hunter.js" defer></script>
+  <script src="../src/ml/multi-asset-graph.js" defer></script>
+  <script src="../src/ml/temporal-fusion-lite.js" defer></script>
+  <script src="../src/ml/narrative-velocity.js" defer></script>
+  <script src="../src/ml/trading-rl-agent.js" defer></script>
+  <script src="../src/core/qft-engine.js" defer></script>
+
+  <script src="../src/core/predictions/shared-state.js" defer></script>
+  <script src="../src/core/predictions/data-fetchers.js" defer></script>
+  <script src="../src/core/predictions/edge-committee-core.js" defer></script>
+  <script src="../src/core/predictions/edge-committee-config.js" defer></script>
+  <script src="../src/core/predictions/regime-weights.js" defer></script>
+  <script src="../src/core/predictions/weight-mergekit.js" defer></script>
+  <script src="../src/core/predictions/polymarket-logic.js" defer></script>
+  <script src="../src/core/predictions/microstructure.js" defer></script>
+  <script src="../src/core/predictions/signal-gates.js" defer></script>
+  <script src="../src/core/predictions/polymarket-routing.js" defer></script>
   <script src="../src/core/predictions.js" defer></script>
   <script src="../src/core/validator-15m.js" defer></script>
   <script src="../src/feeds/orderbook.js" defer></script>
-  <script src="../src/ui/hourly-kalshi-tracker.js" defer></script>
-
+  <script src="../src/feeds/wall-depth-snapshot.js" defer></script>
+  <script src="../src/ui/hourly-ranges-panel.js" defer></script>
+  <script src="../src/ui/polymarket-terminal.js" defer></script>
   <script src="../src/orbital/pyth-momentum-exit.js" defer></script>
   <script src="../src/orbital/MOMENTUM_INTEGRATION.js" defer></script>
   <script src="../src/core/backtest-2day-analyzer.js" defer></script>
   <script src="../src/core/h15-tuner.js" defer></script>
-  <script src="../src/quant/kalshi-fill-simulator.js" defer></script>
   <script src="../src/feeds/coinmarketcap-pro-feed.js" defer></script>
   <script src="../src/core/pyth-timeout-monitor.js" defer></script>
 
   <!-- Network Health Core + Dashboard (MUST load before app.js) -->
   <script src="../src/core/network-health.js"></script>
+  <script src="../src/core/network-recovery.js"></script>
   <script src="../src/ui/network-health-dashboard.js"></script>
-  <script src="../src/core/app.js" defer></script>
+  <!-- App shell modules (must load before app-core.js destructures window.APP_*) -->
+  <script src="../src/core/app/observability.js" defer></script>
+  <script src="../src/core/app/orderbook-hud.js" defer></script>
+  <script src="../src/core/ui/microstructure-hud.js" defer></script>
+  <script src="../src/core/app/ui-components.js" defer></script>
+  <script src="../src/core/app-core.js" defer></script>
+  <script src="../src/core/app-state.js" defer></script>
+  <script src="../src/core/audio-notifications.js" defer></script>
+  <script src="../src/core/forensics-logger.js" defer></script>
+  <!-- Pyth Hermes REST spot feed — populates window._pythPrices / window.PythClient.
+       feed-adapters.js auto-starts polling once this is present (see its PythClient check). -->
+  <script src="../src/feeds/pyth-browser-client.js" defer></script>
+  <script src="../src/core/feeds/garvonix-harmonizer.js" defer></script>
+  <script src="../src/core/feeds/render-scheduler.js" defer></script>
+  <script src="../src/core/feeds/feed-adapters.js" defer></script>
+  <script src="../src/core/ui/render-layer.js" defer></script>
+  <!-- Orbital momentum signal (Redpanda/Kafka -> Firestore, read-only, supplementary
+       only — normal no-op if the orbital pipeline isn't running under this app instance) -->
+  <script src="../src/orbital/orbital-signal-client.js"></script>
+  <!-- Oracle (Pyth spot + Polymarket PTB only) → truth guard → inference persist → advisors -->
+  <script src="../src/shared/signal-math.js"></script>
+  <script src="../src/llm/oracle-snapshot.js"></script>
+  <script src="../src/llm/live-path-15m.js"></script>
+  <script src="../src/ml/signal-calibrator.js"></script>
+  <script src="../src/llm/inference-truth-guard.js"></script>
+  <script src="../src/llm/inference-state-store.js"></script>
+  <script src="../src/llm/graviharmonic-box.js"></script>
+  <script src="../src/llm/orbital-foresight-engine.js"></script>
+  <script src="../src/llm/asi1-desk-contract.js"></script>
+  <script src="../src/llm/asi1-precontract-advisor.js" defer></script>
+  <script src="../src/ui/asi1-desk.js" defer></script>
+  <script src="../src/llm/grok-analytics-memory.js" defer></script>
+  <script src="../src/llm/grok-range-overlay.js" defer></script>
+  <!-- 5m overlay kept loaded but disabled (FIVE_MIN_GROK_ENABLED=false) -->
+  <script src="../src/llm/five-min-claude-overlay.js" defer></script>
+  <script src="../src/quant/quant-layer.js" defer></script>
+  <script src="../src/core/app-init.js" defer></script>
   <script>
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', () => {
@@ -351,7 +474,6 @@
     }
   </script>
   <div id="ob-hud" class="ob-hud"></div>
-  <script src="../src/kalshi/cloud-data-loader.js" defer></script>
 </body>
 
 </html>

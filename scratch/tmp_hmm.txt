@@ -1,0 +1,35 @@
+             vol: calcStdDev(closes.slice(-15 - i, -i || undefined), 10) / p1,
+             orderflow: orderBookImbalanceSig || 0,
+             fundingRate: fundingRateSig || 0
+          });
+        }
+        const hmmResult = window.QuantCore.hmm.classify(obsSeq);
+        if (hmmResult.regime === 'CASCADE') {
+           hmmConfidenceMult = 0.5; // Moderate penalty for cascade (free-fall)
+        } else if (hmmResult.regime === 'CHOP') {
+           // In chop, we only trade strong breakouts. If raw signal is weak, penalize it.
+           // If the signal is very strong, let it ride.
+           if (Math.abs(consensusComposite) < 0.25) {
+             hmmConfidenceMult = 0.6; 
+           } else {
+             hmmConfidenceMult = 0.9; // Allow strong signals through chop
+           }
+        }
+      } catch (err) {}
+    }
+
+    // 🌟 PHASE INVERSION: Flipped score output to capitalize on 45% systematic loss rate
+    const score = -1 * clamp(consensusComposite * 1.6 * adxGate * divergenceSuppression * hmmConfidenceMult * (ENABLE_MDT_SCORE_MULT ? mdtScoreMult : 1) * _sessMult * (tapeVelocity.scoreBoostMult || 1), -1, 1);
+    const agreement = summarizeAgreement(Object.fromEntries(modelActiveKeys.map(key => [key, signalVector[key]])));
+    const coreAgreement = summarizeAgreement(Object.fromEntries(CORE_SIGNAL_KEYS.map(key => [key, signalVector[key]])));
+
+    const indicatorsPack = { rsi, emaCross, vwapDev: vwapDevRolling, vwapBands };
+    const scalpSetups = includeSetups ? detectScalpSetups(candles, indicatorsPack, bookAnalysis, tradeFlow, session) : [];
+
+    const indicatorsSummary = {
+      rsi: { value: rsi, signal: rsiSig, label: rsi > 70 ? 'Overbought' : rsi < 30 ? 'Oversold' : rsi > 55 ? 'Bullish' : rsi < 45 ? 'Bearish' : 'Neutral' },
+      ema: { value: emaCross, signal: emaSig, label: emaCross > 0.1 ? 'Bull Cross' : emaCross < -0.1 ? 'Bear Cross' : 'Converging', ema9: ema9[ema9.length - 1], ema21: ema21[ema21.length - 1] },
+      vwap: { value: vwapDevRolling, signal: vwapSig, price: vwapRollingLast, bands: vwapBands, label: Math.abs(vwapDevRolling) < 0.3 ? 'At VWAP' : vwapDevRolling > 0 ? 'Above VWAP' : 'Below VWAP' },
+      obv: { slope: obvSlope, signal: obvSig, label: obvSlope > 2 ? 'Accumulation' : obvSlope < -2 ? 'Distribution' : 'Flat' },
+      volume: { buyPct: buyV / ((buyV + sellV) || 1) * 100, sellPct: sellV / ((buyV + sellV) || 1) * 100, ratio: volRatio, signal: volSig, label: volRatio > 1.2 ? 'Buy Pressure' : volRatio < 0.8 ? 'Sell Pressure' : 'Balanced' },
+      momentum: { value: mom, signal: momSig, label: mom > 0.5 ? 'Rising' : mom < -0.5 ? 'Falling' : 'Flat' },

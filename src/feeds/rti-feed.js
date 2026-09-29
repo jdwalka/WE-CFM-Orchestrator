@@ -19,19 +19,24 @@
   const RTI_POLL_MS_BASE = 5_000;
   const RTI_POLL_MS_NEAR = 2_000;
   const NEAR_BOUNDARY_MS = 75_000;
-  const EXCHANGE_FETCH_TIMEOUT_MS = 8_000;
+  const EXCHANGE_FETCH_TIMEOUT_MS = 30_000;
   const MAX_LEVELS = 200;
 
-  const BUFFER_SECS   = 180;      // keep enough history for open/close windows
   const STALE_MS      = 30_000;   // mark stale if no update in 30s
   const SETTLE_WINDOW = 60_000;   // last 60s before open/close = settlement window
+  const WINDOW_MS     = 15 * 60 * 1000; // Kalshi/Polymarket contract window length
+  // Must retain buffer history from a window's open-settlement snapshot all the way
+  // through to its close-settlement snapshot (WINDOW_MS + SETTLE_WINDOW apart), or
+  // openAvg silently goes null for the rest of the window once those entries age out
+  // of the buffer -- which is exactly when delta/deltaDir are read (close + grace).
+  const BUFFER_SECS   = Math.ceil((WINDOW_MS + SETTLE_WINDOW) / 1000) + 60; // ~1020s
 
   // CME CF RTI constituent symbols per exchange.
   const EXCHANGE_CONFIG = {
     coinbase: {
-      url:    (pair) => `https://api.exchange.coinbase.com/products/${pair}/book?level=2`,
+      url:    (pair) => `https://api.coinbase.com/api/v3/brokerage/market/product_book?product_id=${encodeURIComponent(pair)}&limit=${MAX_LEVELS}`,
       pairs:  { BTC: 'BTC-USD', ETH: 'ETH-USD', SOL: 'SOL-USD', XRP: 'XRP-USD' },
-      parse:  (d) => ({ bids: d?.bids, asks: d?.asks }),
+      parse:  (d) => ({ bids: d?.pricebook?.bids || d?.bids, asks: d?.pricebook?.asks || d?.asks }),
     },
     kraken: {
       url:    (pair) => `https://api.kraken.com/0/public/Depth?pair=${pair}&count=${MAX_LEVELS}`,
@@ -61,7 +66,7 @@
     BTC: { spacing: 1,    spreadDeviation: 0.005, potentiallyErroneousParam: 0.05 },
     ETH: { spacing: 25,   spreadDeviation: 0.01,  potentiallyErroneousParam: 0.05 },
     SOL: { spacing: 100,  spreadDeviation: 0.01,  potentiallyErroneousParam: 0.05 },
-    XRP: { spacing: 10000, spreadDeviation: 0.01, potentiallyErroneousParam: 0.10 },
+    XRP: { spacing: 20000, spreadDeviation: 0.01, potentiallyErroneousParam: 0.10 },
   };
 
   // Rolling buffer: _buffer[sym] = [{ ts, rti }]

@@ -40,6 +40,7 @@
                 spreadPctHist: [],
                 depthHist: [],
                 imbalanceHist: [],
+                imbalanceVelocityHist: [],
                 sweepHist: [],
                 vacuumHist: [],
                 toxicityHist: [],
@@ -77,13 +78,34 @@
                 value: 0,
                 bidVolume: 0,
                 askVolume: 0,
+                weighted10: 0,
+                weighted20: 0,
+                liquidityNotional20: 0,
                 spreadPct: 0,
             };
         }
-        const bidVolume = bookN.bids.reduce((s, l) => s + l.qty, 0);
-        const askVolume = bookN.asks.reduce((s, l) => s + l.qty, 0);
-        const denom = bidVolume + askVolume;
-        const value = denom > 0 ? (bidVolume - askVolume) / denom : 0;
+        function weighted(rows, levels) {
+            return rows.slice(0, levels).reduce((acc, l, index) => {
+                const w = 1 / (1 + index * (levels <= 10 ? 0.22 : 0.15));
+                acc.qty += l.qty;
+                acc.notional += l.price * l.qty;
+                acc.weightedNotional += l.price * l.qty * w;
+                return acc;
+            }, { qty: 0, notional: 0, weightedNotional: 0 });
+        }
+        function sideImbalance(bid, ask) {
+            const total = bid.weightedNotional + ask.weightedNotional;
+            return total > 0 ? clamp((bid.weightedNotional - ask.weightedNotional) / total, -1, 1) : 0;
+        }
+        const bid10 = weighted(bookN.bids, 10);
+        const ask10 = weighted(bookN.asks, 10);
+        const bid20 = weighted(bookN.bids, 20);
+        const ask20 = weighted(bookN.asks, 20);
+        const bidVolume = bid20.qty;
+        const askVolume = ask20.qty;
+        const weighted10 = sideImbalance(bid10, ask10);
+        const weighted20 = sideImbalance(bid20, ask20);
+        const value = clamp(weighted10 * 0.62 + weighted20 * 0.38, -1, 1);
         const bestBid = bookN.bids[0].price;
         const bestAsk = bookN.asks[0].price;
         const spreadPct = bestBid > 0 ? ((bestAsk - bestBid) / bestBid) * 100 : 0;
@@ -91,7 +113,30 @@
             value: clamp(value, -1, 1),
             bidVolume,
             askVolume,
+            weighted10,
+            weighted20,
+            bidNotional20: bid20.notional,
+            askNotional20: ask20.notional,
+            liquidityNotional20: bid20.notional + ask20.notional,
             spreadPct,
+        };
+    }
+
+    function analyzeImbalanceVelocity(symState, imbalance) {
+        const prev = symState.last?.imbalance?.value ?? imbalance;
+        const prevTs = symState.last?.ts || Date.now();
+        const dtMin = Math.max((Date.now() - prevTs) / 60000, 1 / 60);
+        const shortPerMin = (imbalance - prev) / dtMin;
+        const anchor = symState.imbalanceHist.length ? symState.imbalanceHist[0] : imbalance;
+        const windowPerMin = (imbalance - anchor) / 15;
+        const value = clamp((shortPerMin * 0.65 + windowPerMin * 0.35) * 4, -1, 1);
+        return {
+            value,
+            shortPerMin,
+            windowPerMin,
+            band: Math.abs(value) >= 0.55 ? (value > 0 ? "bid_accelerating" : "ask_accelerating")
+                : Math.abs(value) >= 0.25 ? (value > 0 ? "bid_building" : "ask_building")
+                    : "stable",
         };
     }
 
@@ -410,6 +455,7 @@
         const tradesN = normalizeTrades(trades);
 
         const imbalance = analyzeImbalance(bookN);
+        const imbalanceVelocity = analyzeImbalanceVelocity(state, imbalance.value);
         const sweep = analyzeSweep(tradesN, bookN);
         const vacuum = analyzeVacuum(state, imbalance, bookN);
         const toxicity = analyzeToxicity(tradesN);
@@ -421,6 +467,7 @@
             ? bookN.bids.slice(0, 10).reduce((s, l) => s + l.qty, 0) + bookN.asks.slice(0, 10).reduce((s, l) => s + l.qty, 0)
             : 0);
         pushHist(state.imbalanceHist, imbalance.value);
+        pushHist(state.imbalanceVelocityHist, imbalanceVelocity.value);
         pushHist(state.sweepHist, sweep.score);
         pushHist(state.vacuumHist, vacuum.severity);
         pushHist(state.toxicityHist, toxicity.tox || toxicity.proxy || 0);
@@ -430,6 +477,7 @@
         const flowSign = Math.sign((imbalance.value || 0) + (sweep.score || 0)) || 1;
         const composite = clamp(
             imbalance.value * 0.48 +
+            imbalanceVelocity.value * 0.10 +
             sweep.score * 0.22 +
             vacuum.score * 0.12 +
             (spoofing.direction * spoofing.score) * 0.08 +
@@ -443,6 +491,7 @@
             sym: symKey,
             ts: Date.now(),
             imbalance,
+            imbalanceVelocity,
             sweep,
             vacuum,
             toxicity,
@@ -495,6 +544,8 @@
                 ts: s.ts,
                 composite: s.composite,
                 imbalance: s.imbalance?.value || 0,
+                imbalanceVelocity: s.imbalanceVelocity?.value || 0,
+                liquidityNotional20: s.imbalance?.liquidityNotional20 || 0,
                 sweep: s.sweep?.score || 0,
                 vacuum: s.vacuum?.severity || 0,
                 toxicity: s.toxicity?.tox || s.toxicity?.proxy || 0,

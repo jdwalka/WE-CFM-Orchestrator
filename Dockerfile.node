@@ -1,0 +1,27 @@
+# Dockerfile.node
+# Lightweight First-Party Node Container for Cryptographic Signing
+
+FROM node:20-alpine
+
+# Use an unprivileged user for security
+# This is critical since this container handles private signing keys
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+
+WORKDIR /app
+
+# Copy package files and install only production dependencies
+COPY package*.json ./
+RUN npm install --production --ignore-scripts
+
+# Copy the execution/signing source code
+# We assume there is a specific script for the node validator, e.g., src/node/validator.js
+COPY ./src ./src
+
+# Ensure the appuser has ownership of the working directory
+RUN chown -R appuser:appgroup /app
+
+# Switch to the non-root user
+USER appuser
+
+# Expose no external ports; communicates strictly over the internal Docker bridge via Redis
+CMD ["node", "src/orbital/oracle-redundancy-integrator.js"] # Adjust this entrypoint to your actual signing daemon

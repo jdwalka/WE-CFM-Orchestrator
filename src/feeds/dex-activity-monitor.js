@@ -80,7 +80,7 @@
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ sql }),
-        signal: AbortSignal.timeout(8000),
+        signal: AbortSignal.timeout(30000),
       });
 
       if (!res.ok) {
@@ -150,7 +150,7 @@
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ sql }),
-        signal: AbortSignal.timeout(8000),
+        signal: AbortSignal.timeout(30000),
       });
 
       if (!res.ok) return [];
@@ -243,6 +243,29 @@
         chain,
         timestamp: Date.now(),
       };
+    },
+
+    /**
+     * Get synchronous capital flow score (-1.0 to 1.0) based on cached swaps.
+     * Checks stablecoin rotation (USDT/USDC/DAI/BUSD).
+     */
+    getDexFlowScore(chain) {
+      const swaps = _dexCache.get(chain)?.swaps || [];
+      if (swaps.length === 0) return 0;
+
+      const stables = ['USDT', 'USDC', 'DAI', 'BUSD', 'FDUSD'];
+      let stableIn = 0; // selling crypto for stables (distribution)
+      let stableOut = 0; // buying crypto with stables (accumulation)
+
+      for (const s of swaps) {
+        const fromStable = stables.includes(s.from_token?.toUpperCase());
+        const toStable = stables.includes(s.to_token?.toUpperCase());
+        if (fromStable && !toStable) stableOut += s.value_usd;
+        else if (toStable && !fromStable) stableIn += s.value_usd;
+      }
+
+      const totalFlow = stableIn + stableOut;
+      return totalFlow > 0 ? (stableOut - stableIn) / totalFlow : 0;
     },
 
     /**

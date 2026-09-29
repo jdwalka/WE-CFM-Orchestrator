@@ -20,23 +20,33 @@
 
 // ── 1. Requires ─────────────────────────────────────────────────
 const https = require('https');
-const fs    = require('fs');
-const path  = require('path');
+const fs = require('fs');
+const path = require('path');
 
 // ── 2. CLI arg parsing (done in main()) ─────────────────────────
 
 // ── 3. Constants ─────────────────────────────────────────────────
-const SYMBOL_MAP = { BTC: 'BTCUSDT', ETH: 'ETHUSDT', SOL: 'SOLUSDT', XRP: 'XRPUSDT' };
-const DEFAULT_COINS = ['BTC', 'ETH', 'SOL', 'XRP'];
-const LOOKBACK_BARS     = 200;   // 5m bars fetched before each 15m window
+const SYMBOL_MAP = {
+  BTC: 'BTCUSDT',
+  ETH: 'ETHUSDT',
+  SOL: 'SOLUSDT',
+  XRP: 'XRPUSDT',
+  BNB: 'BNBUSDT',
+  DOGE: 'DOGEUSDT',
+  HYPE: 'HYPEUSDT',
+};
+const DEFAULT_COINS = ['BTC', 'ETH', 'SOL', 'XRP', 'BNB', 'DOGE', 'HYPE'];
+const LOOKBACK_BARS = 200;   // 5m bars fetched before each 15m window
 const LOOKBACK_INTERVAL = '5m';
-const OUTCOME_INTERVAL  = '15m';
-const MIN_CHANGE_PCT    = 0.05;  // ignore FLAT windows (< 0.05% move)
+const OUTCOME_INTERVAL = '15m';
+const MIN_CHANGE_PCT = 0.05;  // ignore FLAT windows (< 0.05% move)
+const WRITE_CHANGE_THRESHOLD_PCT = 1; // write materially changed weights, but avoid tiny noise
+const BINANCE_DATA_BASE = 'https://data-api.binance.vision/api/v3';
 
 // ── 4. Indicator functions — copied VERBATIM from backtest-runner.js ──
 
 // ── Utility helpers ─────────────────────────────────────────────
-const clamp   = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 const average = arr => arr.length ? arr.reduce((s, v) => s + v, 0) / arr.length : 0;
 
 function calcRSI(closes, period = 14) {
@@ -98,7 +108,7 @@ function calcMACD(closes, fast = 12, slow = 26, signalPeriod = 9) {
   const macdLine = emaFast.map((v, i) => v - emaSlow[i]);
   const signalLine = calcEMA(macdLine, signalPeriod);
   const lastMACD = macdLine[macdLine.length - 1];
-  const lastSig  = signalLine[signalLine.length - 1];
+  const lastSig = signalLine[signalLine.length - 1];
   return { macd: lastMACD, signal: lastSig, histogram: lastMACD - lastSig };
 }
 
@@ -156,7 +166,7 @@ function calcADX(candles, period = 14) {
 function calcIchimoku(candles) {
   if (candles.length < 9) return { tenkan: 0, kijun: 0, cloudPos: 'inside' };
   const high = arr => Math.max(...arr.map(c => c.h));
-  const low  = arr => Math.min(...arr.map(c => c.l));
+  const low = arr => Math.min(...arr.map(c => c.l));
   const tenkan = (high(candles.slice(-9)) + low(candles.slice(-9))) / 2;
   const slice26 = candles.length >= 26 ? candles.slice(-26) : candles;
   const kijun = (high(slice26) + low(slice26)) / 2;
@@ -184,8 +194,8 @@ function calcMFI(candles, period = 14) {
   const slice = candles.slice(-period - 1);
   let posFlow = 0, negFlow = 0;
   for (let i = 1; i < slice.length; i++) {
-    const prevTP = (slice[i-1].h + slice[i-1].l + slice[i-1].c) / 3;
-    const currTP = (slice[i].h   + slice[i].l   + slice[i].c)   / 3;
+    const prevTP = (slice[i - 1].h + slice[i - 1].l + slice[i - 1].c) / 3;
+    const currTP = (slice[i].h + slice[i].l + slice[i].c) / 3;
     const rawFlow = currTP * (slice[i].v || 1);
     if (currTP > prevTP) posFlow += rawFlow;
     else if (currTP < prevTP) negFlow += rawFlow;
@@ -198,7 +208,7 @@ function calcATR(candles, period = 14) {
   if (candles.length < period + 1) return 0;
   let sum = 0;
   for (let i = candles.length - period; i < candles.length; i++)
-    sum += Math.max(candles[i].h - candles[i].l, Math.abs(candles[i].h - candles[i-1].c), Math.abs(candles[i].l - candles[i-1].c));
+    sum += Math.max(candles[i].h - candles[i].l, Math.abs(candles[i].h - candles[i - 1].c), Math.abs(candles[i].l - candles[i - 1].c));
   return sum / period;
 }
 
@@ -297,7 +307,11 @@ function calcCCI(candles, period) {
   const tps = slice.map(c => (c.h + c.l + c.c) / 3);
   const mean = tps.reduce((s, v) => s + v, 0) / period;
   const meanDev = tps.reduce((s, v) => s + Math.abs(v - mean), 0) / period;
-  return meanDev > 0 ? (tps[tps.length - 1] - mean) / (0.015 * meanDev) : 0;
+  // Clamped to +/-500, matching src/core/predictions.js's live calcCCI -- an
+  // unclamped reading here lets a near-zero meanDev spike distort the
+  // gradient-descent weight grading with a magnitude the live model can
+  // never actually produce.
+  return meanDev > 0.00001 ? clamp((tps[tps.length - 1] - mean) / (0.015 * meanDev), -500, 500) : 0;
 }
 
 function calcCMF(candles, period) {
@@ -344,11 +358,11 @@ function calcKeltner(candles, period, mult) {
 
 function calcBollinger(closes, period = 20) {
   if (closes.length < period) { return { position: 0.5, widthPct: 0 }; }
-  const slice  = closes.slice(-period);
+  const slice = closes.slice(-period);
   const middle = average(slice);
-  const std    = calcStdDev(closes, period);
-  const upper  = middle + std * 2, lower = middle - std * 2;
-  const width  = Math.max(upper - lower, middle * 0.0001);
+  const std = calcStdDev(closes, period);
+  const upper = middle + std * 2, lower = middle - std * 2;
+  const width = Math.max(upper - lower, middle * 0.0001);
   return { position: clamp((slice[slice.length - 1] - lower) / width, 0, 1), widthPct: middle > 0 ? (width / middle) * 100 : 0 };
 }
 
@@ -367,7 +381,7 @@ function calcStructureBias(candles, atrPct) {
   const recent = candles.slice(-24), latest = recent[recent.length - 1].c;
   const support = Math.min(...recent.map(c => c.l));
   const resistance = Math.max(...recent.map(c => c.h));
-  const supportGapPct    = latest > 0 ? ((latest - support) / latest) * 100 : 0;
+  const supportGapPct = latest > 0 ? ((latest - support) / latest) * 100 : 0;
   const resistanceGapPct = latest > 0 ? ((resistance - latest) / latest) * 100 : 0;
   const bufferPct = clamp(Math.max((atrPct || 0) * 1.25, 0.35), 0.35, 2.4);
   let zone = 'middle', signal = 0;
@@ -448,7 +462,7 @@ async function binanceGet(url, retries = 2) {
  */
 function generateWindows(days) {
   const windows = [];
-  const now   = Date.now();
+  const now = Date.now();
   const start = now - days * 24 * 60 * 60 * 1000;
   // Align start to nearest 15m boundary (ceiling)
   const aligned = Math.ceil(start / (15 * 60000)) * (15 * 60000);
@@ -465,14 +479,14 @@ function generateWindows(days) {
  * Returns { open, close, high, low, vol, pct, direction } or null.
  */
 async function fetchOutcome(symbol, windowStart) {
-  const url = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=15m&startTime=${windowStart}&endTime=${windowStart + 15 * 60000}&limit=1`;
+  const url = `${BINANCE_DATA_BASE}/klines?symbol=${symbol}&interval=15m&startTime=${windowStart}&endTime=${windowStart + 15 * 60000}&limit=1`;
   const data = await binanceGet(url);
   if (!Array.isArray(data) || !data[0]) return null;
-  const open  = parseFloat(data[0][1]);
+  const open = parseFloat(data[0][1]);
   const close = parseFloat(data[0][4]);
-  const high  = parseFloat(data[0][2]);
-  const low   = parseFloat(data[0][3]);
-  const vol   = parseFloat(data[0][5]);
+  const high = parseFloat(data[0][2]);
+  const low = parseFloat(data[0][3]);
+  const vol = parseFloat(data[0][5]);
   if (!open || open === 0) return null;
   const pct = (close - open) / open * 100;
   return {
@@ -489,7 +503,7 @@ async function fetchOutcome(symbol, windowStart) {
  */
 async function fetchLookback(symbol, windowStart) {
   const startTime = windowStart - LOOKBACK_BARS * 5 * 60000;
-  const url = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${LOOKBACK_INTERVAL}&startTime=${startTime}&endTime=${windowStart}&limit=${LOOKBACK_BARS}`;
+  const url = `${BINANCE_DATA_BASE}/klines?symbol=${symbol}&interval=${LOOKBACK_INTERVAL}&startTime=${startTime}&endTime=${windowStart}&limit=${LOOKBACK_BARS}`;
   const data = await binanceGet(url);
   if (!Array.isArray(data) || data.length < 30) return null;
   return data.map(k => ({
@@ -498,6 +512,87 @@ async function fetchLookback(symbol, windowStart) {
     l: parseFloat(k[3]), c: parseFloat(k[4]),
     v: parseFloat(k[5]),
   }));
+}
+
+function intervalMs(interval) {
+  if (interval === '5m') return 5 * 60_000;
+  if (interval === '15m') return 15 * 60_000;
+  return 60_000;
+}
+
+function normalizeKline(row) {
+  return {
+    t: Number(row[0]),
+    o: parseFloat(row[1]),
+    h: parseFloat(row[2]),
+    l: parseFloat(row[3]),
+    c: parseFloat(row[4]),
+    v: parseFloat(row[5]),
+  };
+}
+
+/**
+ * Fetch an entire historical range in 1000-candle pages. The old per-window
+ * path made two requests for every 15m observation; 60 days required >11k
+ * requests and was unusable whenever the main Binance API was geo-blocked.
+ */
+async function fetchKlinesRange(symbol, interval, startTime, endTime) {
+  const stepMs = intervalMs(interval);
+  const rows = [];
+  const seen = new Set();
+  let cursor = Math.floor(startTime / stepMs) * stepMs;
+
+  while (cursor < endTime) {
+    const url = `${BINANCE_DATA_BASE}/klines?symbol=${symbol}&interval=${interval}&startTime=${cursor}&endTime=${endTime}&limit=1000`;
+    const data = await binanceGet(url);
+    if (!Array.isArray(data)) {
+      throw new Error(`Binance data API returned non-array response for ${symbol} ${interval}`);
+    }
+    if (!data.length) break;
+
+    for (const row of data) {
+      const candle = normalizeKline(row);
+      if (candle.t < endTime && !seen.has(candle.t)) {
+        seen.add(candle.t);
+        rows.push(candle);
+      }
+    }
+
+    const nextCursor = Number(data[data.length - 1][0]) + stepMs;
+    if (nextCursor <= cursor) break;
+    cursor = nextCursor;
+    await sleep(150);
+    if (data.length < 1000) break;
+  }
+
+  return rows.sort((a, b) => a.t - b.t);
+}
+
+function outcomeFromCandle(candle) {
+  const open = candle.o;
+  const close = candle.c;
+  if (!open || open === 0) return null;
+  const pct = (close - open) / open * 100;
+  return {
+    open,
+    close,
+    high: candle.h,
+    low: candle.l,
+    vol: candle.v,
+    pct,
+    direction: pct > MIN_CHANGE_PCT ? 'UP' : pct < -MIN_CHANGE_PCT ? 'DOWN' : 'FLAT',
+  };
+}
+
+function candlesBefore(candles, endTime, count = LOOKBACK_BARS) {
+  let lo = 0;
+  let hi = candles.length;
+  while (lo < hi) {
+    const mid = Math.floor((lo + hi) / 2);
+    if (candles[mid].t < endTime) lo = mid + 1;
+    else hi = mid;
+  }
+  return candles.slice(Math.max(0, lo - count), lo);
 }
 
 // ── 9. computeSignalVector ───────────────────────────────────────
@@ -513,7 +608,7 @@ async function fetchLookback(symbol, windowStart) {
  */
 function computeSignalVector(candles) {
   if (!candles || candles.length < 26) return null;
-  const closes    = candles.map(c => c.c);
+  const closes = candles.map(c => c.c);
   const lastPrice = closes[closes.length - 1];
 
   // ── RSI ──
@@ -524,13 +619,13 @@ function computeSignalVector(candles) {
   else rsiSig = (rsi - 50) / 50 * 0.3;
 
   // ── EMA cross ──
-  const ema9  = calcEMA(closes, 9);
+  const ema9 = calcEMA(closes, 9);
   const ema21 = calcEMA(closes, 21);
   const emaCross = (ema9[ema9.length - 1] - ema21[ema21.length - 1]) / (ema21[ema21.length - 1] || 1) * 100;
   const emaSig = clamp(emaCross * 5, -1, 1);
 
   // ── VWAP deviation (rolling 80-bar) ──
-  const vwapRolling     = calcVWAP(candles.slice(-80));
+  const vwapRolling = calcVWAP(candles.slice(-80));
   const vwapRollingLast = vwapRolling[vwapRolling.length - 1];
   const vwapDev = ((lastPrice - vwapRollingLast) / (vwapRollingLast || 1)) * 100;
   let vwapSig = 0;
@@ -540,7 +635,7 @@ function computeSignalVector(candles) {
   else vwapSig = vwapDev > 0 ? 0.3 : -0.3;
 
   // ── OBV slope ──
-  const obv    = calcOBV(candles);
+  const obv = calcOBV(candles);
   const obvSig = clamp(slopeOBV(obv, 8) / 5, -1, 1);
 
   // ── Volume delta (buy/sell aggressor proxy) ──
@@ -555,27 +650,27 @@ function computeSignalVector(candles) {
   const volSig = clamp((buyV / (sellV || 1) - 1) * 0.5, -1, 1);
 
   // ── Momentum (6-bar ROC) ──
-  const mom    = closes.length > 6 ? ((closes[closes.length - 1] - closes[closes.length - 7]) / (closes[closes.length - 7] || 1)) * 100 : 0;
+  const mom = closes.length > 6 ? ((closes[closes.length - 1] - closes[closes.length - 7]) / (closes[closes.length - 7] || 1)) * 100 : 0;
   const momSig = clamp(mom / 2, -1, 1);
 
   // ── ATR + Bollinger Bands ──
-  const atr    = calcATR(candles);
+  const atr = calcATR(candles);
   const atrPct = lastPrice > 0 ? (atr / lastPrice) * 100 : 0;
-  const bands  = calcBollinger(closes);
-  let bandSig  = 0;
+  const bands = calcBollinger(closes);
+  let bandSig = 0;
   if (bands.position >= 0.88) bandSig = -clamp((bands.position - 0.88) / 0.12, 0, 1);
   else if (bands.position <= 0.12) bandSig = clamp((0.12 - bands.position) / 0.12, 0, 1);
   else bandSig = clamp(-(bands.position - 0.5) * 0.45, -0.22, 0.22);
 
   // ── Trend Persistence + Structure ──
   const persistence = calcTrendPersistence(closes, ema21);
-  const structure   = calcStructureBias(candles, atrPct);
+  const structure = calcStructureBias(candles, atrPct);
 
   // ── MACD ──
-  const macdR        = calcMACD(closes);
+  const macdR = calcMACD(closes);
   const macdHistNorm = lastPrice > 0 ? (macdR.histogram / lastPrice) * 1000 : 0;
-  const macdCross    = macdR.macd > macdR.signal ? 0.18 : macdR.macd < macdR.signal ? -0.18 : 0;
-  const macdSig      = clamp(macdHistNorm * 2.5 + macdCross, -1, 1);
+  const macdCross = macdR.macd > macdR.signal ? 0.18 : macdR.macd < macdR.signal ? -0.18 : 0;
+  const macdSig = clamp(macdHistNorm * 2.5 + macdCross, -1, 1);
 
   // ── StochRSI ──
   const stochR = calcStochRSI(closes);
@@ -586,7 +681,7 @@ function computeSignalVector(candles) {
   stochSig = clamp(stochSig + clamp((stochR.k - stochR.d) / 20, -0.18, 0.18), -1, 1);
 
   // ── ADX / DI ──
-  const adxR   = calcADX(candles);
+  const adxR = calcADX(candles);
   const diDiff = (adxR.pdi - adxR.mdi) / Math.max(adxR.pdi + adxR.mdi, 1);
   const adxSig = clamp(diDiff * clamp(adxR.adx / 50, 0, 1) * 1.2, -1, 1);
 
@@ -615,33 +710,33 @@ function computeSignalVector(candles) {
   mfiSig = clamp(mfiSig, -1, 1);
 
   // ── HMA ──
-  const hmaLine  = calcHMA(closes, 16);
-  const hmaCurr  = hmaLine.length ? hmaLine[hmaLine.length - 1] : lastPrice;
+  const hmaLine = calcHMA(closes, 16);
+  const hmaCurr = hmaLine.length ? hmaLine[hmaLine.length - 1] : lastPrice;
   const hmaPrev2 = hmaLine.length > 2 ? hmaLine[hmaLine.length - 3] : hmaCurr;
-  const hmaSlope  = (hmaCurr - hmaPrev2) / (Math.abs(hmaPrev2) || 1) * 100;
+  const hmaSlope = (hmaCurr - hmaPrev2) / (Math.abs(hmaPrev2) || 1) * 100;
   const hmaDevPct = (lastPrice - hmaCurr) / (Math.abs(hmaCurr) || 1) * 100;
   let hmaSig = clamp(hmaSlope * 8, -0.7, 0.7);
-  if (Math.abs(hmaDevPct) > 0.4) hmaSig += clamp(-hmaDevPct * 0.28, -0.3, 0.3);
+  if (Math.abs(hmaDevPct) > 0.4) hmaSig += clamp(hmaDevPct * 0.28, -0.3, 0.3); // FIX: was negated (see predictions.js live logic)
   hmaSig = clamp(hmaSig, -1, 1);
 
   // ── VWMA ──
-  const vwmaLine   = calcVWMA(candles, 20);
-  const vwmaCurr   = vwmaLine[vwmaLine.length - 1];
-  const vwmaPrev   = vwmaLine.length > 3 ? vwmaLine[vwmaLine.length - 4] : vwmaCurr;
-  const vwmaSlope  = (vwmaCurr - vwmaPrev) / (Math.abs(vwmaPrev) || 1) * 100;
+  const vwmaLine = calcVWMA(candles, 20);
+  const vwmaCurr = vwmaLine[vwmaLine.length - 1];
+  const vwmaPrev = vwmaLine.length > 3 ? vwmaLine[vwmaLine.length - 4] : vwmaCurr;
+  const vwmaSlope = (vwmaCurr - vwmaPrev) / (Math.abs(vwmaPrev) || 1) * 100;
   const vwmaDevPct = (lastPrice - vwmaCurr) / (Math.abs(vwmaCurr) || 1) * 100;
   let vwmaSig = clamp(vwmaSlope * 6, -0.6, 0.6);
   vwmaSig += clamp(vwmaDevPct * 0.35, -0.4, 0.4);
   vwmaSig = clamp(vwmaSig, -1, 1);
 
   // ── SMA cross ──
-  const sma9arr  = calcSMA(closes, 9);
+  const sma9arr = calcSMA(closes, 9);
   const sma21arr = calcSMA(closes, 21);
   const smaCross = (sma9arr[sma9arr.length - 1] - sma21arr[sma21arr.length - 1]) / (Math.abs(sma21arr[sma21arr.length - 1]) || 1) * 100;
-  const smaSig   = clamp(smaCross * 5, -1, 1);
+  const smaSig = clamp(smaCross * 5, -1, 1);
 
   // ── Supertrend — returns { signal: 1|-1, bullish, supertrend } ──
-  const stR          = calcSupertrend(candles, 10, 3.0);
+  const stR = calcSupertrend(candles, 10, 3.0);
   const supertrendSig = stR.signal; // already ±1
 
   // ── CCI (trend-filtered) ──
@@ -649,7 +744,7 @@ function computeSignalVector(candles) {
   let cciSig = 0;
   if (cciVal > 150) cciSig = -clamp((cciVal - 100) / 150, 0, 1);
   else if (cciVal < -150) cciSig = clamp((-100 - cciVal) / 150, 0, 1);
-  else cciSig = clamp(-cciVal / 200, -0.3, 0.3);
+  else cciSig = clamp(cciVal / 200, -0.3, 0.3); // FIX: was negated (see predictions.js 2026-05-04 CRITICAL fix)
   cciSig = clamp(cciSig, -1, 1);
 
   // ── CMF ──
@@ -658,7 +753,7 @@ function computeSignalVector(candles) {
 
   // ── Fisher Transform — plain number return ──
   const fisherVal = calcFisher(candles, 10);
-  const fisherSig = clamp(-fisherVal / 2.5, -1, 1);
+  const fisherSig = clamp(fisherVal / 2.5, -1, 1); // FIX: was negated (see predictions.js 2026-05-04 CRITICAL fix)
 
   // ── Keltner Channels — { position } return ──
   const kelt = calcKeltner(candles, 20, 2.0);
@@ -673,17 +768,17 @@ function computeSignalVector(candles) {
   if (isBullTrend || isBearTrend) {
     const sf = clamp((adxR.adx - 22) / 28, 0, 0.70);
     if (isBullTrend) {
-      if (rsiSig   < 0) rsiSig   *= (1 - sf);
+      if (rsiSig < 0) rsiSig *= (1 - sf);
       if (stochSig < 0) stochSig *= (1 - sf);
-      if (wRSig    < 0) wRSig    *= (1 - sf);
-      if (bandSig  < 0) bandSig  *= (1 - sf * 0.6);
-      if (mfiSig   < 0) mfiSig   *= (1 - sf * 0.6);
+      if (wRSig < 0) wRSig *= (1 - sf);
+      if (bandSig < 0) bandSig *= (1 - sf * 0.6);
+      if (mfiSig < 0) mfiSig *= (1 - sf * 0.6);
     } else {
-      if (rsiSig   > 0) rsiSig   *= (1 - sf);
+      if (rsiSig > 0) rsiSig *= (1 - sf);
       if (stochSig > 0) stochSig *= (1 - sf);
-      if (wRSig    > 0) wRSig    *= (1 - sf);
-      if (bandSig  > 0) bandSig  *= (1 - sf * 0.6);
-      if (mfiSig   > 0) mfiSig   *= (1 - sf * 0.6);
+      if (wRSig > 0) wRSig *= (1 - sf);
+      if (bandSig > 0) bandSig *= (1 - sf * 0.6);
+      if (mfiSig > 0) mfiSig *= (1 - sf * 0.6);
     }
   }
 
@@ -723,8 +818,8 @@ function gradeSignals(observations) {
   const result = {};
   for (const [k, s] of Object.entries(stats)) {
     result[k] = {
-      winRate:   s.total > 0 ? s.hits / s.total : 0.5,
-      total:     s.total,
+      winRate: s.total > 0 ? s.hits / s.total : 0.5,
+      total: s.total,
       avgSignal: observations.length > 0 ? s.sumVal / observations.length : 0,
     };
   }
@@ -746,21 +841,29 @@ function optimizeWeights(observations, initialBias, opts = {}) {
   const { learningRate = 0.008, epochs = 200, minW = 0.01, maxW = 10 } = opts;
 
   const weights = { ...initialBias };
-  const keys    = Object.keys(weights);
+  const keys = Object.keys(weights);
 
   const computeAccuracy = (W) => {
     let correct = 0;
+    let scored = 0;
     for (const obs of observations) {
       let score = 0, totalW = 0;
       for (const k of keys) {
         const sig = obs.signalVector[k] ?? 0;
-        score  += sig * (W[k] ?? 1);
+        score += sig * (W[k] ?? 1);
         totalW += Math.abs(W[k] ?? 1);
       }
-      const norm = totalW > 0 ? score / totalW : 0;
-      if ((norm > 0 ? 'UP' : 'DOWN') === obs.actualDirection) correct++;
+
+      // Match live predictions.js: amplify + deadband, no phase inversion.
+      let rawNorm = totalW > 0 ? score / totalW : 0;
+      const SCORE_AMPLIFIER = 1.6;
+      rawNorm = rawNorm * SCORE_AMPLIFIER;
+      if (Math.abs(rawNorm) < 0.15) continue; // abstain — selective accuracy
+      const predDir = rawNorm > 0 ? 'UP' : 'DOWN';
+      if (predDir === obs.actualDirection) correct++;
+      scored++;
     }
-    return observations.length > 0 ? correct / observations.length : 0;
+    return scored > 0 ? correct / scored : 0;
   };
 
   const initialAccuracy = computeAccuracy(weights);
@@ -775,22 +878,23 @@ function optimizeWeights(observations, initialBias, opts = {}) {
       let score = 0, totalW = 0;
       for (const k of keys) {
         const sig = obs.signalVector[k] ?? 0;
-        score  += sig * (weights[k] ?? 1);
+        score += sig * (weights[k] ?? 1);
         totalW += Math.abs(weights[k] ?? 1);
       }
-      const norm   = totalW > 0 ? score / totalW : 0;
-      const pred   = Math.tanh(norm * 2.5);
-      const target = obs.actualDirection === 'UP' ? 1 : -1;
-      const loss   = (pred - target) ** 2;
-      totalLoss   += loss;
 
-      const dL    = 2 * (pred - target);
+      const norm = totalW > 0 ? score / totalW : 0;
+      const pred = Math.tanh(norm * 2.5);
+      const target = obs.actualDirection === 'UP' ? 1 : -1;
+      const loss = (pred - target) ** 2;
+      totalLoss += loss;
+
+      const dL = 2 * (pred - target);
       const dTanh = 1 - pred ** 2;
       const dNorm = dL * dTanh;
 
       for (const k of keys) {
         const sig = obs.signalVector[k] ?? 0;
-        const dS  = sig / (totalW || 1) - score * Math.sign(weights[k] ?? 1) / ((totalW || 1) ** 2);
+        const dS = sig / (totalW || 1) - score * Math.sign(weights[k] ?? 1) / ((totalW || 1) ** 2);
         grads[k] += dNorm * dS;
       }
     }
@@ -801,7 +905,7 @@ function optimizeWeights(observations, initialBias, opts = {}) {
     }
 
     if (epoch % 40 === 0 || epoch === epochs - 1) {
-      const acc     = computeAccuracy(weights);
+      const acc = computeAccuracy(weights);
       const logLine = `  Epoch ${String(epoch).padStart(3)}: loss=${(totalLoss / N).toFixed(4)}, acc=${(acc * 100).toFixed(1)}%`;
       epochLog.push(logLine);
       process.stdout.write(logLine + '\n');
@@ -821,18 +925,18 @@ function printWeightTable(coin, oldW, newW, winRates, obsCount) {
   console.log(`  ${'─'.repeat(68)}`);
 
   const rows = Object.entries(newW).map(([k, nw]) => {
-    const ow      = oldW[k] ?? 1;
-    const delta   = ((nw - ow) / (Math.abs(ow) || 1)) * 100;
-    const wr      = winRates[k];
-    const wrStr   = wr ? `${(wr.winRate * 100).toFixed(1)}%`.padStart(7) : '   n/a';
-    const nStr    = wr ? String(wr.total).padStart(8) : '       n/a';
-    const marker  = !wr                   ? ''
-                  : wr.winRate >= 0.62    ? '  ★ TOP PERFORMER'
-                  : wr.winRate < 0.45     ? '  ✗ WORSE THAN CHANCE'
-                  : wr.winRate < 0.50     ? '  ↓ WEAK'
-                  : '';
+    const ow = oldW[k] ?? 1;
+    const delta = ((nw - ow) / (Math.abs(ow) || 1)) * 100;
+    const wr = winRates[k];
+    const wrStr = wr ? `${(wr.winRate * 100).toFixed(1)}%`.padStart(7) : '   n/a';
+    const nStr = wr ? String(wr.total).padStart(8) : '       n/a';
+    const marker = !wr ? ''
+      : wr.winRate >= 0.62 ? '  ★ TOP PERFORMER'
+        : wr.winRate < 0.45 ? '  ✗ WORSE THAN CHANCE'
+          : wr.winRate < 0.50 ? '  ↓ WEAK'
+            : '';
     const deltaStr = `${delta >= 0 ? '+' : ''}${delta.toFixed(1)}%`;
-    const changed  = Math.abs(delta) > 5 ? ' ◄' : '';
+    const changed = Math.abs(delta) > WRITE_CHANGE_THRESHOLD_PCT ? ' ◄' : '';
     return { k, ow, nw, delta, deltaStr, wrStr, nStr, marker, changed };
   }).sort((a, b) => (winRates[b.k]?.winRate ?? 0.5) - (winRates[a.k]?.winRate ?? 0.5));
 
@@ -846,66 +950,49 @@ function printWeightTable(coin, oldW, newW, winRates, obsCount) {
 
 /**
  * Surgically rewrites PER_COIN_INDICATOR_BIAS values in `filePath`
- * for `coin`, only updating keys that changed by > 5%.
+ * for `coin`, only updating keys that changed by more than the configured
+ * write threshold so the live model actually receives the latest retune.
  * Adds an outcome-retuned comment on the coin's opening line.
  *
  * Uses brace-counting to isolate the exact coin block so sibling
  * coins are never affected.
  */
-function writeWeightsToPredictions(coin, oldWeights, newWeights, filePath, windowCount, dateStr) {
-  let src = fs.readFileSync(filePath, 'utf8');
+function writeWeightsToJSON(coin, oldWeights, newWeights, weightsPath, windowCount, dateStr) {
+  // Guarded read: a corrupted/truncated weights file (this exact failure hit
+  // live once already — a duplicate-key JSON error) used to throw uncaught
+  // here, aborting the write phase for every remaining coin in the run after
+  // the expensive backtest computation had already completed for all of
+  // them. Now it's reported per-coin and the run continues.
+  let json;
+  try {
+    json = JSON.parse(fs.readFileSync(weightsPath, 'utf8'));
+  } catch (e) {
+    console.error(`  [ERROR] ${coin}: could not read/parse ${weightsPath} — ${e.message}. Skipping write for this coin; fix the file and rerun.`);
+    return 0;
+  }
+  if (!json.PER_COIN_INDICATOR_BIAS[coin]) {
+    console.log(`  [WARN] ${coin} not found in predictions-weights.json — skipping`);
+    return 0;
+  }
   let updatedCount = 0;
-
   for (const [key, newVal] of Object.entries(newWeights)) {
     const oldVal = oldWeights[key];
     if (oldVal === undefined) continue;
     const changePct = Math.abs((newVal - oldVal) / (Math.abs(oldVal) || 1)) * 100;
-    if (changePct <= 5) continue; // skip noise
-
-    // Find the coin's block start (e.g. "    BTC: {")
-    const coinBlockStart = src.indexOf(`${coin}:`);
-    if (coinBlockStart === -1) {
-      console.log(`  [WARN] ${coin} block not found in ${path.basename(filePath)}`);
-      break;
-    }
-
-    // Walk forward to find the matching closing brace via brace-count
-    let depth = 0, blockEnd = -1;
-    for (let i = coinBlockStart; i < src.length; i++) {
-      if (src[i] === '{') depth++;
-      else if (src[i] === '}') {
-        depth--;
-        if (depth === 0) { blockEnd = i; break; }
-      }
-    }
-    if (blockEnd === -1) continue;
-
-    const coinBlock = src.slice(coinBlockStart, blockEnd + 1);
-    // Match the key precisely (word boundary prevents rsi matching stochrsi, etc.)
-    const keyRegex = new RegExp(`(\\b${key}\\s*:\\s*)[\\d.]+`);
-    const newBlock = coinBlock.replace(keyRegex, `$1${parseFloat(newVal.toFixed(3))}`);
-
-    if (newBlock !== coinBlock) {
-      src = src.slice(0, coinBlockStart) + newBlock + src.slice(blockEnd + 1);
-      updatedCount++;
-    }
+    if (changePct <= WRITE_CHANGE_THRESHOLD_PCT) continue; // skip noise
+    json.PER_COIN_INDICATOR_BIAS[coin][key] = parseFloat(newVal.toFixed(3));
+    updatedCount++;
   }
-
   if (updatedCount > 0) {
-    // Stamp the coin's key line with a retuning comment (idempotent)
-    const coinBlockStart = src.indexOf(`${coin}:`);
-    if (coinBlockStart !== -1) {
-      const lineEnd     = src.indexOf('\n', coinBlockStart);
-      const comment     = ` // outcome-retuned ${dateStr} from ${windowCount} windows`;
-      const lineContent = src.slice(coinBlockStart, lineEnd);
-      if (!lineContent.includes('outcome-retuned')) {
-        src = src.slice(0, lineEnd) + comment + src.slice(lineEnd);
-      }
-    }
-    fs.writeFileSync(filePath, src, 'utf8');
-    console.log(`  [${coin}] Wrote ${updatedCount} updated weights to ${path.basename(filePath)}`);
+    // Atomic write: write-to-temp then rename, so a process kill mid-write
+    // (this environment killed several long-running runs this session)
+    // can't leave weightsPath itself truncated/corrupted.
+    const tmpPath = `${weightsPath}.tmp-${process.pid}`;
+    fs.writeFileSync(tmpPath, JSON.stringify(json, null, 2), 'utf8');
+    fs.renameSync(tmpPath, weightsPath);
+    console.log(`  [${coin}] Wrote ${updatedCount} updated weights to predictions-weights.json`);
   } else {
-    console.log(`  [${coin}] No weights changed by >5%, nothing written`);
+    console.log(`  [${coin}] No weights changed by >${WRITE_CHANGE_THRESHOLD_PCT}%, nothing written`);
   }
   return updatedCount;
 }
@@ -914,24 +1001,24 @@ function writeWeightsToPredictions(coin, oldWeights, newWeights, filePath, windo
 
 async function main() {
   const args = process.argv.slice(2);
-  let days         = 60;
-  let coinsArg     = DEFAULT_COINS;
+  let days = 60;
+  let coinsArg = DEFAULT_COINS;
   let writeWeights = false;
-  let testMode     = false;
-  let maxWindows   = null;
+  let testMode = false;
+  let maxWindows = null;
 
   for (let i = 0; i < args.length; i++) {
-    if      (args[i] === '--days')          days         = parseInt(args[++i], 10);
-    else if (args[i] === '--coins')         coinsArg     = args[++i].split(',');
+    if (args[i] === '--days') days = parseFloat(args[++i]);
+    else if (args[i] === '--coins') coinsArg = args[++i].split(',');
     else if (args[i] === '--write-weights') writeWeights = true;
-    else if (args[i] === '--test')          testMode     = true;
-    else if (args[i] === '--max')           maxWindows   = parseInt(args[++i], 10);
+    else if (args[i] === '--test') testMode = true;
+    else if (args[i] === '--max') maxWindows = parseInt(args[++i], 10);
   }
 
   const dateStr = new Date().toISOString().slice(0, 10);
-  const ROOT    = path.resolve(__dirname, '..');
-  const PREDS   = path.join(ROOT, 'src', 'core', 'predictions.js');
-  const BT      = path.join(ROOT, 'backtest', 'backtest-runner.js');
+  const ROOT = path.resolve(__dirname, '..');
+  const PREDS = path.join(ROOT, 'src', 'core', 'predictions.js');
+  const BT = path.join(ROOT, 'backtest', 'backtest-runner.js');
   const LOG_DIR = path.join(ROOT, 'backtest-logs');
   if (!fs.existsSync(LOG_DIR)) fs.mkdirSync(LOG_DIR, { recursive: true });
 
@@ -940,35 +1027,29 @@ async function main() {
   console.log(`Days: ${days}  Coins: ${coinsArg.join(',')}  WriteWeights: ${writeWeights}`);
   console.log(`${'═'.repeat(60)}\n`);
 
-  // ── Load current PER_COIN_INDICATOR_BIAS from predictions.js ──
-  // The object is defined inside an IIFE; we use a greedy-enough regex:
-  // all inner closing braces have commas, the outer one has a semicolon,
-  // so the non-greedy [\s\S]*? naturally stops at the outer };
-  const predsSrc  = fs.readFileSync(PREDS, 'utf8');
-  const biasMatch = predsSrc.match(/(?:const\s+)?PER_COIN_INDICATOR_BIAS\s*=\s*(\{[\s\S]*?\n\s*\})\s*;/);
+  // ── Load current PER_COIN_INDICATOR_BIAS from predictions-weights.json ──
+  const WEIGHTS_PATH = path.join(ROOT, 'src', 'core', 'predictions-weights.json');
   let currentBias = {};
-  if (biasMatch) {
-    try {
-      // eslint-disable-next-line no-new-func
-      currentBias = new Function(`return ${biasMatch[1]}`)();
-      console.log(`Loaded PER_COIN_INDICATOR_BIAS for: ${Object.keys(currentBias).join(', ')}`);
-    } catch (e) {
-      console.error(`WARN: Could not parse PER_COIN_INDICATOR_BIAS: ${e.message}`);
-    }
-  } else {
-    console.warn('WARN: PER_COIN_INDICATOR_BIAS not found in predictions.js — starting from flat weights');
+  try {
+    const weightsJson = JSON.parse(fs.readFileSync(WEIGHTS_PATH, 'utf8'));
+    currentBias = weightsJson.PER_COIN_INDICATOR_BIAS || {};
+    console.log(`Loaded PER_COIN_INDICATOR_BIAS for: ${Object.keys(currentBias).join(', ')}`);
+  } catch (e) {
+    console.warn(`WARN: Could not load predictions-weights.json: ${e.message} — starting from flat weights`);
   }
 
   const allWindows = generateWindows(days);
-  const useWindows = maxWindows ? allWindows.slice(0, maxWindows) : allWindows;
-  console.log(`Generated ${allWindows.length} windows (${days} days) — using ${useWindows.length}\n`);
+  const useWindows = maxWindows
+    ? allWindows.slice(Math.max(0, allWindows.length - maxWindows))
+    : allWindows;
+  console.log(`Generated ${allWindows.length} windows (${days} days) — using ${useWindows.length}${maxWindows ? ' (most recent windows)' : ''}\n`);
 
   // ── Test mode: verify connectivity and signal computation ──────
   if (testMode) {
     console.log('[TEST MODE] Verifying Binance connectivity with sample fetches...');
     for (const coin of coinsArg.slice(0, 1)) {
       const sym = SYMBOL_MAP[coin];
-      const w   = useWindows[Math.floor(useWindows.length / 2)];
+      const w = useWindows[Math.floor(useWindows.length / 2)];
       console.log(`  Window: ${new Date(w.startMs).toISOString()}`);
 
       const out = await fetchOutcome(sym, w.startMs);
@@ -1001,7 +1082,7 @@ async function main() {
   }
 
   // ── Main loop ──────────────────────────────────────────────────
-  const results    = {};
+  const results = {};
   const BATCH_SIZE = 50;
 
   for (const coin of coinsArg) {
@@ -1012,40 +1093,54 @@ async function main() {
     const observations = [];
     let fetched = 0, flat = 0, errors = 0, skipped = 0;
 
-    for (let i = 0; i < useWindows.length; i++) {
-      const win = useWindows[i];
+    let outcomeCandles = [];
+    let lookbackCandles = [];
+    try {
+      const firstStart = useWindows[0].startMs;
+      const lastEnd = useWindows[useWindows.length - 1].endMs;
+      const lookbackStart = firstStart - LOOKBACK_BARS * 5 * 60_000;
+      console.log(`  Fetching ${OUTCOME_INTERVAL} outcomes and ${LOOKBACK_INTERVAL} lookback candles...`);
+      outcomeCandles = await fetchKlinesRange(sym, OUTCOME_INTERVAL, firstStart, lastEnd);
+      lookbackCandles = await fetchKlinesRange(sym, LOOKBACK_INTERVAL, lookbackStart, lastEnd);
+      const outcomeByStart = new Map(outcomeCandles.map(c => [c.t, c]));
+      console.log(`  Loaded ${outcomeCandles.length} outcome candles and ${lookbackCandles.length} lookback candles`);
 
-      if (i > 0 && i % BATCH_SIZE === 0) {
-        console.log(`  Progress: ${i}/${useWindows.length} — ${fetched} usable, ${flat} flat, ${errors} errors`);
+      for (let i = 0; i < useWindows.length; i++) {
+        const win = useWindows[i];
+
+        if (i > 0 && i % BATCH_SIZE === 0) {
+          console.log(`  Progress: ${i}/${useWindows.length} — ${fetched} usable, ${flat} flat, ${errors} errors`);
+        }
+
+        const outcomeCandle = outcomeByStart.get(win.startMs);
+        const outcome = outcomeCandle ? outcomeFromCandle(outcomeCandle) : null;
+        if (!outcome) { errors++; continue; }
+        if (outcome.direction === 'FLAT') { flat++; continue; }
+
+        const candles = candlesBefore(lookbackCandles, win.startMs);
+        if (!candles || candles.length < 30) { skipped++; continue; }
+
+        let sigVec;
+        try {
+          sigVec = computeSignalVector(candles);
+        } catch (e) {
+          errors++;
+          continue;
+        }
+        if (!sigVec) { skipped++; continue; }
+
+        observations.push({
+          coin,
+          signalVector: sigVec,
+          actualDirection: outcome.direction,
+          windowStart: win.startMs,
+          pct: outcome.pct,
+        });
+        fetched++;
       }
-
-      // Rate-limit: 150ms minimum between requests (spec requirement)
-      await sleep(150);
-      const outcome = await fetchOutcome(sym, win.startMs);
-      if (!outcome) { errors++; continue; }
-      if (outcome.direction === 'FLAT') { flat++; continue; }
-
-      await sleep(150);
-      const candles = await fetchLookback(sym, win.startMs);
-      if (!candles || candles.length < 30) { skipped++; continue; }
-
-      let sigVec;
-      try {
-        sigVec = computeSignalVector(candles);
-      } catch (e) {
-        errors++;
-        continue;
-      }
-      if (!sigVec) { skipped++; continue; }
-
-      observations.push({
-        coin,
-        signalVector:    sigVec,
-        actualDirection: outcome.direction,
-        windowStart:     win.startMs,
-        pct:             outcome.pct,
-      });
-      fetched++;
+    } catch (e) {
+      console.error(`  Historical candle fetch failed for ${coin}: ${e.message}`);
+      errors += Math.max(0, useWindows.length - observations.length);
     }
 
     console.log(`\n  ${coin} complete: ${fetched} usable windows, ${flat} flat (skipped), ${skipped} insufficient data, ${errors} fetch errors`);
@@ -1058,7 +1153,7 @@ async function main() {
     const winRates = gradeSignals(observations);
 
     // Merge existing bias with flat-1.0 defaults for any keys not previously tuned
-    const bias     = currentBias[coin] || {};
+    const bias = currentBias[coin] || {};
     const sampleSV = observations[0].signalVector;
     const fullBias = {
       ...Object.fromEntries(Object.keys(sampleSV).map(k => [k, 1.0])),
@@ -1076,14 +1171,14 @@ async function main() {
 
   // ── Write JSON summary to backtest-logs/ ──────────────────────
   const summaryPath = path.join(LOG_DIR, `tuned-weights-market-${dateStr}.json`);
-  const summary     = {};
+  const summary = {};
   for (const [coin, r] of Object.entries(results)) {
     summary[coin] = {
-      observations:    r.obsCount,
+      observations: r.obsCount,
       initialAccuracy: r.optResult.initialAccuracy,
-      finalAccuracy:   r.optResult.finalAccuracy,
-      winRates:        r.winRates,
-      updatedWeights:  r.optResult.updatedWeights,
+      finalAccuracy: r.optResult.finalAccuracy,
+      winRates: r.winRates,
+      updatedWeights: r.optResult.updatedWeights,
     };
   }
   fs.writeFileSync(summaryPath, JSON.stringify(summary, null, 2), 'utf8');
@@ -1095,22 +1190,38 @@ async function main() {
     const { execSync } = require('child_process');
 
     for (const [coin, r] of Object.entries(results)) {
-      writeWeightsToPredictions(coin, r.oldBias, r.optResult.updatedWeights, PREDS, r.obsCount, dateStr);
-      writeWeightsToPredictions(coin, r.oldBias, r.optResult.updatedWeights, BT,   r.obsCount, dateStr);
+      writeWeightsToJSON(coin, r.oldBias, r.optResult.updatedWeights, WEIGHTS_PATH, r.obsCount, dateStr);
     }
 
-    // Syntax-check both files after writes
-    for (const f of [PREDS, BT]) {
-      try {
-        execSync(`node --check "${f}"`, { stdio: 'pipe' });
-        console.log(`  ${path.basename(f)} — ✅ syntax OK`);
-      } catch (e) {
-        console.error(`  ${path.basename(f)} — ❌ SYNTAX ERROR: ${e.stderr?.toString().slice(0, 300)}`);
-      }
+    // Sync JSON → predictions.js + backtest-runner.js + regime-weights.js
+    try {
+      execSync(`node "${path.join(ROOT, 'scripts', 'sync-weights.js')}"`, { stdio: 'inherit', cwd: ROOT });
+    } catch (e) {
+      console.error('  sync-weights.js failed:', e.message);
     }
   }
 
-  console.log('\n── COMPLETE ─────────────────────────────────────────────────\n');
+  console.log('\n================ COMPLETE ================\n');
 }
 
-main().catch(e => { console.error('FATAL:', e.stack); process.exit(1); });
+if (require.main === module) {
+  main().catch(e => { console.error('FATAL:', e.stack); process.exit(1); });
+} else {
+  module.exports = {
+    SYMBOL_MAP,
+    DEFAULT_COINS,
+    computeSignalVector,
+    generateWindows,
+    fetchOutcome,
+    fetchLookback,
+    sleep,
+    optimizeWeights,
+    writeWeightsToJSON,
+    // polymarket-retuner.js imports this under the old name — the actual
+    // function was always writeWeightsToJSON; this shorthand property
+    // referenced a non-existent variable and threw ReferenceError on
+    // require() the moment this branch executed.
+    writeWeightsToPredictions: writeWeightsToJSON,
+    gradeSignals,
+  };
+}

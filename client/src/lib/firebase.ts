@@ -1,5 +1,12 @@
-import { initializeApp } from "firebase/app";
 import { getAnalytics } from "firebase/analytics";
+import { getApp, getApps, initializeApp, type FirebaseApp } from "firebase/app";
+import {
+  GoogleAuthProvider,
+  browserLocalPersistence,
+  getAuth,
+  setPersistence,
+  type Auth,
+} from "firebase/auth";
 
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
@@ -11,16 +18,36 @@ const firebaseConfig = {
   measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID,
 };
 
-const hasRequiredConfig = Boolean(
+export const hasRequiredConfig = Boolean(
   firebaseConfig.apiKey &&
+  firebaseConfig.authDomain &&
   firebaseConfig.projectId &&
   firebaseConfig.appId
 );
 
+export let firebaseApp: FirebaseApp | null = null;
+export let firebaseAuth: Auth | null = null;
+export let googleAuthProvider: GoogleAuthProvider | null = null;
+
 if (hasRequiredConfig) {
-  const app = initializeApp(firebaseConfig);
+  firebaseApp = getApps().length ? getApp() : initializeApp(firebaseConfig);
+  firebaseAuth = getAuth(firebaseApp);
+  googleAuthProvider = new GoogleAuthProvider();
+  googleAuthProvider.setCustomParameters({ prompt: "select_account" });
+
   if (typeof window !== "undefined") {
-    getAnalytics(app);
+    try {
+      getAnalytics(firebaseApp);
+    } catch (_) {
+      // Analytics can fail in desktop/runtime contexts where GA is unavailable.
+    }
   }
 }
 
+export async function ensureFirebaseAuth(): Promise<Auth> {
+  if (!firebaseAuth) {
+    throw new Error("Firebase client config missing (check VITE_FIREBASE_* variables)");
+  }
+  await setPersistence(firebaseAuth, browserLocalPersistence);
+  return firebaseAuth;
+}

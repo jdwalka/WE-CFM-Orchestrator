@@ -23,19 +23,23 @@ const DAYS_BACK    = parseInt(getArg('--days') || '30', 10);
 const CANDLES_WANT = DAYS_BACK * 288;   // 288 × 5m = 1 day
 
 // ── Log directory & checkpoint ────────────────────────────────────
-const LOG_DIR    = 'F:\\WECRYP\\backtest-logs';
-const CHECKPOINT = 'F:\\WECRYP\\WECRYPTO_SESSION_CHECKPOINT_20260501.md';
+const ROOT       = path.resolve(__dirname, '..');
+const LOG_DIR    = path.join(ROOT, 'backtest-logs');
+const CHECKPOINT = path.join(ROOT, 'WECRYPTO_SESSION_CHECKPOINT_20260501.md');
 try { fs.mkdirSync(LOG_DIR, { recursive: true }); } catch (_) {}
 
 // ── Coins ─────────────────────────────────────────────────────────
 const PREDICTION_COINS = [
-  { sym: 'BTC', binSym: 'BTCUSDT' },
-  { sym: 'ETH', binSym: 'ETHUSDT' },
-  { sym: 'SOL', binSym: 'SOLUSDT' },
-  { sym: 'XRP', binSym: 'XRPUSDT' },
+  { sym: 'BTC', binSym: 'BTCUSDT', mexcSym: 'BTCUSDT' },
+  { sym: 'ETH', binSym: 'ETHUSDT', mexcSym: 'ETHUSDT' },
+  { sym: 'SOL', binSym: 'SOLUSDT', mexcSym: 'SOLUSDT' },
+  { sym: 'XRP', binSym: 'XRPUSDT', mexcSym: 'XRPUSDT' },
+  { sym: 'DOGE', binSym: 'DOGEUSDT', mexcSym: 'DOGEUSDT' },
+  { sym: 'BNB', binSym: 'BNBUSDT', mexcSym: 'BNBUSDT' },
+  { sym: 'HYPE', binSym: 'HYPEUSDT', mexcSym: 'HYPEUSDT' },
 ];
 
-// ── Weights (updated 2026-05-01) ──────────────────────────────────
+// ── Weights (updated 2026-08) ──────────────────────────────────────
 const COMPOSITE_WEIGHTS = {
   supertrend:0.10, hma:0.07, vwma:0.06, ema:0.05, sma:0.03, macd:0.07, persistence:0.07,
   bands:0.08, keltner:0.05, williamsR:0.07, rsi:0.06, cci:0.05, stochrsi:0.04,
@@ -45,25 +49,62 @@ const COMPOSITE_WEIGHTS = {
 const OUTER_ORBITAL_WEIGHTS = { momentum: 0.05, vwap: 0.05 };
 
 const PER_COIN_INDICATOR_BIAS = {
-  BTC: { stochrsi:1.8, vwma:1.2, volume:1.4, bands:2.5, williamsR:2.0, structure:1.4, fisher:1.3,
-         keltner:1.6, cci:1.2, cmf:1.0, rsi:0.8, macd:0.6, persistence:0.8, ema:0.5,
-         ichimoku:0.3, adx:0.3, vwap:0.2, sma:0.2, momentum:0.25, obv:0.1, hma:0.1, mfi:0.5, supertrend:0.4 },
-  ETH: { rsi:0.5, stochrsi:1.0, williamsR:1.4, bands:2.5, structure:1.4, keltner:1.2, cci:0.9,
-         fisher:0.8, cmf:0.6, volume:0.9, persistence:0.8, obv:0.5, macd:0.4, ema:0.35, sma:0.1,
-         adx:0.25, ichimoku:0.2, vwap:0.15, vwma:0.5, supertrend:0.3, mfi:0.05, momentum:0.20, hma:0.05 },
-  SOL: { bands:2.0, fisher:1.5, williamsR:4.0, hma:0.1, structure:1.2, cci:3.5, keltner:0.8,
-         obv:0.8, macd:0.3, ichimoku:0.2, adx:0.2, vwma:0.1, volume:0.2, sma:0.0, vwap:0.05,
-         rsi:0.05, persistence:0.05, ema:0.05, cmf:0.05, supertrend:0.05, momentum:0.50, mfi:0.05, stochrsi:0.05 },
-  XRP: { structure:1.0, volume:1.5, vwap:4.0, fisher:2.5, rsi:3.5, obv:1.5, williamsR:1.2,
-         bands:0.8, supertrend:0.5, cci:0.5, cmf:0.6, keltner:0.4, macd:0.3, stochrsi:0.8,
-         persistence:0.2, ema:0.2, adx:0.2, ichimoku:0.2, sma:0.0, mfi:0.1, momentum:0.01, vwma:0.05, hma:0.05 },
+  BTC: {
+    bands: 1.09, williamsR: 1.08, obv: 0.956, vwap: 1.05, hma: 0.9, momentum: 0.55,
+    stochrsi: 1.05, sma: 0.95, adx: 1.01, mfi: 1.13, supertrend: 0.942, ichimoku: 0.885,
+    keltner: 1.131, volume: 0.94, ema: 0.891, vwma: 0.86, macd: 0.91, structure: 1.158,
+    fisher: 1.08, persistence: 0.963, rsi: 0.637, cci: 1.07, cmf: 1.01, fearGreed: 1,
+    book: 0.85, flow: 0.8,
+  },
+  ETH: {
+    bands: 1.33, mfi: 1.1, sma: 0.957, adx: 1.11, supertrend: 1.069, ichimoku: 0.964,
+    hma: 0.85, vwap: 0.82, ema: 0.908, cmf: 1.1, momentum: 0.55, obv: 0.918,
+    fisher: 1.24, vwma: 0.94, macd: 0.851, cci: 1.22, rsi: 0.81, structure: 1.2,
+    persistence: 0.981, stochrsi: 1.11, williamsR: 1.3, keltner: 1.291, volume: 0.92,
+    fearGreed: 1, book: 0.9, flow: 0.85,
+  },
+  SOL: {
+    williamsR: 1.152, cci: 1.12, sma: 1.061, mfi: 1.13, rsi: 1.02, supertrend: 0.963,
+    ema: 0.876, bands: 1.18, stochrsi: 0.86, volume: 0.95, cmf: 0.8, ichimoku: 0.88,
+    persistence: 0.709, adx: 0.9, hma: 0.76, vwap: 0.7, vwma: 0.712, macd: 0.9,
+    keltner: 1.351, fisher: 1.13, momentum: 0.55, obv: 0.863, structure: 1.285,
+    fearGreed: 0.9, book: 0.75, flow: 0.7,
+  },
+  XRP: {
+    vwap: 0.98, rsi: 0.91, fisher: 0.83, hma: 1.009, mfi: 1.02, momentum: 0.55,
+    sma: 0.765, macd: 1.063, vwma: 0.803, persistence: 0.865, ichimoku: 0.859, obv: 0.809,
+    volume: 0.84, adx: 0.83, ema: 0.733, keltner: 0.947, cci: 0.936, williamsR: 0.875,
+    supertrend: 0.728, cmf: 0.84, stochrsi: 0.988, bands: 0.992, structure: 1.127,
+    fearGreed: 0.7, book: 0.606, flow: 0.556,
+  },
+  DOGE: {
+    obv: 4.5, volume: 3.5, cmf: 3, bands: 2.5, mfi: 2, structure: 1.8, fisher: 1.8,
+    keltner: 1.212, cci: 1.012, williamsR: 0.824, rsi: 0.5, persistence: 0.252, ema: 0.277,
+    macd: 0.181, ichimoku: 0.177, adx: 0.105, hma: 0.296, sma: 0, supertrend: 0.197,
+    vwap: 0.102, stochrsi: 0.068, momentum: 0.052, vwma: 0.029, fearGreed: 2,
+  },
+  BNB: {
+    sma: 5, mfi: 4.5, ema: 4, vwap: 3.5, hma: 3, vwma: 2.5, volume: 3.5, momentum: 2,
+    persistence: 2, macd: 1.5, ichimoku: 2, supertrend: 2, cmf: 1.5, obv: 0.5,
+    fisher: 0.831, cci: 0.34, adx: 0.505, structure: 0.065, keltner: 0.093,
+    williamsR: 0.089, bands: 0.093, rsi: 0.071, stochrsi: 0.089, fearGreed: 0.8,
+  },
+  HYPE: {
+    williamsR: 6.5, fisher: 5, cci: 4.5, bands: 3, keltner: 2, rsi: 1.5, stochrsi: 1.2,
+    structure: 0.8, obv: 0.5, persistence: 0.4, vwap: 0.3, ema: 0.3, cmf: 0.3,
+    adx: 0.3, ichimoku: 0.2, sma: 0, vwma: 0.2, supertrend: 0.1, momentum: 0.05,
+    hma: 0.05, macd: 0.1, volume: 0.3, mfi: 0.3, fearGreed: 1.8,
+  },
 };
 
 const BACKTEST_FILTER_OVERRIDES = {
-  BTC:  { h1:{entryThreshold:0.36,minAgreement:0.56}, h5:{entryThreshold:0.36,minAgreement:0.56}, h10:{entryThreshold:0.36,minAgreement:0.57}, h15:{entryThreshold:0.36,minAgreement:0.58} },
-  ETH:  { h1:{entryThreshold:0.42,minAgreement:0.56}, h5:{entryThreshold:0.42,minAgreement:0.56}, h10:{entryThreshold:0.40,minAgreement:0.57}, h15:{entryThreshold:0.38,minAgreement:0.58} },
-  XRP:  { h1:{entryThreshold:0.40,minAgreement:0.54}, h5:{entryThreshold:0.40,minAgreement:0.54}, h10:{entryThreshold:0.36,minAgreement:0.56}, h15:{entryThreshold:0.32,minAgreement:0.58} },
-  SOL:  { h1:{entryThreshold:0.45,minAgreement:0.66}, h5:{entryThreshold:0.45,minAgreement:0.66}, h10:{entryThreshold:0.40,minAgreement:0.62}, h15:{entryThreshold:0.41,minAgreement:0.64,maxThreshold:0.55} },
+  BTC:  { h1:{entryThreshold:0.06,minAgreement:0.50}, h5:{entryThreshold:0.08,minAgreement:0.50}, h10:{entryThreshold:0.08,minAgreement:0.50}, h15:{entryThreshold:0.06,minAgreement:0.50} },
+  ETH:  { h1:{entryThreshold:0.06,minAgreement:0.50}, h5:{entryThreshold:0.08,minAgreement:0.50}, h10:{entryThreshold:0.08,minAgreement:0.50}, h15:{entryThreshold:0.06,minAgreement:0.50} },
+  SOL:  { h1:{entryThreshold:0.06,minAgreement:0.50}, h5:{entryThreshold:0.08,minAgreement:0.50}, h10:{entryThreshold:0.08,minAgreement:0.50}, h15:{entryThreshold:0.06,minAgreement:0.50} },
+  XRP:  { h1:{entryThreshold:0.06,minAgreement:0.50}, h5:{entryThreshold:0.08,minAgreement:0.50}, h10:{entryThreshold:0.08,minAgreement:0.50}, h15:{entryThreshold:0.06,minAgreement:0.50} },
+  DOGE: { h1:{entryThreshold:0.06,minAgreement:0.50}, h5:{entryThreshold:0.08,minAgreement:0.50}, h10:{entryThreshold:0.08,minAgreement:0.50}, h15:{entryThreshold:0.06,minAgreement:0.50} },
+  BNB:  { h1:{entryThreshold:0.06,minAgreement:0.50}, h5:{entryThreshold:0.08,minAgreement:0.50}, h10:{entryThreshold:0.08,minAgreement:0.50}, h15:{entryThreshold:0.06,minAgreement:0.50} },
+  HYPE: { h1:{entryThreshold:0.06,minAgreement:0.50}, h5:{entryThreshold:0.08,minAgreement:0.50}, h10:{entryThreshold:0.08,minAgreement:0.50}, h15:{entryThreshold:0.06,minAgreement:0.50} },
 };
 
 const SCORE_AMPLIFIER        = 1.6;
@@ -284,7 +325,8 @@ function calcCCI(candles, period) {
   if (candles.length < period) return 0;
   const slice = candles.slice(-period), tps = slice.map(c => (c.h + c.l + c.c) / 3);
   const mean = tps.reduce((s, v) => s + v, 0) / period, meanDev = tps.reduce((s, v) => s + Math.abs(v - mean), 0) / period;
-  return meanDev > 0 ? (tps[tps.length - 1] - mean) / (0.015 * meanDev) : 0;
+  // Clamped to +/-500, matching src/core/predictions.js's live calcCCI.
+  return meanDev > 0.00001 ? Math.max(-500, Math.min(500, (tps[tps.length - 1] - mean) / (0.015 * meanDev))) : 0;
 }
 
 function calcCMF(candles, period) {
@@ -368,16 +410,30 @@ function buildSignalModel(candles, sym = null) {
   if (!candles || candles.length < 26) return null;
   const closes = candles.map(c => c.c), lastPrice = closes[closes.length - 1];
 
-  const rsi = calcRSI(closes);
-  let rsiSig = rsi > 70 ? -0.6 - ((rsi - 70) / 30) * 0.4 : rsi < 30 ? 0.6 + ((30 - rsi) / 30) * 0.4 : (rsi - 50) / 50 * 0.3;
+  // 1. Multi-scale EMA Trend (9, 21, 50)
+  const ema9 = calcEMA(closes, 9);
+  const ema21 = calcEMA(closes, 21);
+  const ema50 = closes.length >= 50 ? calcEMA(closes, 50) : calcEMA(closes, 26);
+  const emaCrossShort = (ema9[ema9.length-1] - ema21[ema21.length-1]) / (ema21[ema21.length-1] || 1) * 100;
+  const emaCrossLong = (ema21[ema21.length-1] - ema50[ema50.length-1]) / (ema50[ema50.length-1] || 1) * 100;
+  const emaSig = clamp(emaCrossShort * 4.0 + emaCrossLong * 2.5, -1, 1);
 
-  const ema9 = calcEMA(closes, 9), ema21 = calcEMA(closes, 21);
-  const emaCross = (ema9[ema9.length-1] - ema21[ema21.length-1]) / (ema21[ema21.length-1] || 1) * 100;
-  const emaSig = clamp(emaCross * 5, -1, 1);
+  // 2. Multi-horizon Momentum & Impulse
+  const mom1 = closes.length > 1 ? ((lastPrice - closes[closes.length - 2]) / (closes[closes.length - 2] || 1)) * 100 : 0;
+  const mom3 = closes.length > 3 ? ((lastPrice - closes[closes.length - 4]) / (closes[closes.length - 4] || 1)) * 100 : 0;
+  const mom6 = closes.length > 6 ? ((lastPrice - closes[closes.length - 7]) / (closes[closes.length - 7] || 1)) * 100 : 0;
+  const momSig = clamp(mom1 * 2.5 + mom3 * 1.5 + mom6 * 0.8, -1, 1);
 
+  // 3. Volatility & Supertrend
+  const supertrendSig = calcSupertrend(candles, 10, 2.5).signal;
+  const isStrongTrend = Math.abs(emaCrossShort) > 0.08 || Math.abs(mom3) > 0.20 || supertrendSig !== 0;
+
+  // 4. VWAP & Volume Delta
   const vwapRolling = calcVWAP(candles.slice(-80)), vwapRollingLast = vwapRolling[vwapRolling.length - 1];
   const vwapDev = ((lastPrice - vwapRollingLast) / (vwapRollingLast || 1)) * 100;
-  let vwapSig = Math.abs(vwapDev) < 0.3 ? 0 : vwapDev > 1.5 ? -0.5 : vwapDev < -1.5 ? 0.5 : vwapDev > 0 ? 0.3 : -0.3;
+  let vwapSig = isStrongTrend
+    ? (vwapDev > 0 ? 0.6 : -0.6)
+    : (Math.abs(vwapDev) < 0.3 ? 0 : vwapDev > 1.5 ? -0.5 : vwapDev < -1.5 ? 0.5 : vwapDev > 0 ? 0.3 : -0.3);
 
   const obv = calcOBV(candles), obvSig = clamp(slopeOBV(obv, 8) / 5, -1, 1);
 
@@ -385,76 +441,66 @@ function buildSignalModel(candles, sym = null) {
   recent.forEach(c => { const range = c.h - c.l || 0.0001, bodyPos = (c.c - c.l) / range, vol = c.v || 1; buyV += vol * bodyPos; sellV += vol * (1 - bodyPos); });
   const volSig = clamp((buyV / (sellV || 1) - 1) * 0.5, -1, 1);
 
-  const mom = closes.length > 6 ? ((closes[closes.length-1] - closes[closes.length-7]) / (closes[closes.length-7] || 1)) * 100 : 0;
-  const momSig = clamp(mom / 2, -1, 1);
+  const atr = calcATR(candles), atrPct = lastPrice > 0 ? (atr / lastPrice) * 100 : 0.4;
 
-  const atr = calcATR(candles), atrPct = lastPrice > 0 ? (atr / lastPrice) * 100 : 0;
-  const bands = calcBollinger(closes);
-  let bandSig = bands.position >= 0.88 ? -clamp((bands.position - 0.88) / 0.12, 0, 1) : bands.position <= 0.12 ? clamp((0.12 - bands.position) / 0.12, 0, 1) : clamp(-(bands.position - 0.5) * 0.45, -0.22, 0.22);
+  // 5. Regime-Adaptive Oscillators
+  const rsi = calcRSI(closes, 14);
+  let rsiSig = isStrongTrend
+    ? (rsi >= 50 ? clamp((rsi - 50) / 25, 0, 1) : -clamp((50 - rsi) / 25, 0, 1))
+    : (rsi > 70 ? -clamp((rsi - 70) / 20, 0, 1) : rsi < 30 ? clamp((30 - rsi) / 20, 0, 1) : (rsi - 50) / 50 * 0.2);
+
+  const bands = calcBollinger(closes, 20);
+  let bandSig = 0;
+  if (isStrongTrend) {
+    bandSig = bands.position > 0.75 ? 0.65 : bands.position < 0.25 ? -0.65 : 0;
+  } else {
+    bandSig = bands.position >= 0.88 ? -clamp((bands.position - 0.88) / 0.12, 0, 1)
+      : bands.position <= 0.12 ? clamp((0.12 - bands.position) / 0.12, 0, 1)
+      : clamp(-(bands.position - 0.5) * 0.4, -0.2, 0.2);
+  }
 
   const persistence = calcTrendPersistence(closes, ema21), structure = calcStructureBias(candles, atrPct);
   const macdR = calcMACD(closes);
   const macdHistNorm = lastPrice > 0 ? (macdR.histogram / lastPrice) * 1000 : 0;
-  const macdSig = clamp(macdHistNorm * 2.5 + (macdR.macd > macdR.signal ? 0.18 : macdR.macd < macdR.signal ? -0.18 : 0), -1, 1);
+  const macdSig = clamp(macdHistNorm * 3.2 + (macdR.macd > macdR.signal ? 0.25 : -0.25), -1, 1);
 
   const stochR = calcStochRSI(closes);
-  let stochSig = stochR.k > 80 ? -0.6 - ((stochR.k - 80) / 20) * 0.4 : stochR.k < 20 ? 0.6 + ((20 - stochR.k) / 20) * 0.4 : (stochR.k - 50) / 50 * 0.35;
-  stochSig = clamp(stochSig + clamp((stochR.k - stochR.d) / 20, -0.18, 0.18), -1, 1);
+  let stochSig = isStrongTrend
+    ? (stochR.k >= 50 ? clamp((stochR.k - 50) / 35, 0, 1) : -clamp((50 - stochR.k) / 35, 0, 1))
+    : (stochR.k > 80 ? -0.6 : stochR.k < 20 ? 0.6 : (stochR.k - 50) / 50 * 0.2);
 
   const adxR = calcADX(candles);
-  const adxSig = clamp(((adxR.pdi - adxR.mdi) / Math.max(adxR.pdi + adxR.mdi, 1)) * clamp(adxR.adx / 50, 0, 1) * 1.2, -1, 1);
+  const adxSig = clamp(((adxR.pdi - adxR.mdi) / Math.max(adxR.pdi + adxR.mdi, 1)) * clamp(adxR.adx / 30, 0, 1) * 1.5, -1, 1);
 
   const ichi = calcIchimoku(candles);
-  let ichiSig = ichi.cloudPos === 'above' ? 0.5 + (ichi.tenkan > ichi.kijun ? 0.2 : 0) : ichi.cloudPos === 'below' ? -0.5 - (ichi.tenkan < ichi.kijun ? 0.2 : 0) : ichi.tenkan > ichi.kijun ? 0.12 : ichi.tenkan < ichi.kijun ? -0.12 : 0;
-  ichiSig = clamp(ichiSig, -1, 1);
+  let ichiSig = ichi.cloudPos === 'above' ? 0.6 + (ichi.tenkan > ichi.kijun ? 0.2 : 0) : ichi.cloudPos === 'below' ? -0.6 - (ichi.tenkan < ichi.kijun ? 0.2 : 0) : ichi.tenkan > ichi.kijun ? 0.15 : ichi.tenkan < ichi.kijun ? -0.15 : 0;
 
   const wR = calcWilliamsR(candles);
-  let wRSig = wR > -20 ? -0.6 - ((wR + 20) / 20) * 0.4 : wR < -80 ? 0.6 + ((-80 - wR) / 20) * 0.4 : (wR + 50) / 50 * -0.3;
-  wRSig = clamp(wRSig, -1, 1);
+  let wRSig = isStrongTrend
+    ? (wR > -50 ? clamp((wR + 50) / 40, 0, 1) : -clamp((-50 - wR) / 40, 0, 1))
+    : (wR > -20 ? -0.6 : wR < -80 ? 0.6 : (wR + 50) / 50 * -0.2);
 
   const mfi = calcMFI(candles);
-  let mfiSig = mfi > 80 ? -0.6 - ((mfi - 80) / 20) * 0.4 : mfi < 20 ? 0.6 + ((20 - mfi) / 20) * 0.4 : (mfi - 50) / 50 * 0.35;
-  mfiSig = clamp(mfiSig, -1, 1);
+  let mfiSig = isStrongTrend ? (mfi >= 50 ? 0.5 : -0.5) : (mfi > 80 ? -0.5 : mfi < 20 ? 0.5 : (mfi - 50) / 50 * 0.2);
 
   const hmaLine = calcHMA(closes, 16), hmaCurr = hmaLine.length ? hmaLine[hmaLine.length - 1] : lastPrice;
   const hmaPrev2 = hmaLine.length > 2 ? hmaLine[hmaLine.length - 3] : hmaCurr;
   let hmaSig = clamp(((hmaCurr - hmaPrev2) / (Math.abs(hmaPrev2) || 1) * 100) * 8, -0.7, 0.7);
-  const hmaDevPct = (lastPrice - hmaCurr) / (Math.abs(hmaCurr) || 1) * 100;
-  if (Math.abs(hmaDevPct) > 0.4) hmaSig += clamp(-hmaDevPct * 0.28, -0.3, 0.3);
-  hmaSig = clamp(hmaSig, -1, 1);
 
   const vwmaLine = calcVWMA(candles, 20), vwmaCurr = vwmaLine[vwmaLine.length - 1];
   const vwmaPrev = vwmaLine.length > 3 ? vwmaLine[vwmaLine.length - 4] : vwmaCurr;
   let vwmaSig = clamp(((vwmaCurr - vwmaPrev) / (Math.abs(vwmaPrev) || 1) * 100) * 6, -0.6, 0.6);
-  vwmaSig = clamp(vwmaSig + clamp(((lastPrice - vwmaCurr) / (Math.abs(vwmaCurr) || 1) * 100) * 0.35, -0.4, 0.4), -1, 1);
 
   const sma9arr = calcSMA(closes, 9), sma21arr = calcSMA(closes, 21);
   const smaSig = clamp(((sma9arr[sma9arr.length-1] - sma21arr[sma21arr.length-1]) / (Math.abs(sma21arr[sma21arr.length-1]) || 1) * 100) * 5, -1, 1);
 
-  const supertrendSig = calcSupertrend(candles, 10, 3.0).signal;
   const cciVal = calcCCI(candles, 14);
-  let cciSig = cciVal > 150 ? -clamp((cciVal - 100) / 150, 0, 1) : cciVal < -150 ? clamp((-100 - cciVal) / 150, 0, 1) : clamp(-cciVal / 200, -0.3, 0.3);
-  cciSig = clamp(cciSig, -1, 1);
+  let cciSig = isStrongTrend ? (cciVal >= 0 ? 0.6 : -0.6) : (cciVal > 150 ? -0.5 : cciVal < -150 ? 0.5 : 0);
 
-  const cmfSig = clamp(calcCMF(candles, 20) * 2.5, -1, 1);
-  const fisherSig = clamp(-calcFisher(candles, 10) / 2.5, -1, 1);
+  let cmfSig = clamp(calcCMF(candles, 20) * 2.5, -1, 1);
+  let fisherSig = clamp(calcFisher(candles, 10) / 2.0, -1, 1);
   const kelt = calcKeltner(candles, 20, 2.0);
-  let keltSig = kelt.position >= 0.88 ? -clamp((kelt.position - 0.88) / 0.12, 0, 1) : kelt.position <= 0.12 ? clamp((0.12 - kelt.position) / 0.12, 0, 1) : clamp(-(kelt.position - 0.5) * 0.45, -0.22, 0.22);
-
-  const isBullTrend = emaCross > 0.15 && adxR.pdi > adxR.mdi && adxR.adx > 22;
-  const isBearTrend = emaCross < -0.15 && adxR.mdi > adxR.pdi && adxR.adx > 22;
-  if (isBullTrend || isBearTrend) {
-    const sf = clamp((adxR.adx - 22) / 28, 0, 0.70);
-    if (isBullTrend) {
-      if (rsiSig < 0) rsiSig *= (1 - sf); if (stochSig < 0) stochSig *= (1 - sf);
-      if (wRSig < 0) wRSig *= (1 - sf); if (bandSig < 0) bandSig *= (1 - sf * 0.6);
-      if (mfiSig < 0) mfiSig *= (1 - sf * 0.6);
-    } else {
-      if (rsiSig > 0) rsiSig *= (1 - sf); if (stochSig > 0) stochSig *= (1 - sf);
-      if (wRSig > 0) wRSig *= (1 - sf); if (bandSig > 0) bandSig *= (1 - sf * 0.6);
-      if (mfiSig > 0) mfiSig *= (1 - sf * 0.6);
-    }
-  }
+  let keltSig = isStrongTrend ? (kelt.position > 0.7 ? 0.6 : kelt.position < 0.3 ? -0.6 : 0) : (kelt.position >= 0.88 ? -0.5 : kelt.position <= 0.12 ? 0.5 : 0);
 
   const sv = {
     rsi: rsiSig, ema: emaSig, vwap: vwapSig, obv: obvSig, volume: volSig,
@@ -466,19 +512,28 @@ function buildSignalModel(candles, sym = null) {
 
   const coinBias = (sym && PER_COIN_INDICATOR_BIAS[sym]) ? PER_COIN_INDICATOR_BIAS[sym] : {};
   const keys = Object.keys(sv);
-  const effW = k => (COMPOSITE_WEIGHTS[k] ?? OUTER_ORBITAL_WEIGHTS[k] ?? 0) * (coinBias[k] ?? 1.0);
+  const effW = k => (COMPOSITE_WEIGHTS[k] ?? OUTER_ORBITAL_WEIGHTS[k] ?? 0.05) * (coinBias[k] ?? 1.0);
   const totalWeight = keys.reduce((s, k) => s + effW(k), 0) || 1;
   const rawComposite = keys.reduce((s, k) => s + sv[k] * effW(k), 0) / totalWeight;
-  const adxGate = adxR.adx < 20 ? Math.max(0.25, adxR.adx / 20) : 1.0;
-  const score = clamp(rawComposite * SCORE_AMPLIFIER * adxGate, -1, 1);
+  const adxGate = adxR.adx < 15 ? Math.max(0.35, adxR.adx / 15) : 1.0;
+  const score = clamp(rawComposite * 1.8 * adxGate, -1, 1);
   const agr = summarizeAgreement(sv);
 
   return {
     score, absScore: Math.abs(score), coreScore: score,
     agreement: agr.agreement, conflict: agr.conflict,
     structureBias: structure.signal, structureZone: structure.zone, persistenceScore: persistence.signal,
-    emaCross, mom, rsi, atrPct, signalVector: sv,
+    emaCross: emaCrossShort, mom: mom3, rsi, atrPct, signalVector: sv,
+    isStrongTrend,
   };
+}
+
+function normalCDF(z) {
+  const t = 1 / (1 + 0.2316419 * Math.abs(z));
+  const poly = t * (0.319381530 + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429))));
+  const pdf = Math.exp(-0.5 * z * z) / Math.sqrt(2 * Math.PI);
+  const p = 1 - pdf * poly;
+  return z >= 0 ? p : 1 - p;
 }
 
 // ── HTTP helpers ──────────────────────────────────────────────────
@@ -493,30 +548,57 @@ function httpGet(url) {
   });
 }
 
-const KRAKEN_PAIR = { BTC: 'XXBTZUSD', ETH: 'XETHZUSD', SOL: 'SOLUSD', XRP: 'XXRPZUSD' };
-const CB_PRODUCT  = { BTC: 'BTC-USD',  ETH: 'ETH-USD',  SOL: 'SOL-USD', XRP: 'XRP-USD'  };
+const KRAKEN_PAIR = { BTC: 'XXBTZUSD', ETH: 'XETHZUSD', SOL: 'SOLUSD', XRP: 'XXRPZUSD', DOGE: 'XDGUSD' };
+const CB_PRODUCT  = { BTC: 'BTC-USD',  ETH: 'ETH-USD',  SOL: 'SOL-USD', XRP: 'XRP-USD', DOGE: 'DOGE-USD', BNB: 'BNB-USD', HYPE: 'HYPE-USD' };
 
-async function fetchBinanceUSCandles(symbol, limit = 1000, interval = '5m') {
+async function fetchBinanceCandles(symbol, limit = 1000, interval = '5m') {
   const PAGE = 1000;
-  if (limit <= PAGE) {
-    const url = `https://api.binance.us/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
-    const { status, body } = await httpGet(url);
-    if (status !== 200) throw new Error(`Binance.US HTTP ${status}`);
-    return JSON.parse(body).map(r => ({ t: Number(r[0]), o: parseFloat(r[1]), h: parseFloat(r[2]), l: parseFloat(r[3]), c: parseFloat(r[4]), v: parseFloat(r[5]) }));
+  const hosts = [
+    'https://data-api.binance.vision/api/v3',
+    'https://api.binance.us/api/v3',
+    'https://api.binance.com/api/v3',
+  ];
+
+  for (const host of hosts) {
+    try {
+      if (limit <= PAGE) {
+        const url = `${host}/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
+        const { status, body } = await httpGet(url);
+        if (status === 200) {
+          const rows = JSON.parse(body);
+          if (Array.isArray(rows) && rows.length > 0) {
+            return rows.map(r => ({ t: Number(r[0]), o: parseFloat(r[1]), h: parseFloat(r[2]), l: parseFloat(r[3]), c: parseFloat(r[4]), v: parseFloat(r[5]) }));
+          }
+        }
+      } else {
+        const pages = []; let endTime = null, remaining = limit;
+        while (remaining > 0) {
+          const fetchCount = Math.min(PAGE, remaining);
+          const url = endTime ? `${host}/klines?symbol=${symbol}&interval=${interval}&limit=${fetchCount}&endTime=${endTime}` : `${host}/klines?symbol=${symbol}&interval=${interval}&limit=${fetchCount}`;
+          const { status, body } = await httpGet(url);
+          if (status !== 200) break;
+          const rows = JSON.parse(body);
+          if (!Array.isArray(rows) || rows.length === 0) break;
+          pages.unshift(rows); endTime = Number(rows[0][0]) - 1; remaining -= rows.length;
+          if (rows.length < fetchCount) break;
+          await new Promise(r => setTimeout(r, 100));
+        }
+        if (pages.length > 0) {
+          return pages.flat().map(r => ({ t: Number(r[0]), o: parseFloat(r[1]), h: parseFloat(r[2]), l: parseFloat(r[3]), c: parseFloat(r[4]), v: parseFloat(r[5]) }));
+        }
+      }
+    } catch (_) {}
   }
-  const pages = []; let endTime = null, remaining = limit;
-  while (remaining > 0) {
-    const fetchCount = Math.min(PAGE, remaining);
-    const url = endTime ? `https://api.binance.us/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${fetchCount}&endTime=${endTime}` : `https://api.binance.us/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${fetchCount}`;
-    const { status, body } = await httpGet(url);
-    if (status !== 200) throw new Error(`Binance.US HTTP ${status}`);
-    const rows = JSON.parse(body);
-    if (!Array.isArray(rows) || rows.length === 0) break;
-    pages.unshift(rows); endTime = Number(rows[0][0]) - 1; remaining -= rows.length;
-    if (rows.length < fetchCount) break;
-    await new Promise(r => setTimeout(r, 150));
-  }
-  return pages.flat().map(r => ({ t: Number(r[0]), o: parseFloat(r[1]), h: parseFloat(r[2]), l: parseFloat(r[3]), c: parseFloat(r[4]), v: parseFloat(r[5]) }));
+  throw new Error(`Binance endpoints unreachable for ${symbol}`);
+}
+
+async function fetchMexcCandles(symbol, limit = 1000, interval = '5m') {
+  const url = `https://api.mexc.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${Math.min(1000, limit)}`;
+  const { status, body } = await httpGet(url);
+  if (status !== 200) throw new Error(`MEXC HTTP ${status}`);
+  const rows = JSON.parse(body);
+  if (!Array.isArray(rows) || rows.length === 0) throw new Error(`No MEXC data`);
+  return rows.map(r => ({ t: Number(r[0]), o: parseFloat(r[1]), h: parseFloat(r[2]), l: parseFloat(r[3]), c: parseFloat(r[4]), v: parseFloat(r[5]) }));
 }
 
 async function fetchKrakenCandles(sym, limit = 1000) {
@@ -545,7 +627,8 @@ async function fetchCoinbaseCandles(sym, limit = 300) {
 
 async function fetchCandles(coin, limit) {
   const errors = [];
-  try { return await fetchBinanceUSCandles(coin.binSym, limit); } catch(e) { errors.push(`BinanceUS: ${e.message}`); }
+  try { return await fetchBinanceCandles(coin.binSym, limit); } catch(e) { errors.push(`Binance: ${e.message}`); }
+  try { return await fetchMexcCandles(coin.mexcSym || coin.binSym, limit); } catch(e) { errors.push(`MEXC: ${e.message}`); }
   try { return await fetchKrakenCandles(coin.sym, limit); }      catch(e) { errors.push(`Kraken: ${e.message}`); }
   try { return await fetchCoinbaseCandles(coin.sym, Math.min(300, limit)); } catch(e) { errors.push(`Coinbase: ${e.message}`); }
   throw new Error(errors.join(' | '));
@@ -553,20 +636,34 @@ async function fetchCandles(coin, limit) {
 
 // Fetch 1m candles for h1/h5 analysis
 async function fetch1mCandles(coin) {
-  const url = `https://api.binance.us/api/v3/klines?symbol=${coin.binSym}&interval=1m&limit=1000`;
-  try {
-    const { status, body } = await httpGet(url);
-    if (status !== 200) return null;
-    return JSON.parse(body).map(r => ({ t: Number(r[0]), o: parseFloat(r[1]), h: parseFloat(r[2]), l: parseFloat(r[3]), c: parseFloat(r[4]), v: parseFloat(r[5]) }));
-  } catch(_) { return null; }
+  const hosts = ['https://data-api.binance.vision/api/v3', 'https://api.binance.us/api/v3', 'https://api.binance.com/api/v3'];
+  for (const host of hosts) {
+    const url = `${host}/klines?symbol=${coin.binSym}&interval=1m&limit=1000`;
+    try {
+      const { status, body } = await httpGet(url);
+      if (status === 200) {
+        const rows = JSON.parse(body);
+        if (Array.isArray(rows) && rows.length > 0) {
+          return rows.map(r => ({ t: Number(r[0]), o: parseFloat(r[1]), h: parseFloat(r[2]), l: parseFloat(r[3]), c: parseFloat(r[4]), v: parseFloat(r[5]) }));
+        }
+      }
+    } catch(_) {}
+  }
+  return null;
 }
 
 // ── Core backtest runner (per-coin, per-horizon) ──────────────────
-function runBacktest(sym, candles) {
-  const BARMIN = 5, LIVE_WINDOW = 300, startIdx = Math.max(52, BACKTEST_MIN_TRAIN_OBS);
+// candles5m: primary series; candles1m optional for h1/h5 (fixes h1≡h5 bug when only 5m bars used).
+function runBacktest(sym, candles5m, candles1m = null) {
   const results = {};
 
   for (const horizonMin of SHORT_HORIZON_MINUTES) {
+    // Use 1m series for h1/h5 when available so horizons are not byte-identical.
+    const use1m = horizonMin <= 5 && Array.isArray(candles1m) && candles1m.length >= 120;
+    const candles = use1m ? candles1m : candles5m;
+    const BARMIN = use1m ? 1 : 5;
+    const LIVE_WINDOW = use1m ? 180 : 300;
+    const startIdx = Math.max(52, BACKTEST_MIN_TRAIN_OBS);
     const horizonBars = Math.max(1, Math.round(horizonMin / BARMIN));
     const filter = BACKTEST_FILTER_OVERRIDES[sym]?.[`h${horizonMin}`] || { entryThreshold: 0.30, minAgreement: 0.58 };
     const observations = [], indAccum = {};
@@ -962,7 +1059,7 @@ async function main() {
     console.log(candles1m ? `${candles1m.length} candles ✓` : 'skipped');
 
     process.stdout.write(`  Running advanced backtest for ${coin.sym}... `);
-    const results = runBacktest(coin.sym, candles);
+    const results = runBacktest(coin.sym, candles, candles1m);
     console.log('done');
 
     allResults[coin.sym] = results;

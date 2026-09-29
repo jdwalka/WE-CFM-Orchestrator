@@ -1,0 +1,30 @@
+    return {
+      price: lastPrice,
+      score,
+      signal: signalFromScore(score),
+      confidence: Math.round(clamp(confidenceFromScore(Math.abs(score)) * (tapeVelocity.confidenceBoostMult || 1), 0, 95)),
+      indicators: indicatorsSummary,
+      projections: SHORT_HORIZON_MINUTES.reduce((acc, horizonMin) => {
+        let targetScale = horizonMin / 60;
+        let rangeScale = Math.max(0.12, Math.sqrt(horizonMin / 15) * 0.5) * projectionRangeExpansionMult;
+        let target = lastPrice * (1 + mom / 100 * targetScale * projectionTargetDriftMult);
+        const entry = projectionKey(horizonMin);
+
+        if (horizonMin === 15) {
+          const ns = getNextCandleSession();
+          targetScale = ns.minsRemaining / 60;
+          rangeScale = Math.max(0.05, Math.sqrt(ns.minsRemaining / 15) * 0.5) * projectionRangeExpansionMult;
+          target = lastPrice * (1 + mom / 100 * targetScale * projectionTargetDriftMult);
+          acc[entry] = { horizonMin, target, high: target + atr * rangeScale, low: target - atr * rangeScale };
+          acc[entry].nextSession = {
+            target: target,
+            high: target + atr * rangeScale,
+            low: target - atr * rangeScale,
+            opensIn: ns.minsRemaining,
+            isPivoted: ns.isPivoted,
+            open: ns.nextOpen,
+            close: ns.nextClose,
+            maturity: ns.maturity,
+            freshEntry: ns.freshEntry,
+            lateEntry: ns.lateEntry,
+          };

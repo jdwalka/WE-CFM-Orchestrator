@@ -59,7 +59,7 @@ Expected output:
 ╚════════════════════════════════════════════╝
 
 Environment: production
-API Key: a8f1995c...
+API Key: <key-id-prefix>...
 
 [Kalshi Worker] HTTP server listening on http://127.0.0.1:3050
 

@@ -1,0 +1,27 @@
+name: Sync CLAUDE.md
+
+# Pulls CLAUDE.md from the canonical upstream repo and opens a PR when it drifts.
+# REQUIRED: set `source-repo` below to the real upstream (owner/repo).
+
+on:
+  schedule:
+    - cron: "0 7 * * 1" # Mondays 07:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Sync CLAUDE.md
+        uses: EtK2000/CLAUDE.md-sync@adb107d85b82c3d39b63fe2f5d726bb5b16c1bc4
+        with:
+          source-repo: JohnDaWalka/WE-CFM-Orchestrator # TODO: confirm canonical upstream
+          source-ref: main
+          source-path: CLAUDE.md
+          target-path: CLAUDE.md
+          token: ${{ github.token }}

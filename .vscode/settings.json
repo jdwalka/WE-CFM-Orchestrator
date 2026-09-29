@@ -15,7 +15,7 @@
     "geminicodeassist.contextExclusionFile": "",
     "geminicodeassist.inlineSuggestions.nextEditPredictions": true,
     "geminicodeassist.verboseLogging": true,
-    "editor.defaultFormatter": "vscode.typescript-language-features",
+    "editor.defaultFormatter": "vscode.json-language-features",
     "notebook.defaultFormatter": "vscode.typescript-language-features",
     "github.copilot.chat.alternateGeminiModelFPrompt.enabled": true,
     "github.copilot.chat.copilotMemory.enabled": true,
@@ -24,5 +24,39 @@
     },
     "markdown.validate.enabled": true,
     "files.autoSave": "afterDelay",
-    "editor.codeActions.triggerOnFocusChange": true
+    "editor.codeActions.triggerOnFocusChange": true,
+    "[jsonc]": {
+        "editor.defaultFormatter": "vscode.json-language-features"
+    },
+    "editor.formatOnSave": true,
+    "editor.wordWrap": "on",
+    "files.exclude": {
+        "**/.DS_Store": false,
+        "**/.git": false,
+        "**/.hg": false,
+        "**/.svn": false,
+        "**/Thumbs.db": false
+    },
+    "google.cloud.project": "wecrypto",
+    "[javascript]": {
+        "editor.defaultFormatter": "vscode.typescript-language-features"
+    },
+    "[dockerfile]": {
+        "editor.defaultFormatter": "ms-azuretools.vscode-containers"
+    },
+    "[dockercompose]": {
+        "editor.defaultFormatter": "redhat.vscode-yaml"
+    },
+    "[markdown]": {
+        "editor.defaultFormatter": "yzhang.markdown-all-in-one"
+    },
+    "telemetry.editStats.details.enabled": true,
+    "telemetry.editStats.showDecorations": true,
+    "telemetry.editStats.showStatusBar": true,
+    "application.experimental.rendererProfiling": true,
+    "chat.agent.collapseCompletedResponses": true,
+    "chat.checkpoints.showFileChanges": true,
+    "chat.planAgent.defaultModel": "DeepSeek V4 Pro (deepseek-v4)",
+    "python.terminal.useEnvFile": true,
+    "antigravityAccount.autoRotateEnabled": true
 }

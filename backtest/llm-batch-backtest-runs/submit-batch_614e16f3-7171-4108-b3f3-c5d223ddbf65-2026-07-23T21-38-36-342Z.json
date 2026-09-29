@@ -1,0 +1,197 @@
+{
+  "batchId": "batch_614e16f3-7171-4108-b3f3-c5d223ddbf65",
+  "batchName": "wecrypto-llm-bt-smoketest",
+  "model": "grok-4.3",
+  "createdAt": "2026-07-23T21:38:36.342Z",
+  "coins": [
+    "BTC"
+  ],
+  "horizons": [
+    15
+  ],
+  "days": 2,
+  "step": 60,
+  "requestCount": 20,
+  "requests": {
+    "BTC-h15-1784694000000": {
+      "coin": "BTC",
+      "horizonMinutes": 15,
+      "decisionTs": 1784694000000,
+      "entryPrice": 66367.43,
+      "futurePrice": 66424.71,
+      "realizedReturnPct": 0.08630739505810817,
+      "realizedDirection": "up"
+    },
+    "BTC-h15-1784697600000": {
+      "coin": "BTC",
+      "horizonMinutes": 15,
+      "decisionTs": 1784697600000,
+      "entryPrice": 66060,
+      "futurePrice": 66019.85,
+      "realizedReturnPct": -0.06077808053284011,
+      "realizedDirection": "down"
+    },
+    "BTC-h15-1784701200000": {
+      "coin": "BTC",
+      "horizonMinutes": 15,
+      "decisionTs": 1784701200000,
+      "entryPrice": 65874.77,
+      "futurePrice": 65954.16,
+      "realizedReturnPct": 0.12051654981110281,
+      "realizedDirection": "up"
+    },
+    "BTC-h15-1784704800000": {
+      "coin": "BTC",
+      "horizonMinutes": 15,
+      "decisionTs": 1784704800000,
+      "entryPrice": 65924.3,
+      "futurePrice": 65757.28,
+      "realizedReturnPct": -0.25335119220075764,
+      "realizedDirection": "down"
+    },
+    "BTC-h15-1784708400000": {
+      "coin": "BTC",
+      "horizonMinutes": 15,
+      "decisionTs": 1784708400000,
+      "entryPrice": 66092.56,
+      "futurePrice": 65987.71,
+      "realizedReturnPct": -0.15864115416317853,
+      "realizedDirection": "down"
+    },
+    "BTC-h15-1784712000000": {
+      "coin": "BTC",
+      "horizonMinutes": 15,
+      "decisionTs": 1784712000000,
+      "entryPrice": 66038.89,
+      "futurePrice": 65871.27,
+      "realizedReturnPct": -0.2538201353777984,
+      "realizedDirection": "down"
+    },
+    "BTC-h15-1784715600000": {
+      "coin": "BTC",
+      "horizonMinutes": 15,
+      "decisionTs": 1784715600000,
+      "entryPrice": 65941.22,
+      "futurePrice": 65972.93,
+      "realizedReturnPct": 0.04808828226106804,
+      "realizedDirection": "up"
+    },
+    "BTC-h15-1784719200000": {
+      "coin": "BTC",
+      "horizonMinutes": 15,
+      "decisionTs": 1784719200000,
+      "entryPrice": 66101.52,
+      "futurePrice": 66025,
+      "realizedReturnPct": -0.11576133196332561,
+      "realizedDirection": "down"
+    },
+    "BTC-h15-1784722800000": {
+      "coin": "BTC",
+      "horizonMinutes": 15,
+      "decisionTs": 1784722800000,
+      "entryPrice": 65877.86,
+      "futurePrice": 65805.58,
+      "realizedReturnPct": -0.10971819667487505,
+      "realizedDirection": "down"
+    },
+    "BTC-h15-1784726400000": {
+      "coin": "BTC",
+      "horizonMinutes": 15,
+      "decisionTs": 1784726400000,
+      "entryPrice": 65587.1,
+      "futurePrice": 65840.63,
+      "realizedReturnPct": 0.386554673098824,
+      "realizedDirection": "up"
+    },
+    "BTC-h15-1784730000000": {
+      "coin": "BTC",
+      "horizonMinutes": 15,
+      "decisionTs": 1784730000000,
+      "entryPrice": 65629.94,
+      "futurePrice": 65725.3,
+      "realizedReturnPct": 0.1452995385947337,
+      "realizedDirection": "up"
+    },
+    "BTC-h15-1784733600000": {
+      "coin": "BTC",
+      "horizonMinutes": 15,
+      "decisionTs": 1784733600000,
+      "entryPrice": 66044.3,
+      "futurePrice": 65986.32,
+      "realizedReturnPct": -0.08778955943207199,
+      "realizedDirection": "down"
+    },
+    "BTC-h15-1784737200000": {
+      "coin": "BTC",
+      "horizonMinutes": 15,
+      "decisionTs": 1784737200000,
+      "entryPrice": 65991.26,
+      "futurePrice": 66350.71,
+      "realizedReturnPct": 0.5446933427244937,
+      "realizedDirection": "up"
+    },
+    "BTC-h15-1784740800000": {
+      "coin": "BTC",
+      "horizonMinutes": 15,
+      "decisionTs": 1784740800000,
+      "entryPrice": 66048.85,
+      "futurePrice": 66109.43,
+      "realizedReturnPct": 0.09171999209673928,
+      "realizedDirection": "up"
+    },
+    "BTC-h15-1784744400000": {
+      "coin": "BTC",
+      "horizonMinutes": 15,
+      "decisionTs": 1784744400000,
+      "entryPrice": 65901.56,
+      "futurePrice": 65750.03,
+      "realizedReturnPct": -0.22993385892534085,
+      "realizedDirection": "down"
+    },
+    "BTC-h15-1784748000000": {
+      "coin": "BTC",
+      "horizonMinutes": 15,
+      "decisionTs": 1784748000000,
+      "entryPrice": 65842.43,
+      "futurePrice": 65898.73,
+      "realizedReturnPct": 0.08550717219884339,
+      "realizedDirection": "up"
+    },
+    "BTC-h15-1784751600000": {
+      "coin": "BTC",
+      "horizonMinutes": 15,
+      "decisionTs": 1784751600000,
+      "entryPrice": 65904.08,
+      "futurePrice": 65916.5,
+      "realizedReturnPct": 0.018845570714283933,
+      "realizedDirection": "up"
+    },
+    "BTC-h15-1784755200000": {
+      "coin": "BTC",
+      "horizonMinutes": 15,
+      "decisionTs": 1784755200000,
+      "entryPrice": 65924.52,
+      "futurePrice": 66063,
+      "realizedReturnPct": 0.21005841225692035,
+      "realizedDirection": "up"
+    },
+    "BTC-h15-1784758800000": {
+      "coin": "BTC",
+      "horizonMinutes": 15,
+      "decisionTs": 1784758800000,
+      "entryPrice": 65980.52,
+      "futurePrice": 65951.16,
+      "realizedReturnPct": -0.04449798213169672,
+      "realizedDirection": "down"
+    },
+    "BTC-h15-1784762400000": {
+      "coin": "BTC",
+      "horizonMinutes": 15,
+      "decisionTs": 1784762400000,
+      "entryPrice": 65963.3,
+      "futurePrice": 65983.95,
+      "realizedReturnPct": 0.03130528642441203,
+      "realizedDirection": "up"
+    }
+  }
+}

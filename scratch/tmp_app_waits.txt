@@ -1,0 +1,40 @@
+    // MODEL-AGNOSTIC PRINCIPLE: Verdict color reflects MODEL conviction ONLY, never Kalshi odds.
+    // Kalshi is used for divergence awareness + comparison bar only (not verdict color override).
+
+    if (_kAlignEarly?.modelYesPct != null) {
+      // Use CDF P(close ≥ strike) — correct for binary contracts
+      const myp = _kAlignEarly.modelYesPct;
+      if (myp >= 58) { verdictDir = _yesDirEarly; verdictSource = 'model-cdf'; }
+      else if (myp <= 42) { verdictDir = _noDirEarly; verdictSource = 'model-cdf'; }
+      else { verdictDir = 'wait'; verdictSource = 'model-cdf-neutral'; }
+    } else if (modelDir !== 'wait') {
+      // Model has conviction (raw score > ±0.12) — USE IT for verdict color
+      verdictDir = modelDir;
+      verdictSource = 'model';
+    } else {
+      // Model has no conviction → show as WAIT (don't fade to Kalshi)
+      verdictDir = 'wait';
+      verdictSource = 'model-uncertain';
+    }
+
+    // Safety gate: avoid late/borderline calls that commonly flip wrong near settlement.
+    const tickerAgeMs = Math.max(0, Date.now() - Number(window._lastTickerFetchTs || 0));
+    const isTickerStale = tickerAgeMs > 8_000;
+    const msToClose = _k15mV?.closeTime
+      ? (new Date(_k15mV.closeTime).getTime() - Date.now())
+      : null;
+    const inSafetyWindow = Number.isFinite(msToClose)
+      && msToClose >= 0
+      && msToClose <= 90_000;
+    const isBorderlineStrike = Number.isFinite(_kAlignEarly?.gapPct)
+      ? Math.abs(_kAlignEarly.gapPct) < 0.08
+      : false;
+    const isWeakConviction = Math.abs(Number(p.score || 0)) < MODEL_FLOW_THRESHOLD;
+    if (verdictDir !== 'wait' && inSafetyWindow && (isTickerStale || isBorderlineStrike || isWeakConviction)) {
+      verdictDir = 'wait';
+      verdictSource = isTickerStale
+        ? 'safety-stale-data'
+        : isBorderlineStrike
+          ? 'safety-borderline-strike'
+          : 'safety-weak-conviction';
+    }

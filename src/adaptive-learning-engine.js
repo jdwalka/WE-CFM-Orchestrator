@@ -9,6 +9,8 @@
  * Feeds accuracy data back into weight tuning engine for real-time model improvement.
  */
 
+const ADAPTIVE_WEIGHTS_STORAGE_KEY = 'beta1_adaptive_weights';
+
 class AdaptiveLearningEngine {
   constructor() {
     // Historical accuracy tracking per signal per coin
@@ -35,7 +37,62 @@ class AdaptiveLearningEngine {
     this.tuneLog = [];
     this.maxLogSize = 100;
     
+    this._loadPersistedWeights();
     console.log('[AdaptiveLearningEngine] Initialized');
+  }
+
+  _loadPersistedWeights() {
+    if (typeof window === 'undefined' || !window.localStorage) return false;
+    try {
+      const raw = localStorage.getItem(ADAPTIVE_WEIGHTS_STORAGE_KEY);
+      if (!raw) return false;
+      const parsed = JSON.parse(raw);
+      const weights = parsed?.weights && typeof parsed.weights === 'object' ? parsed.weights : parsed;
+      if (!weights || typeof weights !== 'object') return false;
+
+      this.signalWeights = {};
+      for (const [coin, signalMap] of Object.entries(weights)) {
+        if (!signalMap || typeof signalMap !== 'object') continue;
+        this.signalWeights[coin] = {};
+        for (const [signalName, rawWeight] of Object.entries(signalMap)) {
+          const weight = Number(rawWeight);
+          if (!Number.isFinite(weight)) continue;
+          this.signalWeights[coin][signalName] = weight;
+        }
+      }
+
+      window._adaptiveWeights = this.signalWeights;
+      return true;
+    } catch (e) {
+      console.warn('[AdaptiveLearningEngine] Failed to load persisted weights:', e.message);
+      return false;
+    }
+  }
+
+  _savePersistedWeights() {
+    if (typeof window === 'undefined' || !window.localStorage) return false;
+    try {
+      localStorage.setItem(ADAPTIVE_WEIGHTS_STORAGE_KEY, JSON.stringify({
+        updatedAt: Date.now(),
+        weights: this.signalWeights,
+      }));
+      return true;
+    } catch (e) {
+      console.warn('[AdaptiveLearningEngine] Failed to save persisted weights:', e.message);
+      return false;
+    }
+  }
+
+  syncToPredictionEngine() {
+    if (typeof window === 'undefined' || !window.PredictionEngine?.setAdaptiveWeights) return false;
+
+    let applied = false;
+    for (const [coin, weights] of Object.entries(this.signalWeights)) {
+      if (!weights || typeof weights !== 'object') continue;
+      window.PredictionEngine.setAdaptiveWeights(coin, weights);
+      applied = true;
+    }
+    return applied;
   }
 
   /**
@@ -215,6 +272,9 @@ class AdaptiveLearningEngine {
       window._adaptiveWeights = this.signalWeights;
       window._lastTuneEvent = tuneEvent;
     }
+
+    this._savePersistedWeights();
+    this.syncToPredictionEngine();
     
     return tuneEvent;
   }
@@ -326,6 +386,11 @@ class AdaptiveLearningEngine {
     this.signalWeights = {};
     this.tuneLog = [];
     this.lastTuneTime = 0;
+    if (typeof window !== 'undefined' && window.localStorage) {
+      try {
+        localStorage.removeItem(ADAPTIVE_WEIGHTS_STORAGE_KEY);
+      } catch (_) { }
+    }
     console.log('[AdaptiveLearningEngine] Reset');
   }
 }

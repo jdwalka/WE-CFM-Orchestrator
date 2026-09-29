@@ -1,0 +1,23 @@
+# WE-CRYPTO Repository - Code Owners
+# @github/team or individual usernames for code review
+
+# Own all .js files in the source
+/* @JohnDaWalka
+
+# Own agent definitions
+/.agent.md @JohnDaWalka
+
+# Own MCP server
+mcp-server/ @JohnDaWalka
+
+# Own Electron main process
+electron/main.js @JohnDaWalka
+
+# Own dashboard UI
+src/ui/ @JohnDaWalka
+
+# Own inference/LLM
+src/llm/ @JohnDaWalka
+
+# Default owner for all other files
+* @JohnDaWalka

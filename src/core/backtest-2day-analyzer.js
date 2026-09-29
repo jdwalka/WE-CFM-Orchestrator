@@ -37,8 +37,8 @@ class BacktestAnalyzer {
       const cachedPredictions = await this._getCachedPredictions();
       console.log(`   ✓ Found ${cachedPredictions.length} predictions\n`);
 
-      // Phase 2: Get historical settlements from Kalshi API
-      console.log('📊 Phase 2: Fetching settled contracts from Kalshi...');
+      // Phase 2: Get historical settlements from Polymarket Gamma
+      console.log('📊 Phase 2: Fetching settled contracts from Polymarket...');
       const settlements = await this._getHistoricalSettlements();
       console.log(`   ✓ Found ${settlements.length} settlements\n`);
 
@@ -103,57 +103,86 @@ class BacktestAnalyzer {
   }
 
   /**
-   * Fetch all settlements from Kalshi API (paginated)
+   * Fetch historical settlements from Polymarket Gamma (Kalshi API removed).
+   * Prefer in-app HistoricalSettlementFetcher / _15mResolutionLog when available.
    */
   async _getHistoricalSettlements() {
     const settlements = [];
     const coins = ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'BNB', 'HYPE'];
 
+    // Prefer live resolution log if the app already has it
+    try {
+      const log = (typeof window !== 'undefined' && Array.isArray(window._15mResolutionLog))
+        ? window._15mResolutionLog
+        : [];
+      for (const e of log) {
+        const t = e.resolvedAt || e.closeTimeMs || e.closeTime || 0;
+        if (t >= this.startTime && t <= this.endTime) {
+          settlements.push({
+            source: 'polymarket',
+            coin: e.sym || e.symbol,
+            ticker: e.slug || e.ticker,
+            outcome: e.actualOutcome || e.outcome,
+            settleTime: t,
+          });
+        }
+      }
+      if (settlements.length) return settlements;
+    } catch (_) { /* fall through to Gamma */ }
+
     for (const coin of coins) {
       try {
-        // Fetch settled markets for this coin
-        const url = `https://api.elections.kalshi.com/trade-api/v2/markets?status=settled&limit=100`;
-        const response = await fetch(url, { timeout: 10000 });
+        const url = `https://gamma-api.polymarket.com/markets?closed=true&limit=100`;
+        const response = await fetch(url, { timeout: 20000 });
         
         if (!response.ok) continue;
         
         const data = await response.json();
-        const markets = (data.markets || []).filter(m => {
-          // Match 15M markets for this coin
-          return m.ticker && m.ticker.includes(coin) && m.ticker.includes('15M') && m.status === 'settled';
+        const markets = (Array.isArray(data) ? data : (data.markets || [])).filter(m => {
+          const q = String(m.question || m.slug || '').toUpperCase();
+          return q.includes(coin) && (q.includes('15') || q.includes('UP') || q.includes('DOWN'));
         });
 
         for (const market of markets) {
-          const settleTime = market.close_time ? new Date(market.close_time).getTime() : null;
+          const settleTime = market.endDate
+            ? new Date(market.endDate).getTime()
+            : (market.closedTime ? new Date(market.closedTime).getTime() : null);
           
           // Only include settlements within our 2-day window
           if (settleTime && settleTime >= this.startTime && settleTime <= this.endTime) {
+            const prices = typeof market.outcomePrices === 'string'
+              ? JSON.parse(market.outcomePrices || '[]')
+              : (market.outcomePrices || []);
+            const outcomes = typeof market.outcomes === 'string'
+              ? JSON.parse(market.outcomes || '[]')
+              : (market.outcomes || ['Up', 'Down']);
+            let upIdx = outcomes.findIndex((o) => String(o).toLowerCase() === 'up');
+            if (upIdx < 0) upIdx = 0;
+            const upP = parseFloat(prices[upIdx] ?? 0);
+            const outcome = upP >= 0.5 ? 'UP' : 'DOWN';
             settlements.push({
-              source: 'kalshi',
+              source: 'polymarket',
               coin,
-              ticker: market.ticker,
-              outcome: (() => {
-                const strike = String(market.strike_type ?? 'above').toLowerCase();
-                const yesDir = strike === 'below' ? 'DOWN' : 'UP';
-                const noDir = yesDir === 'UP' ? 'DOWN' : 'UP';
-                return String(market.result).toUpperCase() === 'YES' ? yesDir : noDir;
-              })(),
-              strikeType: market.strike_type,
+              ticker: market.slug || market.id,
+              outcome,
+              result: outcome,
+              outcomeDir: outcome,
+              strikeType: 'above',
               settleTime,
               settleTimeIso: new Date(settleTime).toISOString(),
-              marketPrice: market.last_price || null,
-              strikePrice: market.strike_price || null
+              marketPrice: market.lastTradePrice || market.bestBid || null,
+              strikePrice: null,
             });
           }
         }
 
         await this._delay(500); // Rate limit
       } catch (e) {
-        console.warn(`   [Kalshi] Error fetching ${coin}:`, e.message);
+        console.warn(`   [Polymarket] Error fetching ${coin}:`, e.message);
       }
     }
 
-    console.log(`   [Kalshi] ${settlements.length} settlements fetched`);
+    console.log(`   [Polymarket] ${settlements.length} settlements fetched`);
     return settlements;
   }
 

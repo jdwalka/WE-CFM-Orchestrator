@@ -1,0 +1,1029 @@
+﻿diff --git a/src/core/app.js b/src/core/app.js
+index 4285ab82..2dc1012a 100644
+--- a/src/core/app.js
++++ b/src/core/app.js
+@@ -8036,23 +8036,12 @@
+     { num: 26, sym: 'DXL', name: 'DEX Liq', shell: '4f', key: '_dexLiq', fmt: 'compactUsd', desc: 'On-chain DEX liquidity depth', weight: 'heavy' },
+   ];
+ 
+-  async function renderCFM() {
++  function renderCFM() {
+     ensureCFMScrollTracker();
+     const _myRV = _rv; // capture version ΓÇö bail after any await if stale
+     const _myCFMSeq = ++_cfmRenderSeq; // invalidate older in-flight CFM async hydration
+     const isStaleCFMRender = () => _rv !== _myRV || _myCFMSeq !== _cfmRenderSeq || currentView !== 'cfm';
+     const scrollTopSnapshot = content?.scrollTop || 0;
+-    let latestScrollTop = scrollTopSnapshot;
+-    let userScrolledDuringRender = false;
+-    const onCFMScroll = () => {
+-      if (!content) return;
+-      userScrolledDuringRender = true;
+-      latestScrollTop = content.scrollTop;
+-    };
+-    content?.addEventListener('scroll', onCFMScroll, { passive: true });
+-    const cleanupCFMScrollListener = () => {
+-      try { content?.removeEventListener('scroll', onCFMScroll); } catch (_) { }
+-    };
+ 
+     // Start engine in background if not started ΓÇö DON'T await it blocking the render
+     if (!cfmStarted && !_cfmStarting) {
+@@ -8080,14 +8069,32 @@
+ 
+     // Add a loading banner at the top if still loading
+     const loadingBanner = (!cfmStarted)
+-      ? `<div style="display:flex;align-items:center;gap:10px;padding:8px 16px;background:rgba(255,193,7,0.1);border:1px solid rgba(255,193,7,0.3);border-radius:6px;margin-bottom:12px;font-size:13px;color:#ffc107"><div style="width:16px;height:16px;border:2px solid rgba(255,193,7,0.3);border-top-color:#ffc107;border-radius:50%;animation:spin 0.8s linear infinite;flex-shrink:0"></div><span>Assembling CFM benchmarks\u2026</span></div>`
++      ? `<div style="display:flex;align-items:center;gap:10px;padding:8px 16px;background:rgba(255,193,7,0.1);border:1px solid rgba(255,193,7,0.3);border-radius:6px;margin-bottom:12px;font-size:13px;color:#ffc107"><div style="width:16px;height:16px;border:2px solid rgba(255,193,7,0.3);border-top-color:#ffc107;border-radius:50%;animation:spin 0.8s linear infinite;flex-shrink:0"></div><span>Assembling CFM benchmarksΓÇª</span></div>`
+       : '';
+ 
+-    if (isStaleCFMRender()) {
+-      cleanupCFMScrollListener();
+-      return; // guard: stale render version or superseded CFM render
++    if (isStaleCFMRender()) return;
++
++    // Build the opportunities panel HTML synchronously
++    let oppPanelHtml = '';
++    try {
++      oppPanelHtml = buildOpportunitiesPanel(cfmAll, predAll) || '';
++    } catch (e) {
++      console.warn('[CFM] opp panel error:', e);
+     }
+ 
++    // Build each coin periodic table HTML synchronously
++    const coinsHtml = PREDICTION_COINS.map(coin => {
++      const cfm = cfmAll[coin.sym];
++      const pred = predAll[coin.sym];
++      if (!cfm || cfm.cfmRate === 0) return '';
++      try {
++        return buildCoinPeriodicTable(coin, cfm, pred);
++      } catch (e) {
++        console.warn(`[CFM] coin table error ${coin.sym}:`, e);
++        return '';
++      }
++    }).join('');
++
+     content.innerHTML = `
+       <div class="cfm-view-root">
+       ${loadingBanner}
+@@ -8141,11 +8148,11 @@
+         <span style="margin-left:auto;font-size:9px"><span style="color:#1a6eff">\u25cf</span> CDC <span style="color:#0052ff">\u25cf</span> CB <span style="color:#8dc63f">\u25cf</span> GKO <span style="color:#a259ff">\u25cf</span> DEX</span>
+       </div>
+ 
+-      <!-- Opportunities Panel placeholder ΓÇö filled async below -->
+-      <div id="cfm-opp-slot"></div>
++      <!-- Opportunities Panel placeholder -->
++      <div id="cfm-opp-slot">${oppPanelHtml}</div>
+ 
+-      <!-- Per-coin periodic table placeholders ΓÇö filled async below -->
+-      ${PREDICTION_COINS.map(coin => `<div id="cfm-coin-slot-${coin.sym}" class="cfm-coin-skeleton"><div class="cfm-coin-skel-bar" style="border-left:3px solid ${coin.color}"><span style="color:${coin.color};font-weight:700;font-size:13px">${coin.sym}</span><span style="color:var(--color-text-muted);font-size:11px;margin-left:8px">loading orbital dataΓÇª</span><div style="width:18px;height:18px;border:2px solid rgba(255,255,255,0.15);border-top-color:${coin.color};border-radius:50%;animation:spin 0.8s linear infinite;margin-left:auto"></div></div></div>`).join('')}
++      <!-- Per-coin periodic tables -->
++      ${coinsHtml}
+ 
+       <!-- Methodology -->
+       <div class="card" style="margin-top:8px" id="cfm-methodology">
+@@ -8161,84 +8168,47 @@
+       </div>
+       </div>
+     `;
+-    requestAnimationFrame(() => {
+-      if (currentView === 'cfm' && content) content.scrollTop = scrollTopSnapshot;
+-    });
+-
+-    // ΓöÇΓöÇ Progressive async fill ΓÇö opportunities panel then coins one-by-one ΓöÇΓöÇ
+-    // Yields to the browser between each heavy build so the page is responsive immediately.
+-    (async () => {
+-      try {
+-        // 1. Opportunities panel (medium weight)
+-        await new Promise(r => setTimeout(r, 0));
+-        if (isStaleCFMRender()) return;
+-        const oppSlot = document.getElementById('cfm-opp-slot');
+-        if (oppSlot) {
+-          try { oppSlot.outerHTML = buildOpportunitiesPanel(cfmAll, predAll) || '<div id="cfm-opp-slot"></div>'; }
+-          catch (e) { console.warn('[CFM] opp panel error:', e); }
+-        }
+-
+-        // 2. Each coin table (heavy ΓÇö up to 22 suborbitals each)
+-        for (const coin of PREDICTION_COINS) {
+-          await new Promise(r => setTimeout(r, 0));
+-          if (isStaleCFMRender()) return;
+-          const cfm = cfmAll[coin.sym];
+-          const pred = predAll[coin.sym];
+-          const slot = document.getElementById(`cfm-coin-slot-${coin.sym}`);
+-          if (!slot) continue;
+-          if (!cfm || cfm.cfmRate === 0) { slot.remove(); continue; }
+-          try {
+-            slot.outerHTML = buildCoinPeriodicTable(coin, cfm, pred);
+-          } catch (e) {
+-            console.warn(`[CFM] coin table error ${coin.sym}:`, e);
+-            slot.remove();
+-          }
+-        }
+ 
+-        // 3. Re-attach toggle listeners after all coins are in DOM
+-        if (isStaleCFMRender()) return;
+-        content.querySelectorAll('[data-cfm-toggle]').forEach(btn => {
+-          btn.addEventListener('click', () => {
+-            const sym = btn.dataset.cfmToggle;
+-            const block = btn.closest('[data-cfm-sym]');
+-            if (!block) return;
+-            const panel = block.querySelector('.cfm-expand-panel');
+-            const icon = block.querySelector('.cfm-expand-icon');
+-            const isOpen = panel?.classList.toggle('open');
+-            block.classList.toggle('expanded', isOpen);
+-            if (icon) icon.textContent = isOpen ? '\u2212' : '+';
+-            if (isOpen) cfmExpanded.add(sym); else cfmExpanded.delete(sym);
+-          });
+-        });
++    // Re-attach toggle listeners after all coins are in DOM
++    content.querySelectorAll('[data-cfm-toggle]').forEach(btn => {
++      btn.addEventListener('click', () => {
++        const sym = btn.dataset.cfmToggle;
++        const block = btn.closest('[data-cfm-sym]');
++        if (!block) return;
++        const panel = block.querySelector('.cfm-expand-panel');
++        const icon = block.querySelector('.cfm-expand-icon');
++        const isOpen = panel?.classList.toggle('open');
++        block.classList.toggle('expanded', isOpen);
++        if (icon) icon.textContent = isOpen ? '\u2212' : '+';
++        if (isOpen) cfmExpanded.add(sym); else cfmExpanded.delete(sym);
++      });
++    });
+ 
+-        // Preserve user position if they scrolled while async hydration was still filling slots.
+-        if (currentView === 'cfm' && content) {
+-          content.scrollTop = userScrolledDuringRender ? latestScrollTop : scrollTopSnapshot;
+-        }
+-      } finally {
+-        cleanupCFMScrollListener();
++    // Restore user position
++    requestAnimationFrame(() => {
++      if (currentView === 'cfm' && content) {
++        content.scrollTop = scrollTopSnapshot;
+       }
+-      // =========================================================================
+-  // RL Weights Synchronization
+-  // =========================================================================
+-  setTimeout(() => {
+-    if (window.wecryp?.getSystemWeights) {
+-      window.wecryp.getSystemWeights()
+-        .then(res => {
+-          if (res.success && res.weights) {
+-            console.log('[RL Loop] ?? Fetched system_weights from Firebase on startup');
+-            if (window.PredictionMarkets?.setAdaptiveWeights) {
+-              const symbols = ['BTC', 'ETH', 'SOL', 'DOGE', 'XRP']; 
+-              symbols.forEach(sym => {
+-                window.PredictionMarkets.setAdaptiveWeights(sym, res.weights);
+-              });
++    });
++
++    // RL Weights Synchronization (runs in background)
++    setTimeout(() => {
++      if (window.wecryp?.getSystemWeights) {
++        window.wecryp.getSystemWeights()
++          .then(res => {
++            if (res.success && res.weights) {
++              console.log('[RL Loop] ΓÜû∩╕Å Fetched system_weights from Firebase on startup');
++              if (window.PredictionMarkets?.setAdaptiveWeights) {
++                const symbols = ['BTC', 'ETH', 'SOL', 'DOGE', 'XRP']; 
++                symbols.forEach(sym => {
++                  window.PredictionMarkets.setAdaptiveWeights(sym, res.weights);
++                });
++              }
+             }
+-          }
+-        })
+-        .catch(err => console.warn('[RL Loop] Failed to sync startup weights:', err));
+-    }
+-  }, 3000); 
+-})();
++          })
++          .catch(err => console.warn('[RL Loop] Failed to sync startup weights:', err));
++      }
++    }, 3000);
+   }
+ 
+   // ================================================================
+@@ -8562,11 +8532,184 @@
+     return count;
+   }
+ 
++  function getKalshiIntentBias(ki) {
++    const direction = String(ki?.direction || '').toUpperCase();
++    const side = String(ki?.side || '').toUpperCase();
++    if (direction === 'UP') return 'up';
++    if (direction === 'DOWN') return 'down';
++    if (side === 'YES') return 'up';
++    if (side === 'NO') return 'down';
++    return 'neutral';
++  }
++
++  function getKalshiEntryWindowLabel(ki) {
++    const secsLeft = Number.isFinite(ki?.secsLeft)
++      ? Number(ki.secsLeft)
++      : (Number.isFinite(ki?.closeTimeMs) ? Math.max(0, (Number(ki.closeTimeMs) - Date.now()) / 1000) : null);
++    if (!Number.isFinite(secsLeft)) return null;
++    if (ki?.timingRegime === 'SCALP_EARLY') return 'scalp window';
++    if (ki?.timingRegime === 'CLOSE_VALUE') return '2-3m value window';
++    if (secsLeft > 720) return 'fresh entry';
++    if (secsLeft > 420) return 'setup window';
++    if (secsLeft > 180) return 'prime window';
++    if (secsLeft > 60) return 'late entry';
++    if (secsLeft > 5) return 'last call';
++    return 'settling';
++  }
++
++  function humanizeKalshiReason(reason) {
++    const text = String(reason || '').trim();
++    if (!text) return null;
++    if (/open-window guard/i.test(text)) return 'too early in the window';
++    if (/wait-guard threshold/i.test(text)) return 'timing gate not met';
++    if (/final confidence floor/i.test(text)) return 'model confidence below floor';
++    if (/soft veto/i.test(text)) return 'soft model veto';
++    if (/hard veto/i.test(text)) return 'hard model veto';
++    if (/prediction stale/i.test(text)) return 'prediction stale';
++    if (/market stale|stale-data/i.test(text)) return 'market data stale';
++    if (/scheduler cooldown/i.test(text)) return 'provider cooldown';
++    if (/scheduler circuit/i.test(text)) return 'provider circuit open';
++    if (/late-entry-window/i.test(text)) return 'late entry blocked';
++    if (/non-BTC divergent/i.test(text)) return 'risk downgrade on divergent setup';
++    return text;
++  }
++
++  function getKalshiIntentVisuals(ki) {
++    const bias = getKalshiIntentBias(ki);
++    const isExit = ki?.action === 'earlyExit';
++    const isHold = ki?.action === 'hold';
++    const isTrade = ki?.action === 'trade';
++    const isCrowdFade = ki?.alignment === 'CROWD_FADE' || !!ki?.crowdFade;
++    const isDivergent = ki?.alignment === 'DIVERGENT' || isCrowdFade;
++    const directionColor = bias === 'up'
++      ? 'var(--color-green)'
++      : bias === 'down'
++        ? 'var(--color-red)'
++        : 'var(--color-text-muted)';
++    const directionBgStrong = bias === 'up'
++      ? 'rgba(0,200,100,0.08)'
++      : bias === 'down'
++        ? 'rgba(220,60,60,0.08)'
++        : 'rgba(200,200,0,0.06)';
++    const directionBgSoft = bias === 'up'
++      ? 'rgba(0,200,100,0.06)'
++      : bias === 'down'
++        ? 'rgba(220,60,60,0.06)'
++        : 'rgba(200,200,0,0.05)';
++    const directionBorderStrong = bias === 'up'
++      ? 'rgba(0,200,100,0.24)'
++      : bias === 'down'
++        ? 'rgba(220,60,60,0.24)'
++        : 'rgba(200,200,0,0.18)';
++    const directionBorderSoft = bias === 'up'
++      ? 'rgba(0,200,100,0.18)'
++      : bias === 'down'
++        ? 'rgba(220,60,60,0.18)'
++        : 'rgba(200,200,0,0.15)';
++    const sideColor = bias === 'up'
++      ? 'var(--color-green)'
++      : bias === 'down'
++        ? 'var(--color-red)'
++        : 'var(--color-text-muted)';
++    const sideBg = bias === 'up'
++      ? 'rgba(0,200,100,0.18)'
++      : bias === 'down'
++        ? 'rgba(220,60,60,0.18)'
++        : 'transparent';
++    const actionLabel = isExit ? 'STAND ASIDE' : isHold ? 'EVALUATE' : isTrade ? 'BUY' : 'WATCH';
++    const directiveLabel = (!isExit && !isHold && ki?.side)
++      ? `${actionLabel} ${ki.side}`
++      : actionLabel;
++    const actionColor = isExit
++      ? 'var(--color-red)'
++      : isHold
++        ? 'var(--color-gold,#f90)'
++        : directionColor;
++    const actionBg = isExit
++      ? 'rgba(255,80,80,0.22)'
++      : isHold
++        ? 'rgba(255,180,0,0.22)'
++        : bias === 'up'
++          ? 'rgba(0,200,100,0.18)'
++          : bias === 'down'
++            ? 'rgba(220,60,60,0.18)'
++            : 'rgba(200,200,0,0.12)';
++    const bg = isExit
++      ? 'rgba(255,80,80,0.07)'
++      : isHold
++        ? 'rgba(255,180,0,0.07)'
++        : isTrade
++          ? directionBgStrong
++          : directionBgSoft;
++    const border = isExit
++      ? 'rgba(255,80,80,0.25)'
++      : isHold
++        ? 'rgba(255,180,0,0.28)'
++        : isTrade
++          ? directionBorderStrong
++          : directionBorderSoft;
++    const alignColor = isCrowdFade
++      ? '#e040fb'
++      : isDivergent
++        ? '#ff8c00'
++        : directionColor;
++    return {
++      bias,
++      isExit,
++      isHold,
++      isTrade,
++      isCrowdFade,
++      isDivergent,
++      bg,
++      border,
++      sideColor,
++      sideBg,
++      actionColor,
++      actionBg,
++      actionLabel,
++      directiveLabel,
++      directionColor,
++      alignColor,
++      confidenceColor: actionColor,
++    };
++  }
++
++  function buildKalshiDecisionSummary(ki) {
++    if (!ki) return '';
++    const visuals = getKalshiIntentVisuals(ki);
++    const parts = [visuals.directiveLabel];
++    if (ki.alignment === 'CROWD_FADE') {
++      const mispricing = Number.isFinite(ki.crowdFadeMispricingPp) ? ` ${ki.crowdFadeMispricingPp}pp` : '';
++      parts.push(`contrarian fade${mispricing}`);
++    } else if (ki.alignment === 'DIVERGENT') {
++      parts.push('contrarian to crowd');
++    } else if (ki.alignment === 'ALIGNED') {
++      parts.push('model + crowd aligned');
++    } else if (ki.alignment === 'MODEL_LEADS') {
++      parts.push('model leads market');
++    } else if (ki.alignment === 'MODEL_ONLY') {
++      parts.push('model-only setup');
++    } else if (ki.alignment === 'KALSHI_ONLY') {
++      parts.push('house-only setup');
++    }
++    const windowLabel = getKalshiEntryWindowLabel(ki);
++    if (windowLabel) parts.push(windowLabel);
++    if (Number.isFinite(ki.edgeCents)) parts.push(`edge ${ki.edgeCents >= 0 ? '+' : ''}${ki.edgeCents}c`);
++    if (!visuals.isTrade) {
++      const blocked = ((ki.blockedBy || []).concat(ki.timingBlocks || []).concat(ki.stageDiagnostics?.suppressionReasons || []))
++        .map(humanizeKalshiReason)
++        .filter(Boolean);
++      if (blocked.length) parts.push(`blocked: ${blocked.slice(0, 2).join(', ')}`);
++    }
++    return parts.slice(0, 4).join(' ┬╖ ');
++  }
++
+   function buildFifteenMinuteMovePlan(ki) {
+     if (!ki || ki.action === 'skip') return null;
+     const secsLeft = Number.isFinite(ki.secsLeft)
+       ? ki.secsLeft
+       : (Number.isFinite(ki.closeTimeMs) ? Math.max(0, (ki.closeTimeMs - Date.now()) / 1000) : null);
++    const visuals = getKalshiIntentVisuals(ki);
+ 
+     let phase = 'UNTIMED';
+     if (secsLeft != null) {
+@@ -8580,12 +8723,14 @@
+     if (ki.timingRegime === 'SCALP_EARLY') phase = 'SCALP';
+     else if (ki.timingRegime === 'CLOSE_VALUE') phase = 'CLOSE_VALUE';
+ 
+-    const isTrade = ki.action === 'trade';
+-    const isHold = ki.action === 'hold';
+-    const isExit = ki.action === 'earlyExit';
+-    const isCrowdFade = ki.alignment === 'CROWD_FADE' || !!ki.crowdFade;
++    const isTrade = visuals.isTrade;
++    const isHold = visuals.isHold;
++    const isExit = visuals.isExit;
++    const isCrowdFade = visuals.isCrowdFade;
+     const edge = Number.isFinite(ki.edgeCents) ? ki.edgeCents : null;
+     const side = ki.side || 'ΓÇö';
++    const directionalTone = visuals.directionColor;
++    const watchTone = visuals.bias === 'neutral' ? 'var(--color-text-muted)' : directionalTone;
+ 
+     let title = 'Watch';
+     let detail = 'No clean trade setup yet.';
+@@ -8608,19 +8753,19 @@
+       detail = isTrade
+         ? (ki.exitPlan || 'Buy the early flip and sell into the probability expansion before book pressure fades.')
+         : `Book/tape scanner is watching for a clean flip${(ki.blockedBy?.length || ki.timingBlocks?.length) ? ': ' + (ki.blockedBy?.length ? ki.blockedBy.slice(0, 2) : ki.timingBlocks.slice(0, 2)).join(', ') : '.'}`;
+-      tone = isTrade ? 'var(--color-green)' : '#ffb74d';
++      tone = isTrade ? directionalTone : watchTone;
+     } else if (phase === 'OPENING') {
+       title = isTrade ? `Prepare ${side}` : 'Observe open';
+       detail = isTrade
+         ? 'Let the first minute print; avoid instant fills at contract open.'
+         : 'Collect tape and flow before committing capital.';
+-      tone = isTrade ? 'var(--color-text)' : 'var(--color-text-muted)';
++      tone = isTrade ? directionalTone : watchTone;
+     } else if (phase === 'SETUP') {
+       title = isTrade ? `Set up ${side}` : 'Watch setup';
+       detail = isTrade
+         ? `Edge ${edge != null ? (edge >= 0 ? '+' : '') + edge + 'c' : '?'} ΓÇö queue entry plan, prefer better price into 7mΓåÆ3m.`
+         : 'Model and market are still forming; wait for clearer spread.';
+-      tone = isTrade ? 'var(--color-green)' : 'var(--color-text-muted)';
++      tone = isTrade ? directionalTone : watchTone;
+     } else if (phase === 'PRIME') {
+       title = isTrade ? `Execute ${side}` : 'Prime window';
+       detail = isTrade
+@@ -8628,19 +8773,19 @@
+           ? `Confirmed ${ki.crowdFadeTimingLabel || 'adaptive'} mispricing fade${ki.crowdFadeWindowLabel ? ` (${ki.crowdFadeWindowLabel})` : ''}; execute with disciplined sizing.`
+           : 'Best 15m entry window (3mΓÇô7m left); execute if edge remains stable.')
+         : 'Window is ideal but setup is not confirmed yet.';
+-      tone = isTrade ? (isCrowdFade ? '#e040fb' : 'var(--color-green)') : '#ffd700';
++      tone = isTrade ? directionalTone : watchTone;
+     } else if (phase === 'LATE') {
+       title = isTrade ? `Manage ${side}` : 'Late phase';
+       detail = isTrade
+         ? 'Late-cycle trade: reduce size unless it upgrades into the 2-3m value window.'
+         : 'Stalk only heavy payout skew or clear mispricing into the 2-3m close window.';
+-      tone = isTrade ? 'var(--color-orange)' : 'var(--color-text-muted)';
++      tone = isTrade ? directionalTone : watchTone;
+     } else if (phase === 'CLOSE_VALUE') {
+       title = isTrade ? `Value ${side}` : 'Close-value scan';
+       detail = isTrade
+         ? (ki.exitPlan || '2-3m mispricing window is active; enter only while edge and book pressure stay aligned.')
+         : `Hunting payout/mispricing skew${(ki.blockedBy?.length || ki.timingBlocks?.length) ? ': ' + (ki.blockedBy?.length ? ki.blockedBy.slice(0, 2) : ki.timingBlocks.slice(0, 2)).join(', ') : '.'}`;
+-      tone = isTrade ? 'var(--color-green)' : '#ffd700';
++      tone = isTrade ? directionalTone : watchTone;
+     } else if (phase === 'LAST_CALL') {
+       title = 'Last call';
+       detail = 'Final seconds: only exceptional fill-at-price entries; otherwise let the contract settle.';
+@@ -8918,26 +9063,13 @@
+                 ${(() => {
+           const ki = kalshiIntents[v.sym];
+           if (!ki || ki.action === 'skip') return '';
+-          const isExit = ki.action === 'earlyExit';
+-          const isHold = ki.action === 'hold';
+-          const isTrade = ki.action === 'trade';
+-          const isCrowdFade = ki.alignment === 'CROWD_FADE' || !!ki.crowdFade;
+-          const isDivergent = ki.alignment === 'DIVERGENT' || isCrowdFade;
+-          const bg = isExit ? 'rgba(255,80,80,0.07)'
+-            : isHold ? 'rgba(255,180,0,0.07)'
+-              : isCrowdFade ? 'rgba(224,64,251,0.08)'
+-                : isTrade ? 'rgba(0,200,100,0.08)'
+-                  : isDivergent ? 'rgba(255,140,0,0.07)'
+-                    : 'rgba(200,200,0,0.06)';
+-          const border = isExit ? 'rgba(255,80,80,0.25)'
+-            : isHold ? 'rgba(255,180,0,0.28)'
+-              : isCrowdFade ? 'rgba(224,64,251,0.26)'
+-                : isTrade ? 'rgba(0,200,100,0.22)'
+-                  : isDivergent ? 'rgba(255,140,0,0.28)'
+-                    : 'rgba(200,200,0,0.18)';
+-          const sideColor = ki.side === 'YES' ? 'var(--color-green)' : ki.side === 'NO' ? 'var(--color-red)' : 'var(--color-text-muted)';
+-          const sideBg = ki.side === 'YES' ? 'rgba(0,200,100,0.18)' : ki.side === 'NO' ? 'rgba(220,60,60,0.18)' : 'transparent';
+-          const alignColor = isCrowdFade ? '#e040fb' : isDivergent ? '#ff8c00' : isTrade ? 'var(--color-green)' : 'var(--color-text-muted)';
++          const visuals = getKalshiIntentVisuals(ki);
++          const decisionSummary = buildKalshiDecisionSummary(ki);
++          const isExit = visuals.isExit;
++          const isHold = visuals.isHold;
++          const isTrade = visuals.isTrade;
++          const isCrowdFade = visuals.isCrowdFade;
++          const isDivergent = visuals.isDivergent;
+           const alignTagC = {
+             ALIGNED: 'Γ£ô Aligned', DIVERGENT: 'ΓÜí Divergent', CROWD_FADE: '≡ƒöä Crowd fade', MODEL_LEADS: 'ΓåÆ Model leads',
+             KALSHI_ONLY: 'Γùç Kalshi only', MODEL_ONLY: 'Γùå Model only',
+@@ -8975,7 +9107,7 @@
+                 : (secsNow / 60).toFixed(1) + 'm';
+           const isLastCall = msNow != null && msNow <= 60000;
+           return `
+-                   <div style="margin-top:6px;padding:7px 9px;border-radius:5px;background:${bg};border:1px solid ${border}">
++                  <div style="margin-top:6px;padding:7px 9px;border-radius:5px;background:${visuals.bg};border:1px solid ${visuals.border}">
+                      ${isExit
+               ? `<div style="display:flex;align-items:center;gap:8px">
+                             <span style="background:rgba(255,80,80,0.22);color:var(--color-red);padding:3px 12px;border-radius:4px;font-size:12px;font-weight:800;letter-spacing:.5px">STAND ASIDE</span>
+@@ -8987,14 +9119,16 @@
+                             <span style="font-size:11px;color:var(--color-text-muted)">Shell wall ΓÇö collecting data</span>
+                           </div>`
+                 : `<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+-                            <span style="background:${sideBg};color:${sideColor};padding:3px 12px;border-radius:4px;font-size:14px;font-weight:800;letter-spacing:.7px">${ki.side}</span>
++                            <span style="background:${visuals.sideBg};color:${visuals.sideColor};padding:3px 12px;border-radius:4px;font-size:14px;font-weight:800;letter-spacing:.7px">${ki.side}</span>
++                            <span style="background:${visuals.actionBg};color:${visuals.actionColor};padding:3px 10px;border-radius:4px;font-size:11px;font-weight:800;letter-spacing:.55px">${visuals.actionLabel}</span>
+                             <span style="font-size:12px;font-weight:700;color:var(--color-text);font-family:var(--font-mono)">KALSHI${strikeC ? ' ┬╖ ' + strikeC : ''}</span>
+                             ${ki.isInversion ? '<span style="background:rgba(255,120,0,0.22);color:#ff8c00;padding:2px 7px;border-radius:3px;font-size:11px;font-weight:800">≡ƒöÑ INVERSION</span>' : ''}
+                             ${ki.timingLabel ? `<span style="background:rgba(90,160,255,0.18);color:#7db7ff;padding:2px 7px;border-radius:3px;font-size:11px;font-weight:800">${ki.timingLabel}</span>` : ''}
+                             ${ki.mcts?.ran ? `<span style="background:rgba(170,110,255,0.18);color:#caa7ff;padding:2px 7px;border-radius:3px;font-size:11px;font-weight:800">MCTS ${ki.mcts.voteAction || '?'} ${Number.isFinite(Number(ki.mcts.voteStrength)) ? Number(ki.mcts.voteStrength).toFixed(2) : ''}</span>` : ''}
+                             ${isLastCall ? `<span id="kalshi-lc-${ki.sym}" data-close-ms="${ki.closeTimeMs}" style="background:rgba(255,40,40,0.22);color:var(--color-red);padding:2px 7px;border-radius:3px;font-size:11px;font-weight:800;font-family:var(--font-mono)">ΓÜí ${timeStr}</span>` : ''}
+-                            <span style="margin-left:auto;color:${alignColor};font-size:11px;font-weight:700">${alignTagC}</span>
++                            <span style="margin-left:auto;color:${visuals.alignColor};font-size:11px;font-weight:700">${alignTagC}</span>
+                           </div>`}
++                    ${decisionSummary ? `<div style="font-size:11px;color:${visuals.actionColor};margin-top:4px;font-weight:700;line-height:1.35">${decisionSummary}</div>` : ''}
+                      ${!isExit && !isHold && ki.edgeCents != null ? `
+                      <div style="margin-top:5px;display:flex;gap:6px;flex-wrap:wrap;align-items:stretch">
+                        <div style="background:var(--color-surface-3);padding:3px 8px;border-radius:4px;text-align:center;min-width:44px">
+@@ -9022,7 +9156,7 @@
+                        ${ki.kalshiYesPrice != null ? `<span>Kalshi <strong style="color:var(--color-text)">${Math.round(ki.kalshiYesPrice * 100)}%</strong> YES</span>` : ''}
+                        ${ki.targetPrice ? `<span>Strike <strong style="color:var(--color-text)">${ki.targetPrice}</strong></span>` : ''}
+                        ${timeStr && !isLastCall ? `<span id="kalshi-min-${ki.sym}" data-close-ms="${ki.closeTimeMs}">ΓÅ▒ <strong>${timeStr}</strong></span>` : ''}
+-                       <span style="color:${isTrade ? 'var(--color-green)' : 'var(--color-orange)'}"><strong>${ki.confidence}%</strong> conf</span>
++                       <span style="color:${visuals.confidenceColor}"><strong>${ki.confidence}%</strong> conf</span>
+                      </div>
+                      ${ki.thinBook ? `<div style="font-size:11px;color:var(--color-orange);margin-top:3px">ΓÜá Thin book (${ki.entryPrice != null ? (ki.entryPrice * 100).toFixed(0) : '?'}┬ó entry) ΓÇö check spread before sizing</div>` : ''}
+                      ${ki.tailRisk ? `<div style="font-size:11px;color:#ff6b6b;margin-top:3px">ΓÜá Tail risk ($${ki.entryPrice != null ? ki.entryPrice.toFixed(2) : '?'} entry)${ki.lossErasesWins ? ' ΓÇö one loss erases ' + ki.lossErasesWins + ' wins' : ''}</div>` : ''}
+@@ -9032,6 +9166,7 @@
+                       ${ki.exitPlan && isTrade ? `<div style="font-size:11px;color:#7db7ff;margin-top:3px">${ki.exitPlan}</div>` : ''}
+                      ${(ki.blockedBy?.length || ki.timingBlocks?.length || ki.stageDiagnostics?.suppressionReasons?.length) && !isTrade ? `<div style="font-size:11px;color:var(--color-text-faint);margin-top:3px">Watching: ${((ki.blockedBy?.length ? ki.blockedBy : []).concat(ki.timingBlocks || []).concat(ki.stageDiagnostics?.suppressionReasons || []).filter(Boolean).slice(0, 4)).join(' ┬╖ ')}</div>` : ''}
+                       ${ki.humanReason ? `<div style="font-size:11px;color:var(--color-text-muted);margin-top:4px;line-height:1.4">${ki.humanReason}</div>` : ''}
++                      ${ki.aiInferenceReason ? `<div style="font-size:11px;color:#9dc1ff;margin-top:4px;line-height:1.4">AI ${Number.isFinite(ki.preferredHorizonMin) ? ki.preferredHorizonMin : 15}m${ki.aiInferenceProvider ? ' ┬╖ ' + String(ki.aiInferenceProvider).toUpperCase() : ''}${Number.isFinite(ki.aiInferenceConfidence) ? ' ┬╖ ' + ki.aiInferenceConfidence + '%' : ''}: ${ki.aiInferenceReason}</div>` : ''}
+                       ${renderFifteenMinuteMovePlan(ki, true)}
+                     </div>`;
+         })()}
+@@ -10279,23 +10414,26 @@
+     const _myRV = _rv; // capture version ΓÇö bail after any await if stale
+     const nowTs = Date.now();
+     const scrollTopSnapshot = content?.scrollTop || 0;
+-    let latestScrollTop = scrollTopSnapshot;
+-    let userScrolledDuringRender = false;
+-    const onPredScroll = () => {
+-      if (!content) return;
+-      userScrolledDuringRender = true;
+-      latestScrollTop = content.scrollTop;
+-    };
+-    content?.addEventListener('scroll', onPredScroll, { passive: true });
+-    const cleanupPredScrollListener = () => {
+-      try { content?.removeEventListener('scroll', onPredScroll); } catch (_) { }
+-    };
++    const predAnchorSnapshot = (() => {
++      if (!content) return null;
++      const hostRect = content.getBoundingClientRect();
++      const cards = Array.from(content.querySelectorAll('[data-testid^="pred-"]'));
++      for (const card of cards) {
++        const rect = card.getBoundingClientRect();
++        if (rect.bottom > hostRect.top + 8) {
++          return {
++            testId: card.getAttribute('data-testid'),
++            offsetTop: rect.top - hostRect.top,
++          };
++        }
++      }
++      return null;
++    })();
+ 
+     const engine = window.PredictionEngine;
+     const engineReady = !!engine?.getAll && !!engine?.getSession;
+     if (!engineReady) {
+       content.innerHTML = `<div class="card"><div class="card-body" style="padding:14px;color:var(--color-text-muted)">Prediction engine unavailable. Waiting for module load...</div></div>`;
+-      cleanupPredScrollListener();
+       return;
+     }
+ 
+@@ -10336,21 +10474,21 @@
+     } else if (!predsLoaded && nowTs < _predictionEngineRetryAfterTs && currentView === 'predictions') {
+       const secLeft = Math.max(1, Math.ceil((_predictionEngineRetryAfterTs - nowTs) / 1000));
+       content.innerHTML = `<div class="card"><div class="card-body" style="padding:14px;color:var(--color-text-muted)">Prediction engine retry backoff active (${secLeft}s).<br><small style="opacity:.75">${escapeHtml(_predictionEngineLastError || 'waiting for recovery')}</small></div></div>`;
+-      cleanupPredScrollListener();
+       return;
+     }
+ 
+-    if (_rv !== _myRV) { cleanupPredScrollListener(); return; } // guard: stale render version
++    if (_rv !== _myRV) { return; } // guard: stale render version
+     let preds = {};
+     let session = null;
++    let cfmAll = {};
+     try {
+       preds = engine.getAll() || {};
+       session = engine.getSession?.() || null;
++      cfmAll = window.CFMEngine?.getAll?.() || window._cfmAll || {};
+     } catch (err) {
+       const msg = String(err?.message || err || 'unknown render error');
+       console.error('[Predictions] getAll/getSession failed:', err);
+       content.innerHTML = `<div class="card"><div class="card-body" style="padding:14px;color:var(--color-text-muted)">Prediction render failed: ${escapeHtml(msg)}</div></div>`;
+-      cleanupPredScrollListener();
+       return;
+     }
+     const coinOrder = new Map(PREDICTION_COINS.map((coin, index) => [coin.sym, index]));
+@@ -10372,6 +10510,8 @@
+         const bi = coinOrder.has(b.sym) ? coinOrder.get(b.sym) : Number.MAX_SAFE_INTEGER;
+         return (ai - bi) || String(a.sym).localeCompare(String(b.sym));
+       });
++    const kalshiIntents = window.KalshiOrchestrator?.update?.(preds, cfmAll) ?? {};
++    window._cfmAll = cfmAll;
+     const bullCount = predArr.filter(p => p.signal === 'strong_bull' || p.signal === 'bullish').length;
+     const bearCount = predArr.filter(p => p.signal === 'strong_bear' || p.signal === 'bearish').length;
+     const backtests = predArr.map(p => p.backtest).filter(Boolean);
+@@ -10558,7 +10698,7 @@
+       </div>
+       <div class="pred-grid">
+         ${predArr.map(p => {
+-      try { return predictionCard(p); }
++      try { return predictionCard(p, kalshiIntents[p.sym] || null); }
+       catch (cardErr) {
+         console.error('[predictionCard] crash:', p?.sym, cardErr);
+         return `<div class="pred-card" style="padding:20px 16px;border-left:4px solid var(--color-red,#ff4444)">
+@@ -10622,13 +10762,22 @@
+     });
+     requestAnimationFrame(() => {
+       if (currentView === 'predictions' && content) {
+-        content.scrollTop = userScrolledDuringRender ? latestScrollTop : scrollTopSnapshot;
++        if (predAnchorSnapshot?.testId) {
++          const target = content.querySelector(`[data-testid="${predAnchorSnapshot.testId}"]`);
++          if (target) {
++            const hostRect = content.getBoundingClientRect();
++            const targetRect = target.getBoundingClientRect();
++            const delta = (targetRect.top - hostRect.top) - predAnchorSnapshot.offsetTop;
++            content.scrollTop += delta;
++            return;
++          }
++        }
++        content.scrollTop = scrollTopSnapshot;
+       }
+     });
+-    cleanupPredScrollListener();
+   }
+ 
+-  function predictionCard(p) {
++  function predictionCard(p, ki = null) {
+     if (!p || !p.sym) {
+       console.warn('[predictionCard] Missing prediction object or sym:', p);
+       return `<div class="pred-card" style="padding:20px 16px;border-left:4px solid var(--color-red,#ff4444)">
+@@ -10658,8 +10807,29 @@
+     const _yesDirEarly = _strikeDirEarly === 'below' ? 'down' : 'up';
+     const _noDirEarly = _yesDirEarly === 'up' ? 'down' : 'up';
+ 
+-    const modelDir = p.score > 0.12 ? 'up' : p.score < -0.12 ? 'down' : 'wait';
++    const MODEL_FLOW_THRESHOLD = 0.06;
++    const modelDir = p.score > MODEL_FLOW_THRESHOLD ? 'up' : p.score < -MODEL_FLOW_THRESHOLD ? 'down' : 'wait';
+     const kalshiDir = kalshiProb !== null ? (kalshiProb >= 0.5 ? _yesDirEarly : _noDirEarly) : null;
++    const liveReferencePrice = Number.isFinite(_kAlignEarly?.rtiPrice)
++      ? Number(_kAlignEarly.rtiPrice)
++      : Number.isFinite(p.price)
++        ? Number(p.price)
++        : null;
++    const liveStrikeSide = Number.isFinite(_kAlignEarly?.ref) && Number.isFinite(liveReferencePrice)
++      ? ((_strikeDirEarly === 'below'
++        ? liveReferencePrice < Number(_kAlignEarly.ref)
++        : liveReferencePrice >= Number(_kAlignEarly.ref))
++          ? 'YES'
++          : 'NO')
++      : null;
++    const liveStrikeColor = liveStrikeSide === 'YES'
++      ? 'var(--color-green)'
++      : liveStrikeSide === 'NO'
++        ? 'var(--color-red)'
++        : 'var(--color-text-muted)';
++    const liveStrikeLabel = liveStrikeSide
++      ? `LIVE ${liveStrikeSide} SIDE`
++      : 'LIVE STRIKE N/A';
+ 
+     let verdictDir, verdictSource;
+     // MODEL-AGNOSTIC PRINCIPLE: Verdict color reflects MODEL conviction ONLY, never Kalshi odds.
+@@ -10689,11 +10859,11 @@
+       : null;
+     const inSafetyWindow = Number.isFinite(msToClose)
+       && msToClose >= 0
+-      && msToClose <= 5 * 60_000;
++      && msToClose <= 90_000;
+     const isBorderlineStrike = Number.isFinite(_kAlignEarly?.gapPct)
+       ? Math.abs(_kAlignEarly.gapPct) < 0.08
+       : false;
+-    const isWeakConviction = Math.abs(Number(p.score || 0)) < 0.18;
++    const isWeakConviction = Math.abs(Number(p.score || 0)) < MODEL_FLOW_THRESHOLD;
+     if (verdictDir !== 'wait' && inSafetyWindow && (isTickerStale || isBorderlineStrike || isWeakConviction)) {
+       verdictDir = 'wait';
+       verdictSource = isTickerStale
+@@ -10722,16 +10892,75 @@
+       verdictSource = 'safety-semi-confidence-ultra-late';
+     }
+ 
++    const intentAction = ki?.action || null;
++    const intentDirection = String(ki?.direction || '').toLowerCase();
++    const intentSide = String(ki?.side || '').toUpperCase();
++    const hasFreshIntentDirection = (intentDirection === 'up' || intentDirection === 'down')
++      && intentAction !== 'earlyExit'
++      && intentAction !== 'skip';
++    if (hasFreshIntentDirection) {
++      verdictDir = intentDirection;
++      verdictSource = `orchestrator-${intentAction || 'watch'}`;
++    }
++    const hasDisplayIntentDirection = (intentDirection === 'up' || intentDirection === 'down')
++      && intentAction !== 'earlyExit'
++      && intentAction !== 'skip';
++    const displayVerdictDir = (
++      verdictDir === 'wait'
++      && hasDisplayIntentDirection
++      && !String(verdictSource || '').startsWith('safety-')
++    )
++      ? intentDirection
++      : verdictDir;
++
+     // Fade flag: raw price direction conflicts with Kalshi crowd (informational only ΓÇö betAction does NOT use this)
+     const _fadeActive = kalshiDir !== null && modelDir !== 'wait' && modelDir !== kalshiDir;
+     const _fadeSolid = _fadeActive && Math.abs(p.score) >= 0.20;
+     const _fadeSoft = _fadeActive && !_fadeSolid;
++    const _flowDir = modelDir !== 'wait' ? modelDir : (displayVerdictDir !== 'wait' ? displayVerdictDir : null);
++    const _flowAction = _flowDir === _yesDirEarly ? 'YES' : _flowDir === _noDirEarly ? 'NO' : null;
++    const _flowColor = _flowDir === 'up'
++      ? 'var(--color-green)'
++      : _flowDir === 'down'
++        ? 'var(--color-red)'
++        : 'var(--color-text-muted)';
++    const _flowLabel = _flowDir === 'up'
++      ? 'FLOW UP'
++      : _flowDir === 'down'
++        ? 'FLOW DOWN'
++        : 'FLOW FLAT';
+     // Bet action derived from verdictDir (Kalshi-certainty and CDF-aware ΓÇö not raw score direction)
+-    const _betAction = verdictDir === _yesDirEarly ? 'YES' : verdictDir === _noDirEarly ? 'NO' : null;
++    const _betAction = intentSide === 'YES' || intentSide === 'NO'
++      ? intentSide
++      : (displayVerdictDir === _yesDirEarly ? 'YES' : displayVerdictDir === _noDirEarly ? 'NO' : null);
++    const _reversionVote = !!(_betAction && liveStrikeSide && _betAction !== liveStrikeSide);
++    const _executionLabel = _betAction
++      ? (intentAction === 'trade'
++        ? `${_reversionVote ? 'fade to' : 'buy'} ${_betAction}`
++        : intentAction === 'hold'
++          ? `${_reversionVote ? 'setting up fade to' : 'setup favors'} ${_betAction}`
++          : `${_reversionVote ? 'leaning fade to' : 'leaning'} ${_betAction}`)
++      : _flowAction
++        ? `flow leaning ${_flowAction}`
++        : 'WAIT';
++    const _voteLabel = _executionLabel;
++    const _voteColor = _betAction && intentAction === 'trade'
++      ? _flowColor
++      : _betAction && (intentAction === 'watch' || intentAction === 'hold')
++        ? '#7db7ff'
++      : _flowAction
++        ? '#7db7ff'
++        : 'var(--color-text-muted)';
+     const compositeEdge = 0.75 * Math.abs(p.score) + 0.25 * (kalshiEdge ?? 0);
+ 
+-    const verdictMain = verdictDir === 'up' ? 'Γû▓ UP' : verdictDir === 'down' ? 'Γû╝ DOWN' : 'Γùå WAIT';
+-    const strength = verdictDir === 'wait' ? 'NEUTRAL'
++    const verdictDirLabel = displayVerdictDir === 'up'
++      ? 'Γû▓ UP'
++      : displayVerdictDir === 'down'
++        ? 'Γû╝ DOWN'
++        : 'Γùå WAIT';
++    const verdictActionLabel = displayVerdictDir === 'wait' ? _voteLabel : _executionLabel;
++    const verdictMain = `${verdictDirLabel}${verdictActionLabel ? ` <span style="font-size:11px;font-weight:600;opacity:0.88;letter-spacing:0.01em">${escapeHtml(verdictActionLabel)}</span>` : ''}`;
++    const strength = displayVerdictDir === 'wait' ? 'NEUTRAL'
+       : compositeEdge >= 0.42 ? 'STRONG' : compositeEdge >= 0.22 ? 'MODERATE' : 'LIGHT';
+     const scoreStr = Number.isFinite(p.score) ? (p.score > 0 ? '+' : '') + p.score.toFixed(2) : 'ΓÇö';
+ 
+@@ -10739,10 +10968,24 @@
+     const _modelUpPct = Math.round(Math.min(99, Math.max(1, 50 + (p.score || 0) * 50)));
+     const _modelDownPct = 100 - _modelUpPct;
+     const _modelYesPctCard = _kAlignEarly?.modelYesPct ?? (_strikeDirEarly === 'below' ? _modelDownPct : _modelUpPct);
+-    const _modelProbStr = verdictDir === 'up' ? `${_modelUpPct}% UP`
+-      : verdictDir === 'down' ? `${_modelDownPct}% DOWN` : 'NEUTRAL';
+-    const _modelProbColor = verdictDir === 'up' ? 'var(--color-green)'
+-      : verdictDir === 'down' ? 'var(--color-red)' : 'var(--color-text-muted)';
++    const _modelProbStr = _flowDir === 'up' ? `${_modelUpPct}% UP`
++      : _flowDir === 'down' ? `${_modelDownPct}% DOWN` : 'NEUTRAL';
++    const _modelConfidencePct = _flowDir === 'up'
++      ? _modelUpPct
++      : _flowDir === 'down'
++        ? _modelDownPct
++        : Math.max(_modelUpPct, _modelDownPct);
++    const _modelProbColor = '#7db7ff';
++    const _modelDirectionColor = _flowDir === 'up'
++      ? 'var(--color-green)'
++      : _flowDir === 'down'
++        ? 'var(--color-red)'
++        : 'var(--color-text-muted)';
++    const _modelVoteLabel = _flowDir === 'up'
++      ? 'votes UP'
++      : _flowDir === 'down'
++        ? 'votes DOWN'
++        : 'neutral';
+     const _liveKProbCard = window.PredictionMarkets?.getCoin?.(p.sym)?.kalshi15m?.probability ?? kalshiProb;
+     const _liveKPctCard = _liveKProbCard != null ? Math.round(_liveKProbCard * 100) : null;
+     const _edgePpCard = _liveKPctCard != null ? Math.abs(_modelYesPctCard - _liveKPctCard) : null;
+@@ -10772,13 +11015,37 @@
+     const hcConfThreshold = 0.62;
+     const hcEdgeThreshold = 0.20;
+     const hcPass =
+-      verdictDir !== 'wait' &&
++      displayVerdictDir !== 'wait' &&
+       !verdictSource.startsWith('safety-') &&
+       confNorm >= hcConfThreshold &&
+       compositeEdge >= hcEdgeThreshold;
+     const hcBadge = isHighConfidenceOverlayOn()
+       ? `<span class="pred-source-badge ${hcPass ? 'kalshi-align' : 'kalshi-fade'}" title="Advisory overlay only; does not alter model verdict routing">${hcPass ? 'Γ£à HC PASS' : 'ΓÅ╕ HC HOLD'}</span>`
+       : '';
++    const guardReasons = Array.from(new Set(
++      ((ki?.blockedBy || []).concat(ki?.stageDiagnostics?.suppressionReasons || []))
++        .map(humanizeKalshiReason)
++        .filter(Boolean)
++    )).slice(0, 2);
++    const guardRationale = (() => {
++      if (!ki || ki.action === 'trade' || ki.action === 'skip') return '';
++      if (ki.action === 'earlyExit') {
++        return `Orchestrator guard: stand aside${guardReasons.length ? ` ΓÇö ${guardReasons.join(' ┬╖ ')}` : ''}.`;
++      }
++      if (ki.action === 'hold') {
++        return `Orchestrator guard: evaluating before entry${guardReasons.length ? ` ΓÇö ${guardReasons.join(' ┬╖ ')}` : ''}.`;
++      }
++      return guardReasons.length
++        ? `Orchestrator guard: ${guardReasons.join(' ┬╖ ')}.`
++        : '';
++    })();
++    const strikeStateRationale = (() => {
++      if (!liveStrikeSide || !_betAction || !Number.isFinite(_kAlignEarly?.ref) || !Number.isFinite(liveReferencePrice)) return '';
++      if (!_reversionVote) {
++        return `Live strike state: ${liveStrikeSide} side currently leads at ${liveReferencePrice.toFixed(4)} vs ref ${Number(_kAlignEarly.ref).toFixed(4)}.`;
++      }
++      return `Live strike state: ${liveStrikeSide} side is currently winning at ${liveReferencePrice.toFixed(4)} vs ref ${Number(_kAlignEarly.ref).toFixed(4)}, so ${_betAction} is a reversion-through-close call rather than a momentum follow.`;
++    })();
+     const hcRationale = (() => {
+       if (!isHighConfidenceOverlayOn()) return '';
+       if (hcPass) {
+@@ -10816,24 +11083,24 @@
+   }, 3000); 
+ })();
+     const waitRationale = (() => {
+-      if (verdictDir !== 'wait') return '';
++      if (displayVerdictDir !== 'wait') return '';
+ 
+       const modelYesPct = Number(_kAlignEarly?.modelYesPct);
+       if (verdictSource === 'model-cdf-neutral' && Number.isFinite(modelYesPct)) {
+-        return `Model thinking: CDF neutral at ${modelYesPct.toFixed(1)}% YES (needs >=58% for YES direction or <=42% for NO direction).`;
++        return `Model thinking: CDF neutral at ${modelYesPct.toFixed(1)}% YES (needs >=58% for YES direction or <=42% for NO direction)${_flowDir ? `, while raw flow still leans ${String(_flowDir).toUpperCase()}${_flowAction ? ` / ${_flowAction}` : ''}` : ''}.`;
+       }
+       if (verdictSource === 'model-uncertain') {
+-        return `Model thinking: low conviction score ${scoreStr} (needs >+0.12 for UP or <-0.12 for DOWN).`;
++        return `Model thinking: low conviction score ${scoreStr} (needs >+${MODEL_FLOW_THRESHOLD.toFixed(2)} for UP or <${(-MODEL_FLOW_THRESHOLD).toFixed(2)} for DOWN)${_flowDir ? `, current flow lean ${String(_flowDir).toUpperCase()}${_flowAction ? ` / ${_flowAction}` : ''}` : ''}.`;
+       }
+       if (verdictSource === 'safety-stale-data') {
+-        return `Model thinking: signal blocked by stale ticker data (${Math.round(tickerAgeMs / 1000)}s old) inside the 5-minute pre-close guard.`;
++        return `Model thinking: signal blocked by stale ticker data (${Math.round(tickerAgeMs / 1000)}s old) inside the 90-second pre-close guard.`;
+       }
+       if (verdictSource === 'safety-borderline-strike') {
+         const gap = Number(_kAlignEarly?.gapPct);
+-        return `Model thinking: strike gap too narrow (${Number.isFinite(gap) ? gap.toFixed(3) : 'n/a'}%) inside the 5-minute pre-close guard.`;
++        return `Model thinking: strike gap too narrow (${Number.isFinite(gap) ? gap.toFixed(3) : 'n/a'}%) inside the 90-second pre-close guard.`;
+       }
+       if (verdictSource === 'safety-weak-conviction') {
+-        return `Model thinking: weak score ${scoreStr} in the 5-minute pre-close guard (requires stronger than ┬▒0.18).`;
++        return `Model thinking: weak score ${scoreStr} in the 90-second pre-close guard (requires stronger than ┬▒${MODEL_FLOW_THRESHOLD.toFixed(2)}).`;
+       }
+       if (verdictSource === 'safety-semi-confidence-ultra-late') {
+         return `Model thinking: semi-confidence (${Math.round(confNorm * 100)}%) with crowd conflict in the last 45 seconds, so entry is blocked.`;
+@@ -11125,18 +11392,23 @@
+         </div>
+ 
+         <!-- Verdict Banner: always visible ΓÇö this is the primary signal -->
+-        <div class="pred-verdict ${verdictDir}">
++        <div class="pred-verdict ${displayVerdictDir}">
+           <div class="pred-verdict-call">
+             <span class="pred-verdict-main">${verdictMain}</span>
+             <span class="pred-verdict-strength">${strength}</span>
+           </div>
+           <div class="pred-verdict-meta">
+             <span class="pred-source-badge model">MODEL</span>
++            <span class="pred-source-badge" style="border-color:rgba(125,183,255,0.45);color:${_flowColor}">${_flowLabel}</span>
++            <span class="pred-source-badge" style="border-color:rgba(125,183,255,0.45);color:${_voteColor}">${_voteLabel}</span>
++            <span class="pred-source-badge" style="border-color:rgba(255,255,255,0.18);color:${liveStrikeColor}">${liveStrikeLabel}</span>
++            ${ki?.action ? `<span class="pred-source-badge" style="border-color:rgba(255,255,255,0.18);color:${ki.action === 'trade' ? 'var(--color-green)' : ki.action === 'earlyExit' ? 'var(--color-red)' : (ki.action === 'hold' ? '#ffd27a' : '#7db7ff')}">ORCH ${String(ki.action).toUpperCase()}</span>` : ''}
+             ${llmBadge}
+             ${_liveKPctCard !== null
+         ? `<span class="pred-source-badge ${_fadeActive ? 'kalshi-fade' : 'kalshi-align'}">${_fadeActive ? 'ΓÜí ' : ''}KALSHI ${_liveKPctCard}% YES</span>`
+         : ''}
+-            <span style="color:${_modelProbColor};font-weight:700">${_modelProbStr}</span>
++            <span style="color:${_modelProbColor};font-weight:700">MODEL ${_modelProbStr}</span>
++            ${_liveKPctCard !== null ? `<span style="font-size:10px;font-weight:700;color:var(--color-text-muted)">M ${Math.round(_modelYesPctCard)}% ┬╖ K ${_liveKPctCard}%</span>` : ''}
+             <span>┬╖</span>
+             <span>${p.confidence}% conf</span>
+             ${_edgePpCard != null && _edgePpCard >= 10 ? `<span style="color:${_edgePpCard >= 20 ? 'var(--color-green)' : '#ffd700'};font-weight:800;font-size:9px;padding:1px 5px;border-radius:3px;background:${_edgePpCard >= 20 ? 'rgba(38,212,126,0.12)' : 'rgba(255,215,0,0.12)'}">${_edgePpCard}pp ${_fadeActive ? 'FADE' : 'EDGE'}</span>` : ''}
+@@ -11144,6 +11416,8 @@
+             <span style="font-size:9px;padding:2px 6px;border-radius:9999px;background:var(--color-surface-2);color:${setup15.cls === 'bull' ? 'var(--color-green)' : setup15.cls === 'bear' ? 'var(--color-red)' : 'var(--color-text-muted)'};font-weight:700;text-transform:uppercase">${setup15.label}</span>
+           </div>
+           ${(p.llm?.ai_wording?.wait_rationale) ? `<div class="pred-verdict-rationale" style="color:#8fa8ff"><span style="font-weight:700">Γ£¿ AI:</span> ${escapeHtml(p.llm.ai_wording.wait_rationale)}</div>` : waitRationale ? `<div class="pred-verdict-rationale">${waitRationale}</div>` : ''}
++          ${strikeStateRationale ? `<div class="pred-verdict-rationale" style="color:${liveStrikeColor}"><span style="font-weight:700">≡ƒôì LIVE:</span> ${escapeHtml(strikeStateRationale)}</div>` : ''}
++          ${guardRationale ? `<div class="pred-verdict-rationale" style="color:#ffd27a"><span style="font-weight:700">≡ƒ¢í ORCH:</span> ${escapeHtml(guardRationale)}</div>` : ''}
+           ${(p.llm?.ai_wording?.high_confidence_rationale) ? `<div class="pred-verdict-rationale" style="color:#8fa8ff"><span style="font-weight:700">Γ£¿ AI:</span> ${escapeHtml(p.llm.ai_wording.high_confidence_rationale)}</div>` : hcRationale ? `<div class="pred-verdict-rationale">${hcRationale}</div>` : ''}
+           ${(p.llm?.ai_wording?.primary_rationale) ? `<div class="pred-verdict-rationale" style="color:#8fa8ff"><span style="font-weight:700">Γ£¿ AI:</span> ${escapeHtml(p.llm.ai_wording.primary_rationale)}</div>` : ratPrimary ? `<div class="pred-verdict-rationale">${ratPrimary}</div>` : ''}
+           ${llmNotes ? `
+@@ -11161,20 +11435,20 @@
+           ${_liveKPctCard !== null ? `
+             <div class="pred-comparison-bar-wrap" title="Model vs Market: shows where model (top) differs from Kalshi crowd (bottom)">
+               <div style="font-size:9px;color:var(--color-text-muted);margin-bottom:4px;display:flex;justify-content:space-between">
+-                <span>Model: ${_modelProbStr}</span>
++                <span>Model confidence: ${_modelConfidencePct}%</span>
+                 <span>Kalshi: ${_liveKPctCard}% YES</span>
+               </div>
+               <div style="display:flex;gap:8px;align-items:center">
+                 <div style="flex:1;height:12px;background:rgba(0,0,0,0.1);border-radius:3px;position:relative;overflow:hidden">
+-                  <div style="height:100%;width:${_modelUpPct}%;background:${verdictDir === 'up' ? 'var(--color-green)' : 'var(--color-red)'};border-radius:3px"></div>
++                  <div style="height:100%;width:${_modelConfidencePct}%;background:linear-gradient(90deg, rgba(88,166,255,0.92), rgba(125,183,255,0.98));border-radius:3px;box-shadow:inset 0 0 0 1px rgba(255,255,255,0.08)"></div>
+                 </div>
+-                <span style="font-size:9px;font-weight:700;min-width:35px;text-align:right;color:var(--color-text)">${_edgePpCard ?? 'ΓÇö'}pp</span>
++                <span style="font-size:9px;font-weight:800;min-width:68px;text-align:right;color:${_modelDirectionColor}">${_modelVoteLabel}</span>
+               </div>
+               <div style="display:flex;gap:8px;align-items:center;margin-top:4px">
+                 <div style="flex:1;height:12px;background:rgba(0,0,0,0.1);border-radius:3px;position:relative;overflow:hidden">
+                   <div style="height:100%;width:${_liveKPctCard}%;background:${_liveKColorCard};border-radius:3px"></div>
+                 </div>
+-                <span style="font-size:9px;font-weight:700;min-width:35px;text-align:right;color:var(--color-text-muted)">crowd</span>
++                <span style="font-size:9px;font-weight:700;min-width:68px;text-align:right;color:var(--color-text-muted)">${_edgePpCard ?? 'ΓÇö'}pp edge</span>
+               </div>
+             </div>
+           ` : ''}
+@@ -11263,7 +11537,8 @@
+         const modelLeanStr = modelLean === 'up' ? `${modelUpPct}% UP`
+           : modelLean === 'down' ? `${modelDownPct}% DOWN`
+             : 'NEUTRAL';
+-        const modelColor = modelLean === 'up' ? 'var(--color-green)'
++        const modelColor = '#7db7ff';
++        const modelDirectionColor = modelLean === 'up' ? 'var(--color-green)'
+           : modelLean === 'down' ? 'var(--color-red)'
+             : 'var(--color-text-muted)';
+ 
+@@ -11288,17 +11563,15 @@
+             : `<span style="color:var(--color-text-muted)">ΓÇö</span>`;
+ 
+         // ΓöÇΓöÇ Styling ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+-        const isExit = ki.action === 'earlyExit';
+-        const isHold = ki.action === 'hold';
+-        const isTrade = ki.action === 'trade';
+-        const isCrowdFade = ki.alignment === 'CROWD_FADE' || !!ki.crowdFade;
+-        const isDivergent = ki.alignment === 'DIVERGENT';
+-        const rowBg = isExit ? 'rgba(255,80,80,0.07)' : isHold ? 'rgba(255,180,0,0.07)'
+-          : isCrowdFade ? 'rgba(224,64,251,0.08)'
+-            : isTrade ? 'rgba(0,200,100,0.07)' : 'rgba(200,200,0,0.05)';
+-        const rowBdr = isExit ? 'rgba(255,80,80,0.2)' : isHold ? 'rgba(255,180,0,0.25)'
+-          : isCrowdFade ? 'rgba(224,64,251,0.25)'
+-            : isTrade ? 'rgba(0,200,100,0.2)' : 'rgba(200,200,0,0.15)';
++        const visuals = getKalshiIntentVisuals(ki);
++        const decisionSummary = buildKalshiDecisionSummary(ki);
++        const isExit = visuals.isExit;
++        const isHold = visuals.isHold;
++        const isTrade = visuals.isTrade;
++        const isCrowdFade = visuals.isCrowdFade;
++        const isDivergent = visuals.isDivergent;
++        const rowBg = visuals.bg;
++        const rowBdr = visuals.border;
+ 
+         // ΓöÇΓöÇ Contract expiry guard ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+         // ki is stale cache ΓÇö if closeTimeMs is in the past, new contract not yet listed.
+@@ -11421,9 +11694,9 @@
+         }
+ 
+         // ΓöÇΓöÇ Active contract ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+-        const sideColor = ki.side === 'YES' ? 'var(--color-green)' : ki.side === 'NO' ? 'var(--color-red)' : 'var(--color-orange)';
+-        const sideBg = ki.side === 'YES' ? 'rgba(0,200,100,0.18)' : ki.side === 'NO' ? 'rgba(220,60,60,0.18)' : 'transparent';
+-        const actionLabel = isTrade ? '≡ƒƒó TRADE' : isExit ? '≡ƒö┤ EXIT' : isHold ? 'ΓÅ│ HOLD' : '≡ƒæü WATCH';
++        const sideColor = visuals.sideColor;
++        const sideBg = visuals.sideBg;
++        const actionLabel = visuals.actionLabel;
+         const strikeLabel = (() => { const m = ki.contractTicker?.match(/T(\d+(?:\.\d+)?)$/); return m ? 'T' + Number(m[1]).toLocaleString() : '';   // =========================================================================
+   // RL Weights Synchronization
+   // =========================================================================
+@@ -11473,13 +11746,15 @@
+               : `<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+                      <span style="background:${sideBg};color:${sideColor};padding:4px 14px;border-radius:4px;font-size:15px;font-weight:800;letter-spacing:.8px">${ki.side}</span>
+                      <span style="font-size:12px;font-weight:700;color:var(--color-text)">KALSHI${strikeLabel ? ' ┬╖ ' + strikeLabel : ''}</span>
+-                     <span style="margin-left:auto;background:${isTrade ? 'rgba(0,200,100,0.15)' : 'rgba(200,200,0,0.12)'};color:${isTrade ? 'var(--color-green)' : 'var(--color-orange)'};padding:3px 10px;border-radius:3px;font-size:12px;font-weight:700">${actionLabel}</span>
++                    <span style="margin-left:auto;background:${visuals.actionBg};color:${visuals.actionColor};padding:3px 10px;border-radius:3px;font-size:12px;font-weight:700">${actionLabel}</span>
+                    </div>`}
++              ${decisionSummary ? `<div style="font-size:11px;color:${visuals.actionColor};margin-top:6px;font-weight:700;line-height:1.35">${decisionSummary}</div>` : ''}
+               <!-- Model vs Kalshi probability ΓÇö the primary insight -->
+               <div style="margin-top:6px;padding:6px 8px;border-radius:4px;background:rgba(0,0,0,0.12);font-size:12px">
+                 <div style="display:flex;align-items:center;gap:8px;margin-bottom:${liveKPct != null ? '5px' : '0'}">
+                   <span style="color:var(--color-text-muted);font-size:10px;font-weight:600;letter-spacing:.4px">MODEL</span>
+                   <strong style="font-size:14px;color:${modelColor}">${modelLeanStr}</strong>
++                  <span style="font-size:10px;font-weight:800;color:${modelDirectionColor};padding:1px 6px;border-radius:999px;background:rgba(125,183,255,0.10)">${modelLean === 'up' ? 'UP' : modelLean === 'down' ? 'DOWN' : 'WAIT'}</span>
+                   <span style="color:var(--color-text-faint);font-size:16px;font-weight:300">Γåö</span>
+                   <span style="color:var(--color-text-muted);font-size:10px;font-weight:600;letter-spacing:.4px">KALSHI</span>
+                   <strong style="font-size:14px;color:${kalshiColor}">${kalshiLeanStr}</strong>
+@@ -11505,7 +11780,7 @@
+               <div style="display:flex;gap:12px;font-size:11px;color:var(--color-text-faint);margin-top:5px;flex-wrap:wrap;align-items:center">
+                 ${ki.closeTimeMs ? `<span id="kalshi-min-${p.sym}" data-close-ms="${ki.closeTimeMs}">ΓÅ▒ <strong>${minsStr ?? 'ΓÇª'}</strong> left</span>` : minsStr ? `<span>ΓÅ▒ <strong>${minsStr}</strong> left</span>` : ''}
+                 ${ki.suggestedEntry != null ? `<span>Entry ~<strong>$${ki.suggestedEntry.toFixed(2)}</strong></span>` : ''}
+-                <span style="color:${isTrade ? 'var(--color-green)' : isDivergent ? 'var(--color-orange)' : 'var(--color-text-muted)'}">${alignTag} ┬╖ <strong>${ki.confidence}%</strong></span>
++                <span style="color:${visuals.confidenceColor}">${alignTag} ┬╖ <strong>${ki.confidence}%</strong></span>
+               </div>
+               ${ki.humanReason ? `<div style="font-size:11px;color:var(--color-text-muted);margin-top:5px;line-height:1.4;font-family:var(--font-sans)">${ki.humanReason}</div>` : ''}
+               ${renderFifteenMinuteMovePlan(ki)}
+@@ -13603,6 +13878,23 @@
+   }, 3000); 
+ })();
+ 
++  // ΓöÇΓöÇ Initialize Custom Agent Registry (.agents) ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
++  (async function initializeCustomAgents() {
++    try {
++      const CustomAgentRegistry = require('../agents/custom-agent-registry');
++      window._customAgentRegistry = new CustomAgentRegistry();
++      await window._customAgentRegistry.init();
++      window.CustomAgents = {
++        status: () => window._customAgentRegistry.getStatus(),
++        list: () => window._customAgentRegistry.listAgents(),
++        get: (name) => window._customAgentRegistry.getAgent(name),
++      };
++      console.log(`[App] Custom agents enabled: ${window._customAgentRegistry.getStatus().count}`);
++    } catch (err) {
++      console.warn('[App] Failed to initialize custom agents:', err.message);
++    }
++  })();
++
+   // ΓöÇΓöÇ KalshiDebug console API ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+   // Accessible from DevTools console for live inspection.
+   window.KalshiDebug = {
+@@ -13731,4 +14023,3 @@
+     }
+   }, 3000); 
+ })();
+-

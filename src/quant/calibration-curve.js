@@ -9,13 +9,100 @@
 (function () {
     'use strict';
 
+    const OVERNIGHT_EMPIRICAL_HORIZON_DECILES = {
+        '0-5m': [
+            { predicted_prob: 0.0049, empirical_freq: 0.0114, count: 788 },
+            { predicted_prob: 0.1431, empirical_freq: 0.24,   count: 25 },
+            { predicted_prob: 0.2563, empirical_freq: 0.20,   count: 10 },
+            { predicted_prob: 0.3476, empirical_freq: 0.20,   count: 10 },
+            { predicted_prob: 0.4455, empirical_freq: 0.375,  count: 8 },
+            { predicted_prob: 0.5594, empirical_freq: 0.75,   count: 8 },
+            { predicted_prob: 0.617,  empirical_freq: 1.0,    count: 3 },
+            { predicted_prob: 0.7463, empirical_freq: 1.0,    count: 6 },
+            { predicted_prob: 0.861,  empirical_freq: 0.0,    count: 1 },
+            { predicted_prob: 0.9811, empirical_freq: 0.8571, count: 7 }
+        ],
+        '6-15m': [
+            { predicted_prob: 0.01,   empirical_freq: 0.0266, count: 1655 },
+            { predicted_prob: 0.1473, empirical_freq: 0.162,  count: 142 },
+            { predicted_prob: 0.2472, empirical_freq: 0.3375, count: 80 },
+            { predicted_prob: 0.3453, empirical_freq: 0.4795, count: 73 },
+            { predicted_prob: 0.4441, empirical_freq: 0.6071, count: 56 },
+            { predicted_prob: 0.545,  empirical_freq: 0.6154, count: 26 },
+            { predicted_prob: 0.642,  empirical_freq: 0.7727, count: 22 },
+            { predicted_prob: 0.7475, empirical_freq: 0.70,   count: 10 },
+            { predicted_prob: 0.859,  empirical_freq: 1.0,    count: 5 },
+            { predicted_prob: 0.9701, empirical_freq: 0.8571, count: 7 }
+        ],
+        '16-30m': [
+            { predicted_prob: 0.0143, empirical_freq: 0.0244, count: 2627 },
+            { predicted_prob: 0.1458, empirical_freq: 0.19,   count: 279 },
+            { predicted_prob: 0.2488, empirical_freq: 0.404,  count: 198 },
+            { predicted_prob: 0.3454, empirical_freq: 0.5933, count: 150 },
+            { predicted_prob: 0.4448, empirical_freq: 0.7581, count: 124 },
+            { predicted_prob: 0.5439, empirical_freq: 0.6557, count: 61 },
+            { predicted_prob: 0.6442, empirical_freq: 0.60,   count: 25 },
+            { predicted_prob: 0.7222, empirical_freq: 0.60,   count: 5 },
+            { predicted_prob: 0.8115, empirical_freq: 0.50,   count: 2 },
+            { predicted_prob: 0.9999, empirical_freq: 1.0,    count: 13 }
+        ],
+        '31-60m': [
+            { predicted_prob: 0.0156, empirical_freq: 0.0275, count: 4371 },
+            { predicted_prob: 0.1461, empirical_freq: 0.2986, count: 777 },
+            { predicted_prob: 0.2433, empirical_freq: 0.5018, count: 554 },
+            { predicted_prob: 0.3436, empirical_freq: 0.5572, count: 341 },
+            { predicted_prob: 0.4438, empirical_freq: 0.7137, count: 227 },
+            { predicted_prob: 0.5384, empirical_freq: 0.7333, count: 120 },
+            { predicted_prob: 0.6464, empirical_freq: 0.8649, count: 37 },
+            { predicted_prob: 0.7174, empirical_freq: 0.8889, count: 9 },
+            { predicted_prob: 0.86,   empirical_freq: 1.0,    count: 1 },
+            { predicted_prob: 0.9857, empirical_freq: 1.0,    count: 22 }
+        ]
+    };
+
+    function smoothDecilesWithLaplacePrior(deciles) {
+        return deciles.map(d => {
+            const n = d.count || 0;
+            const pred = d.predicted_prob;
+            const rawFreq = d.empirical_freq;
+            if (n >= 10) {
+                return { x: pred, y: rawFreq };
+            }
+            // Bayesian Laplace shrinkage toward prior for small-sample buckets (N < 10)
+            const smoothedFreq = (n * rawFreq + 2 * pred) / (n + 2);
+            return { x: pred, y: smoothedFreq };
+        });
+    }
+
     class CalibrationAnalyzer {
-        constructor() {
+        constructor(options = {}) {
             this.predictions = [];  // {confidence, outcome}
             this.calibrationModel = null;
             this.metrics = null;
 
-            console.log('[CalibrationAnalyzer] Initialized');
+            if (options.seedOvernight !== false) {
+                this.seedFromOvernightDeciles(options.horizon || '6-15m');
+            }
+
+            console.log('[CalibrationAnalyzer] Initialized (pre-seeded with overnight empirical deciles)');
+        }
+
+        /**
+         * Pre-seed isotonic model from empirical overnight deciles with Laplace smoothing
+         */
+        seedFromOvernightDeciles(horizon = '6-15m') {
+            const deciles = OVERNIGHT_EMPIRICAL_HORIZON_DECILES[horizon] || OVERNIGHT_EMPIRICAL_HORIZON_DECILES['6-15m'];
+            const smoothed = smoothDecilesWithLaplacePrior(deciles);
+            const xs = smoothed.map(s => s.x);
+            const ys = smoothed.map(s => s.y);
+            this.calibrationModel = {
+                xs,
+                ys,
+                f: ys,
+                horizon,
+                seeded: true,
+            };
+            return this.calibrationModel;
         }
 
         /**
@@ -32,7 +119,7 @@
                 ...metadata,
             });
 
-            if (this.predictions.length > 10000) {
+            if (this.predictions.length > 20000) {
                 this.predictions.shift();
             }
         }
@@ -295,13 +382,20 @@
         /**
          * Reset
          */
-        reset() {
+        reset(options = {}) {
             this.predictions = [];
             this.calibrationModel = null;
             this.metrics = null;
+            if (options.reseed !== false) {
+                this.seedFromOvernightDeciles(options.horizon || '6-15m');
+            }
         }
     }
 
-    window.CalibrationAnalyzer = CalibrationAnalyzer;
+    const targetScope = typeof window !== 'undefined' ? window : (typeof global !== 'undefined' ? global : this);
+    targetScope.CalibrationAnalyzer = CalibrationAnalyzer;
+    if (typeof module !== 'undefined' && module.exports) {
+        module.exports = CalibrationAnalyzer;
+    }
     console.log('[CalibrationAnalyzer] Loaded');
 })();

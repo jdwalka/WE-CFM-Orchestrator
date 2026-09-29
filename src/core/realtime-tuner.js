@@ -25,6 +25,10 @@ class RealTimeTuner {
     this.gateAdjustments = {}; // Recent gate changes
     this.weightAdjustments = {}; // Recent weight changes
     this.decisionHistory = []; // Last 20 decisions
+    this.enforceMonotonicImprovement = false; // keep polls independent by default
+    this.lastAcceptedWinRate = null;
+    this.lastAcceptedSnapshot = null;
+    this.minMonotonicDelta = 0.10; // require at least 0.10pp non-regression tolerance
     
     // Real-time metrics
     this.pollCount = 0;
@@ -231,6 +235,7 @@ class RealTimeTuner {
 
       const decisions = {
         timestamp: Date.now(),
+        baselinePortfolioWinRate: Number(pollData?.accuracy?.portfolio?.winRate || 0),
         gateAdjustments: {},
         weightAdjustments: {},
         marketRegimeChange: null,
@@ -325,8 +330,46 @@ class RealTimeTuner {
         timestamp: Date.now(),
         gatesUpdated: 0,
         weightsUpdated: 0,
-        emergencyTriggered: false
+        emergencyTriggered: false,
+        monotonicGuard: { blocked: false, rolledBack: false, reason: '' },
       };
+
+      const snapshotState = () => {
+        return {
+          gates: adaptiveEngine?.tuner?.currentGates
+            ? JSON.parse(JSON.stringify(adaptiveEngine.tuner.currentGates))
+            : null,
+          weights: adaptiveEngine?.snapshotTuner?.currentCompositeWeights
+            ? JSON.parse(JSON.stringify(adaptiveEngine.snapshotTuner.currentCompositeWeights))
+            : null,
+        };
+      };
+      const restoreState = (snapshot) => {
+        if (!snapshot) return false;
+        if (snapshot.gates && adaptiveEngine?.tuner?.currentGates) {
+          adaptiveEngine.tuner.currentGates = JSON.parse(JSON.stringify(snapshot.gates));
+        }
+        if (snapshot.weights && adaptiveEngine?.snapshotTuner?.currentCompositeWeights) {
+          adaptiveEngine.snapshotTuner.currentCompositeWeights = JSON.parse(JSON.stringify(snapshot.weights));
+        }
+        return true;
+      };
+
+      const baselineWR = Number(decisions?.baselinePortfolioWinRate);
+      const hasBaseline = Number.isFinite(baselineWR);
+      if (this.enforceMonotonicImprovement && hasBaseline && this.lastAcceptedWinRate !== null) {
+        const regressed = baselineWR + this.minMonotonicDelta < this.lastAcceptedWinRate;
+        if (regressed && decisions.emergencyActions.length === 0) {
+          const restored = restoreState(this.lastAcceptedSnapshot);
+          applied.monotonicGuard = {
+            blocked: true,
+            rolledBack: !!restored,
+            reason: `Blocked adjustment: WR ${baselineWR.toFixed(2)}% < last accepted ${this.lastAcceptedWinRate.toFixed(2)}%`,
+          };
+          console.warn(`[RealTimeTuner] ${applied.monotonicGuard.reason}`);
+          return applied;
+        }
+      }
 
       // Apply emergency actions
       if (decisions.emergencyActions.length > 0) {
@@ -345,7 +388,8 @@ class RealTimeTuner {
       // Apply gate adjustments
       Object.entries(decisions.gateAdjustments).forEach(([coin, adj]) => {
         if (adaptiveEngine && adaptiveEngine.tuner && adaptiveEngine.tuner.currentGates) {
-          const oldGate = adaptiveEngine.tuner.currentGates[coin];
+          const oldGate = Number(adaptiveEngine.tuner.currentGates[coin]);
+          if (!Number.isFinite(oldGate) || oldGate <= 0) return;
           const newGate = oldGate + (adj.adjustment / 100 * oldGate); // Apply as percentage
           
           // Respect bounds
@@ -364,6 +408,7 @@ class RealTimeTuner {
         if (adaptiveEngine && adaptiveEngine.snapshotTuner) {
           const baseline = adaptiveEngine.snapshotTuner.baselineCompositeWeights[ind];
           const current = adaptiveEngine.snapshotTuner.currentCompositeWeights[ind];
+          if (!Number.isFinite(baseline) || !Number.isFinite(current)) return;
           
           let newWeight;
           if (adj.action === 'UPWEIGHT_RAPID') {
@@ -371,6 +416,7 @@ class RealTimeTuner {
           } else if (adj.action === 'DOWNWEIGHT_AGGRESSIVE') {
             newWeight = Math.max(baseline * 0.60, current - baseline * 0.15);
           }
+          if (!Number.isFinite(newWeight)) return;
           
           adaptiveEngine.snapshotTuner.currentCompositeWeights[ind] = newWeight;
           applied.weightsUpdated++;
@@ -378,6 +424,13 @@ class RealTimeTuner {
           console.log(`[RealTime] Weight: ${ind} ${current.toFixed(4)} → ${newWeight.toFixed(4)} (${adj.action})`);
         }
       });
+
+      if (this.enforceMonotonicImprovement && hasBaseline) {
+        this.lastAcceptedWinRate = this.lastAcceptedWinRate === null
+          ? baselineWR
+          : Math.max(this.lastAcceptedWinRate, baselineWR);
+        this.lastAcceptedSnapshot = snapshotState();
+      }
 
       return applied;
     } catch (err) {

@@ -1,0 +1,27 @@
+Implementation Summary
+1. Critical Audit Corrections & Traps Addressed
+dYdX: Migrated deprecated v3 endpoints to v4 Indexer (https://indexer.dydx.trade/v4/orderbooks/perpetualMarket/{ticker} and /v4/historicalFunding/{ticker}) with zero auth overhead.
+OKX: Strictly enforced apex domain routing to https://www.okx.com/api/v5/... to eliminate 301/308 redirects that drop headers or cause CORS preflight failures in fetch.
+Bybit: Split linear orderbook and tickers polling; parsed fundingRate and nextFundingTime strictly from /v5/market/tickers.
+Deribit: Corrected invalid path to GET /api/v2/public/get_order_book?instrument_name={sym}-PERPETUAL&depth=20 with explicit depth param.
+Binance: Enforced lowercase /fapi/v1/... and integrated /fapi/v1/fundingInfo to capture funding clamp interval tightening (< 8h) and cap expansion (> 0.75%) feeding burst_pressure.
+Hyperliquid: Replaced rejected GET calls with multiplexed single POST https://api.hyperliquid.xyz/info fetching { type: "metaAndAssetCtxs" } and { type: "predictedFundings" }.
+2. Network & Egress Layer Verification
+Binance HTTP 451 (Geo-block): Enforced local SOCKS5 proxy routing (127.0.0.1:18090 / 127.0.0.1:3010/binance-f) with automatic fallback to api.binance.us.
+Bybit HTTP 403 (Cloudflare WAF): Enforced browser TLS headers (User-Agent, Accept-Language, sec-ch-ua) with automatic fallback to the Rust proxy server (127.0.0.1:3010/bybit).
+3. High-Alpha Additions for the Residual & Tail Model
+Hyperliquid predictedFundings 
+→
+→ cascade_skew: Wired into 
+src/orbital/orbital-matrix-processor.js
+ during payload synthesis to cross-reference instantaneous next-epoch rate against live rates for cascade skew and positioning unwind.
+Binance /fapi/v1/fundingInfo 
+→
+→ burst_pressure: Integrated into 
+src/feeds/derivatives-feed.js
+ to flag extreme volatility clamp adjustments.
+Diagnostics & Telemetry: Captured latency and rate-limit headers (x-mbx-used-weight, x-okx-limit-remaining, x-bapi-limit-status), flagging data_quality: "partial" if latency spikes >500ms or channels degrade.
+4. Scalper Market Data Worker
+Added proxy routes for /dydx/orderbook, /dydx/funding, and /hyperliquid/info with CORS POST support in 
+cloudflare/scalper-market-data/src/index.js
+.

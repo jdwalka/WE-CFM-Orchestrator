@@ -60,13 +60,13 @@ export function useLiveMetrics(options: UseLiveMetricsOptions = {}) {
       ]);
 
       if (statsResult.success) {
-        setStats(statsResult.data);
+        setStats(statsResult.data || null);
       } else {
         setError(statsResult.error || 'Failed to fetch stats');
       }
 
       if (validationsResult.success) {
-        setValidations(validationsResult.data);
+        setValidations(validationsResult.data || []);
       }
 
       setError(null);
@@ -135,10 +135,10 @@ export function useCoinMetrics(coin: string, options: UseLiveMetricsOptions = {}
     try {
       const result = await window.auditAPI.validator.getCoin(coin);
       if (result.success) {
-        setCoinValidations(result.data);
+        setCoinValidations(result.data || []);
         setError(null);
       } else {
-        setError(result.error || 'Failed to fetch coin metrics');
+        setError((result as any).error || 'Failed to fetch coin metrics');
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unknown error');
@@ -179,8 +179,8 @@ declare global {
     auditAPI?: {
       validator: {
         getStats: () => Promise<{ success: boolean; data?: ValidatorStats; error?: string }>;
-        getAll: () => Promise<{ success: boolean; data?: Validation[] }>;
-        getCoin: (sym: string) => Promise<{ success: boolean; data?: Validation[] }>;
+        getAll: () => Promise<{ success: boolean; data?: Validation[]; error?: string }>;
+        getCoin: (sym: string) => Promise<{ success: boolean; data?: Validation[]; error?: string }>;
       };
     };
   }

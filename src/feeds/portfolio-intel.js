@@ -78,17 +78,26 @@
     if (!endpoint) return null;
 
     try {
-      // Get token balances
+      const isSol = chain === 'SOL';
+
+      // 1. Get Balances
+      const balPayload = isSol ? {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'getBalance',
+        params: [addr]
+      } : {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'alchemy_getTokenBalances',
+        params: [addr]
+      };
+
       const balRes = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          jsonrpc: '2.0',
-          id: 1,
-          method: 'alchemy_getTokenBalances',
-          params: [addr],
-        }),
-        signal: AbortSignal.timeout(8000),
+        body: JSON.stringify(balPayload),
+        signal: AbortSignal.timeout(30000),
       });
 
       if (!balRes.ok) {
@@ -99,27 +108,51 @@
       const balData = await balRes.json();
       _markOk('alchemy');
 
-      // Get transaction history
+      // 2. Get Transaction History
+      const txPayload = isSol ? {
+        jsonrpc: '2.0',
+        id: 2,
+        method: 'getSignaturesForAddress',
+        params: [addr, { limit: 100 }]
+      } : {
+        jsonrpc: '2.0',
+        id: 2,
+        method: 'alchemy_getAssetTransfers',
+        params: [{
+          fromAddress: addr,
+          category: ['external', 'internal', 'erc20'],
+          maxCount: '0x64', // 100
+        }]
+      };
+
       const txRes = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          jsonrpc: '2.0',
-          id: 2,
-          method: 'alchemy_getAssetTransfers',
-          params: [{
-            fromAddress: addr,
-            category: ['external', 'internal', 'erc20'],
-            maxCount: '0x64', // 100
-          }],
-        }),
+        body: JSON.stringify(txPayload),
       });
 
-      const txData = txRes.ok ? await txRes.json() : { result: { transfers: [] } };
+      const txData = txRes.ok ? await txRes.json() : null;
+
+      // 3. Normalize Response
+      let balances = [];
+      let transfers = [];
+
+      if (isSol) {
+        const solBalance = balData.result?.value || 0;
+        balances = [{ contractAddress: 'native', tokenBalance: '0x' + solBalance.toString(16) }];
+        transfers = (txData?.result || []).map(t => ({
+          hash: t.signature,
+          blockNum: '0x' + (t.slot || 0).toString(16),
+          category: 'external'
+        }));
+      } else {
+        balances = balData.result?.tokenBalances || [];
+        transfers = txData?.result?.transfers || [];
+      }
 
       return {
-        balances: balData.result?.tokenBalances || [],
-        transfers: txData.result?.transfers || [],
+        balances,
+        transfers,
         source: 'alchemy',
         network: useDevnet ? 'devnet' : 'mainnet',
       };

@@ -1,0 +1,29 @@
+name = "kodak-collector"
+main = "src/index.js"
+compatibility_date = "2026-08-28"
+compatibility_flags = [
+  "nodejs_compat_v2",
+  "transformstream_enable_standard_constructor"
+]
+
+[triggers]
+crons = ["*/5 * * * *"]
+
+[[kv_namespaces]]
+binding = "MARKET_CACHE"
+id = "11089b487b4048729f3a49e6a302c3fb"
+
+[observability]
+enabled = true
+head_sampling_rate = 1
+
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+invocation_logs = true
+persist = true
+
+[observability.traces]
+enabled = true
+head_sampling_rate = 1
+persist = true

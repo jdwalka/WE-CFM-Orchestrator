@@ -1,61 +1,449 @@
-// data-logger.js  v2.1
+// data-logger.js  v2.2
 // ══════════════════════════════════════════════════════════════════════════════
-// Hybrid JSONL logger + Ctrl+D debug overlay
+// Local-spool JSONL logger + durable Google Drive sync + Ctrl+D debug overlay
 //
-// Writes every 60s to ALL available storage roots discovered at startup:
-//   F:\WECRYP\data\YYYY-MM-DD\{category}.jsonl          (primary dev drive)
-//   D:\WECRYP0-data\YYYY-MM-DD\{category}.jsonl         (local D: drive)
-//   C:\WECRYP0-data\...  E:\WECRYP0-data\...            (any other local drives)
-//   Z:\WECRYP0-data\...                                  (Google Drive mapped)
-//   \\server\share\WECRYP0-data\...                      (UNC network shares)
-//   OneDrive\WECRYP0-data\...                            (personal OneDrive)
-//   OneDrive - Azure\WECRYP0-data\...                    (business OneDrive)
+// Writes low-latency batches to a local spool, then asynchronously syncs them to:
+//   H:\My Drive\WECRYP\data\YYYY-MM-DD\{category}.jsonl
+//   I:\My Drive\WECRYP\data\YYYY-MM-DD\{category}.jsonl
 //
-// Drive list is built dynamically via storage:getDrives IPC at load time.
+// Each mounted My Drive root is write-probed at startup and every five minutes.
 // Categories: predictions · decisions · cfm_snapshots · shell_events ·
-//             resolver_outcomes · logic_debug · errors
+//             resolver_outcomes · polymarket_raw · polymarket_5m · logic_debug · errors
 // ══════════════════════════════════════════════════════════════════════════════
 
 (function () {
   'use strict';
 
-  const LOCAL_ROOT = 'F:\\WECRYP\\data';   // primary dev drive — always written first
-  let   DRIVE_PATHS = [];                   // populated by discoverDrives() on startup
-  const FLUSH_MS   = 60_000;
+  let LOCAL_ROOT = '';
+  let env = 'uvix';
+  let DRIVE_PATHS = [];
+  const GOOGLE_DRIVE_ROOTS = [
+    'H:\\My Drive\\WECRYP\\data',
+    'H:\\WECRYPTO\\data',
+    'I:\\My Drive\\WECRYP\\data',
+  ];
+  // polymarket_raw is an unbounded firehose (observed 2.7GB in a single day,
+  // still growing, one snapshot every POLYMARKET_RAW_SNAPSHOT_MS) and
+  // polymarket_5m regularly reaches 100MB+/day. This app's own sync to the
+  // mapped drive letter is a genuine incremental append (see
+  // data:syncFileIncremental in main.js), but Google Drive for Desktop's own
+  // background sync service still has to watch and re-process the whole file
+  // on every touch -- a multi-GB file modified every CLOUD_SYNC_MS is a known
+  // way to wedge that service into a stuck/degraded state, and its error
+  // surface for that is notoriously generic. That is the far more likely
+  // explanation for a spurious Drive "permission" error on an unrelated file
+  // in the same dated folder than an actual ACL problem, especially on an
+  // admin account.
+  //
+  // Fix (storage is not the constraint -- keep syncing everything): these
+  // categories write into a "raw\" child folder, one level below the other
+  // small per-day files, and roll to a new timestamped filename once the
+  // active file passes ROTATE_SIZE_BYTES. A file that has been rolled past is
+  // never appended to again, so Drive only has to upload it once and settle --
+  // the growing, repeatedly-touched file is always small.
+  const CLOUD_SYNC_ROTATE_CATEGORIES = new Set(['polymarket_raw', 'polymarket_5m']);
+  const ROTATE_SIZE_BYTES = 20 * 1024 * 1024; // 20MB -- comfortably small for Drive to re-sync repeatedly
+  const _rotateTag = {}; // category -> active segment tag, e.g. "20260809-143205"
+  const LOCAL_FLUSH_MS = 5_000;
+  const CLOUD_SYNC_MS = 60_000;
+  const DRIVE_REPROBE_MS = 300_000;
+  const POLYMARKET_RAW_SNAPSHOT_MS = 300_000;
+  const STORAGE_PROBE_TIMEOUT_MS = 20000;
+  let initialDataLoadComplete = false;
+  let driveDiscoveryInFlight = null;
+  let cloudSyncInFlight = null;
+  let lastPolymarketRawSnapshotAt = 0;
 
+  function normalizeRoot(root) {
+    return String(root || '').replace(/[\\/]+$/, '');
+  }
+
+  // Dedupes a list of drive/mirror root paths (case-insensitive — Windows
+  // paths — and normalized), preserving first-occurrence order.
+  function uniquePaths(paths) {
+    const seen = new Set();
+    const result = [];
+    for (const p of paths || []) {
+      const normalized = normalizeRoot(p);
+      if (!normalized) continue;
+      const key = normalized.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      result.push(normalized);
+    }
+    return result;
+  }
+
+  function localRootLetter() {
+    const match = String(LOCAL_ROOT || '').match(/^([A-Za-z]):\\/);
+    return match ? match[1].toUpperCase() : '';
+  }
+
+  function pickPrimaryLocalRoot(drives) {
+    const letters = (drives || [])
+      .filter(d => d && d.type === 'local' && d.letter)
+      .map(d => String(d.letter).toUpperCase());
+    const preferred = ['H', 'G', 'F', 'D', 'C'];
+    const picked = preferred.find(letter => letters.includes(letter)) || letters[0];
+    return picked ? `${picked}:\\WECRYPTO\\data` : LOCAL_ROOT;
+  }
+
+  function buildCloudMirrorRoots(root) {
+    const base = normalizeRoot(root);
+    if (!base) return [];
+    return uniquePaths([
+      `${base}\\WECRYPTO\\data`,
+    ]);
+  }
+
+  function dataRootForDriveRoot(root) {
+    const base = normalizeRoot(root);
+    if (!base) return null;
+    return `${base}\\WECRYPTO\\data`;
+  }
+
+  function isGoogleDriveRoot(root) {
+    const value = normalizeRoot(root);
+    return /(?:^|\\)(?:My Drive|Google Drive(?:\s*\(.+\))?|OneDrive.*)$/i.test(value);
+  }
+
+  function isPreferredGoogleDriveRoot(root) {
+    // Treat any cloud drive (Google Drive, OneDrive) as preferred so it's included in discovery
+    return isGoogleDriveRoot(root);
+  }
+
+  function resolveLocalSpoolRoot() {
+    const localAppData = normalizeRoot(window.desktopApp?.userEnv?.localAppData);
+    return localAppData
+      ? `${localAppData}\\WECRYP\\data-spool`
+      : 'C:\\WECRYP\\data-spool';
+  }
+
+  function writeResultOk(result) {
+    return result === true || !!result?.ok;
+  }
+
+  function writeResultError(result) {
+    if (result === false) return 'write rejected';
+    if (!result) return 'no result';
+    return result.error || result.code || 'write rejected';
+  }
+
+  function withTimeout(promise, timeoutMs, label) {
+    let timer = null;
+    const timeout = new Promise(resolve => {
+      timer = setTimeout(() => {
+        resolve({ ok: false, code: 'ETIMEDOUT', error: `${label || 'operation'} timed out after ${timeoutMs}ms` });
+      }, timeoutMs);
+    });
+    return Promise.race([
+      Promise.resolve(promise).catch(error => ({ ok: false, error: error?.message || String(error) })),
+      timeout,
+    ]).finally(() => {
+      if (timer) clearTimeout(timer);
+    });
+  }
+
+  async function probeStorageRoot(root) {
+    const normalized = normalizeRoot(root);
+    const writeFile = window.dataStore?.writeFileDetailed || window.dataStore?.writeFile;
+    if (!normalized || !writeFile) {
+      return { ok: false, root: normalized, error: 'dataStore write bridge unavailable' };
+    }
+
+    const probePath = `${normalized}\\.permission-check\\data-logger-write-probe.json`;
+    const payload = JSON.stringify({
+      source: 'DataLogger',
+      ts: Date.now(),
+      root: normalized,
+    });
+    const result = await withTimeout(
+      writeFile(probePath, payload),
+      STORAGE_PROBE_TIMEOUT_MS,
+      probePath
+    );
+
+    if (writeResultOk(result)) return { ok: true, root: normalized, probePath };
+    return { ok: false, root: normalized, path: probePath, error: writeResultError(result), code: result?.code || null };
+  }
+
+  
   // ── Async drive discovery — runs once on load ─────────────────────────────
-  async function discoverDrives() {
+  function discoverDrives() {
+    if (driveDiscoveryInFlight) return driveDiscoveryInFlight;
+    driveDiscoveryInFlight = runDriveDiscovery().finally(() => { driveDiscoveryInFlight = null; });
+    return driveDiscoveryInFlight;
+  }
+
+  async function runDriveDiscovery() {
     try {
-      if (!window.desktopApp?.getDrives) return;
-      const drives = await window.desktopApp.getDrives();
-      const paths  = [];
-      for (const d of drives) {
-        if (d.type === 'local' && d.letter) {
-          const L = d.letter.toUpperCase();
-          if (L === 'F') continue;               // already covered by LOCAL_ROOT
-          paths.push(`${L}:\\WECRYP0-data`);
-        } else if (d.type === 'network' && d.root) {
-          // UNC path — root already ends with '\', e.g. \\server\share\
-          paths.push(`${d.root}WECRYP0-data`);
-        } else if (d.type === 'cloud' && d.root) {
-          paths.push(`${d.root}\\WECRYP0-data`);
-        }
+      // Establish a reliable local write target FIRST, decoupled from the
+      // slower/optional multi-drive + Google Drive cascade below. Previously
+      // _storage.ready/writableRoots were only ever set once that whole
+      // cascade found at least one writable candidate — if every candidate
+      // (a G: drive, either Google Drive mount, etc.) happened to be
+      // unmounted or unwritable on the very first pass, it bailed out early
+      // and NOTHING was ever marked ready, including the local spool path,
+      // blocking every export/log write until the next 5-minute re-probe.
+      // The local spool root is always computable and almost always
+      // writable, so probe it first and unblock writes immediately;
+      // everything below only ever ADDS more mirror targets on top.
+      const earlyLocalRoot = resolveLocalSpoolRoot();
+      const earlyProbe = await probeStorageRoot(earlyLocalRoot).catch((e) => ({ ok: false, error: e?.message }));
+      if (earlyProbe.ok) {
+        LOCAL_ROOT = earlyLocalRoot;
+        _storage.ready = true;
+        _storage.discoveredAt = Date.now();
+        _storage.writableRoots = uniquePaths([LOCAL_ROOT, ...DRIVE_PATHS]);
+        _stats.session.storageReady = true;
+        _stats.session.storageRoots = _storage.writableRoots.length;
+        _stats.session.lastStorageDiscovery = _storage.discoveredAt;
+      } else {
+        console.warn('[DataLogger] early local spool probe failed:', earlyProbe.error || earlyProbe.code || 'unknown');
       }
-      DRIVE_PATHS = paths;
-      console.log('[DataLogger] storage roots:', [LOCAL_ROOT, ...DRIVE_PATHS].join(' | '));
+
+      const drives = window.desktopApp?.getDrives ? await window.desktopApp.getDrives() : [];
+      const googleStatus = window.desktopApp?.getGoogleDriveTargets
+        ? await window.desktopApp.getGoogleDriveTargets({ force: true }).catch(() => null)
+        : null;
+
+      const localRoots = (drives || [])
+        .filter(d => d?.type === 'local' && d.root)
+        .map(d => dataRootForDriveRoot(d.root));
+      const networkRoots = (drives || [])
+        .filter(d => d?.type === 'network' && d.root)
+        .map(d => dataRootForDriveRoot(d.root));
+      const cloudRoots = (drives || [])
+        .filter(d => d?.type === 'cloud' && d.root)
+        .flatMap(d => buildCloudMirrorRoots(d.root));
+      const googleRoots = (googleStatus?.targets || [])
+        .map(target => target?.root)
+        .filter(Boolean)
+        .flatMap(buildCloudMirrorRoots);
+
+      const candidateRoots = uniquePaths([
+        pickPrimaryLocalRoot(drives),
+        ...GOOGLE_DRIVE_ROOTS,
+        ...cloudRoots,
+        ...googleRoots,
+        ...networkRoots,
+        ...localRoots,
+        LOCAL_ROOT,
+      ]);
+
+      const probes = await Promise.all(candidateRoots.map(probeStorageRoot));
+      const writableRoots = uniquePaths(probes.filter(p => p.ok).map(p => p.root));
+      const failedRoots = probes
+        .filter(p => !p.ok)
+        .map(p => ({ root: p.root, error: p.error || p.code || 'probe failed' }));
+
+      _storage.ready = writableRoots.length > 0;
+      _storage.discoveredAt = Date.now();
+      _storage.drives = Array.isArray(drives) ? drives : [];
+      _storage.accountHints = (googleStatus?.targets || [])
+        .map(target => target?.name || target?.account || target?.root)
+        .filter(Boolean);
+      _storage.googleRoots = uniquePaths(cloudRoots);
+      _storage.googleTargets = uniquePaths(googleRoots);
+      _storage.writableRoots = writableRoots;
+      _storage.failedRoots = failedRoots;
+
+      if (!writableRoots.length) {
+        console.warn('[DataLogger] no writable storage roots discovered; logs will stay buffered until storage recovers');
+        return;
+      }
+
+      LOCAL_ROOT = writableRoots[0];
+      DRIVE_PATHS = writableRoots.slice(1);
+      _stats.session.storageReady = true;
+      _stats.session.storageRoots = writableRoots.length;
+      _stats.session.lastStorageDiscovery = _storage.discoveredAt;
+      
+      console.log('[DataLogger] writable storage roots:', writableRoots.join(' | '));
+      
+      // Load freshest data from C: immediately
+      await loadFreshestData();
+      
+      // Background load historical from H:
+      setTimeout(backloadHistoricalData, 5000);
+      
+      LOCAL_ROOT = resolveLocalSpoolRoot();
+      const localProbe = await probeStorageRoot(LOCAL_ROOT);
+      if (!localProbe.ok) {
+        throw new Error(`local spool unavailable: ${localProbe.error || localProbe.code || LOCAL_ROOT}`);
+      }
+
+      const googleProbes = await Promise.all(GOOGLE_DRIVE_ROOTS.map(probeStorageRoot));
+      const googleWritable = googleProbes.filter(result => result.ok).map(result => result.root);
+      // Merge with whatever the broader multi-drive pass above already found
+      // (G:, network, cloud mirrors) instead of replacing it — both Google
+      // Drive mounts are additional mirrors, not the only mirrors.
+      DRIVE_PATHS = uniquePaths([...DRIVE_PATHS, ...googleWritable]);
+      _storage.ready = true;
+      _storage.discoveredAt = Date.now();
+      _storage.googleRoots = [...GOOGLE_DRIVE_ROOTS];
+      _storage.googleTargets = uniquePaths(googleWritable);
+      _storage.writableRoots = uniquePaths([LOCAL_ROOT, ...DRIVE_PATHS]);
+      _storage.failedRoots = googleProbes.filter(result => !result.ok);
+      _stats.session.storageReady = true;
+      _stats.session.storageRoots = 1 + DRIVE_PATHS.length;
+      _stats.session.lastStorageDiscovery = Date.now();
+
+      console.log('[DataLogger] local spool:', LOCAL_ROOT);
+      console.log('[DataLogger] writable mirror targets:', DRIVE_PATHS.join(' | ') || 'none');
+      if (_storage.failedRoots.length) {
+        console.warn('[DataLogger] unavailable Google My Drive targets:', _storage.failedRoots.map(result => `${result.root}: ${result.error || result.code || 'probe failed'}`).join(' | '));
+      }
+
+      await trackLocalSpoolPartitions();
+      if (!initialDataLoadComplete) {
+        initialDataLoadComplete = true;
+        await loadFreshestData();
+        setTimeout(backloadHistoricalData, 5000);
+      }
     } catch (e) {
       console.warn('[DataLogger] drive discovery failed:', e.message);
-      // Fallback to known drives
-      DRIVE_PATHS = ['D:\\WECRYP0-data', 'Z:\\WECRYP0-data'];
-      console.log('[DataLogger] fallback storage roots:', [LOCAL_ROOT, ...DRIVE_PATHS].join(' | '));
+      _storage.ready = true;
+      _storage.discoveredAt = Date.now();
+      _storage.failedRoots = [{ root: LOCAL_ROOT, error: e.message }];
+    }
+  }
+
+  async function loadFreshestData() {
+    if (!window.dataStore?.readFile) return;
+    try {
+      const today = todayStr();
+      const d = new Date(); d.setDate(d.getDate() - 1);
+      const yesterday = localDayStr(d);
+      
+      const cats = ['predictions', 'decisions', 'resolver_outcomes'];
+      for (const day of [yesterday, today]) {
+        for (const cat of cats) {
+          try {
+            let res = null;
+            for (const root of [LOCAL_ROOT, ...DRIVE_PATHS]) {
+              const candidate = await window.dataStore.readFile(`${root}\\${day}\\${cat}.jsonl`);
+              if (candidate?.data || candidate?.content) {
+                res = candidate;
+                break;
+              }
+            }
+            if (res?.data || res?.content) {
+              const content = res.data || res.content;
+              const lines = content.split(/\r?\n/);
+              for (const line of lines) {
+                if (!line.trim()) continue;
+                try {
+                  const obj = JSON.parse(line);
+                  if (cat === 'predictions') {
+                    const sym = obj.sym;
+                    if (!_stats.predictions[sym]) _stats.predictions[sym] = { total: 0, up: 0, down: 0, scores: [] };
+                    const s = _stats.predictions[sym];
+                    s.total++;
+                    if (obj.dir === 'UP') s.up++;
+                    if (obj.dir === 'DOWN') s.down++;
+                    if (obj.score != null) {
+                      s.scores.push(+obj.score);
+                      if (s.scores.length > 200) s.scores.shift();
+                    }
+                  } else if (cat === 'decisions') {
+                    const sym = obj.sym;
+                    if (!_stats.decisions[sym]) _stats.decisions[sym] = { trade: 0, watch: 0, hold: 0, exit: 0, skip: 0 };
+                    const d = _stats.decisions[sym];
+                    if (obj.action === 'trade') d.trade++;
+                    else if (obj.action === 'earlyExit') d.exit++;
+                    else if (obj.action === 'hold') d.hold++;
+                    else if (obj.action === 'skip') d.skip++;
+                    else d.watch++;
+                  } else if (cat === 'resolver_outcomes') {
+                    const sym = obj.sym;
+                    if (!_stats.resolverOutcomes[sym]) _stats.resolverOutcomes[sym] = { correct: 0, wrong: 0, total: 0 };
+                    const r = _stats.resolverOutcomes[sym];
+                    r.total++;
+                    if (obj.modelCorrect === true) r.correct++;
+                    if (obj.modelCorrect === false) r.wrong++;
+                  }
+                } catch(e) {}
+              }
+            }
+          } catch(e) {}
+        }
+      }
+      console.log('[DataLogger] loadFreshestData complete from', LOCAL_ROOT);
+    } catch(e) {
+      console.warn('[DataLogger] loadFreshestData error', e);
+    }
+  }
+
+  async function backloadHistoricalData() {
+    if (!DRIVE_PATHS[0] || !window.dataStore?.readFile) return;
+    console.log('[DataLogger] background fetching historical data from', DRIVE_PATHS[0]);
+    try {
+      const cats = ['predictions', 'decisions', 'resolver_outcomes'];
+      for (let i = 2; i <= 7; i++) {
+        const d = new Date(); d.setDate(d.getDate() - i);
+        const day = localDayStr(d);
+        for (const cat of cats) {
+          const path = `${DRIVE_PATHS[0]}\\${day}\\${cat}.jsonl`;
+          try {
+            const res = await window.dataStore.readFile(path);
+            if (res?.data || res?.content) {
+              const content = res.data || res.content;
+              const lines = content.split(/\r?\n/);
+              for (const line of lines) {
+                if (!line.trim()) continue;
+                try {
+                  const obj = JSON.parse(line);
+                  // Basic historical accumulation
+                  if (cat === 'resolver_outcomes') {
+                    const sym = obj.sym;
+                    if (!_stats.resolverOutcomes[sym]) _stats.resolverOutcomes[sym] = { correct: 0, wrong: 0, total: 0 };
+                    const r = _stats.resolverOutcomes[sym];
+                    r.total++;
+                    if (obj.modelCorrect === true) r.correct++;
+                    if (obj.modelCorrect === false) r.wrong++;
+                  }
+                } catch(e) {}
+              }
+            }
+          } catch(e) {}
+        }
+      }
+      console.log('[DataLogger] backloadHistoricalData complete');
+    } catch(e) {
+      console.warn('[DataLogger] backloadHistoricalData error', e);
     }
   }
 
   // ── Buffer + Stats ──────────────────────────────────────────────────────────
-  const _buf = {};   // category → string[]
+  const _buf = {};   // category -> string[] awaiting local spool
+  const _cloudPartitions = new Set(); // day|category files monitored for incremental sync
+  const _storage = {
+    ready: false,
+    discoveredAt: 0,
+    drives: [],
+    accountHints: [],
+    googleRoots: [],
+    googleTargets: [],
+    writableRoots: [],
+    failedRoots: [],
+    lastWriteFailure: null,
+  };
 
   const _stats = {
-    session: { startTs: Date.now(), flushCount: 0, bytesWritten: 0 },
+    session: {
+      startTs: Date.now(),
+      flushCount: 0,
+      bytesWritten: 0,
+      writeFailures: 0,
+      storageReady: false,
+      storageRoots: 0,
+      lastStorageDiscovery: 0,
+      lastWriteFailure: null,
+      cloudSyncCount: 0,
+      cloudTrackedFiles: 0,
+      cloudSyncFailures: 0,
+    },
     predictions:      {},   // sym → { total, up, down, scores[] }
     decisions:        {},   // sym → { trade, watch, hold, exit, skip }
     resolverOutcomes: {},   // sym → { correct, wrong, total }
@@ -65,13 +453,118 @@
   };
 
   // ── Helpers ─────────────────────────────────────────────────────────────────
-  function todayStr() { return new Date().toISOString().slice(0, 10); }
+  function localDayStr(date = new Date()) {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }
+
+  function todayStr() { return localDayStr(); }
 
   function filePaths(category) {
+    if (!_storage.ready || !_storage.writableRoots.length) return [];
     const day = todayStr();
     const paths = [`${LOCAL_ROOT}\\${day}\\${category}.jsonl`];
     for (const d of DRIVE_PATHS) paths.push(`${d}\\${day}\\${category}.jsonl`);
     return paths;
+  }
+
+  function trackCloudPartition(day, category) {
+    _cloudPartitions.add(`${day}|${category}`);
+    _stats.session.cloudTrackedFiles = _cloudPartitions.size;
+  }
+
+  // For rotate-categories, returns the *physical* category fragment currently
+  // being appended to -- "raw\polymarket_raw-20260809-143205" -- which the
+  // existing generic path template (`${root}\${day}\${category}.jsonl`) turns
+  // into "...\2026-08-09\raw\polymarket_raw-20260809-143205.jsonl" with no
+  // other code needing to change. Non-rotate categories pass through as-is.
+  // A fresh tag is minted once per process per category (not resumed across
+  // restarts) -- simple and correct; worst case is one extra small file per
+  // app session, which costs nothing given the available storage.
+  function rotatedCategoryKey(category) {
+    if (!CLOUD_SYNC_ROTATE_CATEGORIES.has(category)) return category;
+    if (!_rotateTag[category]) _rotateTag[category] = mintRotateTag();
+    return `raw\\${category}-${_rotateTag[category]}`;
+  }
+
+  function mintRotateTag() {
+    const d = new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+  }
+
+  async function trackLocalSpoolPartitions() {
+    if (!LOCAL_ROOT || !window.dataStore?.listDir) return;
+    const days = [new Date()];
+    const yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+    days.push(yesterday);
+
+    for (const date of days) {
+      const day = localDayStr(date);
+      const result = await window.dataStore.listDir(`${LOCAL_ROOT}\\${day}`);
+      if (!result?.ok || !Array.isArray(result.entries)) continue;
+      for (const entry of result.entries) {
+        if (typeof entry !== 'string' || !entry.endsWith('.jsonl')) continue;
+        trackCloudPartition(day, entry.slice(0, -6));
+      }
+
+      // Rotated segments (polymarket_raw / polymarket_5m) live one level down
+      // in raw\ and are never revisited once their tag rotates out -- without
+      // this, a segment still mid-upload when the app closed would never be
+      // retried, since a fresh session mints a new tag rather than resuming.
+      const rawResult = await window.dataStore.listDir(`${LOCAL_ROOT}\\${day}\\raw`);
+      if (rawResult?.ok && Array.isArray(rawResult.entries)) {
+        for (const entry of rawResult.entries) {
+          if (typeof entry !== 'string' || !entry.endsWith('.jsonl')) continue;
+          trackCloudPartition(day, `raw\\${entry.slice(0, -6)}`);
+        }
+      }
+    }
+  }
+
+  async function appendBlock(filePath, block) {
+    const appendLine = window.dataStore?.appendLineDetailed || window.dataStore?.appendLine;
+    if (!appendLine) return { ok: false, path: filePath, error: 'dataStore append bridge unavailable' };
+    try {
+      const result = await appendLine(filePath, block);
+      if (writeResultOk(result)) return { ok: true, path: filePath, size: Number.isFinite(result?.size) ? result.size : null };
+      return { ok: false, path: filePath, error: writeResultError(result), code: result?.code || null };
+    } catch (error) {
+      return { ok: false, path: filePath, error: error?.message || String(error), code: error?.code || null };
+    }
+  }
+
+  /**
+   * Reads back the most recently persisted record for a category (today's
+   * file, falling back to yesterday's if today's is empty/missing). Used by
+   * adaptive-tuner.js's bootstrapFromPriorSession() to seed the online-weight
+   * overlay from the prior session instead of cold-starting. Best-effort —
+   * returns null on any failure (no local/Drive file, IPC bridge missing).
+   */
+  async function getLatest(category) {
+    if (!window.dataStore?.readFile) return null;
+    try {
+      const today = todayStr();
+      const d = new Date(); d.setDate(d.getDate() - 1);
+      const yesterday = localDayStr(d);
+      for (const day of [today, yesterday]) {
+        for (const root of [LOCAL_ROOT, ...DRIVE_PATHS]) {
+          const candidate = await window.dataStore.readFile(`${root}\\${day}\\${category}.jsonl`);
+          const content = candidate?.data || candidate?.content;
+          if (!content) continue;
+          const lines = content.split(/\r?\n/).filter(l => l.trim());
+          for (let i = lines.length - 1; i >= 0; i--) {
+            try { return JSON.parse(lines[i]); } catch (_) { /* try prior line */ }
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('[DataLogger] getLatest failed:', category, e.message);
+    }
+    return null;
   }
 
   function push(category, obj) {
@@ -83,13 +576,109 @@
   async function flushCat(category) {
     const lines = _buf[category];
     if (!lines || !lines.length) return;
+
     const block = lines.join('\n');
     _buf[category] = [];
-    if (!window.dataStore) return;
-    for (const p of filePaths(category)) {
-      try { await window.dataStore.appendLine(p, block); } catch (_) {}
+    const day = todayStr();
+    const physicalCategory = rotatedCategoryKey(category);
+    const localPath = `${LOCAL_ROOT}\\${day}\\${physicalCategory}.jsonl`;
+    const localResult = await appendBlock(localPath, block);
+    if (!localResult.ok) {
+      _buf[category] = lines.concat(_buf[category] || []);
+      const failureSummary = {
+        category,
+        ts: Date.now(),
+        tier: 'local-spool',
+        keptBuffered: true,
+        failures: [localResult],
+      };
+      _storage.lastWriteFailure = failureSummary;
+      _stats.session.writeFailures++;
+      _stats.session.lastWriteFailure = failureSummary;
+      console.warn('[DataLogger] local spool write failed:', category, `${localResult.path}: ${localResult.error || localResult.code || 'failed'}`);
+      try {
+        window.dispatchEvent(new CustomEvent('data-logger-write-error', { detail: failureSummary }));
+      } catch (_) {}
+      return;
     }
-    _stats.session.bytesWritten += block.length * 2;
+
+    trackCloudPartition(day, physicalCategory);
+    _stats.session.bytesWritten += block.length;
+
+    // Past this size, the CURRENT segment is done: mint a new tag so the next
+    // flush starts a fresh file. This one keeps its filename forever, so Drive
+    // uploads it once and it settles -- the actively-growing file is always
+    // the small one.
+    if (CLOUD_SYNC_ROTATE_CATEGORIES.has(category) && Number.isFinite(localResult.size) && localResult.size >= ROTATE_SIZE_BYTES) {
+      console.log(`[DataLogger] rotating ${category} segment (${(localResult.size / 1024 / 1024).toFixed(1)}MB) -- next flush starts a new file`);
+      _rotateTag[category] = mintRotateTag();
+    }
+  }
+
+  function logPolymarketRaw(data) {
+    const now = Date.now();
+    if (now - lastPolymarketRawSnapshotAt < POLYMARKET_RAW_SNAPSHOT_MS) return;
+    lastPolymarketRawSnapshotAt = now;
+    push('polymarket_raw', {
+      markets: data,
+      snapshotIntervalMs: POLYMARKET_RAW_SNAPSHOT_MS,
+    });
+  }
+
+  function syncCloudPending() {
+    if (cloudSyncInFlight) return cloudSyncInFlight;
+    cloudSyncInFlight = runCloudSyncPending().finally(() => { cloudSyncInFlight = null; });
+    return cloudSyncInFlight;
+  }
+
+  async function runCloudSyncPending() {
+    if (!_storage.ready) return;
+    if (!DRIVE_PATHS.length) {
+      await discoverDrives();
+      if (!DRIVE_PATHS.length) return;
+    }
+
+    const syncFileIncremental = window.dataStore?.syncFileIncremental;
+    if (!syncFileIncremental) {
+      console.warn('[DataLogger] incremental Google My Drive sync bridge unavailable');
+      return;
+    }
+
+    for (const queueKey of _cloudPartitions) {
+      const separatorIndex = queueKey.indexOf('|');
+      const day = queueKey.slice(0, separatorIndex);
+      const category = queueKey.slice(separatorIndex + 1);
+      const sourcePath = `${LOCAL_ROOT}\\${day}\\${category}.jsonl`;
+
+      for (const root of DRIVE_PATHS) {
+        const cloudPath = `${root}\\${day}\\${category}.jsonl`;
+        const driveId = String(root).slice(0, 1).toLowerCase() || 'drive';
+        const statePath = `${LOCAL_ROOT}\\.sync-state\\${driveId}\\${day}\\${category}.json`;
+        const result = await syncFileIncremental({ sourcePath, targetPath: cloudPath, statePath });
+        if (result.ok) {
+          _stats.session.cloudSyncCount++;
+          continue;
+        }
+
+        const failureSummary = {
+          category,
+          ts: Date.now(),
+          tier: 'google-drive',
+          keptBuffered: true,
+          failures: [result],
+        };
+        _storage.lastWriteFailure = failureSummary;
+        _stats.session.writeFailures++;
+        _stats.session.cloudSyncFailures++;
+        _stats.session.lastWriteFailure = failureSummary;
+        console.warn('[DataLogger] Google My Drive sync failed; local spool retained:', `${cloudPath}: ${result.error || result.code || 'failed'}`);
+        const errText = String(result.error || result.code || '');
+        if (errText.includes('ENOSPC')) {
+          DRIVE_PATHS = DRIVE_PATHS.filter(p => p !== root);
+          console.warn('[DataLogger] dropped full mirror', root);
+        }
+      }
+    }
   }
 
   async function flushAll() {
@@ -135,6 +724,11 @@
       alignment: intent.alignment,
       side:      intent.side,
       conf:      intent.confidence,
+      timingRegime: intent.timingRegime ?? null,
+      timingScore: intent.timingScore ?? null,
+      closeValue: !!intent.closeValue,
+      scalpFlip: !!intent.scalpFlip,
+      missedOpportunityScore: intent.missedOpportunityScore ?? 0,
       reason:    (intent.reason || '').slice(0, 100),
     });
     if (!_stats.decisions[sym]) _stats.decisions[sym] = { trade: 0, watch: 0, hold: 0, exit: 0, skip: 0 };
@@ -162,7 +756,7 @@
     const modelCorrect= isFullObj ? res.modelCorrect : arguments[2];
     const prob        = isFullObj ? (res.entryProb ?? arguments[3]) : arguments[3];
 
-    const intent = window.KalshiOrchestrator?.getIntent?.(sym);
+    const intent = window.PolymarketOrchestrator?.getIntent?.(sym);
     push('resolver_outcomes', {
       sym,
       outcome,
@@ -176,6 +770,11 @@
       crowdFade:      isFullObj ? (res.crowdFade       ?? false) : false,
       edgeCents:      isFullObj ? (res.edgeCents       ?? null) : null,
       entryPrice:     isFullObj ? (res.entryPrice      ?? null) : null,
+      timingRegime:   isFullObj ? (res.timingRegime    ?? null) : null,
+      timingScore:    isFullObj ? (res.timingScore     ?? null) : null,
+      closeValue:     isFullObj ? (res.closeValue      ?? false) : false,
+      scalpFlip:      isFullObj ? (res.scalpFlip       ?? false) : false,
+      missedOpportunityScore: isFullObj ? (res.missedOpportunityScore ?? 0) : 0,
       wickedOut:      isFullObj ? (res.wickedOut        ?? false) : false,
       lateEntry:      isFullObj ? (res.lateEntry        ?? false) : false,
       closeSnapshots: isFullObj ? (res.closeSnapshots  ?? []) : [],
@@ -204,11 +803,15 @@
         outcome,
         correct:    modelCorrect,
         score:      isFullObj ? (res.modelScore ?? null) : null,
-        kalshiPct:  Math.round((prob || 0.5) * 100),
+        polymarketPct: Math.round((prob || 0.5) * 100),
         sweetSpot:  isFullObj ? (res.sweetSpot ?? false) : false,
         wickedOut:  isFullObj ? (res.wickedOut ?? false) : false,
         alignment:  isFullObj ? (res.orchestratorAlign ?? null) : null,
         edgeCents:  isFullObj ? (res.edgeCents ?? null) : null,
+        timingRegime: isFullObj ? (res.timingRegime ?? null) : null,
+        timingScore: isFullObj ? (res.timingScore ?? null) : null,
+        closeValue: isFullObj ? (res.closeValue ?? false) : false,
+        scalpFlip: isFullObj ? (res.scalpFlip ?? false) : false,
       };
       cache.push(compact);
       if (cache.length > 100) cache = cache.slice(-100);
@@ -261,6 +864,11 @@
   let _refreshTmr = null;
 
   function buildHTML() {
+    // XSS guard — use window.escapeHtml when render-layer is loaded, else inline fallback
+    const esc = (typeof window !== 'undefined' && typeof window.escapeHtml === 'function')
+      ? window.escapeHtml
+      : (v) => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
     const s     = _stats;
     const upMin = Math.floor((Date.now() - s.session.startTs) / 60000);
     const kb    = (s.session.bytesWritten / 1024).toFixed(1);
@@ -274,17 +882,17 @@
       const acc = r?.total ? Math.round(r.correct / r.total * 100) : null;
       const accColor = acc == null ? '' : acc >= 55 ? 'var(--color-up)' : acc >= 45 ? 'var(--color-gold)' : 'var(--color-down)';
       return `<tr>
-        <td>${sym}</td><td>${p.total}</td>
+        <td>${esc(sym)}</td><td>${p.total}</td>
         <td style="color:var(--color-up)">${p.up}</td>
         <td style="color:var(--color-down)">${p.down}</td>
         <td style="color:${+avg < 0 ? 'var(--color-down)' : 'var(--color-up)'}">${avg}</td>
-        <td>${acc != null ? `<b style="color:${accColor}">${acc}%</b> (${r.total})` : '—'}</td>
+        <td>${acc != null ? `<b style="color:${esc(accColor)}">${acc}%</b> (${r.total})` : '—'}</td>
       </tr>`;
     }).join('') || '<tr><td colspan="6" style="color:var(--color-text-muted)">No data yet — waiting for prediction cycles</td></tr>';
 
     /* ── Decision rows ── */
     const decRows = Object.entries(s.decisions).map(([sym, d]) => `<tr>
-      <td>${sym}</td>
+      <td>${esc(sym)}</td>
       <td style="color:var(--color-green)">${d.trade}</td>
       <td>${d.watch}</td>
       <td style="color:var(--color-gold)">${d.hold}</td>
@@ -298,10 +906,10 @@
       const mom = c.momentum || 0;
       const col = mom > 0.01 ? 'var(--color-up)' : mom < -0.01 ? 'var(--color-down)' : 'var(--color-text-muted)';
       return `<tr>
-        <td>${sym}</td>
+        <td>${esc(sym)}</td>
         <td style="color:${col}">${mom.toFixed(5)}</td>
         <td>${(c.cfmRate || 0).toFixed(5)}</td>
-        <td>${c.trend || '—'}</td>
+        <td>${esc(c.trend || '—')}</td>
         <td>${c.sourceCount || 0}</td>
       </tr>`;
     }).join('') || '<tr><td colspan="5" style="color:var(--color-text-muted)">CFM warming up…</td></tr>';
@@ -312,7 +920,7 @@
       ? Object.entries(sr.shells || {}).map(([key, sh]) => {
           const col = sh.ionized ? 'var(--color-down)' : sh.volSpiked ? 'var(--color-gold)' : 'var(--color-text-muted)';
           return `<tr>
-            <td>${key}</td>
+            <td>${esc(key)}</td>
             <td style="color:${col}">${(sh.velocity || 0).toFixed(4)}</td>
             <td>${sh.ionized ? '⚡ IONIZED' : sh.volSpiked ? `📊 ${(sh.volSpikeMult || 0).toFixed(1)}×` : '—'}</td>
           </tr>`;
@@ -321,15 +929,15 @@
 
     /* ── Error rows ── */
     const errRows = s.errors.slice(-8).reverse().map(e =>
-      `<tr><td style="color:var(--color-red);white-space:nowrap">${e.source}</td>
-       <td style="color:var(--color-text-muted);max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${e.msg}</td></tr>`
+      `<tr><td style="color:var(--color-red);white-space:nowrap">${esc(e.source)}</td>
+       <td style="color:var(--color-text-muted);max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(e.msg)}</td></tr>`
     ).join('');
 
     return `
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;border-bottom:1px solid rgba(255,255,255,0.08);padding-bottom:10px">
       <span style="font-size:15px;font-weight:800;color:var(--color-primary,#7c6aff)">⚙ WeCrypto Debug Metrics</span>
       <span style="font-size:10px;color:var(--color-text-muted)">
-        Uptime <b>${upMin}m</b> · <b>${s.session.flushCount}</b> flushes · <b>${kb} KB</b> written ·
+        Uptime <b>${upMin}m</b> · <b>${s.session.flushCount}</b> local flushes · <b>${kb} KB</b> written ·
         <b>${1 + DRIVE_PATHS.length}</b> storage root(s) active · <kbd style="background:rgba(255,255,255,0.1);padding:1px 4px;border-radius:3px">Ctrl+D</kbd> close
       </span>
     </div>
@@ -388,14 +996,17 @@
 
         <div style="margin-top:14px;padding:10px 12px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.07);border-radius:6px;font-size:10px;color:var(--color-text-muted);line-height:1.9">
           <div style="font-weight:700;color:var(--color-text,#e2e8f0);margin-bottom:4px">💾 Storage Paths (${1 + DRIVE_PATHS.length} roots)</div>
-          <div>📁 Primary: <code>F:\\WECRYP\\data\\${todayStr()}</code></div>
-          ${DRIVE_PATHS.map(p => `<div>💾 Mirror: <code>${p}\\${todayStr()}</code></div>`).join('')}
-          ${DRIVE_PATHS.length === 0 ? '<div style="color:var(--color-gold)">⚠ Discovering drives…</div>' : ''}
-          <div style="margin-top:6px">Categories: predictions · decisions · cfm_snapshots · shell_events · resolver_outcomes · logic_debug · errors</div>
+          <div>📁 Local spool: <code>${esc(LOCAL_ROOT)}\\${esc(todayStr())}</code></div>
+          ${DRIVE_PATHS.map(p => `<div>💾 Google My Drive: <code>${esc(p)}\\${esc(todayStr())}</code></div>`).join('')}
+          ${DRIVE_PATHS.length === 0 ? '<div style="color:var(--color-gold)">⚠ Google My Drive unavailable; retaining local spool</div>' : ''}
+          <div>Cloud monitor: <b>${s.session.cloudTrackedFiles}</b> files · sync checks: <b>${s.session.cloudSyncCount}</b> · failures: <b>${s.session.cloudSyncFailures}</b></div>
+          ${_storage.accountHints.length ? `<div>Google accounts: <code>${_storage.accountHints.map(h => esc(h)).join('</code> · <code>')}</code></div>` : ''}
+          ${s.session.writeFailures ? `<div style="color:var(--color-red);margin-top:4px">Write failures: <b>${s.session.writeFailures}</b> · last: <code>${esc(s.session.lastWriteFailure?.category || 'unknown')}</code></div>` : ''}
+          <div style="margin-top:6px">Categories: predictions · decisions · cfm_snapshots · shell_events · resolver_outcomes · polymarket_raw · polymarket_5m · logic_debug · errors</div>
         </div>
 
         <div style="margin-top:10px;font-size:10px;color:var(--color-text-muted)">
-          Auto-refresh every 3s · Flush every 60s · Press <kbd style="background:rgba(255,255,255,0.1);padding:1px 4px;border-radius:3px">Ctrl+D</kbd> or <kbd style="background:rgba(255,255,255,0.1);padding:1px 4px;border-radius:3px">Esc</kbd> to close
+          Auto-refresh every 3s · Local flush every 5s · Google sync every 60s · Press <kbd style="background:rgba(255,255,255,0.1);padding:1px 4px;border-radius:3px">Ctrl+D</kbd> or <kbd style="background:rgba(255,255,255,0.1);padding:1px 4px;border-radius:3px">Esc</kbd> to close
         </div>
       </div>
 
@@ -475,8 +1086,10 @@
   window.addEventListener('error', e => logError('window', e.error || e.message));
   window.addEventListener('unhandledrejection', e => logError('promise', e.reason));
 
-  // ── 60s flush timer ──────────────────────────────────────────────────────────
-  setInterval(flushAll, FLUSH_MS);
+  // Local writes stay off the cloud mount's latency path; cloud sync retries independently.
+  setInterval(flushAll, LOCAL_FLUSH_MS);
+  setInterval(syncCloudPending, CLOUD_SYNC_MS);
+  setInterval(discoverDrives, DRIVE_REPROBE_MS);
 
   // ── Public API ───────────────────────────────────────────────────────────────
   window.DataLogger = {
@@ -487,8 +1100,27 @@
     logOutcome,
     logLogicDebug,
     logError,
-    flush:         flushAll,
+    logPolymarketOutcome: (sym, record) => push('polymarket_outcomes', { sym, ...record, ts: Date.now() }),
+    logPolymarket: logPolymarketRaw,
+    logPolymarket5M: (data) => push('polymarket_5m', { markets: data }),
+    // Forward-collected derivatives/options/edge history → enables future backtesting
+    // of these real-time-only signals (no historical store exists for them yet).
+    logDerivatives: (sym, record) => push('derivatives', { sym, ...record }),
+    logOptions: (sym, record) => push('options', { sym, ...record }),
+    logPredictionEdge: (sym, record) => push('prediction_edge', { sym, ...record }),
+    push,
+    getLatest,
+    flush:         async () => {
+      await flushAll();
+      await syncCloudPending();
+    },
     getStats:      () => _stats,
+    getStorageRoots: () => ({
+      primary: LOCAL_ROOT,
+      mirrors: [...DRIVE_PATHS],
+      ..._storage,
+    }),
+    refreshStorageRoots: discoverDrives,
     getWritePaths: (category) => filePaths(category || 'export'),
     showDebug:     showOverlay,
     hideDebug:     hideOverlay,
@@ -496,5 +1128,5 @@
 
   // Kick off async drive discovery — populates DRIVE_PATHS before first flush
   discoverDrives();
-  console.log('[DataLogger] v2.1 — dynamic storage discovery started | primary=' + LOCAL_ROOT + ' | flush=60s | Ctrl+D=debug overlay');
+  console.log('[DataLogger] v2.2 — local spool + Google My Drive sync started | local=5s | cloud=60s | Ctrl+D=debug overlay');
 })();

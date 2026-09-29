@@ -1,0 +1,35 @@
+# ================================================================
+# WE|||CRYPTO — MergeKit Recipe: DARE-TIES Crypto 15M Sniper
+# Model Merging Engine: DARE-TIES (Drop And Rescale with Sign Resolution)
+# Application: 15-Minute Expiration Contracts (Kalshi / Polymarket)
+#
+# DARE-TIES performs uniform stochastic dropout (rate: 0.45) with exact
+# unbiased rescaling 1/(1-p), followed by TIES sign election to remove
+# destructive interference in choppy 15m expiration environments.
+# ================================================================
+
+merge_method: dare_ties
+base_model: models/crypto-base-foresight-8b
+dtype: bfloat16
+
+models:
+  - model: models/crypto-kalshi-15m-sniper-8b
+    parameters:
+      weight: 0.60
+      density: 0.55
+  - model: models/crypto-momentum-breakout-8b
+    parameters:
+      weight: 0.40
+      density: 0.50
+
+parameters:
+  top_k: 0.60
+  lambda: 1.10
+  drop_rate: 0.45
+  rescale: true
+  normalize: true
+
+metadata:
+  target_horizons: ["15m"]
+  underlyings: ["BTC", "ETH", "SOL", "XRP"]
+  horizon_sweet_spot: "3.0m_to_6.0m_remaining"

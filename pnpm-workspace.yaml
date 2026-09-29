@@ -1,0 +1,6 @@
+allowBuilds:
+  '@firebase/util': set this to true or false
+  '@google/genai': set this to true or false
+  electron: set this to true or false
+  electron-winstaller: set this to true or false
+  protobufjs: set this to true or false

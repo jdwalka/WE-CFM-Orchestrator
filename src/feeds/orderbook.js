@@ -18,9 +18,12 @@
   const WALL_MIN_AGE = 400;  // ms
   const LIQSNAP_INTERVAL = 2000;
   const LIQSNAP_MAX = 450;
+  const DEPTH_WINDOWS = [10, 20];
+  const IMBALANCE_WINDOW_MS = 15 * 60 * 1000;
+  const HL_FALLBACK_DELAY_MS = 20000;
   const WALL_BEEPS_PERMANENTLY_DISABLED = true;
 
-  const books = {};   // sym → { bids, asks, mid }
+  const books = {};   // sym → { bids, asks, mid, timestamp }
   const wallTracker = {};   // sym → { bids: Map<priceStr,{qty,firstTs,lastQty}>, asks: Map }
   const liquiditySnaps = {}; // sym → [{ts, mid, bids, asks}]
   const balanceMetrics = {}; // sym → depth balance snapshot
@@ -33,6 +36,27 @@
   let soundEnabled = false;  // muted — no sound alerts
   let audioCtx = null;
   let _audioUnlockBound = false;
+  let _wallLogLastTs = 0;
+  let _wallLogSuppressed = 0;
+
+  function logWallAlert(message) {
+    const verbose = window.WECRYPTO_VERBOSE_ORDERBOOK === true || localStorage.getItem('wecrypto_verbose_orderbook') === '1';
+    if (verbose) {
+      console.log(message);
+      return;
+    }
+    const now = Date.now();
+    if ((now - _wallLogLastTs) < 5000) {
+      _wallLogSuppressed += 1;
+      return;
+    }
+    if (_wallLogSuppressed > 0) {
+      console.debug(`[OB] suppressed ${_wallLogSuppressed} wall-alert log(s)`);
+      _wallLogSuppressed = 0;
+    }
+    _wallLogLastTs = now;
+    console.debug(message);
+  }
 
   // Timestamp of last HL message per sym — used to suppress Binance data when HL is live
   const _hlLastMsg = {};
@@ -68,7 +92,7 @@
 
   function _initBookState(sym) {
     if (books[sym]) return;
-    books[sym] = { bids: [], asks: [], mid: 0, spread: 0, spreadPct: 0 };
+    books[sym] = { bids: [], asks: [], mid: 0, spread: 0, spreadPct: 0, timestamp: 0, source: 'orderbook-ws' };
     wallTracker[sym] = { bids: new Map(), asks: new Map() };
     liquiditySnaps[sym] = [];
     balanceMetrics[sym] = null;
@@ -76,14 +100,136 @@
     lastSnapTs[sym] = 0;
   }
 
-  function computeBalanceMetrics(sym, bids, asks, mid, spreadPct) {
+  function clamp(v, lo, hi) {
+    return Math.max(lo, Math.min(hi, v));
+  }
+
+  function depthWeight(index, levels) {
+    const slope = levels <= 10 ? 0.22 : 0.15;
+    return 1 / (1 + index * slope);
+  }
+
+  function weightedDepth(rows, levels) {
+    const slice = rows.slice(0, levels);
+    return slice.reduce((acc, [p, q], index) => {
+      const price = Number(p) || 0;
+      const qty = Number(q) || 0;
+      const weight = depthWeight(index, levels);
+      acc.rawQty += qty;
+      acc.rawNotional += price * qty;
+      acc.weightedQty += qty * weight;
+      acc.weightedNotional += price * qty * weight;
+      acc.levels = slice.length;
+      return acc;
+    }, {
+      levels: slice.length,
+      rawQty: 0,
+      rawNotional: 0,
+      weightedQty: 0,
+      weightedNotional: 0,
+    });
+  }
+
+  function buildDepthProfile(bids, asks) {
+    const levels = {};
+    DEPTH_WINDOWS.forEach(levelCount => {
+      const bid = weightedDepth(bids, levelCount);
+      const ask = weightedDepth(asks, levelCount);
+      const weightedTotal = bid.weightedNotional + ask.weightedNotional;
+      const rawTotal = bid.rawNotional + ask.rawNotional;
+      levels[`level${levelCount}`] = {
+        levels: levelCount,
+        bid,
+        ask,
+        bidWeightedNotional: bid.weightedNotional,
+        askWeightedNotional: ask.weightedNotional,
+        bidNotional: bid.rawNotional,
+        askNotional: ask.rawNotional,
+        totalNotional: rawTotal,
+        weightedTotalNotional: weightedTotal,
+        imbalance: weightedTotal > 0 ? (bid.weightedNotional - ask.weightedNotional) / weightedTotal : 0,
+      };
+    });
+    const l10 = levels.level10?.imbalance ?? 0;
+    const l20 = levels.level20?.imbalance ?? l10;
+    return {
+      ...levels,
+      blendImbalance: clamp(l10 * 0.62 + l20 * 0.38, -1, 1),
+    };
+  }
+
+  function computeImbalanceVelocity(sym, now, currentImbalance) {
+    const prev = balanceMetrics[sym];
+    const prevImb = prev?.weighted?.blendImbalance ?? prev?.imbalance?.value ?? currentImbalance;
+    const prevTs = prev?.ts || now;
+    const dtMin = Math.max((now - prevTs) / 60000, 1 / 60);
+    const shortPerMin = (currentImbalance - prevImb) / dtMin;
+
+    const snaps = liquiditySnaps[sym] || [];
+    const anchor = snaps.find(s => now - s.ts >= IMBALANCE_WINDOW_MS - 5000) || snaps[0] || null;
+    let windowPerMin = 0;
+    let windowDelta = 0;
+    let windowAgeMin = 0;
+    if (anchor) {
+      const anchorImb = anchor.weighted?.blendImbalance
+        ?? anchor.imbalance?.value
+        ?? buildDepthProfile(anchor.bids || [], anchor.asks || []).blendImbalance
+        ?? currentImbalance;
+      windowAgeMin = Math.max((now - anchor.ts) / 60000, 1 / 60);
+      windowDelta = currentImbalance - anchorImb;
+      windowPerMin = windowDelta / windowAgeMin;
+    }
+
+    const normalized = clamp((shortPerMin * 0.65 + windowPerMin * 0.35) * 4, -1, 1);
+    const accel = prev?.velocity?.shortPerMin != null ? shortPerMin - prev.velocity.shortPerMin : 0;
+    const abs = Math.abs(normalized);
+    const band = abs >= 0.55 ? (normalized > 0 ? 'bid_accelerating' : 'ask_accelerating')
+      : abs >= 0.25 ? (normalized > 0 ? 'bid_building' : 'ask_building')
+        : 'stable';
+
+    return {
+      value: normalized,
+      shortPerMin,
+      windowPerMin,
+      windowDelta,
+      windowAgeMin,
+      accel,
+      band,
+      direction: normalized > 0.05 ? 'bid' : normalized < -0.05 ? 'ask' : 'flat',
+    };
+  }
+
+  function classifyLiquidity(profile) {
+    const notional10 = profile.level10?.totalNotional || 0;
+    const notional20 = profile.level20?.totalNotional || notional10;
+    const weighted20 = profile.level20?.weightedTotalNotional || 0;
+    const depthExpansion = notional10 > 0 ? notional20 / notional10 : 0;
+    const score = clamp(Math.log10(Math.max(1, notional20)) / 8, 0, 1);
+    const band = score >= 0.78 ? 'deep'
+      : score >= 0.58 ? 'healthy'
+        : score >= 0.38 ? 'thin'
+          : 'fragile';
+    return {
+      notional10,
+      notional20,
+      weighted20,
+      depthExpansion,
+      score,
+      band,
+    };
+  }
+
+  function computeBalanceMetrics(sym, bids, asks, mid, spreadPct, now = Date.now()) {
     const TOP_N = 20;
     const topBids = bids.slice(0, TOP_N);
     const topAsks = asks.slice(0, TOP_N);
+    const weighted = buildDepthProfile(topBids, topAsks);
     const bidNotional = topBids.reduce((s, [p, q]) => s + (p * q), 0);
     const askNotional = topAsks.reduce((s, [p, q]) => s + (p * q), 0);
     const totalNotional = bidNotional + askNotional;
-    const imbalanceValue = totalNotional > 0 ? (bidNotional - askNotional) / totalNotional : 0;
+    const imbalanceValue = weighted.blendImbalance || (totalNotional > 0 ? (bidNotional - askNotional) / totalNotional : 0);
+    const velocity = computeImbalanceVelocity(sym, now, imbalanceValue);
+    const liquidity = classifyLiquidity(weighted);
 
     const allTopQty = [...topBids, ...topAsks].map(([, q]) => q);
     const avgQty = allTopQty.length ? allTopQty.reduce((a, b) => a + b, 0) / allTopQty.length : 0;
@@ -106,11 +252,14 @@
     else if (askWallConcentration > bidWallConcentration + 0.05) dominantWallSide = 'ask';
 
     return {
-      ts: Date.now(),
+      ts: now,
       mid,
       spreadPct,
       bidNotional,
       askNotional,
+      weighted,
+      velocity,
+      liquidity,
       imbalance: {
         value: imbalanceValue,
         band,
@@ -212,24 +361,38 @@
     const spread = bestAsk - bestBid;
     const spreadPct = mid > 0 ? (spread / mid) * 100 : 0;
 
-    books[sym] = { bids, asks, mid, spread, spreadPct };
-
     const now = Date.now();
     detectWalls(sym, 'bids', bids, mid, now);
     detectWalls(sym, 'asks', asks, mid, now);
 
-    balanceMetrics[sym] = computeBalanceMetrics(sym, bids, asks, mid, spreadPct);
+    balanceMetrics[sym] = computeBalanceMetrics(sym, bids, asks, mid, spreadPct, now);
+    books[sym] = { bids, asks, mid, spread, spreadPct, timestamp: now, source: 'orderbook-ws', balance: balanceMetrics[sym], depthMetrics: balanceMetrics[sym] };
+
+    if (window.PredictionEngine?.updateLiveOrderBook) {
+      try {
+        window.PredictionEngine.updateLiveOrderBook(sym, books[sym], {
+          balance: balanceMetrics[sym],
+          source: 'orderbook-ws',
+          silent: true,
+        });
+      } catch (_) { }
+    }
 
     // Liquidity snapshot
     if (now - lastSnapTs[sym] >= LIQSNAP_INTERVAL) {
       lastSnapTs[sym] = now;
       const arr = liquiditySnaps[sym];
-      arr.push({ ts: now, mid, bids: bids.slice(0, 20), asks: asks.slice(0, 20) });
+      arr.push({ ts: now, mid, bids: bids.slice(0, 20), asks: asks.slice(0, 20), weighted: balanceMetrics[sym]?.weighted, imbalance: balanceMetrics[sym]?.imbalance });
       if (arr.length > LIQSNAP_MAX) arr.shift();
     }
 
     const fns = listeners.get(sym);
     if (fns) fns.forEach(fn => fn(books[sym]));
+    try {
+      window.dispatchEvent(new CustomEvent('orderbook:updated', {
+        detail: { sym, book: books[sym], balance: balanceMetrics[sym] }
+      }));
+    } catch (_) { }
   }
 
   // ── Wall detection ────────────────────────────────────────────────────────
@@ -293,7 +456,7 @@
     if (!WALL_BEEPS_PERMANENTLY_DISABLED && soundEnabled) playBeep(bias);
     alertListeners.forEach(fn => fn(alert));
 
-    console.log(`[OB] ${sym} ${side}-WALL ${type} @ ${price} | qty=${qty.toFixed(2)} age=${ageMs}ms [${bias}]`);
+    logWallAlert(`[OB] ${sym} ${side}-WALL ${type} @ ${price} | qty=${qty.toFixed(2)} age=${ageMs}ms [${bias}]`);
   }
 
   // ── Audio ─────────────────────────────────────────────────────────────────
@@ -341,18 +504,23 @@
       Object.keys(BN_MAP).forEach(_initBookState);
       // Primary: HL single WebSocket covers all 7 coins including BNB
       connectHL();
-      // Binance fallback: starts after 4s — only fires if HL hasn't connected
+      // Binance fallback: starts after a short grace period if HL has not connected.
       setTimeout(() => {
         if (!_hlWs || _hlWs.readyState !== WebSocket.OPEN) {
-          console.warn('[OB] HL not ready after 4s — activating Binance fallback');
+          console.info(`[OB] HL not ready after ${Math.round(HL_FALLBACK_DELAY_MS / 1000)}s — activating Binance fallback`);
           Object.keys(BN_MAP).forEach(connectBinance);
         }
-      }, 4000);
+      }, HL_FALLBACK_DELAY_MS);
     },
     onAlert: (fn) => alertListeners.push(fn),
     onBook: (sym, fn) => {
       if (!listeners.has(sym)) listeners.set(sym, []);
       listeners.get(sym).push(fn);
+    },
+    getFreshBook: (sym, ttlMs = 2500) => {
+      const book = books[sym];
+      if (!book || !book.timestamp) return null;
+      return Date.now() - book.timestamp <= ttlMs ? book : null;
     },
     getBalanceMetrics: (sym) => balanceMetrics[sym] || null,
     offBook: (sym, fn) => {

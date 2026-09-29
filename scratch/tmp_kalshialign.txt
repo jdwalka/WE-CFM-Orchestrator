@@ -1,0 +1,55 @@
+      console.log('[ExecCue][MICRO-VERIFY] Session verification logging complete; auto-disabled');
+    }
+  }
+
+  function buildExecutionGuard(model, cache) {
+    const closeTimeMs = model?.projections?.p15?.kalshiAlign?.closeTimeMs;
+    if (!Number.isFinite(closeTimeMs)) return null;
+    const now = Date.now();
+    const msToClose = closeTimeMs - now;
+    const dataAgeMs = Math.max(0, now - (cache?.ts || now));
+    const staleData = dataAgeMs > 45_000;
+    const hardLate = msToClose <= 18_000;
+    const cautionLate = msToClose <= 40_000;
+    const blocked = hardLate || (cautionLate && staleData);
+    return {
+      blocked,
+      hardLate,
+      cautionLate,
+      staleData,
+      msToClose,
+      dataAgeMs,
+      reason: blocked
+        ? (hardLate ? 'late-entry-window' : 'stale-data-near-close')
+        : (cautionLate ? 'late-window-caution' : null),
+    };
+  }
+
+  function computePrediction(coin, backtest = null) {
+    const computedTs = Date.now();
+    const cache = candleCache[coin.sym];
+    if (!cache) return { error: 'Insufficient data' };
+    
+    let candles15m = cache.candles15m || [];
+    if (candles15m.length < 8 && cache.candles && cache.candles.length >= 24) {
+      candles15m = bucketCandles(cache.candles, 15 * 60 * 1000);
+      cache.candles15m = candles15m;
+    }
+
+    if (candles15m.length < 8) {
+      return {
+        sym: coin.sym, name: coin.name, color: coin.color, icon: coin.icon,
+        price: cache?.ticker?.usd || 0,
+        signal: 'neutral', confidence: 15, score: 0,
+        ts: computedTs, timestamp: computedTs,
+        source: 'loading', candleCount: cache?.candles15m?.length || 0, updatedAt: '–',
+        error: 'Insufficient data',
+        indicators: {}, diagnostics: {}, volatility: { label: 'Unknown', atrPct: 0 },
+        projections: {}, reversalFlags: [], scalpSetups: [],
+      };
+    }
+
+    // ★★★ REVERT: Using 15m candles caused massive lag (indicators spanning 3.5 hours).
+    // Reverting to 5-min data (cache.candles) so predictions react fast enough for 15m markets.
+    const effectiveBook = resolveFreshOrderBook(coin.sym, cache.book);
+    const effectiveCache = { ...cache, book: effectiveBook || cache.book };

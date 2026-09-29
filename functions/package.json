@@ -1,0 +1,17 @@
+{
+  "name": "wecryp-functions",
+  "private": true,
+  "main": "index.js",
+  "engines": {
+    "node": "20"
+  },
+  "dependencies": {
+    "@google-cloud/vertexai": "^1.10.0",
+    "firebase-admin": "^12.7.0",
+    "firebase-functions": "^7.3.2"
+  },
+  "overrides": {
+    "protobufjs": "7.6.5",
+    "uuid": "11.1.1"
+  }
+}

@@ -22,15 +22,16 @@ Write-Host "Installing Python dependencies (PyInstaller, numpy, scipy, requests)
 & $python -m pip install --upgrade pip setuptools wheel
 & $python -m pip install pyinstaller numpy scipy requests
 
-# Clean previous PyInstaller outputs
-if (Test-Path "dist") { Remove-Item -Recurse -Force dist }
-if (Test-Path "build") { Remove-Item -Recurse -Force build }
-if (Test-Path "backtest-regime.spec") { Remove-Item -Force backtest-regime.spec }
+$stamp = Get-Date -Format "yyyyMMdd-HHmmss"
+$pyBuildRoot = Join-Path $scriptDir "build\pyinstaller-$stamp"
+$pyDistDir = Join-Path $pyBuildRoot "dist"
+$pyWorkDir = Join-Path $pyBuildRoot "work"
+New-Item -ItemType Directory -Path $pyDistDir, $pyWorkDir -Force | Out-Null
 
 Write-Host "Building backtest-regime.exe with PyInstaller..."
-& $python -m PyInstaller --onefile --name backtest-regime backtest-regime.py
+& $python -m PyInstaller --onefile --name "backtest-regime-$stamp" --distpath $pyDistDir --workpath $pyWorkDir --specpath $pyBuildRoot backtest-regime.py
 
-$exePath = Join-Path $scriptDir "dist\backtest-regime.exe"
+$exePath = Join-Path $pyDistDir "backtest-regime-$stamp.exe"
 if (!(Test-Path $exePath)) {
     Write-Host "PyInstaller did not produce expected exe at $exePath" -ForegroundColor Red
     exit 1
@@ -68,8 +69,17 @@ Write-Host "Found built exe: $builtExe"
 # Copy to drive root
 $driveRoot = $DeployDrive.TrimEnd('\') + '\\'
 $dest = Join-Path $driveRoot (Split-Path $builtExe -Leaf)
+if (Test-Path $dest) {
+    $name = [IO.Path]::GetFileNameWithoutExtension($dest)
+    $ext = [IO.Path]::GetExtension($dest)
+    $dest = Join-Path $driveRoot "$name-$stamp$ext"
+}
+if (Test-Path $dest) {
+    Write-Host "Refusing to overwrite existing executable: $dest" -ForegroundColor Red
+    exit 1
+}
 Write-Host "Copying to $dest"
-Copy-Item -Path $builtExe -Destination $dest -Force
+Copy-Item -Path $builtExe -Destination $dest
 
 Write-Host "Done. Deployed to $dest" -ForegroundColor Green
 Write-Host "Note: Writing to root of drive may require elevated privileges." -ForegroundColor Yellow

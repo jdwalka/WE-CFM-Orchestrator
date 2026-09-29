@@ -1,0 +1,33 @@
+# ================================================================
+# WE|||CRYPTO — MergeKit Recipe: Nearswap Specialist Interpolation
+# Model Merging Engine: Nearswap (Selective Cosine Similarity Interpolation)
+# Application: 5m & 15m Crypto Prediction Contracts (Kalshi / Polymarket)
+#
+# Nearswap selectively blends parameters between ranging and trending
+# models ONLY when local cosine agreement exceeds tau (0.65), preserving
+# divergent specialist edges without destructive homogenization.
+# ================================================================
+
+merge_method: nearswap
+base_model: models/crypto-base-foresight-8b
+dtype: bfloat16
+
+models:
+  - model: models/crypto-regime-ranging-8b
+    parameters:
+      weight: 0.50
+  - model: models/crypto-regime-trending-8b
+    parameters:
+      weight: 0.50
+
+parameters:
+  tau: 0.65
+  blend_factor: 0.50
+  preserve_divergence: true
+  min_weight: 0.005
+  normalize: true
+
+metadata:
+  target_horizons: ["5m", "15m"]
+  underlyings: ["BTC", "ETH", "SOL", "XRP"]
+  regime_affinity: ["ranging", "trending_smooth", "trending_volatile"]

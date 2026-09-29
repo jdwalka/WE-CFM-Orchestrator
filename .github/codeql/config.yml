@@ -1,0 +1,35 @@
+name: "WeCryp CodeQL policy"
+
+queries:
+  - uses: security-extended
+
+paths:
+  - .github/workflows
+  - backtest
+  - client
+  - configs
+  - electron
+  - functions
+  - mcp-server
+  - native-math
+  - proxy
+  - public
+  - scripts
+  - server
+  - shared
+  - src
+  - tests
+  - tools
+  - uagents
+  - we-crypto-cfm-tauri
+  - we-crypto-electron
+  - wecrypto-audit-site
+
+paths-ignore:
+  - '**/node_modules/**'
+  - '**/dist/**'
+  - '**/build/**'
+  - 'WE-CRYPTO-CACHE/**'
+  - 'WE-CRYPTO-backup-*/**'
+  - '_consolidated-from-drive/**'
+  - '.codeql-results/**'

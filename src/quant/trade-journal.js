@@ -11,7 +11,7 @@
     class TradeJournal {
         constructor(config = {}) {
             this.trades = [];
-            this.maxTrades = config.max_trades || 10000;
+            this.maxTrades = config.max_trades || 20000;
             this.storageKey = config.storage_key || 'beta1_trade_journal';
             this.exportPath = config.export_path;  // for Node.js backends
             this.schemaVersion = '1.0.0';
@@ -343,9 +343,9 @@
                 }
 
                 // Multi-drive cache (Windows)
-                if (typeof window !== 'undefined' && window.MultiDriveCache) {
-                    window.MultiDriveCache.set('trade_journal', jsonl);
-                }
+                // if (typeof window !== 'undefined' && window.MultiDriveCache) {
+                //     window.MultiDriveCache.set('trade_journal', jsonl);
+                // }
             } catch (err) {
                 console.error('[TradeJournal] Persist error:', err.message);
             }

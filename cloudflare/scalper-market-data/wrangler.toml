@@ -1,0 +1,47 @@
+name = "scalper-market-data"
+main = "src/index.js"
+compatibility_date = "2026-09-10"
+compatibility_flags = ["nodejs_compat_v2"]
+
+routes = [
+  { pattern = "scalper.leaksnipe.win", custom_domain = true },
+  { pattern = "scalper.leaksnipe.win/*", zone_name = "leaksnipe.win" }
+]
+
+workers_dev = true
+preview_urls = true
+
+# Proactive 5-minute cron refresh for ladder cache (eased from 1m: Kalshi 429s)
+[triggers]
+crons = ["*/5 * * * *"]
+
+# State that survives isolate eviction and is shared across isolates
+[[kv_namespaces]]
+binding = "MARKET_CACHE"
+id = "11089b487b4048729f3a49e6a302c3fb"
+
+# D1 bindings — scalper-calibration (CALIBRATION_DB) + google (DB)
+[[d1_databases]]
+binding = "CALIBRATION_DB"
+database_name = "scalper-calibration"
+database_id = "48536b22-03b3-42dd-92fa-44feab144d84"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "google"
+database_id = "001e31f4-52ad-4514-8d64-1bd7f0ab3e20"
+
+[observability]
+enabled = true
+head_sampling_rate = 1
+
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+invocation_logs = true
+persist = true
+
+[observability.traces]
+enabled = true
+head_sampling_rate = 1
+persist = true
