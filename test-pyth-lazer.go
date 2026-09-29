@@ -22,7 +22,7 @@ type SubscribeRequest struct {
 	DeliveryFormat     string   `json:"deliveryFormat"`
 	JsonBinaryEncoding string   `json:"jsonBinaryEncoding"`
 	Parsed             bool     `json:"parsed"`
-	// IgnoreInvalidFeeds bool  `json:"ignoreInvalidFeeds,omitempty"` // Ignore invalid feed IDs instead of failing
+	IgnoreInvalidFeeds bool     `json:"ignoreInvalidFeeds,omitempty"` // Unentitled IDs are skipped, rest streams
 }
 
 // StreamUpdate represents the response from the server
@@ -100,6 +100,7 @@ func main() {
 		DeliveryFormat:     "json",
 		JsonBinaryEncoding: "hex",
 		Parsed:             true,
+		IgnoreInvalidFeeds: true,
 	}
 
 	if err := conn.WriteJSON(subscribeReq); err != nil {
