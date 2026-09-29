@@ -41,7 +41,9 @@ def load_env():
 
 
 def headers():
-    h = {"Accept": "application/json"}
+    # NOTE: urllib's default "Python-urllib/3.12" UA trips the zone WAF
+    # (scripting-client rule) on data paths; identify as first-party.
+    h = {"Accept": "application/json", "User-Agent": "wecrypto-engine/1.0"}
     cid = os.getenv("CF_ACCESS_CLIENT_ID", "")
     csec = os.getenv("CF_ACCESS_CLIENT_SECRET", "")
     if cid:
@@ -100,8 +102,12 @@ def main():
                 if sym not in SYMBOLS:
                     continue
                 try:
-                    get_json(f"https://ladder.leaksnipe.win/ladder?symbol={sym}&force=1")
-                    actions.append(f"force-refreshed {sym}")
+                    cur = get_json(f"https://ladder.leaksnipe.win/ladder?symbol={sym}&force=1")
+                    if (cur.get("status") == "expired"
+                            and not cur.get("bands")):
+                        actions.append(f"{sym} still expired (no live series, expected)")
+                    else:
+                        actions.append(f"force-refreshed {sym}")
                 except Exception as e:  # noqa: BLE001
                     actions.append(f"force-refresh {sym} failed: {e}")
         else:
