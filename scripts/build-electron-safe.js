@@ -5,6 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
+const { builderArgsFor } = require('./electron-builder-args');
 
 const rootDir = path.resolve(__dirname, '..');
 const packagePath = path.join(rootDir, 'package.json');
@@ -171,15 +172,6 @@ function createConfig(buildLabel, targets) {
   }
 
   return buildConfig;
-}
-
-function builderArgsFor(targets, configPath) {
-  const args = ['--config', configPath, '--win'];
-  if (targets.size === 1) {
-    if (targets.has('portable')) args.push('portable');
-    if (targets.has('installer')) args.push('nsis');
-  }
-  return args;
 }
 
 assertNoSiblingDistDirs();
